@@ -1,4 +1,4 @@
-# cocoro_ghost 詳細設計（ドラフト v0.1）
+# cocoro_ghost 詳細設計（ドラフト v0.2）
 
 ## 1. 概要
 
@@ -6,6 +6,9 @@
 - 役割:
   - LLM 呼び出し・記憶管理・内的思考（reflection）を担う。
   - REST API を通じて、UI やキャラクター表示コンポーネントから利用される。
+- 想定:
+  - 一人のユーザー専用システムとして設計し、DB スキーマには `user_id` を持たない。
+  - API の `user_id` は初期実装では `"default"` 固定値のみ受け付け、将来マルチユーザー化する場合は互換性を考慮せずスキーマ変更・マイグレーションを行う前提とする。
 - 参照ドキュメント:
   - 要件定義: `docs/要件定義.md`
   - プロンプト定義: `docs/cocoro_ghost_prompts.md`
@@ -133,8 +136,8 @@ class LlmClient:
         image_descriptions: list[str] | None = None,
     ) -> dict:
         """
-        reflection 用プロンプトを組み立て、JSON 形式の内的思考を生成する。
-        戻り値は Python の dict として返す（呼び出し元でバリデーションする）。
+        reflection 用プロンプトテキストを受け取り、JSON 形式の内的思考を生成する。
+        戻り値は Python の dict として返す（構造の検証やドメイン構造体への変換は呼び出し元で行う）。
         image_descriptions には、画像要約テキストのリストを入れる想定。
         エラー時は例外を送出する。
         """
@@ -172,11 +175,14 @@ class LlmClient:
 
 #### `reflection.py`
 
-- reflection プロンプトを使って LLM に問い合わせ、JSON を受け取りパースする。
-- 戻り値:
+- `llm_client.LlmClient` を利用して reflection 用 LLM に問い合わせる高レイヤモジュール。
+- 責務:
+  - 要件定義・プロンプト定義に基づき、reflection 用プロンプト文字列を組み立てる。
+  - LLM から得た JSON 文字列／dict をスキーマに沿って検証し、アプリ内部で扱いやすい構造体（例: `EpisodeReflection`）へ変換する。
+- 戻り値のイメージ:
   - `reflection_text`, `emotion_label`, `emotion_intensity`,
     `topic_tags`, `salience_score`, `episode_comment`, `persons[...]`
-- JSON パースに失敗した場合はエラーとして扱い、処理を停止する。
+- JSON パースやバリデーションに失敗した場合はエラーとして扱い、処理を停止する（フォールバックや自動補正は行わない）。
 
 #### `memory.py`
 
@@ -223,6 +229,7 @@ class LlmClient:
 | occurred_at        | DATETIME  | Yes  | エピソード発生時刻（UTC想定） |
 | source             | TEXT      | Yes  | 発生源（`chat`, `desktop_capture`, `camera_capture`, `notification`, `meta_request` など） |
 | user_text          | TEXT      | No   | ユーザーの発話やテキスト状況 |
+| reply_text         | TEXT      | No   | パートナーからユーザーへの返答テキスト（chat/meta_request/notification 等） |
 | image_summary      | TEXT      | No   | 画像（デスクトップ／カメラ）からの要約テキスト |
 | activity           | TEXT      | No   | おおまかな活動（読書／仕事／ゲーム／移動 等） |
 | context_note       | TEXT      | No   | 場所・時間帯・天気などの自由記述 |
@@ -230,6 +237,7 @@ class LlmClient:
 | emotion_intensity  | REAL      | No   | 感情の強さ（0.0〜1.0） |
 | topic_tags         | TEXT      | No   | 主なトピックのタグ列（例: `"仕事, 読書, 家族"`。実装上はカンマ区切り or JSON 文字列） |
 | reflection_text    | TEXT      | Yes  | 内的思考（reflection）のテキスト |
+| reflection_json    | TEXT      | Yes  | reflection の元となる JSON 全体（将来の再解釈や再集計のために保存） |
 | salience_score     | REAL      | Yes  | 印象スコア（0.0〜1.0） |
 | episode_embedding  | BLOB/TEXT | No   | エピソード埋め込みベクトル（バイナリ or JSON 文字列） |
 | raw_desktop_path   | TEXT      | No   | デスクトップ画像のファイルパス（最大72時間有効） |
@@ -257,12 +265,8 @@ class LlmClient:
 | mention_count        | INTEGER   | No   | 言及された回数 |
 | topic_tags           | TEXT      | No   | その人物に関連する主な話題 |
 | status_note          | TEXT      | No   | 現在の状況の要約（仕事・体調・家族構成 等） |
-| user_like_score      | REAL      | No   | ユーザーから見た好きさ（0.0〜1.0） |
-| user_trust_score     | REAL      | No   | ユーザーから見た信頼度 |
-| user_respect_score   | REAL      | No   | ユーザーから見た尊敬度 |
-| user_worry_score     | REAL      | No   | ユーザーから見た心配度 |
-| ai_affinity_score    | REAL      | No   | AI から見た好感度 |
-| ai_concern_score     | REAL      | No   | AI が感じる心配度（ユーザーへの影響という意味で） |
+| closeness_score      | REAL      | No   | CocoroAI がその人物をどれくらい身近・親しい存在として感じているか（0.0〜1.0） |
+| worry_score          | REAL      | No   | その人物の状態や振る舞いが、ユーザーや生活全体にどれくらい影響しそうか／どれだけ気がかりか（0.0〜1.0） |
 | profile_embedding    | BLOB/TEXT | No   | その人物全体像の埋め込みベクトル |
 | created_at           | DATETIME  | Yes  | レコード作成時刻 |
 | updated_at           | DATETIME  | Yes  | レコード更新時刻 |
@@ -278,6 +282,14 @@ class LlmClient:
 | role       | TEXT    | No   | そのエピソードにおける役割（主人公／相手／話題に出ただけ 等） |
 
 - 主キーは `(episode_id, person_id)` の複合主キーとする。
+
+### 3.4 生画像パスとクリーンアップ方針
+
+- `raw_desktop_path` / `raw_camera_path` に保存する生画像パスは、要件定義にある通り最大 72 時間まで有効とする。
+- 実装方針:
+  - 単純なバッチ／バックグラウンドタスク（例: 5〜10 分おき）で、現在時刻から 72 時間以上前のエピソードを検索し、対応するファイルを削除する。
+  - 削除対象ファイルの `raw_desktop_path` / `raw_camera_path` は `NULL` に更新する。
+  - 削除処理で例外が発生した場合はログを残し、プロセスを停止させて運用者が原因を確認できるようにする（サイレントなリトライやフォールバックは行わない）。
 
 ---
 
@@ -352,20 +364,21 @@ class LlmClient:
    3. **reflection 生成**
       - ユーザー発話、`reply_text`、直近のコンテキストをまとめた `context_text` を組み立てる。
       - 画像がある場合は、その要約（`image_summary`）を `image_descriptions` として渡す。
-      - `LlmClient.generate_reflection(system_prompt_reflection, context_text, image_descriptions)` を呼び出し、reflection JSON（`reflection_text`, `emotion_label`, など）を取得。
+      - `LlmClient.generate_reflection(system_prompt_reflection, context_text, image_descriptions)` を呼び出し、reflection 用 JSON を取得する。
       - reflection JSON のバリデーションに失敗した場合はエラーとして扱い、処理を停止する。
+      - 検証済み JSON から `reflection_text`, `emotion_label`, `emotion_intensity`, `topic_tags`, `salience_score` などを取り出しつつ、元の JSON 全体も `reflection_json` として保持する。
    5. **埋め込み生成**
       - エピソードのためのテキスト（ユーザー発話、`reply_text`, `reflection_text`, `image_summary` など）を連結または適切にまとめた文字列を作成。
       - `LlmClient.generate_embedding([episode_text])` を呼び出し、1 本のベクトルを取得。
    6. **DB への保存・更新**
       - `episodes` テーブルに新しいレコードを作成:
-        - `occurred_at`, `source="chat"`, `user_text`, `image_summary`, `activity`, `context_note`,
-          `emotion_label`, `emotion_intensity`, `topic_tags`, `reflection_text`, `salience_score`,
+        - `occurred_at`, `source="chat"`, `user_text`, `reply_text`, `image_summary`, `activity`, `context_note`,
+          `emotion_label`, `emotion_intensity`, `topic_tags`, `reflection_text`, `reflection_json`, `salience_score`,
           `episode_embedding`, `raw_desktop_path`, `raw_camera_path`（通常は NULL）などを保存。
       - reflection JSON の `persons` 配列を用いて、`persons` テーブルの各人物レコードを更新:
         - `first_seen_at` / `last_seen_at` / `mention_count` の更新
         - `status_note` の更新（必要な場合）
-        - 各スコア（`user_like_score`, `ai_affinity_score` など）への delta 適用
+        - 各スコア（`closeness_score`, `worry_score`）への delta 適用
       - `episode_persons` テーブルに、今回のエピソードと関係する人物の紐づけを追加。
 
 3. **レスポンス生成**
@@ -392,9 +405,12 @@ class LlmClient:
   - 実装上は、ユーザーごとに 1 本のキュー／ロックで直列化することを想定する。
 
 - 異常時の扱い:
-  - reflection や記憶処理が失敗した場合、その回は「返答は行ったが記憶は残せなかった」状態になるが、
-    ログとエラー通知により検知できるようにする。
-  - 失敗頻度が高い場合はシステム全体をエラー状態として停止するなど、運用レベルで対処する。
+  - reflection や埋め込み生成、episodes / persons / episode_persons への保存処理で例外が発生した場合は、
+    その例外を致命的エラーとして扱い、ログ出力後にプロセスを停止させる（ヘルスチェックがあれば NG とし、監視・再起動の対象とする）。
+  - すでにユーザーへの `reply_text` を返した後にバックグラウンド処理が失敗した場合でも、
+    「返答は行ったが記憶は残せなかった」状態をフォールバックとして許容するのではなく、
+    直後にサービス全体をエラー状態とし、新規リクエストは 5xx エラーで失敗させる。
+  - 自動リトライや簡易な代替処理は行わず、異常系では必ず停止＋運用者による原因調査を前提とする。
 
 ---
 

@@ -71,12 +71,8 @@
       "is_self": true,
       "relation_update_note": "関係性や距離感に変化があれば、その内容。",
       "status_update_note": "その人の状況変化（仕事・体調・生活など）があれば、その内容。",
-      "user_like_delta": 0.1,
-      "user_trust_delta": 0.0,
-      "user_respect_delta": 0.0,
-      "user_worry_delta": -0.1,
-      "ai_affinity_delta": 0.0,
-      "ai_concern_delta": 0.0
+      "closeness_delta": 0.1,
+      "worry_delta": -0.1
     }
   ]
 }
@@ -139,24 +135,16 @@ cocoro_ghost から渡される情報をもとに、ユーザーへ日本語で�
       "is_self": true,
       "relation_update_note": "わたしを、弱音を少し吐ける相手として扱い始めている。",
       "status_update_note": "しばらく仕事が忙しい状況が続いている。睡眠や休息が足りていない可能性がある。",
-      "user_like_delta": 0.0,
-      "user_trust_delta": 0.1,
-      "user_respect_delta": 0.0,
-      "user_worry_delta": 0.1,
-      "ai_affinity_delta": 0.05,
-      "ai_concern_delta": 0.1
+      "closeness_delta": 0.1,
+      "worry_delta": 0.1
     },
     {
       "name": "上司",
       "is_self": false,
       "relation_update_note": "直接の不満は言っていないが、負荷の源として存在感が強くなっている。",
       "status_update_note": "依然として仕事のプレッシャー源であり、ユーザーのストレス要因の一つとして記録する。",
-      "user_like_delta": -0.05,
-      "user_trust_delta": -0.05,
-      "user_respect_delta": 0.0,
-      "user_worry_delta": 0.0,
-      "ai_affinity_delta": 0.0,
-      "ai_concern_delta": 0.05
+      "closeness_delta": -0.05,
+      "worry_delta": 0.05
     }
   ]
 }
@@ -178,12 +166,8 @@ cocoro_ghost から渡される情報をもとに、ユーザーへ日本語で�
       "is_self": true,
       "relation_update_note": "読書は『移動中の習慣』にとどまらず、心を整えるための大事な時間として位置づけられている。",
       "status_update_note": "最近の忙しさの中で、意識的に休息と没頭の時間を取ろうとしている兆候。",
-      "user_like_delta": 0.0,
-      "user_trust_delta": 0.05,
-      "user_respect_delta": 0.05,
-      "user_worry_delta": -0.05,
-      "ai_affinity_delta": 0.05,
-      "ai_concern_delta": -0.05
+      "closeness_delta": 0.05,
+      "worry_delta": -0.05
     }
   ]
 }
