@@ -46,7 +46,7 @@ cocoro_ghost/
   db.py            # DB 接続とセッション管理
   models.py        # ORM モデル定義（episodes / persons / episode_persons）
   schemas.py       # API入出力用 Pydantic モデル
-  llm_client.py    # LiteLLM + xAI ラッパ
+  llm_client.py    # LiteLLM ラッパ
   prompts.py       # プロンプト文字列の読み込み・管理
   reflection.py    # reflection 生成と JSON パース処理
   memory.py        # エピソード生成・保存・人物更新ロジック
@@ -82,15 +82,15 @@ cocoro_ghost/
 #### `db.py`
 
 - SQLAlchemy などの ORM を用いて DB エンジンとセッションを管理。
-- 初期は SQLite を想定。
-- 将来、PostgreSQL + ベクタ拡張に移行可能なよう、DB 接続部分を抽象化しておく。
+- 初期は SQLite を想定し、ベクタ検索には SQLite 拡張の sqlite-vec を利用する。
+- episodes の `episode_embedding` に対する類似検索を sqlite-vec 経由で行い、必要に応じてベクタインデックス用のテーブル／ビューを追加する。
 
 #### `models.py`
 
 - `episodes` テーブル:
   - 要件定義に基づき、エピソードのカラム（source, user_text, image_summary, emotion_label, salience_score など）を定義。
 - `persons` テーブル:
-  - 人物プロフィール（is_self, name, relation_to_user, status_note, 各種スコアなど）を定義。
+  - 人物プロフィール（is_user, name, relation_to_user, status_note, 各種スコアなど）を定義。
 - `episode_persons` テーブル:
   - エピソードと人物の多対多関係を表現し、役割（role）などを追加。
 
@@ -106,7 +106,7 @@ API 仕様（`docs/cocoro_ghost_api.md`）に合わせて定義する。
 
 #### `llm_client.py`
 
-- LiteLLM を利用して xAI へリクエストを行うラッパ。
+- LiteLLM を利用してLLMプロバイダにリクエストを行うラッパ。
 - 責務:
   - チャット用 LLM 呼び出し（キャラクターとしての対話）
   - reflection 用 LLM 呼び出し（JSON 生成）
@@ -252,7 +252,7 @@ class LlmClient:
 | カラム名             | 型        | 必須 | 説明 |
 |----------------------|-----------|------|------|
 | id                   | INTEGER   | PK   | 人物ID |
-| is_self              | BOOLEAN   | Yes  | ユーザー本人かどうか |
+| is_user              | BOOLEAN   | Yes  | ユーザー本人かどうか |
 | name                 | TEXT      | Yes  | 代表的な名前（フルネーム／よく使う呼び名など） |
 | aliases              | TEXT      | No   | その他の名前やハンドルネーム（カンマ区切りなどで複数保持） |
 | display_name         | TEXT      | No   | キャラクターが呼ぶときの呼び方 |
@@ -295,7 +295,7 @@ class LlmClient:
 
 ## 4. テスト方針
 
-### 3.1 テスト構成
+### 4.1 テスト構成
 
 - ディレクトリ:
   - `tests/`
@@ -309,7 +309,7 @@ class LlmClient:
   3. LLM 呼び出しは基本モック:
      - 実際の API 呼び出しは行わず、決め打ちの JSON／テキストを返すテストを中心にする。
 
-### 3.2 テストの進め方
+### 4.2 テストの進め方
 
 - ステップごとに以下のように追加していく:
   1. `/chat` の最小実装 → `/chat` 用の API テストを追加。
@@ -504,9 +504,9 @@ class LlmClient:
 |---------------------------|----------------------------|------|
 | `token`                   | `"secret-token-123"`       | REST API 認証用の固定トークン |
 | `db_url`                  | `"sqlite:///./ghost.db"`   | DB 接続文字列（初期は SQLite） |
-| `llm_model`               | `"xai-chat-1"`             | パートナー返答用の LLM モデル名 |
-| `reflection_model`        | `"xai-chat-1"`             | reflection 生成用モデル名（LLM と同じでも可） |
-| `embedding_model`         | `"xai-embed-1"`            | 埋め込み生成に利用するモデル名 |
+| `llm_model`               | `"chat-1"`                 | パートナー返答用の LLM モデル名 |
+| `reflection_model`        | `"chat-1"`                 | reflection 生成用モデル名（LLM と同じでも可） |
+| `embedding_model`         | `"embed-1"`                | 埋め込み生成に利用するモデル名 |
 | `log_level`               | `"INFO"`                   | ログレベル（DEBUG/INFO/WARN/ERROR） |
 | `env`                     | `"dev"` / `"prod"`         | 実行環境（開発／本番などの切り替え） |
 | `max_chat_queue`          | `10`                       | `/chat` キューの最大長（ユーザーごと） |

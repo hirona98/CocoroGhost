@@ -68,7 +68,7 @@
   "persons": [
     {
       "name": "ユーザー本人または登場人物の名前",
-      "is_self": true,
+      "is_user": true,
       "relation_update_note": "関係性や距離感に変化があれば、その内容。",
       "status_update_note": "その人の状況変化（仕事・体調・生活など）があれば、その内容。",
       "closeness_delta": 0.1,
@@ -132,7 +132,7 @@ cocoro_ghost から渡される情報をもとに、ユーザーへ日本語で�
   "persons": [
     {
       "name": "ユーザー",
-      "is_self": true,
+      "is_user": true,
       "relation_update_note": "わたしを、弱音を少し吐ける相手として扱い始めている。",
       "status_update_note": "しばらく仕事が忙しい状況が続いている。睡眠や休息が足りていない可能性がある。",
       "closeness_delta": 0.1,
@@ -140,7 +140,7 @@ cocoro_ghost から渡される情報をもとに、ユーザーへ日本語で�
     },
     {
       "name": "上司",
-      "is_self": false,
+      "is_user": false,
       "relation_update_note": "直接の不満は言っていないが、負荷の源として存在感が強くなっている。",
       "status_update_note": "依然として仕事のプレッシャー源であり、ユーザーのストレス要因の一つとして記録する。",
       "closeness_delta": -0.05,
@@ -163,7 +163,7 @@ cocoro_ghost から渡される情報をもとに、ユーザーへ日本語で�
   "persons": [
     {
       "name": "ユーザー",
-      "is_self": true,
+      "is_user": true,
       "relation_update_note": "読書は『移動中の習慣』にとどまらず、心を整えるための大事な時間として位置づけられている。",
       "status_update_note": "最近の忙しさの中で、意識的に休息と没頭の時間を取ろうとしている兆候。",
       "closeness_delta": 0.05,
