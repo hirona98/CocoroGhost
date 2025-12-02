@@ -1,0 +1,504 @@
+# cocoro_ghost 詳細設計（ドラフト v0.1）
+
+## 1. 概要
+
+- 本書は、CocoroAI のコアコンポーネントである **cocoro_ghost** の詳細設計をまとめたもの。
+- 役割:
+  - LLM 呼び出し・記憶管理・内的思考（reflection）を担う。
+  - REST API を通じて、UI やキャラクター表示コンポーネントから利用される。
+- 参照ドキュメント:
+  - 要件定義: `docs/要件定義.md`
+  - プロンプト定義: `docs/cocoro_ghost_prompts.md`
+  - API 仕様: `docs/cocoro_ghost_api.md`
+
+---
+
+## 2. プロジェクト構成（新規リポジトリ想定）
+
+### 2.1 ルート構成
+
+- 新規リポジトリ（例: `cocoro_ghost/`）を前提とし、以下のような構成とする。
+
+```text
+cocoro_ghost/
+  README.md
+  pyproject.toml / poetry.lock など
+  cocoro_ghost/       # cocoro_ghost 本体の Python パッケージ
+  tests/               # テストコード
+  docs/                # 要件定義・API仕様・プロンプトなどのドキュメント
+```
+
+- `cocoro_ghost/`
+  - cocoro_ghost 本体の Python パッケージ。
+- `tests/`
+  - cocoro_ghost 向けのテストコードを配置。
+
+### 2.2 `cocoro_ghost/` 配下構成
+
+```text
+cocoro_ghost/
+  __init__.py
+  main.py          # FastAPI アプリのエントリポイント
+  config.py        # 設定読み込み（トークン、DB、モデル名など）
+  db.py            # DB 接続とセッション管理
+  models.py        # ORM モデル定義（episodes / persons / episode_persons）
+  schemas.py       # API入出力用 Pydantic モデル
+  llm_client.py    # LiteLLM + xAI ラッパ
+  prompts.py       # プロンプト文字列の読み込み・管理
+  reflection.py    # reflection 生成と JSON パース処理
+  memory.py        # エピソード生成・保存・人物更新ロジック
+  api/
+    __init__.py
+    chat.py        # /chat エンドポイント
+    notification.py# /notification エンドポイント
+    meta_request.py# /meta_request エンドポイント
+    capture.py     # /capture エンドポイント
+    episodes.py    # /episodes エンドポイント
+```
+
+各モジュールの役割は以下の通り。
+
+#### `main.py`
+
+- FastAPI アプリケーションの生成。
+- ルーター登録:
+  - `/chat`, `/notification`, `/meta_request`, `/capture`, `/episodes`
+- 認証ミドルウェア（固定トークンチェック）の組み込み。
+
+#### `config.py`
+
+- 設定の集中管理。
+  - API トークン
+  - DB 接続文字列（初期は SQLite ファイルパス）
+  - 使用する LLM モデル名
+  - 埋め込みモデル設定
+  - ログレベル など
+- 実装イメージ:
+  - 設定ファイル（例: `config/ghost.toml`）を読み込むシンプルなクラス／関数。
+
+#### `db.py`
+
+- SQLAlchemy などの ORM を用いて DB エンジンとセッションを管理。
+- 初期は SQLite を想定。
+- 将来、PostgreSQL + ベクタ拡張に移行可能なよう、DB 接続部分を抽象化しておく。
+
+#### `models.py`
+
+- `episodes` テーブル:
+  - 要件定義に基づき、エピソードのカラム（source, user_text, image_summary, emotion_label, salience_score など）を定義。
+- `persons` テーブル:
+  - 人物プロフィール（is_self, name, relation_to_user, status_note, 各種スコアなど）を定義。
+- `episode_persons` テーブル:
+  - エピソードと人物の多対多関係を表現し、役割（role）などを追加。
+
+#### `schemas.py`
+
+- `ChatRequest`, `ChatResponse`
+- `NotificationRequest`, `NotificationResponse`
+- `MetaRequestRequest`, `MetaRequestResponse`
+- `CaptureRequest`, `CaptureResponse`
+- `EpisodeSummary` など
+
+API 仕様（`docs/cocoro_ghost_api.md`）に合わせて定義する。
+
+#### `llm_client.py`
+
+- LiteLLM を利用して xAI へリクエストを行うラッパ。
+- 責務:
+  - チャット用 LLM 呼び出し（キャラクターとしての対話）
+  - reflection 用 LLM 呼び出し（JSON 生成）
+  - 埋め込み生成（テキスト／将来的にはマルチモーダル）
+- エラー時は例外を投げ、上位層でログ＋停止処理を行う（フォールバックは行わない方針）。
+
+インターフェース案（Python 疑似コード）:
+
+```python
+class LlmClient:
+    def generate_reply(
+        self,
+        system_prompt: str,
+        conversation: list[dict],
+        temperature: float = 0.7,
+    ) -> str:
+        """
+        パートナーとしての返答を 1 メッセージぶん生成する。
+        conversation は {"role": "user|partner|system", "content": "..."} のリストを想定。
+        エラー時は例外を送出する。
+        """
+
+    def generate_reflection(
+        self,
+        system_prompt: str,
+        context_text: str,
+        image_descriptions: list[str] | None = None,
+    ) -> dict:
+        """
+        reflection 用プロンプトを組み立て、JSON 形式の内的思考を生成する。
+        戻り値は Python の dict として返す（呼び出し元でバリデーションする）。
+        image_descriptions には、画像要約テキストのリストを入れる想定。
+        エラー時は例外を送出する。
+        """
+
+    def generate_embedding(
+        self,
+        texts: list[str],
+        images: list[bytes] | None = None,
+    ) -> list[list[float]]:
+        """
+        エピソード用の埋め込みベクトルを生成する。
+        初期実装では texts のみを使い、images は未使用でもよい。
+        戻り値は、各入力に対応するベクトル（float のリスト）のリストとする。
+        エラー時は例外を送出する。
+        """
+
+    def generate_image_summary(
+        self,
+        images: list[bytes],
+    ) -> list[str]:
+        """
+        画像から日本語の要約テキストを生成する。
+        /chat でユーザーが画像を送ってきた場合や、/capture での静的要約に利用する。
+        戻り値は、各画像に対応する要約文のリストとする。
+        エラー時は例外を送出する。
+        """
+```
+
+#### `prompts.py`
+
+- `docs/cocoro_ghost_prompts.md` に記述したプロンプトをコード側で扱うためのヘルパ。
+- 初期案:
+  - シンプルに Python の文字列として定義するか、
+  - Markdown ファイルから必要なブロックを読み込む関数を用意する。
+
+#### `reflection.py`
+
+- reflection プロンプトを使って LLM に問い合わせ、JSON を受け取りパースする。
+- 戻り値:
+  - `reflection_text`, `emotion_label`, `emotion_intensity`,
+    `topic_tags`, `salience_score`, `episode_comment`, `persons[...]`
+- JSON パースに失敗した場合はエラーとして扱い、処理を停止する。
+
+#### `memory.py`
+
+- 主要なビジネスロジックを担当。
+- 主な責務:
+  - エピソード生成パイプライン:
+    - 入力（chat/notification/meta_request/capture）から、
+      - 必要に応じて要約を生成
+      - reflection を生成
+      - 埋め込みを生成
+    - episodes / persons / episode_persons へ保存・更新
+  - 人物プロフィール更新:
+    - reflection の `persons` 情報から、各人物のスコア・status_note を更新。
+
+#### `api/` 各モジュール
+
+- `chat.py`:
+  - `/chat` の FastAPI ルート定義。
+  - `ChatRequest` を受け取り、`memory` に処理を委譲し、`ChatResponse` を返す。
+- `notification.py`:
+  - `/notification` のルート。
+  - 通知内容を受け取り、エピソード＋ユーザーへの案内文を生成。
+- `meta_request.py`:
+  - `/meta_request` のルート。
+  - 指示＋ペイロードを受け取り、ユーザー向けの説明と感想を生成。
+- `capture.py`:
+  - `/capture` のルート。
+  - 画像パスと context_text を受け取り、要約＋エピソード生成。
+- `episodes.py`:
+  - `/episodes` のルート。
+  - 振り返り用に、簡易なエピソード一覧を返す。
+
+---
+
+## 3. DB スキーマ詳細
+
+### 3.1 `episodes` テーブル
+
+- エピソード（出来事・瞬間）を表すテーブル。
+
+| カラム名           | 型        | 必須 | 説明 |
+|--------------------|-----------|------|------|
+| id                 | INTEGER   | PK   | エピソードID |
+| occurred_at        | DATETIME  | Yes  | エピソード発生時刻（UTC想定） |
+| source             | TEXT      | Yes  | 発生源（`chat`, `desktop_capture`, `camera_capture`, `notification`, `meta_request` など） |
+| user_text          | TEXT      | No   | ユーザーの発話やテキスト状況 |
+| image_summary      | TEXT      | No   | 画像（デスクトップ／カメラ）からの要約テキスト |
+| activity           | TEXT      | No   | おおまかな活動（読書／仕事／ゲーム／移動 等） |
+| context_note       | TEXT      | No   | 場所・時間帯・天気などの自由記述 |
+| emotion_label      | TEXT      | No   | `joy`, `sadness`, `anger`, `fear`, `neutral` など |
+| emotion_intensity  | REAL      | No   | 感情の強さ（0.0〜1.0） |
+| topic_tags         | TEXT      | No   | 主なトピックのタグ列（例: `"仕事, 読書, 家族"`。実装上はカンマ区切り or JSON 文字列） |
+| reflection_text    | TEXT      | Yes  | 内的思考（reflection）のテキスト |
+| salience_score     | REAL      | Yes  | 印象スコア（0.0〜1.0） |
+| episode_embedding  | BLOB/TEXT | No   | エピソード埋め込みベクトル（バイナリ or JSON 文字列） |
+| raw_desktop_path   | TEXT      | No   | デスクトップ画像のファイルパス（最大72時間有効） |
+| raw_camera_path    | TEXT      | No   | カメラ画像のファイルパス（最大72時間有効） |
+| created_at         | DATETIME  | Yes  | レコード作成時刻 |
+| updated_at         | DATETIME  | Yes  | レコード更新時刻 |
+
+### 3.2 `persons` テーブル
+
+- 登場するすべての人物（ユーザー本人を含む）のプロフィールを表すテーブル。
+
+| カラム名             | 型        | 必須 | 説明 |
+|----------------------|-----------|------|------|
+| id                   | INTEGER   | PK   | 人物ID |
+| is_self              | BOOLEAN   | Yes  | ユーザー本人かどうか |
+| name                 | TEXT      | Yes  | 代表的な名前（フルネーム／よく使う呼び名など） |
+| aliases              | TEXT      | No   | その他の名前やハンドルネーム（カンマ区切りなどで複数保持） |
+| display_name         | TEXT      | No   | キャラクターが呼ぶときの呼び方 |
+| relation_to_user     | TEXT      | No   | ユーザーとの関係性（家族／友人／同僚／推し 等） |
+| relation_confidence  | REAL      | No   | 関係性の確からしさ（0.0〜1.0） |
+| residence            | TEXT      | No   | 居住地や生活拠点 |
+| occupation           | TEXT      | No   | 職業・立場 |
+| first_seen_at        | DATETIME  | No   | 初登場時刻 |
+| last_seen_at         | DATETIME  | No   | 最終登場時刻 |
+| mention_count        | INTEGER   | No   | 言及された回数 |
+| topic_tags           | TEXT      | No   | その人物に関連する主な話題 |
+| status_note          | TEXT      | No   | 現在の状況の要約（仕事・体調・家族構成 等） |
+| user_like_score      | REAL      | No   | ユーザーから見た好きさ（0.0〜1.0） |
+| user_trust_score     | REAL      | No   | ユーザーから見た信頼度 |
+| user_respect_score   | REAL      | No   | ユーザーから見た尊敬度 |
+| user_worry_score     | REAL      | No   | ユーザーから見た心配度 |
+| ai_affinity_score    | REAL      | No   | AI から見た好感度 |
+| ai_concern_score     | REAL      | No   | AI が感じる心配度（ユーザーへの影響という意味で） |
+| profile_embedding    | BLOB/TEXT | No   | その人物全体像の埋め込みベクトル |
+| created_at           | DATETIME  | Yes  | レコード作成時刻 |
+| updated_at           | DATETIME  | Yes  | レコード更新時刻 |
+
+### 3.3 `episode_persons` テーブル
+
+- エピソードと人物を紐づける中間テーブル（多対多）。
+
+| カラム名    | 型      | 必須 | 説明 |
+|------------|---------|------|------|
+| episode_id | INTEGER | Yes  | エピソードID（FK -> episodes.id） |
+| person_id  | INTEGER | Yes  | 人物ID（FK -> persons.id） |
+| role       | TEXT    | No   | そのエピソードにおける役割（主人公／相手／話題に出ただけ 等） |
+
+- 主キーは `(episode_id, person_id)` の複合主キーとする。
+
+---
+
+## 4. テスト方針
+
+### 3.1 テスト構成
+
+- ディレクトリ:
+  - `tests/`
+- テストレベル:
+  1. API レベルテスト:
+     - FastAPI の TestClient を用いて、各エンドポイントが 200 を返し、
+       レスポンス JSON が期待されたスキーマを満たすかを確認。
+  2. メモリ・DB ロジックテスト:
+     - `memory.py` のエピソード生成・保存が正しく動作するか。
+     - reflection の JSON を流し込み、`persons` のスコア更新が期待通りかを確認。
+  3. LLM 呼び出しは基本モック:
+     - 実際の API 呼び出しは行わず、決め打ちの JSON／テキストを返すテストを中心にする。
+
+### 3.2 テストの進め方
+
+- ステップごとに以下のように追加していく:
+  1. `/chat` の最小実装 → `/chat` 用の API テストを追加。
+  2. DB スキーマ実装 → シンプルな保存・読み出しテスト。
+  3. reflection・memory 実装 → 典型的な入力に対する更新テスト。
+
+---
+
+## 5. 実装ステップ（ロードマップ）
+
+1. **雛形 API 実装**
+   - `cocoro_ghost/main.py` と `api/chat.py` を作成し、`/chat` がダミー応答を返すところまで。
+2. **DB スキーマ実装**
+   - `db.py`, `models.py` を実装し、`episodes` / `persons` / `episode_persons` のテーブル定義を追加。
+3. **schemas・config 実装**
+   - `schemas.py` に API リクエスト／レスポンスモデルを定義。
+   - `config.py` にトークン・DB・モデル設定を集中管理。
+4. **LLM クライアント実装**
+   - `llm_client.py` で、chat・reflection・埋め込み呼び出しのインターフェースを整備（中身はモックから始めても良い）。
+5. **reflection・memory 実装**
+   - `reflection.py` と `memory.py` を実装し、`/chat` からエピソード生成まで一連の流れを通す。
+6. **他 API 実装**
+   - `/notification`, `/meta_request`, `/capture`, `/episodes` のルートと処理を順に追加。
+7. **認証・設定・ログ整備**
+   - 固定トークンのチェック、設定読み込み、主要イベントのログ出力を整備。
+
+---
+
+## 6. `/chat` フロー詳細
+
+ユーザーとの通常会話を行う `/chat` エンドポイントの処理フローを示す。
+
+1. **API レイヤ（`api/chat.py`）**
+   - `POST /chat` で `ChatRequest` を受信:
+     - `user_id`
+     - `text`
+     - `context_hint`
+   - 認証トークンを検証。
+   - リクエスト内容を `memory.handle_chat(request)` のような関数へ委譲。
+
+2. **メモリレイヤ（`memory.py`）でのフロー**
+   1. **コンテキスト収集**
+      - 直近のエピソードから、必要な文脈（最近の会話、関連する人物情報など）を取得。
+      - ユーザー本人の `persons` プロフィールを読み込み、必要なら会話用のヒントを組み立てる。
+   2. **パートナーとしての返答生成**
+      - もしリクエストに画像（`image_path`）が含まれている場合:
+        - 画像を読み込み、`LlmClient.generate_image_summary([...])` により日本語の要約テキストを生成し、`image_summary` として保持する。
+      - 画像の有無にかかわらず、ユーザー発話と `image_summary`（あれば）を背景情報として扱う。
+      - `prompts.py` からキャラクター用システムプロンプトを取得。
+      - 直近の会話履歴と今回の `text` を `conversation` として構築。
+      - `LlmClient.generate_reply(system_prompt, conversation)` を呼び出し、`reply_text` を得る。
+   3. **reflection 生成**
+      - ユーザー発話、`reply_text`、直近のコンテキストをまとめた `context_text` を組み立てる。
+      - 画像がある場合は、その要約（`image_summary`）を `image_descriptions` として渡す。
+      - `LlmClient.generate_reflection(system_prompt_reflection, context_text, image_descriptions)` を呼び出し、reflection JSON（`reflection_text`, `emotion_label`, など）を取得。
+      - reflection JSON のバリデーションに失敗した場合はエラーとして扱い、処理を停止する。
+   5. **埋め込み生成**
+      - エピソードのためのテキスト（ユーザー発話、`reply_text`, `reflection_text`, `image_summary` など）を連結または適切にまとめた文字列を作成。
+      - `LlmClient.generate_embedding([episode_text])` を呼び出し、1 本のベクトルを取得。
+   6. **DB への保存・更新**
+      - `episodes` テーブルに新しいレコードを作成:
+        - `occurred_at`, `source="chat"`, `user_text`, `image_summary`, `activity`, `context_note`,
+          `emotion_label`, `emotion_intensity`, `topic_tags`, `reflection_text`, `salience_score`,
+          `episode_embedding`, `raw_desktop_path`, `raw_camera_path`（通常は NULL）などを保存。
+      - reflection JSON の `persons` 配列を用いて、`persons` テーブルの各人物レコードを更新:
+        - `first_seen_at` / `last_seen_at` / `mention_count` の更新
+        - `status_note` の更新（必要な場合）
+        - 各スコア（`user_like_score`, `ai_affinity_score` など）への delta 適用
+      - `episode_persons` テーブルに、今回のエピソードと関係する人物の紐づけを追加。
+
+3. **レスポンス生成**
+   - `memory` モジュールから `reply_text` と `episode_id` を受け取り、`ChatResponse` を構築。
+   - API として以下を返す:
+     - `reply_text`: パートナーからユーザーへの返答。
+     - `episode_id`: 記録されたエピソードの ID。
+
+### 6.1 同期／非同期と直列処理の方針
+
+- ユーザー体験としては「返答と記憶がセットで成立する」ことを重視するが、
+  レイテンシを抑えるために以下の方針とする。
+
+- 同期処理（HTTP レスポンスが返るまでに必ず行う）:
+  - 画像要約（`generate_image_summary`、画像がある場合）
+  - パートナーとしての返答生成（`generate_reply`）
+- 非同期処理（HTTP レスポンス返却後にバックグラウンドで行う）:
+  - reflection 生成（`generate_reflection`）
+  - 埋め込み生成（`generate_embedding`）と episodes / persons / episode_persons の保存・更新
+
+- 直列性の確保:
+  - ある `/chat` リクエスト A に対する reflection・記憶処理（3〜4）が完了していない間は、
+    次の `/chat` リクエスト B は「受け付けはするが、実際の処理開始は A の 3〜4 完了後」とする。
+  - 実装上は、ユーザーごとに 1 本のキュー／ロックで直列化することを想定する。
+
+- 異常時の扱い:
+  - reflection や記憶処理が失敗した場合、その回は「返答は行ったが記憶は残せなかった」状態になるが、
+    ログとエラー通知により検知できるようにする。
+  - 失敗頻度が高い場合はシステム全体をエラー状態として停止するなど、運用レベルで対処する。
+
+---
+
+## 7. `/notification` フロー詳細
+
+外部システム（メーラーなど）からの通知を受け取り、ユーザーに伝えるメッセージとエピソードを生成する。
+
+1. **API レイヤ（`api/notification.py`）**
+   - `POST /notification` で `NotificationRequest` を受信:
+     - `source_system`
+     - `title`
+     - `body`
+     - `image_url`（任意）
+   - 認証トークンを検証。
+   - リクエスト内容を `memory.handle_notification(request)` へ委譲。
+
+2. **メモリレイヤ（`memory.py`）でのフロー**
+   1. **通知内容の整理**
+      - `source_system`, `title`, `body` から、通知の要約テキストを組み立てる。
+      - 通知の種類に応じて、おおまかな `activity`（メール／予定／システム通知 等）を推定しておく。
+   2. **画像要約（あれば）**
+      - `image_url` から画像が取得できる場合は読み込み、`generate_image_summary` により要約テキストを生成し、通知の背景情報として扱う。
+   3. **パートナーとしての返答生成**
+      - 通知の要約＋画像要約（あれば）をもとに、ユーザーに伝えるメッセージの骨格を作る。
+      - キャラクター用システムプロンプトを用い、`generate_reply` で「どこからの通知か→内容の要約→一言コメント」を含む `speak_text` を生成する。
+   4. **reflection 生成（非同期）**
+      - 通知の内容・`speak_text`・関連人物（メールの差出人などが分かる場合）をまとめた `context_text` を組み立てる。
+      - `generate_reflection` を呼び出し、reflection JSON を取得する。
+   5. **埋め込み生成と保存（非同期）**
+      - 通知の要約・`speak_text`・`reflection_text` などからエピソードテキストを作成し、`generate_embedding` を呼ぶ。
+      - `episodes` テーブルに `source="notification"` でレコードを追加し、必要に応じて差出人などの人物を `persons` / `episode_persons` に反映する。
+
+3. **レスポンス生成**
+   - `memory` から `speak_text` と `episode_id` を受け取り、`NotificationResponse` を返す。
+
+同期／非同期の扱いは `/chat` と同様に、ユーザーへの `speak_text` は同期、reflection・記憶処理は非同期（ただし直列化）とする。
+
+---
+
+## 8. `/meta_request` フロー詳細
+
+外部から「こういう説明・振る舞いをしてほしい」というメタ指示を受け取り、ユーザー向けのメッセージとエピソードを生成する。
+
+1. **API レイヤ（`api/meta_request.py`）**
+   - `POST /meta_request` で `MetaRequestRequest` を受信:
+     - `instruction`
+     - `payload_text`
+     - `image_url`（任意）
+   - 認証トークンを検証。
+   - リクエスト内容を `memory.handle_meta_request(request)` へ委譲。
+
+2. **メモリレイヤ（`memory.py`）でのフロー**
+   1. **入力情報の整理**
+      - `instruction` と `payload_text` から、ユーザーに伝えるべき内容と目的を整理する。
+   2. **画像要約（あれば）**
+      - `image_url` から画像が取得できる場合は読み込み、`generate_image_summary` により要約テキストを生成し、`payload_text` に付加情報として扱う。
+   3. **パートナーとしての返答生成**
+      - キャラクター用システムプロンプトと `instruction`＋`payload_text`＋画像要約を組み合わせ、
+        ユーザーに対して自然な形で説明・要約・感想を伝える `speak_text` を `generate_reply` で生成する。
+      - ユーザーから見ると、外部の指示ではなく、パートナー自身の提案・気づきとして聞こえるようにする。
+   4. **reflection 生成（非同期）**
+      - `instruction`・`payload_text`・`speak_text` を含む `context_text` を組み立て、`generate_reflection` を呼び出す。
+      - その情報がユーザーや人物プロフィールにどう影響しそうかを reflection に含める。
+   5. **埋め込み生成と保存（非同期）**
+      - 関連テキストからエピソードテキストを作成し、`generate_embedding` を呼び出す。
+      - `episodes` テーブルに `source="meta_request"` でレコードを追加する。
+      - 必要に応じて、ニュースやトピックに関連する人物を `persons` / `episode_persons` に反映する。
+
+3. **レスポンス生成**
+   - `memory` から `speak_text` と `episode_id` を受け取り、`MetaRequestResponse` を返す。
+
+同期／非同期、直列化の方針は `/chat` と同様とする。
+
+---
+
+## 9. 設定（config）設計
+
+### 9.1 設定の読み込み方針
+
+- 基本方針:
+  - 環境変数には依存せず、すべて設定ファイルで管理する。
+  - 例として、リポジトリ直下に `config/ghost.toml`（または `ghost.yaml`）を置き、そこから読み込む。
+  - `cocoro_ghost.config` モジュールで一元管理し、アプリ内の他の箇所では設定ファイルを直接扱わない。
+- 実装イメージ:
+  - 起動時に `Config` クラス（あるいは同等の構造体）を生成し、FastAPI アプリの `state` などに保持する。
+  - 設定ファイルが見つからない、または必須項目が欠けている場合は起動時にエラーとして停止する。
+
+### 9.2 設定項目（案）
+
+| キー名                     | 例                         | 用途 |
+|---------------------------|----------------------------|------|
+| `token`                   | `"secret-token-123"`       | REST API 認証用の固定トークン |
+| `db_url`                  | `"sqlite:///./ghost.db"`   | DB 接続文字列（初期は SQLite） |
+| `llm_model`               | `"xai-chat-1"`             | パートナー返答用の LLM モデル名 |
+| `reflection_model`        | `"xai-chat-1"`             | reflection 生成用モデル名（LLM と同じでも可） |
+| `embedding_model`         | `"xai-embed-1"`            | 埋め込み生成に利用するモデル名 |
+| `log_level`               | `"INFO"`                   | ログレベル（DEBUG/INFO/WARN/ERROR） |
+| `env`                     | `"dev"` / `"prod"`         | 実行環境（開発／本番などの切り替え） |
+| `max_chat_queue`          | `10`                       | `/chat` キューの最大長（ユーザーごと） |
+
+※ モデル名は LiteLLM 側の設定に合わせて変更可能とする。
+
+### 9.3 config モジュールの責務
+
+- 設定ファイルから値を読み込み、型変換・デフォルト値の設定を行う。
+- 必須項目（例: `token`, `db_url`）が設定されていない場合は、起動時にエラーとして停止する。
+- アプリケーションコードからは `config.llm_model` のように属性ベースで参照できるインターフェースを提供する。
