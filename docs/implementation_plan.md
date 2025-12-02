@@ -9,25 +9,12 @@
 
 ## 実装方針
 
-### 基本原則
-
-1. **フォールバック処理は実装しない**
-   - エラーは停止させ、ログに記録する
-   - サイレントな失敗や自動リカバリは行わない
-
-2. **後方互換性は維持しない**
-   - 必要に応じて非互換な変更を行う
-   - スキーマ変更時は再計算・マイグレーションを前提とする
-
-3. **シンプルさ最優先**
-   - 過度な抽象化や将来のための準備コードは書かない
-   - 必要になったときに拡張する
-
-4. **異常系では停止**
-   - LLM呼び出し失敗、DB保存失敗などは即座にエラーとする
-   - プロセスを停止させ、監視・再起動は外部システムに任せる
-
----
+- フォールバック処理は行わず、シンプルさを優先する。
+- 後方互換は考慮せず、必要なら非互換変更で対応する。
+- /chat での LLM API レート制限・その他エラーは、チャット応答としてユーザーにエラー内容を返す。自動リトライやバックオフは実装しない。
+- /chat 以外のエンドポイントで発生したエラーはログに記録するだけとし、特別な停止処理は不要。
+- 保存除外キーワードは API で設定し、現在の設定を即時反映する。
+- 撮影処理は別アプリが実施し、本アプリは API 経由で通知を受けて記録・要約のみ行う。
 
 ## 実装フェーズ
 
@@ -70,7 +57,7 @@ cocoro_ghost/
   images/
     desktop/
     camera/
-    (生画像の一時保存先)
+    (生画像の一時保存先。撮影は別アプリが行い、/capture 通知で本アプリに渡される)
 ```
 
 **必要なパッケージ:**
@@ -96,6 +83,7 @@ sqlite-vec
 **実装内容:**
 - 設定ファイル（config/ghost.toml）の読み込み
 - 必須項目のバリデーション（起動時にチェック）
+- ランタイム設定ストアの用意（FastAPI 依存で注入し、API から即時反映できるようにする）
 - 設定項目:
   - `token`: API認証用トークン
   - `db_url`: SQLite接続文字列
@@ -105,6 +93,7 @@ sqlite-vec
   - `log_level`: ログレベル
   - `env`: 実行環境（dev/prod）
   - `max_chat_queue`: チャットキューの最大長
+  - `exclude_keywords`: 保存除外キーワード（API で更新し即時反映）
 
 **config/ghost.toml サンプル:**
 ```toml
@@ -116,12 +105,14 @@ embedding_model = "text-embedding-ada-002"
 log_level = "INFO"
 env = "dev"
 max_chat_queue = 10
+exclude_keywords = ["パスワード", "銀行"]
 ```
 
 **作業内容:**
 - [ ] config.pyモジュールを実装
 - [ ] 設定ファイルの読み込みロジック
 - [ ] 必須項目チェック（なければ起動時エラー）
+- [ ] ランタイム設定ストア（読み込み＋API反映）の実装
 - [ ] config/ghost.toml.exampleを作成
 
 #### 1.3 データベーススキーマ（db.py, models.py）
@@ -254,6 +245,20 @@ class EpisodeSummary(BaseModel):
     emotion_label: Optional[str]
     salience_score: float
 ```
+
+6. **SettingsUpdateRequest / SettingsResponse**
+```python
+class SettingsUpdateRequest(BaseModel):
+    exclude_keywords: Optional[List[str]] = None
+    character_prompt: Optional[str] = None
+    intervention_level: Optional[str] = None
+
+class SettingsResponse(BaseModel):
+    exclude_keywords: List[str]
+    character_prompt: str
+    intervention_level: str
+```
+"設定変更APIや即時反映" 用のスキーマ。受信した値はランタイム設定ストアに反映し、その場で有効化する。
 
 **作業内容:**
 - [ ] schemas.pyに全てのリクエスト/レスポンスモデルを定義
@@ -507,6 +512,7 @@ class MemoryManager:
         2. 返答生成（同期）
         3. reflection生成（非同期）
         4. 埋め込み生成と保存（非同期）
+        5. LLMレート制限・通信失敗などのエラーはチャット応答としてエラー内容を返す
         """
         pass
 
@@ -537,6 +543,7 @@ class MemoryManager:
     ) -> schemas.CaptureResponse:
         """
         /capture エンドポイントの処理ロジック。
+        撮影は別アプリが行い、受信したパス・要約テキストを保存する。保存除外キーワードに一致した場合は記録をスキップして応答を返す。
         """
         pass
 
@@ -613,6 +620,7 @@ async def chat(
 - [ ] /chatエンドポイントの定義
 - [ ] 認証の適用
 - [ ] リクエスト処理の委譲
+- [ ] LLMエラー時のエラーメッセージ返信（HTTP 200でエラー内容を返す方針を明記）
 
 #### 4.2 /notification エンドポイント（api/notification.py）
 
@@ -632,7 +640,8 @@ async def chat(
 
 **作業内容:**
 - [ ] api/capture.pyを実装
-- [ ] /captureエンドポイントの定義
+- [ ] /captureエンドポイントの定義（撮影そのものは別アプリが行い、ここには画像パスや要約テキストが通知される想定）
+- [ ] 保存除外キーワード設定を参照し、該当する場合は記録スキップを返す
 - [ ] 認証の適用
 
 #### 4.5 /episodes エンドポイント（api/episodes.py）
@@ -671,7 +680,31 @@ async def get_episodes(
 - [ ] 認証の適用
 - [ ] ページネーション実装
 
-#### 4.6 main.pyへのルーター登録
+#### 4.6 設定変更エンドポイント（api/settings.py）
+
+**実装内容:**
+```python
+from fastapi import APIRouter, Depends
+from cocoro_ghost import schemas
+from cocoro_ghost.config import get_config_store
+
+router = APIRouter()
+
+@router.post("/settings", response_model=schemas.SettingsResponse)
+async def update_settings(
+    request: schemas.SettingsUpdateRequest,
+    config_store = Depends(get_config_store),
+):
+    return config_store.update(request)
+```
+
+**作業内容:**
+- [ ] ランタイム設定ストアの依存提供関数 `get_config_store` を実装
+- [ ] 保存除外キーワードを API で更新し、その場で反映
+- [ ] 介入頻度やキャラクタープロンプトなども更新対象に含める
+- [ ] 認証の適用とバリデーション
+
+#### 4.7 main.pyへのルーター登録
 
 **作業内容:**
 - [ ] main.pyに各APIルーターを登録
@@ -721,7 +754,7 @@ def cleanup_old_images():
 - [ ] cleanup.pyモジュールを実装
 - [ ] cleanup_old_images関数の実装
 - [ ] FastAPIのBackgroundTasksまたはAPSchedulerで定期実行
-- [ ] エラーハンドリング（削除失敗時は停止）
+- [ ] エラーハンドリング（削除失敗時はログのみ記録し、それ以上の特別処理はしない）
 
 #### 5.2 ロギング設定
 
@@ -882,6 +915,7 @@ python -X utf8 -m uvicorn cocoro_ghost.main:app --host 0.0.0.0 --port 55601
 2. フェーズ2: LLMクライアントとプロンプト
 3. フェーズ3: Reflectionとメモリ管理
 4. フェーズ4.1: /chat エンドポイント
+5. フェーズ4.6: 設定変更API（保存除外キーワード即時反映含む）
 
 **目標: /chatエンドポイントが動作し、エピソードが記録される**
 
@@ -915,8 +949,8 @@ python -X utf8 -m uvicorn cocoro_ghost.main:app --host 0.0.0.0 --port 55601
    - 書き込みが競合しないよう、適切なロック機構を実装
 
 3. **LLM APIのレート制限**
-   - 必要に応じてリトライやバックオフを実装
-   - ただし、失敗時は最終的にエラーで停止
+   - /chat ではレート制限・通信失敗をチャット応答でエラーとして返し、リトライは行わない
+   - /chat 以外はログ記録のみ（特別な停止処理なし）
 
 4. **画像ファイルの管理**
    - パスは絶対パスで管理
@@ -939,6 +973,9 @@ python -X utf8 -m uvicorn cocoro_ghost.main:app --host 0.0.0.0 --port 55601
 3. **SQLインジェクション対策**
    - ORMを使用することで自動的に対策される
    - 生SQLを書く場合はパラメータバインディングを使用
+
+4. **設定変更APIの保護**
+   - 認証トークン必須とし、変更内容は監査ログに残す
 
 ---
 
@@ -973,5 +1010,6 @@ python -X utf8 -m uvicorn cocoro_ghost.main:app --host 0.0.0.0 --port 55601
 2. **設定管理の実装**: config.pyとconfig/ghost.toml
 3. **データベーススキーマの実装**: db.pyとmodels.py
 4. **FastAPI雛形の実装**: main.pyとヘルスチェックエンドポイント
+5. **設定変更APIとランタイム反映**: configストアと /settings エンドポイントを実装
 
 各フェーズの実装が完了したら、次のフェーズに進みます。
