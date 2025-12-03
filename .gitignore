@@ -1,4 +1,5 @@
 settings.local.json
+/tmp
 
 # cocoro_ghost specific
 config/setting.toml
