@@ -418,13 +418,13 @@ class LlmClient:
 ```
 
 **作業内容:**
-- [ ] llm_client.pyの基本クラスを実装
-- [ ] generate_replyメソッドの実装
-- [ ] generate_reflectionメソッドの実装（JSON生成）
-- [ ] generate_embeddingメソッドの実装
-- [ ] generate_image_summaryメソッドの実装
-- [ ] エラーハンドリング（例外を適切に送出）
-- [ ] LiteLLMの設定とAPI呼び出し
+- [x] llm_client.pyの基本クラスを実装
+- [x] generate_replyメソッドの実装
+- [x] generate_reflectionメソッドの実装（JSON生成）
+- [x] generate_embeddingメソッドの実装
+- [x] generate_image_summaryメソッドの実装（未サポート時は明示例外）
+- [x] エラーハンドリング（例外を適切に送出）
+- [x] LiteLLMの設定とAPI呼び出し
 
 ---
 
@@ -576,14 +576,14 @@ class MemoryManager:
 ```
 
 **作業内容:**
-- [ ] memory.pyモジュールを実装
-- [ ] MemoryManagerクラスの基本構造
-- [ ] handle_chatメソッドの実装
-- [ ] handle_notificationメソッドの実装
-- [ ] handle_meta_requestメソッドの実装
-- [ ] handle_captureメソッドの実装
-- [ ] _update_personsメソッドの実装
-- [ ] _create_episodeメソッドの実装
+- [x] memory.pyモジュールを実装
+- [x] MemoryManagerクラスの基本構造
+- [x] handle_chatメソッドの実装（LLMエラーは応答で返却）
+- [x] handle_notificationメソッドの実装
+- [x] handle_meta_requestメソッドの実装
+- [x] handle_captureメソッドの実装（保存除外キーワード対応、パス検証）
+- [x] _update_personsメソッドの実装
+- [x] _create_episodeメソッドの実装
 - [ ] 同期/非同期処理の実装（FastAPIのBackgroundTasksを使用）
 - [ ] 直列化キュー（ユーザーごとのロック）の実装
 

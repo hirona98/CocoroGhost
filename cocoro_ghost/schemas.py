@@ -64,7 +64,7 @@ class EpisodeSummary(BaseModel):
     salience_score: float
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class SettingsUpdateRequest(BaseModel):

@@ -27,4 +27,15 @@ async def get_episodes(
         .limit(limit)
         .all()
     )
-    return episodes
+    return [
+        schemas.EpisodeSummary(
+            id=e.id,
+            occurred_at=e.occurred_at,
+            source=e.source,
+            user_text=e.user_text,
+            reply_text=e.reply_text,
+            emotion_label=e.emotion_label,
+            salience_score=e.salience_score or 0.0,
+        )
+        for e in episodes
+    ]

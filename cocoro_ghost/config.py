@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import pathlib
-from dataclasses import dataclass, field
+import threading
+from dataclasses import dataclass, field, replace
 from typing import List, Optional
 
 import tomli
@@ -29,21 +30,24 @@ class ConfigStore:
 
     def __init__(self, initial: Config) -> None:
         self._config = initial
+        self._lock = threading.Lock()
 
     @property
     def config(self) -> Config:
         return self._config
 
     def update(self, *, exclude_keywords: Optional[List[str]] = None, character_prompt: Optional[str] = None, intervention_level: Optional[str] = None) -> Config:
-        cfg = self._config
-        if exclude_keywords is not None:
-            cfg.exclude_keywords = exclude_keywords
-        if character_prompt is not None:
-            cfg.character_prompt = character_prompt
-        if intervention_level is not None:
-            cfg.intervention_level = intervention_level
-        self._config = cfg
-        return cfg
+        with self._lock:
+            cfg = self._config
+            updated = replace(cfg)
+            if exclude_keywords is not None:
+                updated.exclude_keywords = exclude_keywords
+            if character_prompt is not None:
+                updated.character_prompt = character_prompt
+            if intervention_level is not None:
+                updated.intervention_level = intervention_level
+            self._config = updated
+            return updated
 
 
 def _require(config_dict: dict, key: str) -> str:
