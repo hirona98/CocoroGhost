@@ -756,6 +756,7 @@ def cleanup_old_images():
 - [ ] cleanup.pyモジュールを実装
 - [ ] cleanup_old_images関数の実装
 - [ ] FastAPIのBackgroundTasksまたはAPSchedulerで定期実行
+- [x] FastAPIのrepeat_everyで10分毎に定期実行
 - [x] cleanup.pyモジュールを実装
 - [x] cleanup_old_images関数の実装
 - [ ] FastAPIのBackgroundTasksまたはAPSchedulerで定期実行

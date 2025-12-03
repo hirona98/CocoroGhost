@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi_utils.tasks import repeat_every
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from cocoro_ghost.api import capture, chat, episodes, meta_request, notification, settings
+from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.db import init_db
 
@@ -40,6 +42,11 @@ def create_app() -> FastAPI:
     @app.get("/")
     async def root():
         return {"message": "cocoro_ghost API is running"}
+
+    @app.on_event("startup")
+    @repeat_every(seconds=600, wait_first=True)
+    async def periodic_cleanup() -> None:
+        cleanup_old_images()
 
     return app
 

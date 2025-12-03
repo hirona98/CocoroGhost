@@ -5,6 +5,7 @@ description = "CocoroAI core (cocoro_ghost)"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi",
+  "fastapi-utils",
   "uvicorn[standard]",
   "sqlalchemy",
   "litellm",
