@@ -37,8 +37,12 @@ class MemoryManager:
         try:
             image_summary = None
             if request.image_path:
-                image_bytes = self._load_image(request.image_path)
-                image_summary = self.llm_client.generate_image_summary([image_bytes])[0]
+                try:
+                    image_bytes = self._load_image(request.image_path)
+                    image_summary = self.llm_client.generate_image_summary([image_bytes])[0]
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("画像要約に失敗しました", exc_info=exc)
+                    image_summary = "画像要約に失敗しました"
 
             system_prompt = self.config_store.config.character_prompt or prompts.get_character_prompt()
             conversation = [{"role": "user", "content": request.text}]
@@ -78,7 +82,6 @@ class MemoryManager:
     def handle_notification(self, db: Session, request: schemas.NotificationRequest) -> schemas.NotificationResponse:
         image_summary = None
         if request.image_url:
-            # 画像取得はここでは行わない（別アプリからの通知前提）。
             image_summary = request.image_url
 
         system_prompt = prompts.get_notification_prompt()
@@ -144,7 +147,11 @@ class MemoryManager:
 
         image_path = self._validate_capture_path(request)
         image_bytes = self._load_image(str(image_path))
-        image_summary = self.llm_client.generate_image_summary([image_bytes])[0]
+        try:
+            image_summary = self.llm_client.generate_image_summary([image_bytes])[0]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("画像要約に失敗しました", exc_info=exc)
+            image_summary = "画像要約に失敗しました"
 
         reflection = generate_reflection(
             self.llm_client,

@@ -90,6 +90,8 @@ sqlite-vec
   - `llm_model`: チャット用LLMモデル名
   - `reflection_model`: reflection用モデル名
   - `embedding_model`: 埋め込みモデル名
+  - `image_model`: 画像要約用モデル名
+  - `image_timeout_seconds`: 画像要約呼び出しタイムアウト（秒）
   - `log_level`: ログレベル
   - `env`: 実行環境（dev/prod）
   - `max_chat_queue`: チャットキューの最大長

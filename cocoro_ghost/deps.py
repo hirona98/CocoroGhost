@@ -20,6 +20,8 @@ def get_memory_manager() -> MemoryManager:
             model=config_store.config.llm_model,
             reflection_model=config_store.config.reflection_model,
             embedding_model=config_store.config.embedding_model,
+            image_model=config_store.config.image_model,
+            image_timeout_seconds=config_store.config.image_timeout_seconds,
         )
         _memory_manager = MemoryManager(llm_client=llm_client, config_store=config_store)
     return _memory_manager

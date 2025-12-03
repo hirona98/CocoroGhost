@@ -8,10 +8,12 @@ import litellm
 
 
 class LlmClient:
-    def __init__(self, model: str, reflection_model: str, embedding_model: str):
+    def __init__(self, model: str, reflection_model: str, embedding_model: str, image_model: str, image_timeout_seconds: int = 60):
         self.model = model
         self.reflection_model = reflection_model
         self.embedding_model = embedding_model
+        self.image_model = image_model
+        self.image_timeout_seconds = image_timeout_seconds
 
     def generate_reply(self, system_prompt: str, conversation: List[Dict[str, str]], temperature: float = 0.7) -> str:
         messages = [{"role": "system", "content": system_prompt}]
@@ -36,5 +38,25 @@ class LlmClient:
         return [item["embedding"] for item in resp["data"]]
 
     def generate_image_summary(self, images: List[bytes]) -> List[str]:
-        # LiteLLM の画像対応はプロバイダ依存のため、ここでは明示的に未サポートとする。
-        raise RuntimeError("画像要約は対応プロバイダ設定後に実装してください")
+        import base64
+
+        summaries: List[str] = []
+        for image_bytes in images:
+            b64 = base64.b64encode(image_bytes).decode("ascii")
+            messages = [
+                {"role": "system", "content": "あなたは画像を短い日本語で要約します。"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "画像を短く日本語で要約してください。"},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    ],
+                },
+            ]
+            resp = litellm.completion(
+                model=self.image_model,
+                messages=messages,
+                timeout=self.image_timeout_seconds,
+            )
+            summaries.append(resp["choices"][0]["message"]["content"])
+        return summaries

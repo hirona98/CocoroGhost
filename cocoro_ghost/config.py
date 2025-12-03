@@ -17,6 +17,8 @@ class Config:
     llm_model: str
     reflection_model: str
     embedding_model: str
+    image_model: str
+    image_timeout_seconds: int
     log_level: str
     env: str
     max_chat_queue: int
@@ -70,6 +72,8 @@ def load_config(path: str | pathlib.Path = "config/ghost.toml") -> ConfigStore:
         llm_model=_require(data, "llm_model"),
         reflection_model=_require(data, "reflection_model"),
         embedding_model=_require(data, "embedding_model"),
+        image_model=_require(data, "image_model"),
+        image_timeout_seconds=int(_require(data, "image_timeout_seconds")),
         log_level=_require(data, "log_level"),
         env=_require(data, "env"),
         max_chat_queue=int(_require(data, "max_chat_queue")),
