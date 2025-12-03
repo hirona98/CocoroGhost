@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
-import pathlib
 import threading
 from datetime import datetime
 from typing import List, Optional
@@ -33,12 +33,9 @@ def _get_user_lock(user_id: str) -> threading.Lock:
     return lock
 
 
-def _validate_image_path(path_str: str, allowed_roots: List[pathlib.Path]) -> pathlib.Path:
-    path = pathlib.Path(path_str).expanduser().resolve()
-    for root in allowed_roots:
-        if root in path.parents or path == root:
-            return path
-    raise ValueError(f"許可されていないパスです: {path_str}")
+def _decode_base64_image(base64_str: str) -> bytes:
+    """BASE64エンコードされた画像データをデコード。"""
+    return base64.b64decode(base64_str)
 
 
 class MemoryManager:
@@ -50,9 +47,9 @@ class MemoryManager:
         try:
             logger.info("chat request", extra={"user_id": request.user_id})
             image_summary = None
-            if request.image_path:
+            if request.image_base64:
                 try:
-                    image_bytes = self._load_image(request.image_path)
+                    image_bytes = _decode_base64_image(request.image_base64)
                     image_summary = self.llm_client.generate_image_summary([image_bytes])[0]
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("画像要約に失敗しました", exc_info=exc)
@@ -123,8 +120,13 @@ class MemoryManager:
 
     def handle_notification(self, db: Session, request: schemas.NotificationRequest) -> schemas.NotificationResponse:
         image_summary = None
-        if request.image_url:
-            image_summary = request.image_url
+        if request.image_base64:
+            try:
+                image_bytes = _decode_base64_image(request.image_base64)
+                image_summary = self.llm_client.generate_image_summary([image_bytes])[0]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("画像要約に失敗しました", exc_info=exc)
+                image_summary = "画像要約に失敗しました"
 
         system_prompt = prompts.get_notification_prompt()
         base_text = f"{request.source_system}: {request.title}\n{request.body}"
@@ -153,6 +155,15 @@ class MemoryManager:
         return schemas.NotificationResponse(speak_text=speak_text, episode_id=episode_id)
 
     def handle_meta_request(self, db: Session, request: schemas.MetaRequestRequest) -> schemas.MetaRequestResponse:
+        image_summary = None
+        if request.image_base64:
+            try:
+                image_bytes = _decode_base64_image(request.image_base64)
+                image_summary = self.llm_client.generate_image_summary([image_bytes])[0]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("画像要約に失敗しました", exc_info=exc)
+                image_summary = "画像要約に失敗しました"
+
         system_prompt = prompts.get_notification_prompt()
         base_text = f"instruction: {request.instruction}\npayload: {request.payload_text}"
         conversation = [{"role": "user", "content": base_text}]
@@ -161,10 +172,10 @@ class MemoryManager:
         reflection = generate_reflection(
             self.llm_client,
             context_text=f"meta_request: {base_text}\nreply: {speak_text}",
-            image_descriptions=[request.image_url] if request.image_url else None,
+            image_descriptions=[image_summary] if image_summary else None,
         )
 
-        embedding_input = "\n".join(filter(None, [base_text, speak_text, reflection.reflection_text]))
+        embedding_input = "\n".join(filter(None, [base_text, speak_text, reflection.reflection_text, image_summary]))
         embedding = self.llm_client.generate_embedding([embedding_input])[0]
 
         episode_id = self._create_episode(
@@ -175,20 +186,19 @@ class MemoryManager:
             reply_text=speak_text,
             reflection=reflection,
             embedding=embedding,
-            image_summary=request.image_url,
+            image_summary=image_summary,
         )
         return schemas.MetaRequestResponse(speak_text=speak_text, episode_id=episode_id)
 
     def handle_capture(self, db: Session, request: schemas.CaptureRequest) -> schemas.CaptureResponse:
         cfg = self.config_store.config
-        text_to_check = (request.context_text or "") + " " + request.image_path
+        text_to_check = request.context_text or ""
         for keyword in cfg.exclude_keywords:
             if keyword and keyword in text_to_check:
                 logger.info("capture skipped due to exclude keyword", extra={"keyword": keyword})
                 return schemas.CaptureResponse(episode_id=-1, stored=False)
 
-        image_path = self._validate_capture_path(request)
-        image_bytes = self._load_image(str(image_path))
+        image_bytes = _decode_base64_image(request.image_base64)
         try:
             image_summary = self.llm_client.generate_image_summary([image_bytes])[0]
         except Exception as exc:  # noqa: BLE001
@@ -214,7 +224,6 @@ class MemoryManager:
             reflection=reflection,
             embedding=embedding,
             image_summary=image_summary,
-            raw_path=str(image_path),
         )
         return schemas.CaptureResponse(episode_id=episode_id, stored=True)
 
@@ -325,18 +334,3 @@ class MemoryManager:
             self._update_persons(db, episode.id, reflection.persons)
             upsert_episode_embedding(db, episode.id, embedding)
             logger.info("chat background updated", extra={"episode_id": episode.id})
-
-    def _validate_capture_path(self, request: schemas.CaptureRequest) -> pathlib.Path:
-        root_desktop = pathlib.Path("images/desktop").resolve()
-        root_camera = pathlib.Path("images/camera").resolve()
-        allowed = [root_desktop, root_camera]
-        path = _validate_image_path(request.image_path, allowed)
-        if request.capture_type == "desktop" and not (root_desktop in path.parents or path == root_desktop):
-            raise ValueError("desktop_capture に無効なパスが指定されました")
-        if request.capture_type == "camera" and not (root_camera in path.parents or path == root_camera):
-            raise ValueError("camera_capture に無効なパスが指定されました")
-        return path
-
-    def _load_image(self, path_str: str) -> bytes:
-        path = _validate_image_path(path_str, [pathlib.Path("images/desktop").resolve(), pathlib.Path("images/camera").resolve()])
-        return path.read_bytes()

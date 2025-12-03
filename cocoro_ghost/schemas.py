@@ -12,7 +12,7 @@ class ChatRequest(BaseModel):
     user_id: str = "default"
     text: str
     context_hint: Optional[str] = None
-    image_path: Optional[str] = None
+    image_base64: Optional[str] = None  # BASE64エンコードされた画像データ
 
 
 class ChatResponse(BaseModel):
@@ -24,7 +24,7 @@ class NotificationRequest(BaseModel):
     source_system: str
     title: str
     body: str
-    image_url: Optional[str] = None
+    image_base64: Optional[str] = None  # BASE64エンコードされた画像データ
 
 
 class NotificationResponse(BaseModel):
@@ -35,7 +35,7 @@ class NotificationResponse(BaseModel):
 class MetaRequestRequest(BaseModel):
     instruction: str
     payload_text: str
-    image_url: Optional[str] = None
+    image_base64: Optional[str] = None  # BASE64エンコードされた画像データ
 
 
 class MetaRequestResponse(BaseModel):
@@ -45,7 +45,7 @@ class MetaRequestResponse(BaseModel):
 
 class CaptureRequest(BaseModel):
     capture_type: str  # "desktop" or "camera"
-    image_path: str
+    image_base64: str  # BASE64エンコードされた画像データ
     context_text: Optional[str] = None
 
 

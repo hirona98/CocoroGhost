@@ -32,7 +32,7 @@ REST API の初期仕様をまとめたものです。
   "user_id": "default",
   "text": "今日はちょっと疲れた",
   "context_hint": "evening",
-  "image_path": null
+  "image_base64": null
 }
 ```
 
@@ -40,7 +40,7 @@ REST API の初期仕様をまとめたものです。
   将来マルチユーザー対応を行う場合も、既存 API との互換を維持するのではなく、必要に応じて非互換な変更（スキーマ変更など）を行う前提とする。
 - `text`: ユーザーの発話内容。
 - `context_hint`: 任意。時間帯や状況のヒントがあれば渡す。
-- `image_path`: 任意。ユーザーが「この画像を見て」と渡してきた画像のパス（サーバー側から参照可能なもの）。
+- `image_base64`: 任意。BASE64エンコードされた画像データ。
 
 ### レスポンスボディ
 
@@ -71,14 +71,14 @@ REST API の初期仕様をまとめたものです。
   "source_system": "mailer",
   "title": "XXさんからのメール",
   "body": "～メール本文サマリ～",
-  "image_url": null
+  "image_base64": null
 }
 ```
 
 - `source_system`: 通知元システム（例: `mailer`, `calendar`, `system`）。
 - `title`: 通知のタイトルや概要。
 - `body`: 通知内容のサマリ。
-- `image_url`: 任意。通知に紐づく画像やサムネイルがあれば指定。
+- `image_base64`: 任意。BASE64エンコードされた画像データ。
 
 ### レスポンスボディ
 
@@ -108,13 +108,13 @@ REST API の初期仕様をまとめたものです。
 {
   "instruction": "これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。",
   "payload_text": "～ニュース内容～",
-  "image_url": null
+  "image_base64": null
 }
 ```
 
 - `instruction`: キャラクターへの指示文。
 - `payload_text`: 指示の対象となる本文（ニュース、記事、ログなど）。
-- `image_url`: 任意。関連画像があれば指定。
+- `image_base64`: 任意。BASE64エンコードされた画像データ。
 
 ### レスポンスボディ
 
@@ -143,13 +143,13 @@ REST API の初期仕様をまとめたものです。
 ```json
 {
   "capture_type": "desktop",
-  "image_path": "/path/to/image.png",
+  "image_base64": "iVBORw0KGgoAAAANSUhEUgAA...",
   "context_text": "ブラウザで技術記事を読んでいる"
 }
 ```
 
 - `capture_type`: `desktop` または `camera`。
-- `image_path`: サーバー側から参照可能な画像ファイルのパス。
+- `image_base64`: BASE64エンコードされた画像データ。
 - `context_text`: 任意。シーンに関する補足テキスト。
 
 ### レスポンスボディ
