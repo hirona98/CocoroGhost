@@ -1,7 +1,7 @@
 settings.local.json
 
 # cocoro_ghost specific
-config/ghost.toml
+config/setting.toml
 data/
 check_sqlite.py
 

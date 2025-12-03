@@ -29,16 +29,16 @@ if errorlevel 1 (
 
 REM 設定ファイルの確認とコピー
 echo.
-if not exist config\ghost.toml (
+if not exist config\setting.toml (
     echo 設定ファイルを作成します...
-    copy config\ghost.toml.example config\ghost.toml
+    copy config\setting.toml.example config\setting.toml
     if errorlevel 1 (
         echo エラー: 設定ファイルのコピーに失敗しました
         pause
         exit /b 1
     )
-    echo 設定ファイルを作成しました: config\ghost.toml
-    echo 注意: config\ghost.toml を編集してAPIキーなどを設定してください
+    echo 設定ファイルを作成しました: config\setting.toml
+    echo 注意: config\setting.toml を編集してAPIキーなどを設定してください
 ) else (
     echo 設定ファイルは既に存在します
 )

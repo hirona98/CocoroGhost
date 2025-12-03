@@ -41,12 +41,12 @@ setup.bat
 
 3. **設定ファイルの準備**
    ```bash
-   copy config\ghost.toml.example config\ghost.toml
+   copy config\setting.toml.example config\setting.toml
    ```
 
 4. **設定ファイルの編集**
 
-   `config/ghost.toml` を編集して、以下を設定：
+   `config/setting.toml` を編集して、以下を設定：
    - `token`: API認証トークン
    - `llm_model`: 使用するLLMモデル
    - その他の設定項目
@@ -70,7 +70,7 @@ python -X utf8 run.py
 
 ## 設定ファイル
 
-`config/ghost.toml` で以下を設定できます：
+`config/setting.toml` で以下を設定できます：
 
 - `token`: API認証トークン
 - `db_url`: データベースURL（デフォルト: sqlite:///./data/ghost.db）
@@ -116,7 +116,7 @@ sqlite-vecは自動的にインストールされますが、問題がある場�
 
 ### 設定ファイルが見つからない
 
-`config/ghost.toml` が存在することを確認してください。存在しない場合：
+`config/setting.toml` が存在することを確認してください。存在しない場合：
 ```bash
-copy config\ghost.toml.example config\ghost.toml
+copy config\setting.toml.example config\setting.toml
 ```

@@ -60,7 +60,7 @@ def _require(config_dict: dict, key: str) -> str:
     return config_dict[key]
 
 
-def load_config(path: str | pathlib.Path = "config/ghost.toml") -> ConfigStore:
+def load_config(path: str | pathlib.Path = "config/setting.toml") -> ConfigStore:
     config_path = pathlib.Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"config file not found: {config_path}")
