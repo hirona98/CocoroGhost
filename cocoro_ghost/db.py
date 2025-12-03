@@ -91,6 +91,8 @@ def upsert_episode_embedding(session, episode_id: int, embedding: list[float]) -
 
 
 def search_similar_episodes(session, query_embedding: list[float], limit: int = 5):
+    import json
+    query_json = json.dumps(query_embedding)
     rows = session.execute(
         text(
             """
@@ -101,6 +103,6 @@ def search_similar_episodes(session, query_embedding: list[float], limit: int = 
             LIMIT :limit
             """
         ),
-        {"query": query_embedding, "limit": limit},
+        {"query": query_json, "limit": limit},
     ).fetchall()
     return rows

@@ -35,7 +35,13 @@ class LlmClient:
             {"role": "user", "content": context_block},
         ]
         self.logger.info("LLM reflection", extra={"model": self.reflection_model})
-        resp = litellm.completion(model=self.reflection_model, messages=messages, temperature=0.1, api_key=self.api_key)
+        resp = litellm.completion(
+            model=self.reflection_model,
+            messages=messages,
+            temperature=0.1,
+            response_format={"type": "json_object"},
+            api_key=self.api_key
+        )
         return resp["choices"][0]["message"]["content"]
 
     def generate_embedding(self, texts: List[str], images: Optional[List[bytes]] = None) -> List[List[float]]:
