@@ -28,6 +28,7 @@ class Episode(Base):
     reflection_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     reflection_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
     salience_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    episode_comment: Mapped[Optional[str]] = mapped_column(Text)
     episode_embedding: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
     raw_desktop_path: Mapped[Optional[str]] = mapped_column(Text)
     raw_camera_path: Mapped[Optional[str]] = mapped_column(Text)

@@ -118,9 +118,8 @@ class MemoryManager:
 
             return schemas.ChatResponse(reply_text=reply_text, episode_id=episode_id)
         except Exception as exc:  # noqa: BLE001
-            error_message = f"LLMエラー: {exc}"
             logger.error("chat processing failed", exc_info=exc)
-            return schemas.ChatResponse(reply_text=error_message, episode_id=-1)
+            return schemas.ChatResponse(reply_text=f"LLMエラー: {exc}", episode_id=-1)
 
     def handle_notification(self, db: Session, request: schemas.NotificationRequest) -> schemas.NotificationResponse:
         image_summary = None
@@ -262,10 +261,6 @@ class MemoryManager:
         image_summary: Optional[str] = None,
         raw_path: Optional[str] = None,
     ) -> int:
-        embedding_blob = None
-        if embedding is not None:
-            embedding_blob = json.dumps(embedding).encode("utf-8")
-
         episode = models.Episode(
             occurred_at=occurred_at,
             source=source,
@@ -278,7 +273,8 @@ class MemoryManager:
             emotion_intensity=reflection.emotion_intensity if reflection else None,
             topic_tags=",".join(reflection.topic_tags) if reflection else None,
             salience_score=reflection.salience_score if reflection else 0.0,
-            episode_embedding=embedding_blob,
+            episode_comment=reflection.episode_comment if reflection else None,
+            episode_embedding=json.dumps(embedding).encode("utf-8") if embedding is not None else None,
             raw_desktop_path=raw_path if source == "desktop_capture" else None,
             raw_camera_path=raw_path if source == "camera_capture" else None,
         )
@@ -287,6 +283,8 @@ class MemoryManager:
         db.refresh(episode)
         if reflection:
             self._update_persons(db, episode.id, reflection.persons)
+        if embedding is not None:
+            upsert_episode_embedding(db, episode.id, embedding)
         return episode.id
 
     def _process_chat_background(
@@ -320,6 +318,7 @@ class MemoryManager:
             episode.emotion_intensity = reflection.emotion_intensity
             episode.topic_tags = ",".join(reflection.topic_tags)
             episode.salience_score = reflection.salience_score
+            episode.episode_comment = reflection.episode_comment
             episode.episode_embedding = json.dumps(embedding).encode("utf-8")
             db.add(episode)
             db.commit()

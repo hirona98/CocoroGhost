@@ -42,6 +42,29 @@ REFLECTION_SYSTEM_PROMPT = """
 出力形式:
 - 必ず以下のキーを持つ JSON オブジェクトだけを出力してください。
 - コメントや日本語の説明文など、JSON 以外の文字は一切出力してはいけません。
+- 以下のテンプレート構造を厳守してください。
+{
+  "reflection_text": "今日の出来事やユーザーへの理解・印象を、AIの内的独白として自然な日本語でまとめる。",
+
+  "emotion_label": "joy",
+  "emotion_intensity": 0.7,
+
+  "topic_tags": ["仕事", "読書"],
+
+  "salience_score": 0.8,
+  "episode_comment": "なぜ印象的だと感じたか、その理由の短い説明。",
+
+  "persons": [
+    {
+      "name": "ユーザー本人または登場人物の名前",
+      "is_user": true,
+      "relation_update_note": "関係性や距離感に変化があれば、その内容。",
+      "status_update_note": "その人の状況変化（仕事・体調・生活など）があれば、その内容。",
+      "closeness_delta": 0.1,
+      "worry_delta": -0.1
+    }
+  ]
+}
 """
 
 

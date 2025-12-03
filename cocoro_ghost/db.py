@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 from typing import Iterator
 
+import logging
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -14,9 +15,16 @@ from cocoro_ghost.config import get_config_store
 Base = declarative_base()
 SessionLocal: sessionmaker | None = None
 
+logger = logging.getLogger(__name__)
+
 
 def _enable_sqlite_vec(engine, dimension: int) -> None:
     with engine.connect() as conn:
+        try:
+            conn.exec_driver_sql("SELECT load_extension('vec0');")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("sqlite-vec拡張のロードに失敗しました", exc_info=exc)
+            raise
         conn.execute(text(f"CREATE VIRTUAL TABLE IF NOT EXISTS episode_embeddings USING vec0(embedding float[{dimension}]));"))
         conn.commit()
 
@@ -24,7 +32,8 @@ def _enable_sqlite_vec(engine, dimension: int) -> None:
 def init_db(db_url: str | None = None) -> None:
     global SessionLocal
     url = db_url or get_config_store().config.db_url
-    engine = create_engine(url, future=True)
+    connect_args = {"check_same_thread": False, "enable_load_extension": True} if url.startswith("sqlite") else {}
+    engine = create_engine(url, future=True, connect_args=connect_args)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     Base.metadata.create_all(bind=engine)
     if url.startswith("sqlite"):
