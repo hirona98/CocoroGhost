@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 import litellm
+import logging
 
 
 class LlmClient:
     def __init__(self, model: str, reflection_model: str, embedding_model: str, image_model: str, image_timeout_seconds: int = 60):
+        self.logger = logging.getLogger(__name__)
         self.model = model
         self.reflection_model = reflection_model
         self.embedding_model = embedding_model
@@ -19,6 +21,7 @@ class LlmClient:
         messages = [{"role": "system", "content": system_prompt}]
         for m in conversation:
             messages.append({"role": m["role"], "content": m["content"]})
+        self.logger.info("LLM reply", extra={"model": self.model})
         resp = litellm.completion(model=self.model, messages=messages, temperature=temperature)
         return resp["choices"][0]["message"]["content"]
 
@@ -30,10 +33,12 @@ class LlmClient:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": context_block},
         ]
+        self.logger.info("LLM reflection", extra={"model": self.reflection_model})
         resp = litellm.completion(model=self.reflection_model, messages=messages, temperature=0.1)
         return resp["choices"][0]["message"]["content"]
 
     def generate_embedding(self, texts: List[str], images: Optional[List[bytes]] = None) -> List[List[float]]:
+        self.logger.info("LLM embedding", extra={"model": self.embedding_model, "count": len(texts)})
         resp = litellm.embedding(model=self.embedding_model, input=texts)
         return [item["embedding"] for item in resp["data"]]
 

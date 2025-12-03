@@ -48,6 +48,7 @@ class MemoryManager:
 
     def handle_chat(self, db: Session, request: schemas.ChatRequest, background_tasks: Optional[BackgroundTasks] = None) -> schemas.ChatResponse:
         try:
+            logger.info("chat request", extra={"user_id": request.user_id})
             image_summary = None
             if request.image_path:
                 try:
@@ -324,6 +325,7 @@ class MemoryManager:
             db.commit()
             self._update_persons(db, episode.id, reflection.persons)
             upsert_episode_embedding(db, episode.id, embedding)
+            logger.info("chat background updated", extra={"episode_id": episode.id})
 
     def _validate_capture_path(self, request: schemas.CaptureRequest) -> pathlib.Path:
         root_desktop = pathlib.Path("images/desktop").resolve()

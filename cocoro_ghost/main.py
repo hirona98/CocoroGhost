@@ -10,6 +10,7 @@ from cocoro_ghost.api import capture, chat, episodes, meta_request, notification
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.db import init_db
+from cocoro_ghost.logging_config import setup_logging
 
 
 security = HTTPBearer()
@@ -24,6 +25,7 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) 
 
 def create_app() -> FastAPI:
     cfg = get_config_store()
+    setup_logging(cfg.config.log_level)
     init_db(cfg.config.db_url)
 
     app = FastAPI(title="cocoro_ghost API")
