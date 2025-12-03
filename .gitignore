@@ -1,5 +1,10 @@
 settings.local.json
 
+# cocoro_ghost specific
+config/ghost.toml
+data/
+check_sqlite.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
