@@ -78,15 +78,12 @@ def session_scope() -> Iterator:
 
 
 def upsert_episode_embedding(session, episode_id: int, embedding: list[float]) -> None:
+    import json
+    embedding_json = json.dumps(embedding)
+    session.execute(text("DELETE FROM episode_embeddings WHERE rowid = :episode_id"), {"episode_id": episode_id})
     session.execute(
-        text(
-            """
-            INSERT INTO episode_embeddings(rowid, embedding)
-            VALUES (:episode_id, :embedding)
-            ON CONFLICT(rowid) DO UPDATE SET embedding = excluded.embedding
-            """
-        ),
-        {"episode_id": episode_id, "embedding": embedding},
+        text("INSERT INTO episode_embeddings(rowid, embedding) VALUES (:episode_id, :embedding)"),
+        {"episode_id": episode_id, "embedding": embedding_json},
     )
 
 
@@ -99,8 +96,8 @@ def search_similar_episodes(session, query_embedding: list[float], limit: int = 
             SELECT rowid as episode_id, distance
             FROM episode_embeddings
             WHERE embedding MATCH :query
+              AND k = :limit
             ORDER BY distance ASC
-            LIMIT :limit
             """
         ),
         {"query": query_json, "limit": limit},
