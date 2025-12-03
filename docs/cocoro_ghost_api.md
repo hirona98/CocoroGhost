@@ -200,9 +200,9 @@ REST API の初期仕様をまとめたものです。
 
 ## 6. 設定管理 API
 
-### 6.1 現在の設定取得 `GET /settings`
+### 6.1 全設定取得 `GET /settings`
 
-現在アクティブなプリセットの設定を取得する。
+共通設定と、現在アクティブなプリセットの詳細をまとめて取得する。
 
 - メソッド: `GET`
 - パス: `/settings`
@@ -211,105 +211,113 @@ REST API の初期仕様をまとめたものです。
 
 ```json
 {
-  "preset_name": "default",
-  "llm_api_key": "sk-...",
-  "llm_model": "gemini/gemini-2.5-flash",
-  "reflection_model": "gemini/gemini-2.5-flash",
-  "embedding_model": "gemini/gemini-embedding-001",
-  "embedding_dimension": 3072,
-  "image_model": "gemini/gemini-2.5-flash",
-  "image_timeout_seconds": 60,
-  "character_prompt": "...",
-  "intervention_level": "high",
   "exclude_keywords": ["パスワード", "銀行"],
-  "similar_episodes_limit": 5,
-  "max_chat_queue": 10
+  "llm_preset": {
+    "id": 1,
+    "name": "default",
+    "llm_api_key": "sk-...",
+    "llm_model": "gpt-4o",
+    "llm_base_url": null,
+    "reasoning_effort": null,
+    "max_turns_window": 50,
+    "max_tokens_vision": 4096,
+    "max_tokens": 4096,
+    "embedding_model": "text-embedding-3-small",
+    "embedding_base_url": null,
+    "embedding_dimension": 1536,
+    "image_model": "gpt-4o-mini",
+    "image_model_api_key": "sk-...-image",
+    "image_llm_base_url": null,
+    "image_timeout_seconds": 60,
+    "similar_episodes_limit": 5
+  },
+  "character_preset": {
+    "id": 1,
+    "name": "default",
+    "system_prompt": "キャラクターのシステムプロンプト...",
+    "memory_id": "default"
+  }
 }
 ```
 
-### 6.2 設定更新 `POST /settings`
+※ APIキーもレスポンスに含まれる（API以外の管理インタフェースなし）。
 
-アクティブなプリセットの一部設定を更新する（DBに永続化、再起動時に反映）。
+### 6.2 共通設定更新 `PATCH /settings`
 
-- メソッド: `POST`
+共通設定（現在は `exclude_keywords` のみ）を更新する。
+
+- メソッド: `PATCH`
 - パス: `/settings`
 
 #### リクエストボディ
 
 ```json
 {
-  "exclude_keywords": ["秘密", "パスワード"],
-  "character_prompt": "新しいキャラクター設定",
-  "intervention_level": "low"
+  "exclude_keywords": ["秘密", "パスワード"]
 }
 ```
-
-※ 全フィールドオプショナル。指定した項目のみ更新される。
 
 #### レスポンスボディ
 
 ```json
 {
   "exclude_keywords": ["秘密", "パスワード"],
-  "character_prompt": "新しいキャラクター設定",
-  "intervention_level": "low"
+  "active_llm_preset_id": 1,
+  "active_character_preset_id": 1
 }
 ```
 
 ---
 
-## 7. プリセット管理 API
+## 7. LLMプリセット API
 
-### 7.1 プリセット一覧取得 `GET /presets`
+### 7.1 プリセット一覧取得 `GET /llm-presets`
 
-保存されているプリセットの一覧を取得する。
+保存されている LLM プリセット一覧と、現在アクティブなプリセット ID を取得する。
 
 - メソッド: `GET`
-- パス: `/presets`
+- パス: `/llm-presets`
 
 #### レスポンスボディ
 
 ```json
 {
   "presets": [
-    {
-      "name": "default",
-      "is_active": true,
-      "created_at": "2025-03-01T10:00:00Z"
-    },
-    {
-      "name": "work",
-      "is_active": false,
-      "created_at": "2025-03-02T12:00:00Z"
-    }
-  ]
+    { "id": 1, "name": "default", "llm_model": "gpt-4o" },
+    { "id": 2, "name": "fast", "llm_model": "gpt-4o-mini" }
+  ],
+  "active_id": 1
 }
 ```
 
-### 7.2 プリセット作成 `POST /presets`
+### 7.2 プリセット作成 `POST /llm-presets`
 
-新しいプリセットを作成する。
+新しい LLM プリセットを作成する。
 
 - メソッド: `POST`
-- パス: `/presets`
+- パス: `/llm-presets`
 
 #### リクエストボディ
 
 ```json
 {
-  "name": "work",
+  "name": "fast",
   "llm_api_key": "sk-...",
-  "llm_model": "gemini/gemini-2.5-flash",
-  "reflection_model": "gemini/gemini-2.5-flash",
-  "embedding_model": "gemini/gemini-embedding-001",
-  "embedding_dimension": 3072,
-  "image_model": "gemini/gemini-2.5-flash",
+  "llm_model": "gpt-4o-mini",
+  "llm_base_url": null,
+  "reasoning_effort": null,
+  "max_turns_window": 50,
+  "max_tokens_vision": 2048,
+  "max_tokens": 2048,
+  "embedding_model": "text-embedding-3-small",
+  "embedding_api_key": "sk-...-embedding",
+  "embedding_base_url": null,
+  "embedding_dimension": 1536,
+  "image_model": "gpt-4o-mini",
+  "image_model_api_key": "sk-...-image",
+  "image_llm_base_url": null,
   "image_timeout_seconds": 60,
-  "character_prompt": "仕事モード用のプロンプト",
-  "intervention_level": "low",
-  "exclude_keywords": ["プライベート"],
-  "similar_episodes_limit": 10,
-  "max_chat_queue": 20
+  "similar_episodes_limit": 5
 }
 ```
 
@@ -317,64 +325,107 @@ REST API の初期仕様をまとめたものです。
 
 ```json
 {
-  "message": "Preset 'work' created"
+  "id": 2,
+  "name": "fast",
+  "llm_api_key": "sk-...",
+  "llm_model": "gpt-4o-mini",
+  "llm_base_url": null,
+  "reasoning_effort": null,
+  "max_turns_window": 50,
+  "max_tokens_vision": 2048,
+  "max_tokens": 2048,
+  "embedding_model": "text-embedding-3-small",
+  "embedding_api_key": "sk-...-embedding",
+  "embedding_base_url": null,
+  "embedding_dimension": 1536,
+  "image_model": "gpt-4o-mini",
+  "image_model_api_key": "sk-...-image",
+  "image_llm_base_url": null,
+  "image_timeout_seconds": 60,
+  "similar_episodes_limit": 5
 }
 ```
 
-### 7.3 プリセット更新 `PATCH /presets/{name}`
+### 7.3 プリセット取得 `GET /llm-presets/{id}`
 
-既存のプリセットを部分更新する。
+- メソッド: `GET`
+- パス: `/llm-presets/{id}`
 
-- メソッド: `PATCH`
-- パス: `/presets/{name}`
+### 7.4 プリセット更新 `PATCH /llm-presets/{id}`
 
-#### リクエストボディ
+部分更新。指定フィールドのみ反映される。
 
 ```json
 {
-  "llm_model": "gemini/gemini-2.5-pro",
-  "character_prompt": "更新されたプロンプト"
+  "llm_model": "gpt-4o",
+  "llm_base_url": "https://example.com/v1",
+  "max_tokens": 4096
 }
 ```
 
-※ 全フィールドオプショナル。
+### 7.5 プリセット削除 `DELETE /llm-presets/{id}`
 
-#### レスポンスボディ
+アクティブなプリセットは削除不可。`400 Bad Request` を返す。
+
+### 7.6 プリセット切り替え `POST /llm-presets/{id}/activate`
+
+指定した LLM プリセットをアクティブ化する。**切り替え後はアプリ再起動が必要**。
 
 ```json
 {
-  "message": "Preset 'work' updated",
-  "restart_required": false
+  "message": "Activated LLM preset 'fast'. Please restart the application.",
+  "restart_required": true
 }
 ```
 
-- `restart_required`: アクティブなプリセットを更新した場合は `true`
+---
 
-### 7.4 プリセット削除 `DELETE /presets/{name}`
+## 8. キャラクタープリセット API
 
-プリセットを削除する。アクティブなプリセットは削除不可。
+### 8.1 プリセット一覧取得 `GET /character-presets`
 
-- メソッド: `DELETE`
-- パス: `/presets/{name}`
-
-#### レスポンスボディ
-
-- ステータスコード: `204 No Content`
-- エラー（アクティブなプリセットを削除しようとした場合）: `400 Bad Request`
-
-### 7.5 プリセット切り替え `POST /presets/{name}/activate`
-
-指定したプリセットをアクティブにする。**切り替え後はアプリの再起動が必要**。
-
-- メソッド: `POST`
-- パス: `/presets/{name}/activate`
-
-#### レスポンスボディ
+- メソッド: `GET`
+- パス: `/character-presets`
 
 ```json
 {
-  "message": "Activated preset 'work'. Please restart the application.",
-  "active_preset": "work",
+  "presets": [
+    { "id": 1, "name": "default", "memory_id": "default" }
+  ],
+  "active_id": 1
+}
+```
+
+### 8.2 プリセット作成 `POST /character-presets`
+
+```json
+{
+  "name": "work-mode",
+  "system_prompt": "仕事モードのキャラクター設定...",
+  "memory_id": "work"
+}
+```
+
+### 8.3 プリセット取得 `GET /character-presets/{id}`
+
+### 8.4 プリセット更新 `PATCH /character-presets/{id}`
+
+```json
+{
+  "system_prompt": "更新後のプロンプト",
+  "memory_id": "default"
+}
+```
+
+### 8.5 プリセット削除 `DELETE /character-presets/{id}`
+
+アクティブなプリセットは削除不可。
+
+### 8.6 プリセット切り替え `POST /character-presets/{id}/activate`
+
+```json
+{
+  "message": "Activated character preset 'work-mode'. Please restart the application.",
   "restart_required": true
 }
 ```

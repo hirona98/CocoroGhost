@@ -6,65 +6,103 @@ import json
 import pathlib
 import threading
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import tomli
+
+if TYPE_CHECKING:
+    from cocoro_ghost.models import CharacterPreset, GlobalSettings, LlmPreset
 
 
 @dataclass
 class Config:
-    """TOML起動設定（起動時のみ使用、変更不可）"""
+    """TOML起動設定（起動時のみ使用、変更不可）。"""
+
     token: str
-    db_url: str
     log_level: str
     env: str
-    llm_api_key: str
-    llm_model: str
-    reflection_model: str
-    embedding_model: str
-    embedding_dimension: int
-    image_model: str
-    image_timeout_seconds: int
-    max_chat_queue: int
+    # 以下は初回マイグレーション用（オプション）
+    llm_api_key: str = ""
+    llm_model: str = ""
+    embedding_model: str = ""
+    embedding_dimension: int = 1536
+    image_model: str = ""
+    image_timeout_seconds: int = 60
     exclude_keywords: List[str] = field(default_factory=list)
     character_prompt: Optional[str] = None
-    intervention_level: Optional[str] = None
     similar_episodes_limit: int = 5
 
 
 @dataclass
 class RuntimeConfig:
-    """ランタイム設定（TOML + DB）"""
+    """ランタイム設定（TOML + GlobalSettings + LlmPreset + CharacterPreset）。"""
+
+    # TOML由来（変更不可）
     token: str
-    db_url: str
     log_level: str
     env: str
-    preset_name: str
+
+    # GlobalSettings由来
+    exclude_keywords: List[str]
+
+    # LlmPreset由来
+    llm_preset_name: str
     llm_api_key: str
     llm_model: str
-    reflection_model: str
+    llm_base_url: Optional[str]
+    reasoning_effort: Optional[str]
+    max_turns_window: int
+    max_tokens_vision: int
+    max_tokens: int
     embedding_model: str
+    embedding_api_key: Optional[str]
+    embedding_base_url: Optional[str]
     embedding_dimension: int
     image_model: str
+    image_model_api_key: Optional[str]
+    image_llm_base_url: Optional[str]
     image_timeout_seconds: int
-    character_prompt: Optional[str]
-    intervention_level: Optional[str]
-    exclude_keywords: List[str]
     similar_episodes_limit: int
-    max_chat_queue: int
+
+    # CharacterPreset由来
+    character_preset_name: str
+    system_prompt: str
+    memory_id: str
 
 
 class ConfigStore:
     """ランタイム設定ストア。"""
 
-    def __init__(self, toml_config: Config, runtime_config: RuntimeConfig) -> None:
+    def __init__(
+        self,
+        toml_config: Config,
+        runtime_config: RuntimeConfig,
+        global_settings: "GlobalSettings",
+        llm_preset: "LlmPreset",
+        character_preset: "CharacterPreset",
+    ) -> None:
         self._toml = toml_config
         self._runtime = runtime_config
+        self._global_settings = global_settings
+        self._llm_preset = llm_preset
+        self._character_preset = character_preset
         self._lock = threading.Lock()
 
     @property
     def config(self) -> RuntimeConfig:
         return self._runtime
+
+    @property
+    def toml_config(self) -> Config:
+        return self._toml
+
+    @property
+    def memory_id(self) -> str:
+        return self._runtime.memory_id
+
+    @property
+    def embedding_dimension(self) -> int:
+        return self._runtime.embedding_dimension
 
 
 def _require(config_dict: dict, key: str) -> str:
@@ -74,7 +112,7 @@ def _require(config_dict: dict, key: str) -> str:
 
 
 def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
-    """TOML設定のみ読み込み"""
+    """TOML設定のみ読み込み。"""
     config_path = pathlib.Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"config file not found: {config_path}")
@@ -84,45 +122,57 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
 
     config = Config(
         token=_require(data, "token"),
-        db_url=_require(data, "db_url"),
         log_level=_require(data, "log_level"),
         env=_require(data, "env"),
         llm_api_key=data.get("llm_api_key", ""),
         llm_model=data.get("llm_model", ""),
-        reflection_model=data.get("reflection_model", ""),
         embedding_model=data.get("embedding_model", ""),
         embedding_dimension=int(data.get("embedding_dimension", 1536)),
         image_model=data.get("image_model", ""),
         image_timeout_seconds=int(data.get("image_timeout_seconds", 60)),
-        max_chat_queue=int(data.get("max_chat_queue", 10)),
         exclude_keywords=list(data.get("exclude_keywords", [])),
         character_prompt=data.get("character_prompt"),
-        intervention_level=data.get("intervention_level"),
         similar_episodes_limit=int(data.get("similar_episodes_limit", 5)),
     )
     return config
 
 
-def merge_toml_and_preset(toml_config: Config, preset) -> RuntimeConfig:
-    """TOMLとDBプリセットをマージ"""
+def build_runtime_config(
+    toml_config: Config,
+    global_settings: "GlobalSettings",
+    llm_preset: "LlmPreset",
+    character_preset: "CharacterPreset",
+) -> RuntimeConfig:
+    """TOML、GlobalSettings、LlmPreset、CharacterPresetをマージしてRuntimeConfigを構築。"""
     return RuntimeConfig(
+        # TOML由来
         token=toml_config.token,
-        db_url=toml_config.db_url,
         log_level=toml_config.log_level,
         env=toml_config.env,
-        preset_name=preset.name,
-        llm_api_key=preset.llm_api_key,
-        llm_model=preset.llm_model,
-        reflection_model=preset.reflection_model,
-        embedding_model=preset.embedding_model,
-        embedding_dimension=preset.embedding_dimension,
-        image_model=preset.image_model,
-        image_timeout_seconds=preset.image_timeout_seconds,
-        character_prompt=preset.character_prompt,
-        intervention_level=preset.intervention_level,
-        exclude_keywords=json.loads(preset.exclude_keywords),
-        similar_episodes_limit=preset.similar_episodes_limit,
-        max_chat_queue=preset.max_chat_queue,
+        # GlobalSettings由来
+        exclude_keywords=json.loads(global_settings.exclude_keywords),
+        # LlmPreset由来
+        llm_preset_name=llm_preset.name,
+        llm_api_key=llm_preset.llm_api_key,
+        llm_model=llm_preset.llm_model,
+        llm_base_url=llm_preset.llm_base_url,
+        reasoning_effort=llm_preset.reasoning_effort,
+        max_turns_window=llm_preset.max_turns_window,
+        max_tokens_vision=llm_preset.max_tokens_vision,
+        max_tokens=llm_preset.max_tokens,
+        embedding_model=llm_preset.embedding_model,
+        embedding_api_key=llm_preset.embedding_api_key,
+        embedding_base_url=llm_preset.embedding_base_url,
+        embedding_dimension=llm_preset.embedding_dimension,
+        image_model=llm_preset.image_model,
+        image_model_api_key=llm_preset.image_model_api_key,
+        image_llm_base_url=llm_preset.image_llm_base_url,
+        image_timeout_seconds=llm_preset.image_timeout_seconds,
+        similar_episodes_limit=llm_preset.similar_episodes_limit,
+        # CharacterPreset由来
+        character_preset_name=character_preset.name,
+        system_prompt=character_preset.system_prompt,
+        memory_id=character_preset.memory_id,
     )
 
 
@@ -130,13 +180,13 @@ _config_store: ConfigStore | None = None
 
 
 def set_global_config_store(store: ConfigStore) -> None:
-    """グローバルConfigStoreを設定"""
+    """グローバルConfigStoreを設定。"""
     global _config_store
     _config_store = store
 
 
 def get_config_store() -> ConfigStore:
-    """グローバルConfigStoreを取得"""
+    """グローバルConfigStoreを取得。"""
     global _config_store
     if _config_store is None:
         raise RuntimeError("ConfigStore not initialized")

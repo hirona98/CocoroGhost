@@ -49,11 +49,11 @@ setup.bat
 
    `config/setting.toml` を編集して、最小限の起動設定を記述：
    - `token`: API認証トークン
-   - `db_url`: データベースURL
    - `log_level`: ログレベル
    - `env`: 環境（dev/prod）
+   - （初回のみ）LLM/Embedding設定を入れておくと default プリセットが自動生成されます
 
-   ※ LLMモデル設定はDBで管理されます（後述のプリセット機能参照）
+   ※ DBファイルは `data/settings.db` と `data/memory_<memory_id>.db` に自動作成されます
 
 ## 起動方法
 
@@ -83,32 +83,22 @@ cocoro_ghostは2つの設定管理方式を採用しています：
 `config/setting.toml` で以下を設定：
 
 - `token`: API認証トークン
-- `db_url`: データベースURL（デフォルト: sqlite:///./data/ghost.db）
 - `log_level`: ログレベル（DEBUG, INFO, WARNING, ERROR）
 - `env`: 環境（dev/prod）
+- （初回のみ）LLM/Embedding設定を入れておくと default プリセットが自動生成される
 
 #### 2. プリセット設定（動的変更可能）
 
-LLMモデル設定や振る舞い設定はDBで管理され、API経由で動的に変更可能：
+設定DBに LLM プリセット・キャラクタープリセット・共通設定を保存し、API経由で切り替え可能：
 
-- `llm_api_key`: LLM APIキー
-- `llm_model`: LLMモデル名
-- `reflection_model`: リフレクション用モデル名
-- `embedding_model`: 埋め込みモデル名
-- `embedding_dimension`: 埋め込みベクトルの次元数
-- `image_model`: 画像処理用モデル名
-- `character_prompt`: キャラクター設定プロンプト
-- `exclude_keywords`: 除外キーワードリスト
-- その他の動的設定
+- **LLMプリセット**: llm_model / llm_base_url / reasoning_effort / max_tokens / max_tokens_vision / max_turns_window / embedding_model / embedding_api_key / embedding_base_url / embedding_dimension / image_model / image_model_api_key / image_llm_base_url / image_timeout_seconds / similar_episodes_limit など
+- **キャラクタープリセット**: system_prompt, memory_id
+- **共通設定**: exclude_keywords（エピソード保存除外キーワード）
+- APIキーはプリセット作成・更新時のみ指定し、取得系レスポンスには含まれません
 
 ### プリセット機能
 
-複数の設定セット（プリセット）を名前付きで保存し、切り替えることができます：
-
-- **初回起動**: TOMLにLLM設定がある場合、自動的に"default"プリセットを作成
-- **プリセット作成**: `POST /presets` で新規プリセット作成
-- **プリセット切り替え**: `POST /presets/{name}/activate` で切り替え（**再起動が必要**）
-- **プリセット管理**: `GET /presets`、`PATCH /presets/{name}`、`DELETE /presets/{name}`
+複数のプリセットを名前付きで保存し、LLM設定とキャラクター設定を独立して切り替えられます（切り替え後は再起動が必要）：
 
 詳細は `docs/cocoro_ghost_api.md` を参照してください。
 
@@ -135,14 +125,6 @@ LLMモデル設定や振る舞い設定はDBで管理され、API経由で動的
 - Python実行時は必ず `-X utf8` オプションを付けること
 - WSL環境ではpowershell.exe経由でPowerShellコマンドを実行すること
 - 開発モードでインストール（`pip install -e .`）すると、コード変更が即座に反映されます
-
-## トラブルシューティング
-
-### sqlite-vec拡張が読み込めない
-
-sqlite-vecは自動的にインストールされますが、問題がある場合は以下を確認：
-- `pip install sqlite-vec` が正常に完了しているか
-- Python 3.10以降を使用しているか
 
 ### 設定ファイルが見つからない
 

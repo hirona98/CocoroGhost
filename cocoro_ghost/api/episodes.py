@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from cocoro_ghost import models, schemas
-from cocoro_ghost.db import get_db
+from cocoro_ghost.deps import get_memory_db_dep
 
 
 router = APIRouter()
@@ -18,8 +18,9 @@ router = APIRouter()
 async def get_episodes(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_memory_db_dep),
 ):
+    """エピソード一覧を取得（記憶DBから）。"""
     episodes = (
         db.query(models.Episode)
         .order_by(models.Episode.occurred_at.desc())

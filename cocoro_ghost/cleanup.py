@@ -7,7 +7,8 @@ import os
 from datetime import datetime, timedelta
 
 from cocoro_ghost import models
-from cocoro_ghost.db import session_scope
+from cocoro_ghost.config import get_config_store
+from cocoro_ghost.db import memory_session_scope
 
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 def cleanup_old_images(hours: int = 72) -> None:
     cutoff_time = datetime.utcnow() - timedelta(hours=hours)
-    with session_scope() as db:
+    config_store = get_config_store()
+    with memory_session_scope(config_store.memory_id, config_store.embedding_dimension) as db:
         episodes = (
             db.query(models.Episode)
             .filter(models.Episode.occurred_at < cutoff_time)

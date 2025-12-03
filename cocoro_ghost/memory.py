@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from cocoro_ghost import models, schemas
 from cocoro_ghost.config import ConfigStore
-from cocoro_ghost.db import search_similar_episodes, session_scope, upsert_episode_embedding
+from cocoro_ghost.db import memory_session_scope, search_similar_episodes, upsert_episode_embedding
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost import prompts
 from cocoro_ghost.reflection import EpisodeReflection, PersonUpdate, generate_reflection
@@ -58,7 +58,7 @@ class MemoryManager:
                     logger.warning("画像要約に失敗しました", exc_info=exc)
                     image_summary = "画像要約に失敗しました"
 
-            system_prompt = self.config_store.config.character_prompt or prompts.get_character_prompt()
+            system_prompt = self.config_store.config.system_prompt
             conversation = [{"role": "user", "content": request.text}]
             if image_summary:
                 conversation.append({"role": "system", "content": f"画像要約: {image_summary}"})
@@ -297,7 +297,7 @@ class MemoryManager:
         image_summary: Optional[str],
     ) -> None:
         lock = _get_user_lock(user_id)
-        with lock, session_scope() as db:
+        with lock, memory_session_scope(self.config_store.memory_id, self.config_store.embedding_dimension) as db:
             reflection = generate_reflection(
                 self.llm_client,
                 context_text=f"user: {user_text}\nreply: {reply_text}\n{context_hint or ''}",

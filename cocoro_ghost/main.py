@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi_utils.tasks import repeat_every
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi_utils.tasks import repeat_every
 
 from cocoro_ghost.api import capture, chat, episodes, meta_request, notification, settings
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
-from cocoro_ghost.db import init_db
 from cocoro_ghost.logging_config import setup_logging
 
 
@@ -24,25 +23,61 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) 
 
 
 def create_app() -> FastAPI:
-    from cocoro_ghost.config import load_config, merge_toml_and_preset, ConfigStore, set_global_config_store
-    from cocoro_ghost.db import migrate_toml_to_db_if_needed, load_active_preset_from_db, session_scope
+    from cocoro_ghost.config import (
+        ConfigStore,
+        build_runtime_config,
+        load_config,
+        set_global_config_store,
+    )
+    from cocoro_ghost.db import (
+        init_memory_db,
+        init_settings_db,
+        load_active_character_preset,
+        load_active_llm_preset,
+        load_global_settings,
+        migrate_toml_to_v2_if_needed,
+        settings_session_scope,
+    )
 
+    # 1. TOML設定読み込み
     toml_config = load_config()
     setup_logging(toml_config.log_level)
 
-    init_db(toml_config.db_url, toml_config.embedding_dimension)
+    # 2. 設定DB初期化
+    init_settings_db()
 
-    with session_scope() as session:
-        migrate_toml_to_db_if_needed(session, toml_config)
+    # 3. マイグレーション（旧SettingPreset -> 新テーブル or TOML -> 新テーブル）
+    with settings_session_scope() as session:
+        migrate_toml_to_v2_if_needed(session, toml_config)
 
-    with session_scope() as session:
-        preset = load_active_preset_from_db(session)
-        runtime_config = merge_toml_and_preset(toml_config, preset)
+    # 4. アクティブなプリセットを読み込み
+    with settings_session_scope() as session:
+        global_settings = load_global_settings(session)
+        llm_preset = load_active_llm_preset(session)
+        character_preset = load_active_character_preset(session)
 
-    config_store = ConfigStore(toml_config, runtime_config)
+        # RuntimeConfig構築
+        runtime_config = build_runtime_config(
+            toml_config, global_settings, llm_preset, character_preset
+        )
+
+        # ConfigStore作成（プリセットオブジェクトをデタッチ状態で保持するためコピー）
+        # SQLAlchemyセッション終了後も使えるようにexpungeする
+        session.expunge(global_settings)
+        session.expunge(llm_preset)
+        session.expunge(character_preset)
+
+        config_store = ConfigStore(
+            toml_config, runtime_config, global_settings, llm_preset, character_preset
+        )
+
     set_global_config_store(config_store)
 
-    app = FastAPI(title="cocoro_ghost API")
+    # 5. 記憶DB初期化（memory_idに対応）
+    init_memory_db(runtime_config.memory_id, runtime_config.embedding_dimension)
+
+    # 6. FastAPIアプリ作成
+    app = FastAPI(title="CocoroGhost API")
 
     app.include_router(chat.router, dependencies=[Depends(verify_token)])
     app.include_router(notification.router, dependencies=[Depends(verify_token)])
@@ -57,7 +92,7 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     async def root():
-        return {"message": "cocoro_ghost API is running"}
+        return {"message": "CocoroGhost API is running"}
 
     @app.on_event("startup")
     @repeat_every(seconds=600, wait_first=True)

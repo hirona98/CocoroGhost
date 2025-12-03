@@ -160,11 +160,16 @@
 
 主キー: `(episode_id, person_id)`
 
-### 7.4 `setting_presets` テーブル
+### 7.4 設定DB（`settings.db`）
 
-- `name` (UNIQUE): プリセット名
-- `is_active` (BOOLEAN): アクティブフラグ（1行のみ TRUE）
-- LLM設定各項目、振る舞い設定各項目
+- `global_settings`: exclude_keywords、active_llm_preset_id、active_character_preset_id
+- `llm_presets`: name、llm_api_key、llm_model、llm_base_url、reasoning_effort、max_turns_window、max_tokens_vision、max_tokens、embedding_model、embedding_base_url、embedding_dimension、image_model、image_model_api_key、image_llm_base_url、image_timeout_seconds、similar_episodes_limit
+- `character_presets`: name、system_prompt、memory_id
+
+### 7.5 記憶DB（`memory_<memory_id>.db`）
+
+- エピソード系テーブル（episodes, persons, episode_persons）
+- sqlite-vec の `episode_embeddings` 仮想テーブル
 
 ---
 
@@ -174,35 +179,30 @@
 
 | 種別 | 管理場所 | 内容 |
 |------|----------|------|
-| 起動設定 | TOML (`config/setting.toml`) | token, db_url, log_level, env |
-| 動的設定 | DB (プリセット) | LLMモデル、APIキー、プロンプト等 |
+| 起動設定 | TOML (`config/setting.toml`) | token, log_level, env、（初回のみ）LLM/Embedding初期値 |
+| 動的設定 | 設定DB | LLMプリセット、キャラクタープリセット、共通設定（exclude_keywords） |
 
 ### 8.2 TOML設定項目
 
 | キー | 例 | 用途 |
 |------|-----|------|
 | `token` | `"secret-token-123"` | REST API 認証トークン |
-| `db_url` | `"sqlite:///./data/ghost.db"` | DB 接続文字列 |
 | `log_level` | `"INFO"` | ログレベル |
 | `env` | `"dev"` / `"prod"` | 実行環境 |
+| `llm_model` など | `"gpt-4o"` | 初回起動時の default プリセット作成に利用（任意） |
 
 ### 8.3 DBプリセット設定項目
 
-| 項目 | 例 | 用途 |
-|------|-----|------|
-| `llm_api_key` | `"sk-..."` | LLM API キー |
-| `llm_model` | `"gemini/gemini-2.5-flash"` | パートナー返答用モデル |
-| `reflection_model` | `"gemini/gemini-2.5-flash"` | reflection生成用モデル |
-| `embedding_model` | `"gemini/gemini-embedding-001"` | 埋め込み生成用モデル |
-| `embedding_dimension` | `3072` | 埋め込みベクトル次元数 |
-| `image_model` | `"gemini/gemini-2.5-flash"` | 画像解析用モデル |
-| `character_prompt` | `"..."` | キャラクター設定プロンプト |
-| `exclude_keywords` | `["パスワード", "銀行"]` | 除外キーワード |
+| 種別 | 主な項目 |
+|------|---------|
+| LLMプリセット | llm_api_key, llm_model, llm_base_url, reasoning_effort, max_turns_window, max_tokens_vision, max_tokens, embedding_model, embedding_api_key, embedding_base_url, embedding_dimension, image_model, image_model_api_key, image_llm_base_url, image_timeout_seconds, similar_episodes_limit |
+| キャラクタープリセット | system_prompt, memory_id |
+| 共通設定 | exclude_keywords |
 
 ### 8.4 プリセット管理
 
-- 名前付きで複数保存可能（例: "default", "work"）
-- API経由で作成・更新・削除・切り替え可能
+- LLMプリセットとキャラクタープリセットを独立して管理・切り替え可能
+- 共通設定（exclude_keywords）はグローバル1件のみ保持
 - 切り替え時はアプリ再起動が必要
 
 ---
@@ -226,8 +226,6 @@
 3. `episodes` テーブルに保存
 4. `persons` テーブルのスコア・状況を更新
 5. `episode_persons` に紐づけを追加
-
-**直列化**: リクエストはキューで直列化し、前の処理完了まで次を待機
 
 ### 9.2 `/notification` フロー
 
