@@ -9,3 +9,4 @@ log_level = "INFO"
 env = "dev"
 max_chat_queue = 10
 exclude_keywords = ["パスワード", "銀行"]
+similar_episodes_limit = 5

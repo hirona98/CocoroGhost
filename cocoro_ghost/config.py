@@ -25,6 +25,7 @@ class Config:
     exclude_keywords: List[str] = field(default_factory=list)
     character_prompt: Optional[str] = None
     intervention_level: Optional[str] = None
+    similar_episodes_limit: int = 5
 
 
 class ConfigStore:
@@ -80,6 +81,7 @@ def load_config(path: str | pathlib.Path = "config/ghost.toml") -> ConfigStore:
         exclude_keywords=list(data.get("exclude_keywords", [])),
         character_prompt=data.get("character_prompt"),
         intervention_level=data.get("intervention_level"),
+        similar_episodes_limit=int(data.get("similar_episodes_limit", 5)),
     )
     return ConfigStore(config)
 

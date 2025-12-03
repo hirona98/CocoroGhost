@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from cocoro_ghost import models, schemas
 from cocoro_ghost.config import ConfigStore
-from cocoro_ghost.db import session_scope, upsert_episode_embedding
+from cocoro_ghost.db import search_similar_episodes, session_scope, upsert_episode_embedding
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost import prompts
 from cocoro_ghost.reflection import EpisodeReflection, PersonUpdate, generate_reflection
@@ -62,9 +62,32 @@ class MemoryManager:
             if image_summary:
                 conversation.append({"role": "system", "content": f"画像要約: {image_summary}"})
 
+            # 類似エピソード検索用の一時埋め込みを生成し、コンテキストを付与
+            similar_context = None
+            try:
+                search_embed = self.llm_client.generate_embedding(
+                    ["\n".join(filter(None, [request.text, request.context_hint, image_summary]))]
+                )[0]
+                similar_rows = search_similar_episodes(db, search_embed, limit=self.config_store.config.similar_episodes_limit)
+                if similar_rows:
+                    episode_ids = [row.episode_id for row in similar_rows]
+                    episodes = (
+                        db.query(models.Episode)
+                        .filter(models.Episode.id.in_(episode_ids))
+                        .all()
+                    )
+                    parts = []
+                    for ep in episodes:
+                        parts.append(
+                            f"- {ep.occurred_at.isoformat()} {ep.topic_tags or ''} {ep.emotion_label or ''} {ep.user_text or ''} {ep.reply_text or ''}"
+                        )
+                    similar_context = "\n".join(parts)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("類似エピソード検索に失敗しました", exc_info=exc)
+
             reply_text = self.llm_client.generate_reply(
                 system_prompt=system_prompt,
-                conversation=conversation,
+                conversation=conversation if not similar_context else conversation + [{"role": "system", "content": f"最近の関連エピソード:\n{similar_context}"}],
             )
 
             # 先にエピソードのベースを保存し、後続の重処理はバックグラウンドに回す
