@@ -1,0 +1,9 @@
+token = "your-secret-token-here"
+db_url = "sqlite:///./data/ghost.db"
+llm_model = "gpt-4"
+reflection_model = "gpt-4"
+embedding_model = "text-embedding-ada-002"
+log_level = "INFO"
+env = "dev"
+max_chat_queue = 10
+exclude_keywords = ["パスワード", "銀行"]
