@@ -3,6 +3,7 @@ db_url = "sqlite:///./data/ghost.db"
 llm_model = "gpt-4"
 reflection_model = "gpt-4"
 embedding_model = "text-embedding-ada-002"
+embedding_dimension = 1536
 image_model = "gpt-4o-mini"
 image_timeout_seconds = 60
 log_level = "INFO"

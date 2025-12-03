@@ -15,9 +15,9 @@ Base = declarative_base()
 SessionLocal: sessionmaker | None = None
 
 
-def _enable_sqlite_vec(engine) -> None:
+def _enable_sqlite_vec(engine, dimension: int) -> None:
     with engine.connect() as conn:
-        conn.execute(text("CREATE VIRTUAL TABLE IF NOT EXISTS episode_embeddings USING vec0(embedding float[1536]);"))
+        conn.execute(text(f"CREATE VIRTUAL TABLE IF NOT EXISTS episode_embeddings USING vec0(embedding float[{dimension}]));"))
         conn.commit()
 
 
@@ -28,7 +28,8 @@ def init_db(db_url: str | None = None) -> None:
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     Base.metadata.create_all(bind=engine)
     if url.startswith("sqlite"):
-        _enable_sqlite_vec(engine)
+        dim = get_config_store().config.embedding_dimension
+        _enable_sqlite_vec(engine, dim)
 
 
 def get_db() -> Iterator:

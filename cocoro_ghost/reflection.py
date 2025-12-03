@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost import prompts
 
 
 @dataclass
@@ -47,7 +48,7 @@ def _validate_person(raw: dict) -> PersonUpdate:
 
 def generate_reflection(llm_client: LlmClient, context_text: str, image_descriptions: Optional[List[str]] = None) -> EpisodeReflection:
     raw = llm_client.generate_reflection(
-        system_prompt="",  # 実プロンプトは呼び出し側で組み立てる前提
+        system_prompt=prompts.get_reflection_prompt(),
         context_text=context_text,
         image_descriptions=image_descriptions,
     )
