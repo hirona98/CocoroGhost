@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 from typing import Iterator
 
 import logging
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from cocoro_ghost.config import get_config_store
@@ -19,21 +20,29 @@ logger = logging.getLogger(__name__)
 
 
 def _enable_sqlite_vec(engine, dimension: int) -> None:
+    import sqlite_vec
+    vec_path = Path(sqlite_vec.__file__).parent / "vec0"
     with engine.connect() as conn:
         try:
-            conn.exec_driver_sql("SELECT load_extension('vec0');")
+            conn.exec_driver_sql(f"SELECT load_extension('{vec_path}');")
         except Exception as exc:  # noqa: BLE001
             logger.error("sqlite-vec拡張のロードに失敗しました", exc_info=exc)
             raise
-        conn.execute(text(f"CREATE VIRTUAL TABLE IF NOT EXISTS episode_embeddings USING vec0(embedding float[{dimension}]));"))
+        conn.execute(text(f"CREATE VIRTUAL TABLE IF NOT EXISTS episode_embeddings USING vec0(embedding float[{dimension}])"))
         conn.commit()
 
 
 def init_db(db_url: str | None = None) -> None:
     global SessionLocal
     url = db_url or get_config_store().config.db_url
-    connect_args = {"check_same_thread": False, "enable_load_extension": True} if url.startswith("sqlite") else {}
+    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
     engine = create_engine(url, future=True, connect_args=connect_args)
+
+    if url.startswith("sqlite"):
+        @event.listens_for(engine, "connect")
+        def enable_sqlite_load_extension(dbapi_conn, connection_record):
+            dbapi_conn.enable_load_extension(True)
+
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     Base.metadata.create_all(bind=engine)
     if url.startswith("sqlite"):
