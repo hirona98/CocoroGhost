@@ -13,6 +13,7 @@ import tomli
 @dataclass
 class Config:
     token: str
+    llm_api_key: str
     db_url: str
     llm_model: str
     reflection_model: str
@@ -70,6 +71,7 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> ConfigStore
 
     config = Config(
         token=_require(data, "token"),
+        llm_api_key=_require(data, "llm_api_key"),
         db_url=_require(data, "db_url"),
         llm_model=_require(data, "llm_model"),
         reflection_model=_require(data, "reflection_model"),
