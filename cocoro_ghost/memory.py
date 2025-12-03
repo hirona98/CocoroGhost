@@ -5,19 +5,32 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
+import threading
 from datetime import datetime
 from typing import List, Optional
 
+from fastapi import BackgroundTasks
 from sqlalchemy.orm import Session
 
 from cocoro_ghost import models, schemas
 from cocoro_ghost.config import ConfigStore
+from cocoro_ghost.db import session_scope
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost import prompts
 from cocoro_ghost.reflection import EpisodeReflection, PersonUpdate, generate_reflection
 
 
 logger = logging.getLogger(__name__)
+
+_user_locks: dict[str, threading.Lock] = {}
+
+
+def _get_user_lock(user_id: str) -> threading.Lock:
+    lock = _user_locks.get(user_id)
+    if lock is None:
+        lock = threading.Lock()
+        _user_locks[user_id] = lock
+    return lock
 
 
 def _validate_image_path(path_str: str, allowed_roots: List[pathlib.Path]) -> pathlib.Path:
@@ -33,7 +46,7 @@ class MemoryManager:
         self.llm_client = llm_client
         self.config_store = config_store
 
-    def handle_chat(self, db: Session, request: schemas.ChatRequest) -> schemas.ChatResponse:
+    def handle_chat(self, db: Session, request: schemas.ChatRequest, background_tasks: Optional[BackgroundTasks] = None) -> schemas.ChatResponse:
         try:
             image_summary = None
             if request.image_path:
@@ -54,25 +67,31 @@ class MemoryManager:
                 conversation=conversation,
             )
 
-            reflection = generate_reflection(
-                self.llm_client,
-                context_text=f"user: {request.text}\nreply: {reply_text}\n{request.context_hint or ''}",
-                image_descriptions=[image_summary] if image_summary else None,
-            )
-
-            embedding_input = "\n".join(filter(None, [request.text, reply_text, reflection.reflection_text, image_summary]))
-            embedding = self.llm_client.generate_embedding([embedding_input])[0]
-
+            # 先にエピソードのベースを保存し、後続の重処理はバックグラウンドに回す
             episode_id = self._create_episode(
                 db,
                 occurred_at=datetime.utcnow(),
                 source="chat",
                 user_text=request.text,
                 reply_text=reply_text,
-                reflection=reflection,
-                embedding=embedding,
+                reflection=None,
+                embedding=None,
                 image_summary=image_summary,
             )
+
+            if background_tasks is not None:
+                background_tasks.add_task(
+                    self._process_chat_background,
+                    request.user_id,
+                    episode_id,
+                    request.text,
+                    reply_text,
+                    request.context_hint,
+                    image_summary,
+                )
+            else:
+                self._process_chat_background(request.user_id, episode_id, request.text, reply_text, request.context_hint, image_summary)
+
             return schemas.ChatResponse(reply_text=reply_text, episode_id=episode_id)
         except Exception as exc:  # noqa: BLE001
             error_message = f"LLMエラー: {exc}"
@@ -245,6 +264,42 @@ class MemoryManager:
         if reflection:
             self._update_persons(db, episode.id, reflection.persons)
         return episode.id
+
+    def _process_chat_background(
+        self,
+        user_id: str,
+        episode_id: int,
+        user_text: str,
+        reply_text: str,
+        context_hint: Optional[str],
+        image_summary: Optional[str],
+    ) -> None:
+        lock = _get_user_lock(user_id)
+        with lock, session_scope() as db:
+            reflection = generate_reflection(
+                self.llm_client,
+                context_text=f"user: {user_text}\nreply: {reply_text}\n{context_hint or ''}",
+                image_descriptions=[image_summary] if image_summary else None,
+            )
+
+            embedding_input = "\n".join(filter(None, [user_text, reply_text, reflection.reflection_text, image_summary]))
+            embedding = self.llm_client.generate_embedding([embedding_input])[0]
+
+            episode = db.query(models.Episode).filter(models.Episode.id == episode_id).one_or_none()
+            if episode is None:
+                logger.error("episode not found for background processing", extra={"episode_id": episode_id})
+                return
+
+            episode.reflection_text = reflection.reflection_text
+            episode.reflection_json = reflection.raw_json
+            episode.emotion_label = reflection.emotion_label
+            episode.emotion_intensity = reflection.emotion_intensity
+            episode.topic_tags = ",".join(reflection.topic_tags)
+            episode.salience_score = reflection.salience_score
+            episode.episode_embedding = json.dumps(embedding).encode("utf-8")
+            db.add(episode)
+            db.commit()
+            self._update_persons(db, episode.id, reflection.persons)
 
     def _validate_capture_path(self, request: schemas.CaptureRequest) -> pathlib.Path:
         root_desktop = pathlib.Path("images/desktop").resolve()

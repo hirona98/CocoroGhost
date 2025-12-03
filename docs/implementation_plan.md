@@ -586,8 +586,8 @@ class MemoryManager:
 - [x] handle_captureメソッドの実装（保存除外キーワード対応、パス検証）
 - [x] _update_personsメソッドの実装
 - [x] _create_episodeメソッドの実装
-- [ ] 同期/非同期処理の実装（FastAPIのBackgroundTasksを使用）
-- [ ] 直列化キュー（ユーザーごとのロック）の実装
+- [x] 同期/非同期処理の実装（FastAPIのBackgroundTasksを使用）
+- [x] 直列化キュー（ユーザーごとのロック）の実装
 
 ---
 

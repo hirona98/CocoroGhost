@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.orm import Session
 
 from cocoro_ghost import schemas
@@ -17,7 +17,8 @@ router = APIRouter()
 @router.post("/chat", response_model=schemas.ChatResponse)
 async def chat(
     request: schemas.ChatRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     memory_manager: MemoryManager = Depends(get_memory_manager),
 ):
-    return memory_manager.handle_chat(db, request)
+    return memory_manager.handle_chat(db, request, background_tasks)
