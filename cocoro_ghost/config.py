@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import threading
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 import tomli
@@ -12,17 +13,18 @@ import tomli
 
 @dataclass
 class Config:
+    """TOML起動設定（起動時のみ使用、変更不可）"""
     token: str
-    llm_api_key: str
     db_url: str
+    log_level: str
+    env: str
+    llm_api_key: str
     llm_model: str
     reflection_model: str
     embedding_model: str
     embedding_dimension: int
     image_model: str
     image_timeout_seconds: int
-    log_level: str
-    env: str
     max_chat_queue: int
     exclude_keywords: List[str] = field(default_factory=list)
     character_prompt: Optional[str] = None
@@ -30,29 +32,39 @@ class Config:
     similar_episodes_limit: int = 5
 
 
-class ConfigStore:
-    """スレッドセーフではない単純なランタイム設定ストア。"""
+@dataclass
+class RuntimeConfig:
+    """ランタイム設定（TOML + DB）"""
+    token: str
+    db_url: str
+    log_level: str
+    env: str
+    preset_name: str
+    llm_api_key: str
+    llm_model: str
+    reflection_model: str
+    embedding_model: str
+    embedding_dimension: int
+    image_model: str
+    image_timeout_seconds: int
+    character_prompt: Optional[str]
+    intervention_level: Optional[str]
+    exclude_keywords: List[str]
+    similar_episodes_limit: int
+    max_chat_queue: int
 
-    def __init__(self, initial: Config) -> None:
-        self._config = initial
+
+class ConfigStore:
+    """ランタイム設定ストア。"""
+
+    def __init__(self, toml_config: Config, runtime_config: RuntimeConfig) -> None:
+        self._toml = toml_config
+        self._runtime = runtime_config
         self._lock = threading.Lock()
 
     @property
-    def config(self) -> Config:
-        return self._config
-
-    def update(self, *, exclude_keywords: Optional[List[str]] = None, character_prompt: Optional[str] = None, intervention_level: Optional[str] = None) -> Config:
-        with self._lock:
-            cfg = self._config
-            updated = replace(cfg)
-            if exclude_keywords is not None:
-                updated.exclude_keywords = exclude_keywords
-            if character_prompt is not None:
-                updated.character_prompt = character_prompt
-            if intervention_level is not None:
-                updated.intervention_level = intervention_level
-            self._config = updated
-            return updated
+    def config(self) -> RuntimeConfig:
+        return self._runtime
 
 
 def _require(config_dict: dict, key: str) -> str:
@@ -61,7 +73,8 @@ def _require(config_dict: dict, key: str) -> str:
     return config_dict[key]
 
 
-def load_config(path: str | pathlib.Path = "config/setting.toml") -> ConfigStore:
+def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
+    """TOML設定のみ読み込み"""
     config_path = pathlib.Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"config file not found: {config_path}")
@@ -71,32 +84,62 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> ConfigStore
 
     config = Config(
         token=_require(data, "token"),
-        llm_api_key=_require(data, "llm_api_key"),
         db_url=_require(data, "db_url"),
-        llm_model=_require(data, "llm_model"),
-        reflection_model=_require(data, "reflection_model"),
-        embedding_model=_require(data, "embedding_model"),
-        embedding_dimension=int(_require(data, "embedding_dimension")),
-        image_model=_require(data, "image_model"),
-        image_timeout_seconds=int(_require(data, "image_timeout_seconds")),
         log_level=_require(data, "log_level"),
         env=_require(data, "env"),
-        max_chat_queue=int(_require(data, "max_chat_queue")),
+        llm_api_key=data.get("llm_api_key", ""),
+        llm_model=data.get("llm_model", ""),
+        reflection_model=data.get("reflection_model", ""),
+        embedding_model=data.get("embedding_model", ""),
+        embedding_dimension=int(data.get("embedding_dimension", 1536)),
+        image_model=data.get("image_model", ""),
+        image_timeout_seconds=int(data.get("image_timeout_seconds", 60)),
+        max_chat_queue=int(data.get("max_chat_queue", 10)),
         exclude_keywords=list(data.get("exclude_keywords", [])),
         character_prompt=data.get("character_prompt"),
         intervention_level=data.get("intervention_level"),
         similar_episodes_limit=int(data.get("similar_episodes_limit", 5)),
     )
-    return ConfigStore(config)
+    return config
+
+
+def merge_toml_and_preset(toml_config: Config, preset) -> RuntimeConfig:
+    """TOMLとDBプリセットをマージ"""
+    return RuntimeConfig(
+        token=toml_config.token,
+        db_url=toml_config.db_url,
+        log_level=toml_config.log_level,
+        env=toml_config.env,
+        preset_name=preset.name,
+        llm_api_key=preset.llm_api_key,
+        llm_model=preset.llm_model,
+        reflection_model=preset.reflection_model,
+        embedding_model=preset.embedding_model,
+        embedding_dimension=preset.embedding_dimension,
+        image_model=preset.image_model,
+        image_timeout_seconds=preset.image_timeout_seconds,
+        character_prompt=preset.character_prompt,
+        intervention_level=preset.intervention_level,
+        exclude_keywords=json.loads(preset.exclude_keywords),
+        similar_episodes_limit=preset.similar_episodes_limit,
+        max_chat_queue=preset.max_chat_queue,
+    )
 
 
 _config_store: ConfigStore | None = None
 
 
+def set_global_config_store(store: ConfigStore) -> None:
+    """グローバルConfigStoreを設定"""
+    global _config_store
+    _config_store = store
+
+
 def get_config_store() -> ConfigStore:
+    """グローバルConfigStoreを取得"""
     global _config_store
     if _config_store is None:
-        _config_store = load_config()
+        raise RuntimeError("ConfigStore not initialized")
     return _config_store
 
 

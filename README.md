@@ -8,6 +8,7 @@ CocoroAIのLLMと記憶処理を担当するPython/FastAPIバックエンドサ�
 - LLMとの対話処理
 - SQLiteベースのエピソード記憶管理
 - sqlite-vecによるベクトル検索
+- プリセット機能によるLLM設定の動的切り替え
 - 画像クリーンアップなどの定期実行タスク
 
 ## セットアップ
@@ -46,10 +47,13 @@ setup.bat
 
 4. **設定ファイルの編集**
 
-   `config/setting.toml` を編集して、以下を設定：
+   `config/setting.toml` を編集して、最小限の起動設定を記述：
    - `token`: API認証トークン
-   - `llm_model`: 使用するLLMモデル
-   - その他の設定項目
+   - `db_url`: データベースURL
+   - `log_level`: ログレベル
+   - `env`: 環境（dev/prod）
+
+   ※ LLMモデル設定はDBで管理されます（後述のプリセット機能参照）
 
 ## 起動方法
 
@@ -68,19 +72,45 @@ python -X utf8 run.py
 
 サーバーは `http://0.0.0.0:55601` で起動します。
 
-## 設定ファイル
+## 設定管理
 
-`config/setting.toml` で以下を設定できます：
+### ハイブリッド設定方式
+
+cocoro_ghostは2つの設定管理方式を採用しています：
+
+#### 1. TOML設定（起動時必須）
+
+`config/setting.toml` で以下を設定：
 
 - `token`: API認証トークン
 - `db_url`: データベースURL（デフォルト: sqlite:///./data/ghost.db）
+- `log_level`: ログレベル（DEBUG, INFO, WARNING, ERROR）
+- `env`: 環境（dev/prod）
+
+#### 2. プリセット設定（動的変更可能）
+
+LLMモデル設定や振る舞い設定はDBで管理され、API経由で動的に変更可能：
+
+- `llm_api_key`: LLM APIキー
 - `llm_model`: LLMモデル名
 - `reflection_model`: リフレクション用モデル名
 - `embedding_model`: 埋め込みモデル名
 - `embedding_dimension`: 埋め込みベクトルの次元数
 - `image_model`: 画像処理用モデル名
-- `log_level`: ログレベル（DEBUG, INFO, WARNING, ERROR）
-- その他の設定項目
+- `character_prompt`: キャラクター設定プロンプト
+- `exclude_keywords`: 除外キーワードリスト
+- その他の動的設定
+
+### プリセット機能
+
+複数の設定セット（プリセット）を名前付きで保存し、切り替えることができます：
+
+- **初回起動**: TOMLにLLM設定がある場合、自動的に"default"プリセットを作成
+- **プリセット作成**: `POST /presets` で新規プリセット作成
+- **プリセット切り替え**: `POST /presets/{name}/activate` で切り替え（**再起動が必要**）
+- **プリセット管理**: `GET /presets`、`PATCH /presets/{name}`、`DELETE /presets/{name}`
+
+詳細は `docs/cocoro_ghost_api.md` を参照してください。
 
 ## 依存関係管理
 

@@ -57,6 +57,7 @@ cocoro_ghost/
     meta_request.py# /meta_request エンドポイント
     capture.py     # /capture エンドポイント
     episodes.py    # /episodes エンドポイント
+    settings.py    # /settings, /presets エンドポイント（設定・プリセット管理）
 ```
 
 各モジュールの役割は以下の通り。
@@ -93,6 +94,10 @@ cocoro_ghost/
   - 人物プロフィール（is_user, name, relation_to_user, status_note, 各種スコアなど）を定義。
 - `episode_persons` テーブル:
   - エピソードと人物の多対多関係を表現し、役割（role）などを追加。
+- `setting_presets` テーブル:
+  - プリセット管理用テーブル。名前付きでLLM設定・振る舞い設定を保存。
+  - `name` (UNIQUE), `is_active` (BOOLEAN), LLM設定各項目、振る舞い設定各項目を含む。
+  - `is_active = TRUE` は1行のみ（UNIQUEインデックスで保証）。
 
 #### `schemas.py`
 
@@ -490,31 +495,61 @@ class LlmClient:
 
 ### 9.1 設定の読み込み方針
 
-- 基本方針:
-  - 環境変数には依存せず、すべて設定ファイルで管理する。
-  - 例として、リポジトリ直下に `config/ghost.toml`（または `ghost.yaml`）を置き、そこから読み込む。
-  - `cocoro_ghost.config` モジュールで一元管理し、アプリ内の他の箇所では設定ファイルを直接扱わない。
-- 実装イメージ:
-  - 起動時に `Config` クラス（あるいは同等の構造体）を生成し、FastAPI アプリの `state` などに保持する。
-  - 設定ファイルが見つからない、または必須項目が欠けている場合は起動時にエラーとして停止する。
+- **ハイブリッド設定管理方式**:
+  - **起動設定**: TOMLファイル（`config/setting.toml`）で管理
+    - 環境変数には依存せず、アプリ起動に必須の設定のみ記述
+  - **動的設定**: SQLiteデータベースで管理（プリセット機能）
+    - LLMモデル設定、API Key、プロンプト、振る舞い設定など
+    - API経由で動的に変更可能
+- `cocoro_ghost.config` モジュールで一元管理し、アプリ内の他の箇所では設定ファイルを直接扱わない。
 
-### 9.2 設定項目（案）
+### 9.2 設定項目
 
-| キー名                     | 例                         | 用途 |
-|---------------------------|----------------------------|------|
-| `token`                   | `"secret-token-123"`       | REST API 認証用の固定トークン |
-| `db_url`                  | `"sqlite:///./ghost.db"`   | DB 接続文字列（初期は SQLite） |
-| `llm_model`               | `"chat-1"`                 | パートナー返答用の LLM モデル名 |
-| `reflection_model`        | `"chat-1"`                 | reflection 生成用モデル名（LLM と同じでも可） |
-| `embedding_model`         | `"embed-1"`                | 埋め込み生成に利用するモデル名 |
-| `log_level`               | `"INFO"`                   | ログレベル（DEBUG/INFO/WARN/ERROR） |
-| `env`                     | `"dev"` / `"prod"`         | 実行環境（開発／本番などの切り替え） |
-| `max_chat_queue`          | `10`                       | `/chat` キューの最大長（ユーザーごと） |
+#### TOML設定（起動時必須）
 
-※ モデル名は LiteLLM 側の設定に合わせて変更可能とする。
+| キー名        | 例                         | 用途 |
+|--------------|----------------------------|------|
+| `token`      | `"secret-token-123"`       | REST API 認証用の固定トークン |
+| `db_url`     | `"sqlite:///./data/ghost.db"` | DB 接続文字列（初期は SQLite） |
+| `log_level`  | `"INFO"`                   | ログレベル（DEBUG/INFO/WARN/ERROR） |
+| `env`        | `"dev"` / `"prod"`         | 実行環境（開発／本番などの切り替え） |
 
-### 9.3 config モジュールの責務
+#### DBプリセット設定（動的変更可能）
 
-- 設定ファイルから値を読み込み、型変換・デフォルト値の設定を行う。
-- 必須項目（例: `token`, `db_url`）が設定されていない場合は、起動時にエラーとして停止する。
-- アプリケーションコードからは `config.llm_model` のように属性ベースで参照できるインターフェースを提供する。
+| 項目                        | 例                         | 用途 |
+|----------------------------|----------------------------|------|
+| `llm_api_key`              | `"sk-..."`                 | LLM API キー（プリセット毎） |
+| `llm_model`                | `"gemini/gemini-2.5-flash"` | パートナー返答用の LLM モデル名 |
+| `reflection_model`         | `"gemini/gemini-2.5-flash"` | reflection 生成用モデル名 |
+| `embedding_model`          | `"gemini/gemini-embedding-001"` | 埋め込み生成用モデル名 |
+| `embedding_dimension`      | `3072`                     | 埋め込みベクトルの次元数 |
+| `image_model`              | `"gemini/gemini-2.5-flash"` | 画像解析用モデル名 |
+| `image_timeout_seconds`    | `60`                       | 画像処理タイムアウト |
+| `character_prompt`         | `"..."` | キャラクター設定プロンプト |
+| `intervention_level`       | `"high"` / `"low"`         | 介入レベル |
+| `exclude_keywords`         | `["パスワード", "銀行"]`   | 除外キーワードリスト |
+| `similar_episodes_limit`   | `5`                        | 類似エピソード検索上限 |
+| `max_chat_queue`           | `10`                       | `/chat` キューの最大長 |
+
+### 9.3 プリセット管理
+
+- **プリセット**: LLM設定と振る舞い設定のセット
+  - 名前付きで複数保存可能（例: "default", "work", "casual"）
+  - 1つのプリセットを「アクティブ」として選択
+  - API経由でプリセットの作成・更新・削除・切り替えが可能
+
+- **初回起動時の動作**:
+  - TOMLにLLM設定が記述されている場合、自動的に"default"プリセットを作成
+  - 2回目以降はDBのプリセットが優先され、TOMLのLLM設定は無視される
+
+- **プリセット切り替え**:
+  - APIで切り替え可能だが、LLMクライアントの再初期化が必要なため**アプリの再起動が必要**
+
+### 9.4 config モジュールの構成
+
+- **Config** (dataclass): TOML起動設定
+- **RuntimeConfig** (dataclass): TOML + DBプリセット設定のマージ結果
+- **ConfigStore**: ランタイム設定ストア（スレッドセーフ）
+- **load_config()**: TOMLファイルから起動設定を読み込み
+- **merge_toml_and_preset()**: TOMLとDBプリセットをマージ
+- **migrate_toml_to_db_if_needed()**: 初回起動時の自動マイグレーション

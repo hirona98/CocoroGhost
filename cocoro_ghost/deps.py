@@ -15,7 +15,6 @@ def get_memory_manager() -> MemoryManager:
     global _memory_manager
     if _memory_manager is None:
         config_store = get_config_store()
-        init_db(config_store.config.db_url)
         llm_client = LlmClient(
             model=config_store.config.llm_model,
             reflection_model=config_store.config.reflection_model,

@@ -77,3 +77,66 @@ class SettingsResponse(BaseModel):
     exclude_keywords: List[str]
     character_prompt: Optional[str]
     intervention_level: Optional[str]
+
+
+class SettingsFullResponse(BaseModel):
+    preset_name: str
+    llm_api_key: str
+    llm_model: str
+    reflection_model: str
+    embedding_model: str
+    embedding_dimension: int
+    image_model: str
+    image_timeout_seconds: int
+    character_prompt: Optional[str]
+    intervention_level: Optional[str]
+    exclude_keywords: List[str]
+    similar_episodes_limit: int
+    max_chat_queue: int
+
+
+class PresetSummary(BaseModel):
+    name: str
+    is_active: bool
+    created_at: datetime
+
+
+class PresetsListResponse(BaseModel):
+    presets: List[PresetSummary]
+
+
+class PresetCreateRequest(BaseModel):
+    name: str
+    llm_api_key: str
+    llm_model: str
+    reflection_model: str
+    embedding_model: str
+    embedding_dimension: int
+    image_model: str
+    image_timeout_seconds: int = 60
+    character_prompt: Optional[str] = None
+    intervention_level: Optional[str] = None
+    exclude_keywords: List[str] = Field(default_factory=list)
+    similar_episodes_limit: int = 5
+    max_chat_queue: int = 10
+
+
+class PresetUpdateRequest(BaseModel):
+    llm_api_key: Optional[str] = None
+    llm_model: Optional[str] = None
+    reflection_model: Optional[str] = None
+    embedding_model: Optional[str] = None
+    embedding_dimension: Optional[int] = None
+    image_model: Optional[str] = None
+    image_timeout_seconds: Optional[int] = None
+    character_prompt: Optional[str] = None
+    intervention_level: Optional[str] = None
+    exclude_keywords: Optional[List[str]] = None
+    similar_episodes_limit: Optional[int] = None
+    max_chat_queue: Optional[int] = None
+
+
+class PresetActivateResponse(BaseModel):
+    message: str
+    active_preset: str
+    restart_required: bool

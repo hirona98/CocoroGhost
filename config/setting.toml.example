@@ -1,14 +1,22 @@
+# cocoro_ghost 起動設定
+# LLMやプロンプト設定はDBで管理されます（プリセット機能）
+
+# 必須設定
 token = "your-secret-token-here"
-llm_api_key = "your-llm-api-key-here"
 db_url = "sqlite:///./data/ghost.db"
-llm_model = "gpt-4"
-reflection_model = "gpt-4"
-embedding_model = "text-embedding-ada-002"
-embedding_dimension = 1536
-image_model = "gpt-4o-mini"
-image_timeout_seconds = 60
 log_level = "INFO"
 env = "dev"
-max_chat_queue = 10
-exclude_keywords = ["パスワード", "銀行"]
-similar_episodes_limit = 5
+
+# 初回起動時のマイグレーション用（オプション）
+# DBにプリセットがない場合、以下の設定からdefaultプリセットが作成されます
+# 2回目以降は無視されます
+# llm_api_key = "your-llm-api-key-here"
+# llm_model = "gpt-4"
+# reflection_model = "gpt-4"
+# embedding_model = "text-embedding-ada-002"
+# embedding_dimension = 1536
+# image_model = "gpt-4o-mini"
+# image_timeout_seconds = 60
+# max_chat_queue = 10
+# exclude_keywords = ["パスワード", "銀行"]
+# similar_episodes_limit = 5

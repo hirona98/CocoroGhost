@@ -73,3 +73,28 @@ class EpisodePerson(Base):
 
     episode: Mapped[Episode] = relationship("Episode", back_populates="persons")
     person: Mapped[Person] = relationship("Person", back_populates="episodes")
+
+
+class SettingPreset(Base):
+    __tablename__ = "setting_presets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    llm_api_key: Mapped[str] = mapped_column(String, nullable=False)
+    llm_model: Mapped[str] = mapped_column(String, nullable=False)
+    reflection_model: Mapped[str] = mapped_column(String, nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String, nullable=False)
+    embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    image_model: Mapped[str] = mapped_column(String, nullable=False)
+    image_timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+
+    character_prompt: Mapped[Optional[str]] = mapped_column(Text)
+    intervention_level: Mapped[Optional[str]] = mapped_column(String)
+    exclude_keywords: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    similar_episodes_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    max_chat_queue: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

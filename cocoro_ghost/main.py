@@ -24,9 +24,23 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) 
 
 
 def create_app() -> FastAPI:
-    cfg = get_config_store()
-    setup_logging(cfg.config.log_level)
-    init_db(cfg.config.db_url)
+    from cocoro_ghost.config import load_config, merge_toml_and_preset, ConfigStore, set_global_config_store
+    from cocoro_ghost.db import migrate_toml_to_db_if_needed, load_active_preset_from_db, session_scope
+
+    toml_config = load_config()
+    setup_logging(toml_config.log_level)
+
+    init_db(toml_config.db_url, toml_config.embedding_dimension)
+
+    with session_scope() as session:
+        migrate_toml_to_db_if_needed(session, toml_config)
+
+    with session_scope() as session:
+        preset = load_active_preset_from_db(session)
+        runtime_config = merge_toml_and_preset(toml_config, preset)
+
+    config_store = ConfigStore(toml_config, runtime_config)
+    set_global_config_store(config_store)
 
     app = FastAPI(title="cocoro_ghost API")
 

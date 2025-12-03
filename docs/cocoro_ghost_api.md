@@ -195,3 +195,186 @@ REST API の初期仕様をまとめたものです。
 ```
 
 - 実際には、要件定義で示したエピソード情報（emotion, topic_tags など）を必要に応じて返す。
+
+---
+
+## 6. 設定管理 API
+
+### 6.1 現在の設定取得 `GET /settings`
+
+現在アクティブなプリセットの設定を取得する。
+
+- メソッド: `GET`
+- パス: `/settings`
+
+#### レスポンスボディ
+
+```json
+{
+  "preset_name": "default",
+  "llm_api_key": "sk-...",
+  "llm_model": "gemini/gemini-2.5-flash",
+  "reflection_model": "gemini/gemini-2.5-flash",
+  "embedding_model": "gemini/gemini-embedding-001",
+  "embedding_dimension": 3072,
+  "image_model": "gemini/gemini-2.5-flash",
+  "image_timeout_seconds": 60,
+  "character_prompt": "...",
+  "intervention_level": "high",
+  "exclude_keywords": ["パスワード", "銀行"],
+  "similar_episodes_limit": 5,
+  "max_chat_queue": 10
+}
+```
+
+### 6.2 設定更新 `POST /settings`
+
+アクティブなプリセットの一部設定を更新する（DBに永続化、再起動時に反映）。
+
+- メソッド: `POST`
+- パス: `/settings`
+
+#### リクエストボディ
+
+```json
+{
+  "exclude_keywords": ["秘密", "パスワード"],
+  "character_prompt": "新しいキャラクター設定",
+  "intervention_level": "low"
+}
+```
+
+※ 全フィールドオプショナル。指定した項目のみ更新される。
+
+#### レスポンスボディ
+
+```json
+{
+  "exclude_keywords": ["秘密", "パスワード"],
+  "character_prompt": "新しいキャラクター設定",
+  "intervention_level": "low"
+}
+```
+
+---
+
+## 7. プリセット管理 API
+
+### 7.1 プリセット一覧取得 `GET /presets`
+
+保存されているプリセットの一覧を取得する。
+
+- メソッド: `GET`
+- パス: `/presets`
+
+#### レスポンスボディ
+
+```json
+{
+  "presets": [
+    {
+      "name": "default",
+      "is_active": true,
+      "created_at": "2025-03-01T10:00:00Z"
+    },
+    {
+      "name": "work",
+      "is_active": false,
+      "created_at": "2025-03-02T12:00:00Z"
+    }
+  ]
+}
+```
+
+### 7.2 プリセット作成 `POST /presets`
+
+新しいプリセットを作成する。
+
+- メソッド: `POST`
+- パス: `/presets`
+
+#### リクエストボディ
+
+```json
+{
+  "name": "work",
+  "llm_api_key": "sk-...",
+  "llm_model": "gemini/gemini-2.5-flash",
+  "reflection_model": "gemini/gemini-2.5-flash",
+  "embedding_model": "gemini/gemini-embedding-001",
+  "embedding_dimension": 3072,
+  "image_model": "gemini/gemini-2.5-flash",
+  "image_timeout_seconds": 60,
+  "character_prompt": "仕事モード用のプロンプト",
+  "intervention_level": "low",
+  "exclude_keywords": ["プライベート"],
+  "similar_episodes_limit": 10,
+  "max_chat_queue": 20
+}
+```
+
+#### レスポンスボディ
+
+```json
+{
+  "message": "Preset 'work' created"
+}
+```
+
+### 7.3 プリセット更新 `PATCH /presets/{name}`
+
+既存のプリセットを部分更新する。
+
+- メソッド: `PATCH`
+- パス: `/presets/{name}`
+
+#### リクエストボディ
+
+```json
+{
+  "llm_model": "gemini/gemini-2.5-pro",
+  "character_prompt": "更新されたプロンプト"
+}
+```
+
+※ 全フィールドオプショナル。
+
+#### レスポンスボディ
+
+```json
+{
+  "message": "Preset 'work' updated",
+  "restart_required": false
+}
+```
+
+- `restart_required`: アクティブなプリセットを更新した場合は `true`
+
+### 7.4 プリセット削除 `DELETE /presets/{name}`
+
+プリセットを削除する。アクティブなプリセットは削除不可。
+
+- メソッド: `DELETE`
+- パス: `/presets/{name}`
+
+#### レスポンスボディ
+
+- ステータスコード: `204 No Content`
+- エラー（アクティブなプリセットを削除しようとした場合）: `400 Bad Request`
+
+### 7.5 プリセット切り替え `POST /presets/{name}/activate`
+
+指定したプリセットをアクティブにする。**切り替え後はアプリの再起動が必要**。
+
+- メソッド: `POST`
+- パス: `/presets/{name}/activate`
+
+#### レスポンスボディ
+
+```json
+{
+  "message": "Activated preset 'work'. Please restart the application.",
+  "active_preset": "work",
+  "restart_required": true
+}
+```
