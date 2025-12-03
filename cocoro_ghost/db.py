@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 from typing import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from cocoro_ghost.config import get_config_store
@@ -15,12 +15,20 @@ Base = declarative_base()
 SessionLocal: sessionmaker | None = None
 
 
+def _enable_sqlite_vec(engine) -> None:
+    with engine.connect() as conn:
+        conn.execute(text("CREATE VIRTUAL TABLE IF NOT EXISTS episode_embeddings USING vec0(embedding float[1536]);"))
+        conn.commit()
+
+
 def init_db(db_url: str | None = None) -> None:
     global SessionLocal
     url = db_url or get_config_store().config.db_url
     engine = create_engine(url, future=True)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     Base.metadata.create_all(bind=engine)
+    if url.startswith("sqlite"):
+        _enable_sqlite_vec(engine)
 
 
 def get_db() -> Iterator:
@@ -48,3 +56,32 @@ def session_scope() -> Iterator:
         raise
     finally:
         session.close()
+
+
+def upsert_episode_embedding(session, episode_id: int, embedding: list[float]) -> None:
+    session.execute(
+        text(
+            """
+            INSERT INTO episode_embeddings(rowid, embedding)
+            VALUES (:episode_id, :embedding)
+            ON CONFLICT(rowid) DO UPDATE SET embedding = excluded.embedding
+            """
+        ),
+        {"episode_id": episode_id, "embedding": embedding},
+    )
+
+
+def search_similar_episodes(session, query_embedding: list[float], limit: int = 5):
+    rows = session.execute(
+        text(
+            """
+            SELECT rowid as episode_id, distance
+            FROM episode_embeddings
+            WHERE embedding MATCH :query
+            ORDER BY distance ASC
+            LIMIT :limit
+            """
+        ),
+        {"query": query_embedding, "limit": limit},
+    ).fetchall()
+    return rows

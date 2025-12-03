@@ -800,6 +800,9 @@ def search_similar_episodes(
 - [ ] ベクタインデックスの構築
 - [ ] 類似検索関数の実装
 - [ ] memory.pyのコンテキスト収集で類似検索を利用
+- [x] sqlite-vecの初期化と episode_embeddings 仮想テーブル作成
+- [x] 埋め込み upsert と類似検索関数の骨組み
+- [ ] 類似検索結果の API/メモリ取り込み（未実装）
 
 ---
 
@@ -918,6 +921,7 @@ python -X utf8 -m uvicorn cocoro_ghost.main:app --host 0.0.0.0 --port 55601
 3. フェーズ3: Reflectionとメモリ管理
 4. フェーズ4.1: /chat エンドポイント
 5. フェーズ4.6: 設定変更API（保存除外キーワード即時反映含む）
+6. フェーズ5.3: ベクタ検索実装（sqlite-vec）
 
 **目標: /chatエンドポイントが動作し、エピソードが記録される**
 

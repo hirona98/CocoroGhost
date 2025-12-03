@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from cocoro_ghost import models, schemas
 from cocoro_ghost.config import ConfigStore
-from cocoro_ghost.db import session_scope
+from cocoro_ghost.db import session_scope, upsert_episode_embedding
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost import prompts
 from cocoro_ghost.reflection import EpisodeReflection, PersonUpdate, generate_reflection
@@ -300,6 +300,7 @@ class MemoryManager:
             db.add(episode)
             db.commit()
             self._update_persons(db, episode.id, reflection.persons)
+            upsert_episode_embedding(db, episode.id, embedding)
 
     def _validate_capture_path(self, request: schemas.CaptureRequest) -> pathlib.Path:
         root_desktop = pathlib.Path("images/desktop").resolve()
