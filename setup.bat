@@ -20,7 +20,7 @@ REM 仮想環境の活性化と依存パッケージのインストール
 echo.
 echo 依存パッケージをインストールします...
 call .venv\Scripts\activate.bat
-pip install fastapi fastapi-utils "uvicorn[standard]" sqlalchemy litellm pydantic python-multipart httpx tomli sqlite-vec typing_inspect
+pip install -e .
 if errorlevel 1 (
     echo エラー: パッケージのインストールに失敗しました
     pause

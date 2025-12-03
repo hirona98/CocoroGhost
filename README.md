@@ -34,8 +34,10 @@ setup.bat
 2. **依存パッケージのインストール**
    ```bash
    .venv\Scripts\activate
-   pip install fastapi fastapi-utils "uvicorn[standard]" sqlalchemy litellm pydantic python-multipart httpx tomli sqlite-vec typing_inspect
+   pip install -e .
    ```
+
+   依存関係は `pyproject.toml` で管理されています。
 
 3. **設定ファイルの準備**
    ```bash
@@ -80,10 +82,29 @@ python -X utf8 run.py
 - `log_level`: ログレベル（DEBUG, INFO, WARNING, ERROR）
 - その他の設定項目
 
+## 依存関係管理
+
+依存関係は `pyproject.toml` で管理されています。以下のパッケージが含まれます：
+
+- **fastapi** - Web フレームワーク
+- **fastapi-utils** - FastAPI ユーティリティ
+- **uvicorn[standard]** - ASGI サーバー
+- **sqlalchemy** - ORM
+- **litellm** - LLM クライアント
+- **pydantic** - データバリデーション
+- **python-multipart** - マルチパートフォームデータ処理
+- **httpx** - HTTP クライアント
+- **tomli** - TOML パーサー
+- **sqlite-vec** - SQLite ベクトル検索拡張
+- **typing_inspect** - 型チェックユーティリティ
+
+新しい依存関係を追加する場合は `pyproject.toml` を編集して、再度 `pip install -e .` を実行してください。
+
 ## 開発時の注意
 
 - Python実行時は必ず `-X utf8` オプションを付けること
 - WSL環境ではpowershell.exe経由でPowerShellコマンドを実行すること
+- 開発モードでインストール（`pip install -e .`）すると、コード変更が即座に反映されます
 
 ## トラブルシューティング
 
