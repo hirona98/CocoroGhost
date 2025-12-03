@@ -756,7 +756,10 @@ def cleanup_old_images():
 - [ ] cleanup.pyモジュールを実装
 - [ ] cleanup_old_images関数の実装
 - [ ] FastAPIのBackgroundTasksまたはAPSchedulerで定期実行
-- [ ] エラーハンドリング（削除失敗時はログのみ記録し、それ以上の特別処理はしない）
+- [x] cleanup.pyモジュールを実装
+- [x] cleanup_old_images関数の実装
+- [ ] FastAPIのBackgroundTasksまたはAPSchedulerで定期実行
+- [x] エラーハンドリング（削除失敗時はログのみ記録し、それ以上の特別処理はしない）
 
 #### 5.2 ロギング設定
 
