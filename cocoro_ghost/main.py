@@ -85,9 +85,9 @@ def create_app() -> FastAPI:
     app.include_router(capture.router, dependencies=[Depends(verify_token)])
     app.include_router(settings.router, dependencies=[Depends(verify_token)])
 
-    @app.get("/health")
+    @app.get("/api/health")
     async def health():
-        return {"status": "ok"}
+        return {"status": "healthy"}
 
     @app.get("/")
     async def root():

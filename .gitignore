@@ -1,6 +1,7 @@
 settings.local.json
 /tmp
 .serena
+/.vscode/launch.json
 
 # cocoro_ghost specific
 config/setting.toml
