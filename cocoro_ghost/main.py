@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_utils.tasks import repeat_every
 
-from cocoro_ghost.api import capture, chat, episodes, meta_request, notification, settings
+from cocoro_ghost.api import capture, chat, meta_request, notification, settings
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.logging_config import setup_logging
@@ -83,7 +83,6 @@ def create_app() -> FastAPI:
     app.include_router(notification.router, dependencies=[Depends(verify_token)])
     app.include_router(meta_request.router, dependencies=[Depends(verify_token)])
     app.include_router(capture.router, dependencies=[Depends(verify_token)])
-    app.include_router(episodes.router, dependencies=[Depends(verify_token)])
     app.include_router(settings.router, dependencies=[Depends(verify_token)])
 
     @app.get("/health")

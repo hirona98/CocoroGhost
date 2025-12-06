@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import List, Optional
 
 from pydantic import BaseModel
@@ -54,177 +53,6 @@ class CaptureResponse(BaseModel):
     stored: bool
 
 
-class EpisodeSummary(BaseModel):
-    id: int
-    occurred_at: datetime
-    source: str
-    user_text: Optional[str]
-    reply_text: Optional[str]
-    emotion_label: Optional[str]
-    salience_score: float
-
-    class Config:
-        from_attributes = True
-
-
-# --- 設定スキーマ ---
-
-
-class GlobalSettingsResponse(BaseModel):
-    """共通設定レスポンス。"""
-
-    exclude_keywords: List[str]
-    active_llm_preset_id: Optional[int]
-    active_character_preset_id: Optional[int]
-
-
-class GlobalSettingsUpdateRequest(BaseModel):
-    """共通設定更新リクエスト。"""
-
-    exclude_keywords: Optional[List[str]] = None
-
-
-# LLMプリセット
-
-
-class LlmPresetResponse(BaseModel):
-    """LLMプリセットレスポンス。"""
-
-    id: int
-    name: str
-    llm_api_key: Optional[str]
-    llm_model: str
-    llm_base_url: Optional[str]
-    reasoning_effort: Optional[str]
-    max_turns_window: int
-    max_tokens_vision: int
-    max_tokens: int
-    embedding_model: str
-    embedding_api_key: Optional[str]
-    embedding_base_url: Optional[str]
-    embedding_dimension: int
-    image_model: str
-    image_model_api_key: Optional[str]
-    image_llm_base_url: Optional[str]
-    image_timeout_seconds: int
-    similar_episodes_limit: int
-
-    class Config:
-        from_attributes = True
-
-
-class LlmPresetCreateRequest(BaseModel):
-    """LLMプリセット作成リクエスト。"""
-
-    name: str
-    llm_api_key: str
-    llm_model: str
-    llm_base_url: Optional[str] = None
-    reasoning_effort: Optional[str] = None
-    max_turns_window: int = 50
-    max_tokens_vision: int = 4096
-    max_tokens: int = 4096
-    embedding_model: str
-    embedding_api_key: Optional[str] = None
-    embedding_base_url: Optional[str] = None
-    embedding_dimension: int
-    image_model: str
-    image_model_api_key: Optional[str] = None
-    image_llm_base_url: Optional[str] = None
-    image_timeout_seconds: int = 60
-    similar_episodes_limit: int = 5
-
-
-class LlmPresetUpdateRequest(BaseModel):
-    """LLMプリセット更新リクエスト。"""
-
-    llm_api_key: Optional[str] = None
-    llm_model: Optional[str] = None
-    llm_base_url: Optional[str] = None
-    reasoning_effort: Optional[str] = None
-    max_turns_window: Optional[int] = None
-    max_tokens_vision: Optional[int] = None
-    max_tokens: Optional[int] = None
-    embedding_model: Optional[str] = None
-    embedding_api_key: Optional[str] = None
-    embedding_base_url: Optional[str] = None
-    embedding_dimension: Optional[int] = None
-    image_model: Optional[str] = None
-    image_model_api_key: Optional[str] = None
-    image_llm_base_url: Optional[str] = None
-    image_timeout_seconds: Optional[int] = None
-    similar_episodes_limit: Optional[int] = None
-
-
-class LlmPresetSummary(BaseModel):
-    """LLMプリセット一覧用。"""
-
-    id: int
-    name: str
-    llm_model: str
-
-    class Config:
-        from_attributes = True
-
-
-class LlmPresetsListResponse(BaseModel):
-    """LLMプリセット一覧レスポンス。"""
-
-    presets: List[LlmPresetSummary]
-    active_id: Optional[int]
-
-
-# キャラクタープリセット
-
-
-class CharacterPresetResponse(BaseModel):
-    """キャラクタープリセットレスポンス。"""
-
-    id: int
-    name: str
-    system_prompt: str
-    memory_id: str
-
-    class Config:
-        from_attributes = True
-
-
-class CharacterPresetCreateRequest(BaseModel):
-    """キャラクタープリセット作成リクエスト。"""
-
-    name: str
-    system_prompt: str
-    memory_id: str = "default"
-
-
-class CharacterPresetUpdateRequest(BaseModel):
-    """キャラクタープリセット更新リクエスト。"""
-
-    system_prompt: Optional[str] = None
-    memory_id: Optional[str] = None
-
-
-class CharacterPresetSummary(BaseModel):
-    """キャラクタープリセット一覧用。"""
-
-    id: int
-    name: str
-    memory_id: str
-
-    class Config:
-        from_attributes = True
-
-
-class CharacterPresetsListResponse(BaseModel):
-    """キャラクタープリセット一覧レスポンス。"""
-
-    presets: List[CharacterPresetSummary]
-    active_id: Optional[int]
-
-
-# 統合設定レスポンス
-
-
 class FullSettingsResponse(BaseModel):
     """全設定統合レスポンス。"""
 
@@ -232,10 +60,10 @@ class FullSettingsResponse(BaseModel):
     exclude_keywords: List[str]
 
     # アクティブなLLMプリセット
-    llm_preset: Optional[LlmPresetResponse]
+    llm_preset: List["LlmPresetSettings"]
 
-    # アクティブなキャラクタープリセット
-    character_preset: Optional[CharacterPresetResponse]
+    # アクティブなEmbeddingプリセット
+    embedding_preset: List["EmbeddingPresetSettings"]
 
 
 class ActivateResponse(BaseModel):
@@ -243,3 +71,42 @@ class ActivateResponse(BaseModel):
 
     message: str
     restart_required: bool
+
+
+class LlmPresetSettings(BaseModel):
+    """設定一覧用LLMプリセット情報。"""
+
+    llm_preset_id: int
+    llm_preset_name: str
+    system_prompt: str
+    llm_api_key: Optional[str]
+    llm_model: str
+    reasoning_effort: Optional[str]
+    llm_base_url: Optional[str]
+    max_turns_window: int
+    max_tokens: int
+    image_model_api_key: Optional[str]
+    image_model: str
+    image_llm_base_url: Optional[str]
+    max_tokens_vision: int
+    image_timeout_seconds: int
+
+
+class EmbeddingPresetSettings(BaseModel):
+    """設定一覧用Embeddingプリセット情報。"""
+
+    embedding_preset_id: int
+    embedding_preset_name: str
+    embedding_model_api_key: Optional[str]
+    embedding_model: str
+    embedding_base_url: Optional[str]
+    embedding_dimension: int
+    similar_episodes_limit: int
+
+
+class FullSettingsUpdateRequest(BaseModel):
+    """全設定更新リクエスト。"""
+
+    exclude_keywords: Optional[List[str]] = None
+    llm_preset: Optional[List[LlmPresetSettings]] = None
+    embedding_preset: Optional[List[EmbeddingPresetSettings]] = None

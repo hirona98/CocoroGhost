@@ -166,7 +166,7 @@ REST API の初期仕様をまとめたものです。
 
 ---
 
-## 5. エピソード取得 API `/episodes`
+## 5. エピソード取得 API `/episodes` // FIX: 廃止
 
 記録済みエピソードの一覧を取得する。振り返り UI 等から利用する想定。
 
@@ -200,7 +200,7 @@ REST API の初期仕様をまとめたものです。
 
 ## 6. 設定管理 API
 
-### 6.1 全設定取得 `GET /settings`
+### 6.1 全設定値取得 `GET /settings`
 
 共通設定と、現在アクティブなプリセットの詳細をまとめて取得する。
 
@@ -212,37 +212,46 @@ REST API の初期仕様をまとめたものです。
 ```json
 {
   "exclude_keywords": ["パスワード", "銀行"],
-  "llm_preset": {
-    "id": 1,
-    "name": "default",
+  "llm_preset": [{
+    "llm_preset_id": 1,
+    "llm_preset_name": "default",
+    "system_prompt": "キャラクターのシステムプロンプト...",
     "llm_api_key": "sk-...",
     "llm_model": "gpt-4o",
-    "llm_base_url": null,
     "reasoning_effort": null,
+    "llm_base_url": null,
     "max_turns_window": 50,
-    "max_tokens_vision": 4096,
     "max_tokens": 4096,
+    "image_model_api_key": "sk-...-image",
+    "image_model": "gpt-4o-mini",
+    "image_llm_base_url": null,
+    "max_tokens_vision": 4096,
+    "image_timeout_seconds": 60
+  }],
+  "embedding_preset": [{
+    "embedding_preset_id": 1,
+    "embedding_preset_name": "default", // character_preset.memory_id だったもの
+    "embedding_model_api_key": "sk-...-embedding",
     "embedding_model": "text-embedding-3-small",
     "embedding_base_url": null,
     "embedding_dimension": 1536,
-    "image_model": "gpt-4o-mini",
-    "image_model_api_key": "sk-...-image",
-    "image_llm_base_url": null,
-    "image_timeout_seconds": 60,
-    "similar_episodes_limit": 5
-  },
-  "character_preset": {
-    "id": 1,
-    "name": "default",
-    "system_prompt": "キャラクターのシステムプロンプト...",
-    "memory_id": "default"
-  }
+    "similar_episodes_limit": 5,
+  }],
+  // "character_preset": { // FIX:廃止
+  //   "id": 1, // FIX:廃止
+  //   "name": "default", // FIX:廃止
+  //   "memory_id": "default" // FIX:移動
+  // }
 }
 ```
 
 ※ APIキーもレスポンスに含まれる（API以外の管理インタフェースなし）。
 
-### 6.2 共通設定更新 `PATCH /settings`
+### 6.2 全設定値設定 `POST /settings` // FIX: 追加
+
+
+
+### 6.2 共通設定更新 `PATCH /settings` // FIX:廃止
 
 共通設定（現在は `exclude_keywords` のみ）を更新する。
 
@@ -269,7 +278,7 @@ REST API の初期仕様をまとめたものです。
 
 ---
 
-## 7. LLMプリセット API
+## 7. LLMプリセット API // FIX:廃止
 
 ### 7.1 プリセット一覧取得 `GET /llm-presets`
 
