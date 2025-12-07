@@ -74,11 +74,7 @@ python -X utf8 run.py
 
 ## 設定管理
 
-### ハイブリッド設定方式
-
-cocoro_ghostは2つの設定管理方式を採用しています：
-
-#### 1. TOML設定（起動時必須）
+#### 1. 基本設定（起動時必須）
 
 `config/setting.toml` で以下を設定：
 
@@ -87,20 +83,10 @@ cocoro_ghostは2つの設定管理方式を採用しています：
 - `env`: 環境（dev/prod）
 - （初回のみ）LLM/Embedding設定を入れておくと default プリセットが自動生成される
 
-#### 2. プリセット設定（動的変更可能）
+#### 2. LLM設定
 
-設定DBに LLM プリセット・キャラクタープリセット・共通設定を保存し、API経由で切り替え可能：
+設定DBにLLMなどの設定を保持
 
-- **LLMプリセット**: llm_model / llm_base_url / reasoning_effort / max_tokens / max_tokens_vision / max_turns_window / embedding_model / embedding_api_key / embedding_base_url / embedding_dimension / image_model / image_model_api_key / image_llm_base_url / image_timeout_seconds / similar_episodes_limit など
-- **キャラクタープリセット**: system_prompt, memory_id
-- **共通設定**: exclude_keywords（エピソード保存除外キーワード）
-- APIキーはプリセット作成・更新時のみ指定し、取得系レスポンスには含まれません
-
-### プリセット機能
-
-複数のプリセットを名前付きで保存し、LLM設定とキャラクター設定を独立して切り替えられます（切り替え後は再起動が必要）：
-
-詳細は `docs/cocoro_ghost_api.md` を参照してください。
 
 ## 依存関係管理
 
