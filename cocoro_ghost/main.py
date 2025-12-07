@@ -13,11 +13,13 @@ from cocoro_ghost.logging_config import setup_logging
 
 
 security = HTTPBearer()
+logger = __import__("logging").getLogger(__name__)
 
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     token = get_config_store().config.token
     if credentials.credentials != token:
+        logger.warning("Authentication failed: invalid token")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
     return credentials.credentials
 

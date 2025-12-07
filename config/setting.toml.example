@@ -4,8 +4,8 @@
 #   - data/settings.db: 設定・プリセット
 #   - data/memory_{id}.db: 記憶データ
 
-# 必須設定
-token = "your-secret-token-here"
+# 必須設定（CocoroConsoleのBearer Token設定と一致させること）
+token = "cocoro_token"
 log_level = "INFO"
 env = "dev"
 
