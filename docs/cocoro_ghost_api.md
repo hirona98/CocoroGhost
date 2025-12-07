@@ -23,7 +23,7 @@ REST API の初期仕様をまとめたものです。
 ユーザーとの通常のテキスト会話を行い、その結果をエピソードとして記録する。
 
 - メソッド: `POST`
-- パス: `/chat`
+- パス: `/api/chat`
 
 ### リクエストボディ
 
@@ -62,7 +62,7 @@ REST API の初期仕様をまとめたものです。
 エピソードを生成する。
 
 - メソッド: `POST`
-- パス: `/notification`
+- パス: `/api/notification`
 
 ### リクエストボディ
 
@@ -100,7 +100,7 @@ REST API の初期仕様をまとめたものです。
 ユーザー向けの発話を生成する。
 
 - メソッド: `POST`
-- パス: `/meta_request`
+- パス: `/api/meta_request`
 
 ### リクエストボディ
 
@@ -136,7 +136,7 @@ REST API の初期仕様をまとめたものです。
 要約・内的思考・エピソード生成を行う。
 
 - メソッド: `POST`
-- パス: `/capture`
+- パス: `/api/capture`
 
 ### リクエストボディ
 
@@ -173,7 +173,7 @@ REST API の初期仕様をまとめたものです。
 共通設定と、現在アクティブなプリセットの詳細をまとめて取得する。
 
 - メソッド: `GET`, `POST`
-- パス: `/settings`
+- パス: `/api/settings`
 
 #### レスポンスボディ
 
@@ -210,12 +210,12 @@ REST API の初期仕様をまとめたものです。
 
 ---
 
-## 6. リアルタイムログ WebSocket `/logs/stream`
+## 6. リアルタイムログ WebSocket `/api/logs/stream`
 
 cocoro_ghost のログをリアルタイムで取得する。接続時に直近 500 件を送信し、その後は新しいログを随時送信する。
 
 - メソッド: `GET`（WebSocket）
-- パス: `/logs/stream`
+- パス: `/api/logs/stream`
 - 認証: `Authorization: Bearer <TOKEN>`（既存トークンと同じ）
 
 ### 接続後の流れ

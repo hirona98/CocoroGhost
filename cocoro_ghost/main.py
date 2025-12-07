@@ -84,12 +84,12 @@ def create_app() -> FastAPI:
     # 6. FastAPIアプリ作成
     app = FastAPI(title="CocoroGhost API")
 
-    app.include_router(chat.router, dependencies=[Depends(verify_token)])
-    app.include_router(notification.router, dependencies=[Depends(verify_token)])
-    app.include_router(meta_request.router, dependencies=[Depends(verify_token)])
-    app.include_router(capture.router, dependencies=[Depends(verify_token)])
-    app.include_router(settings.router, dependencies=[Depends(verify_token)])
-    app.include_router(logs.router)
+    app.include_router(chat.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(notification.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(meta_request.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(capture.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(settings.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(logs.router, prefix="/api")
 
     @app.get("/api/health")
     async def health():
