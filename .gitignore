@@ -1,4 +1,12 @@
 settings.local.json
+/tmp
+.serena
+/.vscode/launch.json
+
+# cocoro_ghost specific
+config/setting.toml
+data/
+check_sqlite.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
