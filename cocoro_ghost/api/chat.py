@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from cocoro_ghost import schemas
 from cocoro_ghost.deps import get_memory_db_dep, get_memory_manager
 from cocoro_ghost.memory import MemoryManager
 

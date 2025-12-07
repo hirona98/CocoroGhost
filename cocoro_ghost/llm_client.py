@@ -195,7 +195,6 @@ class LlmClient:
         kwargs = {
             "model": self.embedding_model,
             "input": texts,
-            "return_response_object": True,
         }
         if self.embedding_api_key:
             kwargs["api_key"] = self.embedding_api_key
