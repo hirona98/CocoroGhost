@@ -1,11 +1,56 @@
-"""LiteLLM ラッパー。"""
+"""LiteLLM ラッパー（Response API 対応）。"""
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, Generator, Iterable, List, Optional
 
 import litellm
+
+
+def _response_to_dict(resp: Any) -> Dict[str, Any]:
+    """LiteLLM Response をシリアライズ可能な dict に変換。"""
+    if hasattr(resp, "model_dump"):
+        return resp.model_dump()
+    if hasattr(resp, "dict"):
+        return resp.dict()
+    if hasattr(resp, "json"):
+        try:
+            return json.loads(resp.json())
+        except Exception:  # noqa: BLE001
+            pass
+    return dict(resp) if isinstance(resp, dict) else {"raw": str(resp)}
+
+
+def _first_choice_content(resp: Any) -> str:
+    """choices[0].message.content を取り出すユーティリティ。"""
+    try:
+        choice = resp.choices[0]
+        message = getattr(choice, "message", None) or choice["message"]
+        content = getattr(message, "content", None) or message["content"]
+        return content or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _delta_content(resp: Any) -> str:
+    """stream chunk から delta.content を取り出す。"""
+    try:
+        choice = resp.choices[0]
+        delta = getattr(choice, "delta", None) or choice.get("delta")
+        if not delta:
+            return ""
+        content = getattr(delta, "content", None) or delta.get("content")
+        if content is None:
+            return ""
+        # OpenAI 互換で content が list の場合もあるため統一
+        if isinstance(content, list):
+            return "".join([item.get("text", "") if isinstance(item, dict) else str(item) for item in content])
+        return str(content)
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 class LlmClient:
@@ -52,12 +97,15 @@ class LlmClient:
         max_tokens: Optional[int] = None,
         response_format: Optional[Dict] = None,
         timeout: Optional[int] = None,
+        stream: bool = False,
     ) -> Dict:
         """completion API呼び出し用のkwargsを構築。"""
         kwargs = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
+            "return_response_object": True,
+            "stream": stream,
         }
 
         if api_key:
@@ -77,18 +125,19 @@ class LlmClient:
 
         return kwargs
 
-    def generate_reply(
+    def generate_reply_response(
         self,
         system_prompt: str,
         conversation: List[Dict[str, str]],
         temperature: float = 0.7,
-    ) -> str:
-        """会話応答を生成。"""
+        stream: bool = False,
+    ):
+        """会話応答を生成（Response オブジェクト or ストリーム）。"""
         messages = [{"role": "system", "content": system_prompt}]
         for m in conversation:
             messages.append({"role": m["role"], "content": m["content"]})
 
-        self.logger.info("LLM reply", extra={"model": self.model})
+        self.logger.info("LLM reply", extra={"model": self.model, "stream": stream})
 
         kwargs = self._build_completion_kwargs(
             model=self.model,
@@ -97,18 +146,18 @@ class LlmClient:
             api_key=self.api_key,
             base_url=self.llm_base_url,
             max_tokens=self.max_tokens,
+            stream=stream,
         )
 
-        resp = litellm.completion(**kwargs)
-        return resp["choices"][0]["message"]["content"]
+        return litellm.completion(**kwargs)
 
-    def generate_reflection(
+    def generate_reflection_response(
         self,
         system_prompt: str,
         context_text: str,
         image_descriptions: Optional[List[str]] = None,
-    ) -> dict:
-        """内的思考（リフレクション）を生成。"""
+    ):
+        """内的思考（リフレクション）を生成（Response オブジェクト）。"""
         context_block = context_text
         if image_descriptions:
             context_block += "\n" + "\n".join(image_descriptions)
@@ -130,8 +179,7 @@ class LlmClient:
             response_format={"type": "json_object"},
         )
 
-        resp = litellm.completion(**kwargs)
-        return resp["choices"][0]["message"]["content"]
+        return litellm.completion(**kwargs)
 
     def generate_embedding(
         self,
@@ -147,6 +195,7 @@ class LlmClient:
         kwargs = {
             "model": self.embedding_model,
             "input": texts,
+            "return_response_object": True,
         }
         if self.embedding_api_key:
             kwargs["api_key"] = self.embedding_api_key
@@ -154,12 +203,13 @@ class LlmClient:
             kwargs["api_base"] = self.embedding_base_url
 
         resp = litellm.embedding(**kwargs)
-        return [item["embedding"] for item in resp["data"]]
+        try:
+            return [item["embedding"] for item in resp["data"]]
+        except Exception:  # noqa: BLE001
+            return [item.embedding for item in resp.data]
 
     def generate_image_summary(self, images: List[bytes]) -> List[str]:
         """画像の要約を生成。"""
-        import base64
-
         summaries: List[str] = []
         for image_bytes in images:
             b64 = base64.b64encode(image_bytes).decode("ascii")
@@ -185,6 +235,29 @@ class LlmClient:
             )
 
             resp = litellm.completion(**kwargs)
-            summaries.append(resp["choices"][0]["message"]["content"])
+            summaries.append(_first_choice_content(resp))
 
         return summaries
+
+    def response_to_dict(self, resp: Any) -> Dict[str, Any]:
+        return _response_to_dict(resp)
+
+    def response_content(self, resp: Any) -> str:
+        return _first_choice_content(resp)
+
+    def stream_delta_chunks(self, resp_stream: Iterable[Any]) -> Generator[str, None, None]:
+        """LiteLLM の streaming Response から delta.content を逐次抽出。"""
+        for chunk in resp_stream:
+            delta = _delta_content(chunk)
+            if delta:
+                yield delta
+
+    # 既存コード互換のためのラッパー（文字列を返す）
+    def generate_reflection(
+        self,
+        system_prompt: str,
+        context_text: str,
+        image_descriptions: Optional[List[str]] = None,
+    ) -> str:
+        resp = self.generate_reflection_response(system_prompt, context_text, image_descriptions)
+        return self.response_content(resp)

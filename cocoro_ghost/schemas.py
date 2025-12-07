@@ -14,11 +14,6 @@ class ChatRequest(BaseModel):
     image_base64: Optional[str] = None  # BASE64エンコードされた画像データ
 
 
-class ChatResponse(BaseModel):
-    reply_text: str
-    episode_id: int
-
-
 class NotificationRequest(BaseModel):
     source_system: str
     title: str
@@ -27,7 +22,7 @@ class NotificationRequest(BaseModel):
 
 
 class NotificationResponse(BaseModel):
-    speak_text: str
+    llm_response: dict
     episode_id: int
 
 
@@ -38,7 +33,7 @@ class MetaRequestRequest(BaseModel):
 
 
 class MetaRequestResponse(BaseModel):
-    speak_text: str
+    llm_response: dict
     episode_id: int
 
 

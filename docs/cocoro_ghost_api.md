@@ -1,29 +1,51 @@
-# cocoro_ghost API 仕様（初期案）
+# cocoro_ghost API 仕様（LiteLLM Response API 版）
 
-このドキュメントは、CocoroAI のコアコンポーネントである cocoro_ghost が提供する
-REST API の初期仕様をまとめたものです。
+LiteLLM の Response API を前提にした cocoro_ghost の API 仕様。LLM 呼び出し結果は OpenAI 互換の Response 形式で返却し、従来のプレーン文字列レスポンスは提供しない。
 
 ## 共通事項
 
 - ベース URL: 例 `https://example.com/api/ghost`
 - 認証:
-  - すべてのエンドポイントで、固定トークンによる認証を行う。
-  - HTTP ヘッダ `Authorization: Bearer <TOKEN>` を必須とする（初期実装想定）。
-- リクエスト／レスポンス:
-  - `Content-Type: application/json`
-  - 日時は ISO 8601（UTC）文字列で扱う。
-- エラーレスポンス:
-  - `/chat` では LLM レート制限・通信失敗などのエラーが発生した場合、HTTP 200 で `reply_text` にエラーメッセージを入れて返す（フォールバックリトライなし）。
-  - `/chat` 以外のエンドポイントで内部エラーが発生した場合は 5xx を返し、特別なフォールバックは行わない。
+  - すべてのエンドポイントで固定トークン認証。
+  - HTTP ヘッダ `Authorization: Bearer <TOKEN>` が必須。
+- リクエスト/レスポンス: `Content-Type: application/json`
+- 日時: ISO 8601（UTC）
+- LLM レスポンス: OpenAI 互換の `chat.completion` Response オブジェクト（例は後述）。`return_response_object=True` で得られる形をそのまま返す。
+- エラー: LLM 呼び出し失敗時は 5xx。業務エラーは 4xx/5xx を使い、成功時にエラー文を埋め込む動作は行わない。
 
----
+### LLM レスポンス例（非ストリーム）
 
-## 1. 通常会話 API `/chat`
+```json
+{
+  "id": "cmpl-xyz",
+  "object": "chat.completion",
+  "created": 1730188860,
+  "model": "gpt-4o",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "今日は少し疲れてるみたい。無理しないでね。"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 123,
+    "completion_tokens": 45,
+    "total_tokens": 168
+  }
+}
+```
 
-ユーザーとの通常のテキスト会話を行い、その結果をエピソードとして記録する。
+## 1. 通常会話 API `/chat`（SSE ストリーミングのみ）
+
+ユーザーとの会話をストリーミングで返しつつ、完了時にエピソードを作成する。
 
 - メソッド: `POST`
 - パス: `/api/chat`
+- 応答: `text/event-stream`（SSE）
 
 ### リクエストボディ
 
@@ -36,30 +58,23 @@ REST API の初期仕様をまとめたものです。
 }
 ```
 
-- `user_id`: 将来的な拡張用。初期は `"default"` 固定のみを受け付ける。
-  将来マルチユーザー対応を行う場合も、既存 API との互換を維持するのではなく、必要に応じて非互換な変更（スキーマ変更など）を行う前提とする。
-- `text`: ユーザーの発話内容。
-- `context_hint`: 任意。時間帯や状況のヒントがあれば渡す。
-- `image_base64`: 任意。BASE64エンコードされた画像データ。
+- `user_id`: 将来拡張用。初期は `"default"` のみ。
+- `text`: ユーザー発話。
+- `context_hint`: 任意。状況ヒント。
+- `image_base64`: 任意。BASE64 画像。
 
-### レスポンスボディ
+### ストリーミング仕様（SSE）
 
-```json
-{
-  "reply_text": "今日は少しお疲れみたいだね。何かあった？",
-  "episode_id": 123
-}
-```
-
-- `reply_text`: CocoroAI からユーザーへ返すメッセージ。
-- `episode_id`: 作成されたエピソードの ID。
-
----
+- 同期レスポンスは廃止。常に SSE で返す。
+- フォーマット:
+  - 生成中: `data: {"type":"token","delta":"..."}\n\n`
+  - 完了: `data: {"type":"done","episode_id":123,"reply_text":"..."}\n\n`
+  - エラー: `data: {"type":"error","message":"..."}\n\n`
+- クライアントは EventSource などで購読し、`done` イベントで最終テキストと episode_id を取得する。
 
 ## 2. 通知受信 API `/notification`
 
-外部システム（メーラーなど）からの通知を受け取り、ユーザーへ伝えるメッセージと
-エピソードを生成する。
+外部通知を受け取り、ユーザーへ伝えるメッセージとエピソードを生成する。
 
 - メソッド: `POST`
 - パス: `/api/notification`
@@ -75,29 +90,25 @@ REST API の初期仕様をまとめたものです。
 }
 ```
 
-- `source_system`: 通知元システム（例: `mailer`, `calendar`, `system`）。
-- `title`: 通知のタイトルや概要。
-- `body`: 通知内容のサマリ。
-- `image_base64`: 任意。BASE64エンコードされた画像データ。
+- `source_system`: 通知元。
+- `title`: 通知タイトル。
+- `body`: 通知本文サマリ。
+- `image_base64`: 任意。BASE64 画像。
 
 ### レスポンスボディ
 
 ```json
 {
-  "speak_text": "メーラーから通知がありました。XXさんからメールが来ています。大事そうな内容だね。",
-  "episode_id": 124
+  "episode_id": 124,
+  "llm_response": {
+    "...": "OpenAI 互換の chat.completion Response（ユーザーに伝えるメッセージ）"
+  }
 }
 ```
 
-- `speak_text`: キャラクターがユーザーに伝えるべきメッセージ。
-- `episode_id`: 作成されたエピソードの ID。
-
----
-
 ## 3. メタ要求 API `/meta_request`
 
-キャラクターに対して「こういう説明・振る舞いをしてほしい」というメタレベルの指示を渡し、
-ユーザー向けの発話を生成する。
+キャラクターへのメタ指示と本文を渡し、ユーザー向け発話を生成する。
 
 - メソッド: `POST`
 - パス: `/api/meta_request`
@@ -112,28 +123,24 @@ REST API の初期仕様をまとめたものです。
 }
 ```
 
-- `instruction`: キャラクターへの指示文。
-- `payload_text`: 指示の対象となる本文（ニュース、記事、ログなど）。
-- `image_base64`: 任意。BASE64エンコードされた画像データ。
+- `instruction`: 指示文。
+- `payload_text`: 対象本文。
+- `image_base64`: 任意。BASE64 画像。
 
 ### レスポンスボディ
 
 ```json
 {
-  "speak_text": "ここ1時間でこんなニュースがあったよ。ざっくり言うと……わたしはこう感じた。",
-  "episode_id": 125
+  "episode_id": 125,
+  "llm_response": {
+    "...": "OpenAI 互換の chat.completion Response（ユーザーへ話す内容）"
+  }
 }
 ```
 
-- `speak_text`: ユーザーに対して話すべきメッセージ。
-- `episode_id`: 作成されたエピソードの ID。
-
----
-
 ## 4. 画像キャプチャ API `/capture`
 
-デスクトップやカメラから取得した画像キャプチャを cocoro_ghost に通知し、
-要約・内的思考・エピソード生成を行う。
+デスクトップ/カメラの画像を受け取り、要約・内的思考・エピソードを生成する。
 
 - メソッド: `POST`
 - パス: `/api/capture`
@@ -148,9 +155,9 @@ REST API の初期仕様をまとめたものです。
 }
 ```
 
-- `capture_type`: `desktop` または `camera`。
-- `image_base64`: BASE64エンコードされた画像データ。
-- `context_text`: 任意。シーンに関する補足テキスト。
+- `capture_type`: `desktop` or `camera`。
+- `image_base64`: BASE64 画像（必須）。
+- `context_text`: 任意。文脈補足。
 
 ### レスポンスボディ
 
@@ -161,54 +168,51 @@ REST API の初期仕様をまとめたものです。
 }
 ```
 
-- `episode_id`: 作成されたエピソードの ID。
-- `stored`: エピソードが保存されたかどうか。
+- 画像要約・反省（reflection）など内部で生成する LLM 呼び出しは Response 形式で保持するが、API レスポンスとしてはエピソード ID のみ返す。
 
----
+## 5. 設定管理 API `/settings`
 
-## 5. 設定管理 API
-
-### 5.1 全設定値取得 `GET,POST /settings`
-
-共通設定と、現在アクティブなプリセットの詳細をまとめて取得する。
+共通設定とアクティブなプリセットを取得する。
 
 - メソッド: `GET`, `POST`
 - パス: `/api/settings`
 
-#### レスポンスボディ
+### レスポンスボディ
 
 ```json
 {
   "exclude_keywords": ["パスワード", "銀行"],
-  "llm_preset": [{
-    "llm_preset_id": 1,
-    "llm_preset_name": "default",
-    "system_prompt": "キャラクターのシステムプロンプト...",
-    "llm_api_key": "sk-...",
-    "llm_model": "gpt-4o",
-    "reasoning_effort": null,
-    "llm_base_url": null,
-    "max_turns_window": 50,
-    "max_tokens": 4096,
-    "image_model_api_key": "sk-...-image",
-    "image_model": "gpt-4o-mini",
-    "image_llm_base_url": null,
-    "max_tokens_vision": 4096,
-    "image_timeout_seconds": 60
-  }],
-  "embedding_preset": [{
-    "embedding_preset_id": 1,
-    "embedding_preset_name": "default",
-    "embedding_model_api_key": "sk-...-embedding",
-    "embedding_model": "text-embedding-3-small",
-    "embedding_base_url": null,
-    "embedding_dimension": 1536,
-    "similar_episodes_limit": 5,
-  }]
+  "llm_preset": [
+    {
+      "llm_preset_id": 1,
+      "llm_preset_name": "default",
+      "system_prompt": "キャラクターのシステムプロンプト...",
+      "llm_api_key": "sk-...",
+      "llm_model": "gpt-4o",
+      "reasoning_effort": null,
+      "llm_base_url": null,
+      "max_turns_window": 50,
+      "max_tokens": 4096,
+      "image_model_api_key": "sk-...-image",
+      "image_model": "gpt-4o-mini",
+      "image_llm_base_url": null,
+      "max_tokens_vision": 4096,
+      "image_timeout_seconds": 60
+    }
+  ],
+  "embedding_preset": [
+    {
+      "embedding_preset_id": 1,
+      "embedding_preset_name": "default",
+      "embedding_model_api_key": "sk-...-embedding",
+      "embedding_model": "text-embedding-3-small",
+      "embedding_base_url": null,
+      "embedding_dimension": 1536,
+      "similar_episodes_limit": 5
+    }
+  ]
 }
 ```
-
----
 
 ## 6. リアルタイムログ WebSocket `/api/logs/stream`
 
@@ -216,21 +220,16 @@ cocoro_ghost のログをリアルタイムで取得する。接続時に直近 
 
 - メソッド: `GET`（WebSocket）
 - パス: `/api/logs/stream`
-- 認証: `Authorization: Bearer <TOKEN>`（既存トークンと同じ）
+- 認証: `Authorization: Bearer <TOKEN>`
 
 ### 接続後の流れ
 
-1. サーバーが接続を受け付け、直近 500 件のログを送信する。
-2. 以降はリアルタイムでログを 1 件ずつ送信する。
-3. クライアントからの送信は不要（受信専用）。
+1. 接続時に直近 500 件のログを送信。
+2. 以降は新規ログを 1 件ずつ送信。
+3. クライアント送信は不要（受信専用）。
 
 ### メッセージ形式（テキスト）
 
 ```json
 {"ts": "2025-01-01T12:00:00+00:00", "level": "INFO", "logger": "cocoro_ghost.chat", "msg": "LLM呼び出し開始"}
 ```
-
-- `ts`: UTC 時刻（ISO 8601）
-- `level`: ログレベル
-- `logger`: ロガー名
-- `msg`: メッセージ（改行はスペースに変換済み）

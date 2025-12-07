@@ -7,7 +7,7 @@ import json
 import logging
 import threading
 from datetime import datetime
-from typing import List, Optional
+from typing import Generator, List, Optional
 
 from fastapi import BackgroundTasks
 from sqlalchemy.orm import Session
@@ -42,53 +42,79 @@ class MemoryManager:
     def __init__(self, llm_client: LlmClient, config_store: ConfigStore):
         self.llm_client = llm_client
         self.config_store = config_store
+        self._sse_prefix = "data: "
 
-    def handle_chat(self, db: Session, request: schemas.ChatRequest, background_tasks: Optional[BackgroundTasks] = None) -> schemas.ChatResponse:
-        try:
-            logger.info("chat request", extra={"user_id": request.user_id})
-            image_summary = None
-            if request.image_base64:
-                try:
-                    image_bytes = _decode_base64_image(request.image_base64)
-                    image_summary = self.llm_client.generate_image_summary([image_bytes])[0]
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("画像要約に失敗しました", exc_info=exc)
-                    image_summary = "画像要約に失敗しました"
-
-            system_prompt = self.config_store.config.system_prompt
-            conversation = [{"role": "user", "content": request.text}]
-            if image_summary:
-                conversation.append({"role": "system", "content": f"画像要約: {image_summary}"})
-
-            # 類似エピソード検索用の一時埋め込みを生成し、コンテキストを付与
-            similar_context = None
+    def _build_chat_context(self, db: Session, request: schemas.ChatRequest) -> tuple[Optional[str], Optional[str]]:
+        """画像要約と類似エピソードコンテキストを準備。"""
+        image_summary = None
+        if request.image_base64:
             try:
-                search_embed = self.llm_client.generate_embedding(
-                    ["\n".join(filter(None, [request.text, request.context_hint, image_summary]))]
-                )[0]
-                similar_rows = search_similar_episodes(db, search_embed, limit=self.config_store.config.similar_episodes_limit)
-                if similar_rows:
-                    episode_ids = [row.episode_id for row in similar_rows]
-                    episodes = (
-                        db.query(models.Episode)
-                        .filter(models.Episode.id.in_(episode_ids))
-                        .all()
-                    )
-                    parts = []
-                    for ep in episodes:
-                        parts.append(
-                            f"- {ep.occurred_at.isoformat()} {ep.topic_tags or ''} {ep.emotion_label or ''} {ep.user_text or ''} {ep.reply_text or ''}"
-                        )
-                    similar_context = "\n".join(parts)
+                image_bytes = _decode_base64_image(request.image_base64)
+                image_summary = self.llm_client.generate_image_summary([image_bytes])[0]
             except Exception as exc:  # noqa: BLE001
-                logger.warning("類似エピソード検索に失敗しました", exc_info=exc)
+                logger.warning("画像要約に失敗しました", exc_info=exc)
+                image_summary = "画像要約に失敗しました"
 
-            reply_text = self.llm_client.generate_reply(
+        # 類似エピソード検索用のコンテキスト
+        similar_context = None
+        try:
+            search_embed = self.llm_client.generate_embedding(
+                ["\n".join(filter(None, [request.text, request.context_hint, image_summary]))]
+            )[0]
+            similar_rows = search_similar_episodes(db, search_embed, limit=self.config_store.config.similar_episodes_limit)
+            if similar_rows:
+                episode_ids = [row.episode_id for row in similar_rows]
+                episodes = (
+                    db.query(models.Episode)
+                    .filter(models.Episode.id.in_(episode_ids))
+                    .all()
+                )
+                parts = []
+                for ep in episodes:
+                    parts.append(
+                        f"- {ep.occurred_at.isoformat()} {ep.topic_tags or ''} {ep.emotion_label or ''} {ep.user_text or ''} {ep.reply_text or ''}"
+                    )
+                similar_context = "\n".join(parts)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("類似エピソード検索に失敗しました", exc_info=exc)
+
+        return image_summary, similar_context
+
+    def stream_chat(
+        self,
+        db: Session,
+        request: schemas.ChatRequest,
+        background_tasks: Optional[BackgroundTasks] = None,
+    ) -> Generator[str, None, None]:
+        """StreamingResponse 用の SSE 出力を生成。"""
+        logger.info("chat request (stream)", extra={"user_id": request.user_id})
+        image_summary, similar_context = self._build_chat_context(db, request)
+
+        system_prompt = self.config_store.config.system_prompt
+        conversation = [{"role": "user", "content": request.text}]
+        if image_summary:
+            conversation.append({"role": "system", "content": f"画像要約: {image_summary}"})
+        if similar_context:
+            conversation.append({"role": "system", "content": f"最近の関連エピソード:\n{similar_context}"})
+
+        try:
+            resp_stream = self.llm_client.generate_reply_response(
                 system_prompt=system_prompt,
-                conversation=conversation if not similar_context else conversation + [{"role": "system", "content": f"最近の関連エピソード:\n{similar_context}"}],
+                conversation=conversation,
+                stream=True,
             )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("stream chat start failed", exc_info=exc)
+            yield self._sse({"type": "error", "message": str(exc)})
+            return
 
-            # 先にエピソードのベースを保存し、後続の重処理はバックグラウンドに回す
+        collected: List[str] = []
+        try:
+            for delta in self.llm_client.stream_delta_chunks(resp_stream):
+                collected.append(delta)
+                yield self._sse({"type": "token", "delta": delta})
+
+            reply_text = "".join(collected)
             episode_id = self._create_episode(
                 db,
                 occurred_at=datetime.utcnow(),
@@ -111,12 +137,22 @@ class MemoryManager:
                     image_summary,
                 )
             else:
-                self._process_chat_background(request.user_id, episode_id, request.text, reply_text, request.context_hint, image_summary)
+                self._process_chat_background(
+                    request.user_id,
+                    episode_id,
+                    request.text,
+                    reply_text,
+                    request.context_hint,
+                    image_summary,
+                )
 
-            return schemas.ChatResponse(reply_text=reply_text, episode_id=episode_id)
+            yield self._sse({"type": "done", "episode_id": episode_id, "reply_text": reply_text})
         except Exception as exc:  # noqa: BLE001
-            logger.error("chat processing failed", exc_info=exc)
-            return schemas.ChatResponse(reply_text=f"LLMエラー: {exc}", episode_id=-1)
+            logger.error("chat stream failed", exc_info=exc)
+            yield self._sse({"type": "error", "message": str(exc)})
+
+    def _sse(self, payload: dict) -> str:
+        return f"{self._sse_prefix}{json.dumps(payload, ensure_ascii=False)}\n\n"
 
     def handle_notification(self, db: Session, request: schemas.NotificationRequest) -> schemas.NotificationResponse:
         image_summary = None
@@ -131,7 +167,8 @@ class MemoryManager:
         system_prompt = prompts.get_notification_prompt()
         base_text = f"{request.source_system}: {request.title}\n{request.body}"
         conversation = [{"role": "user", "content": base_text}]
-        speak_text = self.llm_client.generate_reply(system_prompt=system_prompt, conversation=conversation)
+        speak_resp = self.llm_client.generate_reply_response(system_prompt=system_prompt, conversation=conversation)
+        speak_text = self.llm_client.response_content(speak_resp)
 
         reflection = generate_reflection(
             self.llm_client,
@@ -152,7 +189,10 @@ class MemoryManager:
             embedding=embedding,
             image_summary=image_summary,
         )
-        return schemas.NotificationResponse(speak_text=speak_text, episode_id=episode_id)
+        return schemas.NotificationResponse(
+            llm_response=self.llm_client.response_to_dict(speak_resp),
+            episode_id=episode_id,
+        )
 
     def handle_meta_request(self, db: Session, request: schemas.MetaRequestRequest) -> schemas.MetaRequestResponse:
         image_summary = None
@@ -167,7 +207,8 @@ class MemoryManager:
         system_prompt = prompts.get_notification_prompt()
         base_text = f"instruction: {request.instruction}\npayload: {request.payload_text}"
         conversation = [{"role": "user", "content": base_text}]
-        speak_text = self.llm_client.generate_reply(system_prompt=system_prompt, conversation=conversation)
+        speak_resp = self.llm_client.generate_reply_response(system_prompt=system_prompt, conversation=conversation)
+        speak_text = self.llm_client.response_content(speak_resp)
 
         reflection = generate_reflection(
             self.llm_client,
@@ -188,7 +229,10 @@ class MemoryManager:
             embedding=embedding,
             image_summary=image_summary,
         )
-        return schemas.MetaRequestResponse(speak_text=speak_text, episode_id=episode_id)
+        return schemas.MetaRequestResponse(
+            llm_response=self.llm_client.response_to_dict(speak_resp),
+            episode_id=episode_id,
+        )
 
     def handle_capture(self, db: Session, request: schemas.CaptureRequest) -> schemas.CaptureResponse:
         cfg = self.config_store.config
