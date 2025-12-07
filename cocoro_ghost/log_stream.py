@@ -65,6 +65,10 @@ class _QueueHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - simple passthrough
         try:
+            # /api/logs/stream に関するアクセスログは配信しない
+            msg = record.getMessage()
+            if "logs/stream" in msg:
+                return
             event = _record_to_event(record)
             self.loop.call_soon_threadsafe(self.queue.put_nowait, event)
         except Exception:  # pragma: no cover - logging safety net
@@ -80,7 +84,13 @@ def install_log_handler(loop: asyncio.AbstractEventLoop) -> None:
     _log_queue = asyncio.Queue()
     handler = _QueueHandler(_log_queue, loop)
     handler.setLevel(logging.getLogger().level)
-    logging.getLogger().addHandler(handler)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+
+    # uvicorn系ロガーは propagate=False なので個別にハンドラを付与する
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logging.getLogger(name).addHandler(handler)
+
     _handler_installed = True
     logger.info("log stream handler installed")
 
