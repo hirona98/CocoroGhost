@@ -40,7 +40,7 @@ def create_app() -> FastAPI:
         load_active_character_preset,
         load_active_llm_preset,
         load_global_settings,
-        migrate_toml_to_v2_if_needed,
+        ensure_initial_settings,
         settings_session_scope,
     )
 
@@ -51,9 +51,9 @@ def create_app() -> FastAPI:
     # 2. 設定DB初期化
     init_settings_db()
 
-    # 3. マイグレーション（旧SettingPreset -> 新テーブル or TOML -> 新テーブル）
+    # 3. 初期設定レコードの作成
     with settings_session_scope() as session:
-        migrate_toml_to_v2_if_needed(session, toml_config)
+        ensure_initial_settings(session, toml_config)
 
     # 4. アクティブなプリセットを読み込み
     with settings_session_scope() as session:

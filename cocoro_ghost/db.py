@@ -191,11 +191,11 @@ def search_similar_episodes(session: Session, query_embedding: list[float], limi
     return rows
 
 
-# --- マイグレーション ---
+# --- 初期設定作成 ---
 
 
-def migrate_toml_to_v2_if_needed(session: Session, toml_config) -> None:
-    """TOMLからv2テーブルへの初回マイグレーション（データが空の場合）。"""
+def ensure_initial_settings(session: Session, toml_config) -> None:
+    """設定DBに必要な初期レコードが無ければ作成する。"""
     from cocoro_ghost import models
     from cocoro_ghost.prompts import CHARACTER_SYSTEM_PROMPT
 
