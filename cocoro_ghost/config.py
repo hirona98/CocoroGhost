@@ -25,7 +25,7 @@ class Config:
     llm_api_key: str = ""
     llm_model: str = ""
     embedding_model: str = ""
-    embedding_dimension: int = 1536
+    embedding_dimension: int = 3072
     image_model: str = ""
     image_timeout_seconds: int = 60
     exclude_keywords: List[str] = field(default_factory=list)
@@ -127,7 +127,7 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
         llm_api_key=data.get("llm_api_key", ""),
         llm_model=data.get("llm_model", ""),
         embedding_model=data.get("embedding_model", ""),
-        embedding_dimension=int(data.get("embedding_dimension", 1536)),
+        embedding_dimension=int(data.get("embedding_dimension", 3072)),
         image_model=data.get("image_model", ""),
         image_timeout_seconds=int(data.get("image_timeout_seconds", 60)),
         exclude_keywords=list(data.get("exclude_keywords", [])),

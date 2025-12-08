@@ -207,7 +207,7 @@ LiteLLM の Response API を前提にした cocoro_ghost の API 仕様。LLM �
       "embedding_model_api_key": "sk-...-embedding",
       "embedding_model": "text-embedding-3-small",
       "embedding_base_url": null,
-      "embedding_dimension": 1536,
+      "embedding_dimension": 3072,
       "similar_episodes_limit": 5
     }
   ]

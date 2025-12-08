@@ -199,57 +199,74 @@ def migrate_toml_to_v2_if_needed(session: Session, toml_config) -> None:
     from cocoro_ghost import models
     from cocoro_ghost.prompts import CHARACTER_SYSTEM_PROMPT
 
-    # 既にGlobalSettingsがあればスキップ
+    # 既にアクティブなプリセットがあれば何もしない
     global_settings = session.query(models.GlobalSettings).first()
-    if global_settings is not None:
+    if (
+        global_settings is not None
+        and global_settings.active_llm_preset_id is not None
+        and global_settings.active_character_preset_id is not None
+    ):
         return
 
-    # TOMLから新規作成
-    if not toml_config.llm_api_key or not toml_config.llm_model:
-        logger.warning("TOMLにLLM設定が無いため、空のGlobalSettingsのみ作成します")
+    logger.info("設定DBの初期化を行います（TOMLのLLM設定は使用しません）")
+
+    # GlobalSettingsの用意
+    if global_settings is None:
         global_settings = models.GlobalSettings(
             exclude_keywords=json.dumps(toml_config.exclude_keywords or [])
         )
         session.add(global_settings)
-        session.commit()
-        return
+        session.flush()
+    elif not global_settings.exclude_keywords:
+        global_settings.exclude_keywords = json.dumps(toml_config.exclude_keywords or [])
 
-    logger.info("TOML設定からv2テーブルを初期化します")
+    # LlmPresetの用意（存在しない/アクティブでない場合は空のdefaultを作成）
+    llm_preset = None
+    if global_settings.active_llm_preset_id is not None:
+        llm_preset = (
+            session.query(models.LlmPreset).filter_by(id=global_settings.active_llm_preset_id).first()
+        )
+    if llm_preset is None:
+        llm_preset = session.query(models.LlmPreset).first()
+    if llm_preset is None:
+        logger.warning("LLMプリセットが無いため、空の default プリセットを作成します")
+        llm_preset = models.LlmPreset(
+            name="default",
+            llm_api_key="",
+            llm_model="unset",
+            embedding_model="unset",
+            embedding_api_key=None,
+            embedding_dimension=toml_config.embedding_dimension,
+            image_model="unset",
+            image_timeout_seconds=toml_config.image_timeout_seconds,
+            similar_episodes_limit=toml_config.similar_episodes_limit,
+        )
+        session.add(llm_preset)
+        session.flush()
 
-    # LlmPreset作成
-    llm_preset = models.LlmPreset(
-        name="default",
-        llm_api_key=toml_config.llm_api_key,
-        llm_model=toml_config.llm_model,
-        embedding_model=toml_config.embedding_model,
-        embedding_api_key=toml_config.llm_api_key,
-        embedding_dimension=toml_config.embedding_dimension,
-        image_model=toml_config.image_model,
-        image_timeout_seconds=toml_config.image_timeout_seconds,
-        similar_episodes_limit=toml_config.similar_episodes_limit,
-    )
-    session.add(llm_preset)
-    session.flush()
+    # CharacterPresetの用意（存在しない/アクティブでない場合はdefaultを作成）
+    char_preset = None
+    if global_settings.active_character_preset_id is not None:
+        char_preset = (
+            session.query(models.CharacterPreset).filter_by(id=global_settings.active_character_preset_id).first()
+        )
+    if char_preset is None:
+        char_preset = session.query(models.CharacterPreset).first()
+    if char_preset is None:
+        char_preset = models.CharacterPreset(
+            name="default",
+            system_prompt=toml_config.character_prompt or CHARACTER_SYSTEM_PROMPT,
+            memory_id="default",
+        )
+        session.add(char_preset)
+        session.flush()
 
-    # CharacterPreset作成
-    char_preset = models.CharacterPreset(
-        name="default",
-        system_prompt=toml_config.character_prompt or CHARACTER_SYSTEM_PROMPT,
-        memory_id="default",
-    )
-    session.add(char_preset)
-    session.flush()
+    if global_settings.active_llm_preset_id is None:
+        global_settings.active_llm_preset_id = llm_preset.id
+    if global_settings.active_character_preset_id is None:
+        global_settings.active_character_preset_id = char_preset.id
 
-    # GlobalSettings作成
-    global_settings = models.GlobalSettings(
-        exclude_keywords=json.dumps(toml_config.exclude_keywords or []),
-        active_llm_preset_id=llm_preset.id,
-        active_character_preset_id=char_preset.id,
-    )
-    session.add(global_settings)
     session.commit()
-
-    logger.info("TOML -> v2 マイグレーション完了")
 
 
 def load_global_settings(session: Session):
