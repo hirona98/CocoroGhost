@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 @router.get("/settings", response_model=schemas.FullSettingsResponse)
-async def get_settings(
+def get_settings(
     db: Session = Depends(get_settings_db_dep),
 ):
     """全設定を取得（GlobalSettings + アクティブなプリセット情報）。"""
@@ -72,7 +72,7 @@ async def get_settings(
 
 
 @router.post("/settings", response_model=schemas.FullSettingsResponse)
-async def update_settings(
+def update_settings(
     request: schemas.FullSettingsUpdateRequest,
     db: Session = Depends(get_settings_db_dep),
 ):
@@ -125,4 +125,4 @@ async def update_settings(
     db.commit()
 
     # 最新状態を返す
-    return await get_settings(db=db)
+    return get_settings(db=db)

@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 @router.post("/notification", response_model=schemas.NotificationResponse)
-async def notification(
+def notification(
     request: schemas.NotificationRequest,
     db: Session = Depends(get_memory_db_dep),
     memory_manager: MemoryManager = Depends(get_memory_manager),

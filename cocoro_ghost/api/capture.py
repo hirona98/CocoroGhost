@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 @router.post("/capture", response_model=schemas.CaptureResponse)
-async def capture(
+def capture(
     request: schemas.CaptureRequest,
     db: Session = Depends(get_memory_db_dep),
     memory_manager: MemoryManager = Depends(get_memory_manager),

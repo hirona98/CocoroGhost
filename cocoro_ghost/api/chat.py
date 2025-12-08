@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 @router.post("/chat")
-async def chat(
+def chat(
     request: schemas.ChatRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_memory_db_dep),

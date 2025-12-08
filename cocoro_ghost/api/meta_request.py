@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 @router.post("/meta_request", response_model=schemas.MetaRequestResponse)
-async def meta_request(
+def meta_request(
     request: schemas.MetaRequestRequest,
     db: Session = Depends(get_memory_db_dep),
     memory_manager: MemoryManager = Depends(get_memory_manager),
