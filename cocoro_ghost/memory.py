@@ -76,7 +76,11 @@ class MemoryManager:
                     )
                 similar_context = "\n".join(parts)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("類似エピソード検索に失敗しました", exc_info=exc)
+            import sqlite3
+            if isinstance(exc.__cause__, sqlite3.OperationalError) and "Dimension mismatch" in str(exc.__cause__):
+                logger.error("Embeddingモデルの次元数の不一致(読み込みエラー): DBに保存されたベクトルと現在のEmbeddingモデルの次元数が異なります")
+            else:
+                logger.warning("類似エピソード検索に失敗しました", exc_info=exc)
 
         return image_summary, similar_context
 
@@ -376,5 +380,13 @@ class MemoryManager:
             db.add(episode)
             db.commit()
             self._update_persons(db, episode.id, reflection.persons)
-            upsert_episode_embedding(db, episode.id, embedding)
+            try:
+                upsert_episode_embedding(db, episode.id, embedding)
+            except Exception as exc:  # noqa: BLE001
+                import sqlite3
+                if isinstance(exc.__cause__, sqlite3.OperationalError) and "Dimension mismatch" in str(exc.__cause__):
+                    logger.error("Embeddingモデルの次元数の不一致(書き込みエラー): DBに保存されたベクトルと現在のEmbeddingモデルの次元数が異なります")
+                else:
+                    logger.error("エピソードembedding保存に失敗しました", exc_info=exc)
+                return
             logger.info("chat background updated", extra={"episode_id": episode.id})
