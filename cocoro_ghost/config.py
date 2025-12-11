@@ -20,7 +20,6 @@ class Config:
 
     token: str
     log_level: str
-    env: str
     # 以下は初回マイグレーション用（オプション）
     llm_api_key: str = ""
     llm_model: str = ""
@@ -40,7 +39,6 @@ class RuntimeConfig:
     # TOML由来（変更不可）
     token: str
     log_level: str
-    env: str
 
     # GlobalSettings由来
     exclude_keywords: List[str]
@@ -123,7 +121,6 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
     config = Config(
         token=_require(data, "token"),
         log_level=_require(data, "log_level"),
-        env=_require(data, "env"),
         llm_api_key=data.get("llm_api_key", ""),
         llm_model=data.get("llm_model", ""),
         embedding_model=data.get("embedding_model", ""),
@@ -148,7 +145,6 @@ def build_runtime_config(
         # TOML由来
         token=toml_config.token,
         log_level=toml_config.log_level,
-        env=toml_config.env,
         # GlobalSettings由来
         exclude_keywords=json.loads(global_settings.exclude_keywords),
         # LlmPreset由来

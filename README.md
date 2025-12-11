@@ -48,10 +48,9 @@ setup.bat
 4. **設定ファイルの編集**
 
    `config/setting.toml` を編集して、最小限の起動設定を記述：
+
    - `token`: API認証トークン
    - `log_level`: ログレベル
-   - `env`: 環境（dev/prod）
-   - （初回のみ）LLM/Embedding設定を入れておくと default プリセットが自動生成されます
 
    ※ DBファイルは `data/settings.db` と `data/memory_<memory_id>.db` に自動作成されます
 
@@ -80,8 +79,6 @@ python -X utf8 run.py
 
 - `token`: API認証トークン
 - `log_level`: ログレベル（DEBUG, INFO, WARNING, ERROR）
-- `env`: 環境（dev/prod）
-- （初回のみ）LLM/Embedding設定を入れておくと default プリセットが自動生成される
 
 #### 2. LLM設定
 

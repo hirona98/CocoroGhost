@@ -1,4 +1,3 @@
 # cocoro_ghost 起動設定
 token = "cocoro_token"
 log_level = "INFO"
-env = "dev"

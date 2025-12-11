@@ -188,7 +188,6 @@
 |------|-----|------|
 | `token` | `"secret-token-123"` | REST API 認証トークン |
 | `log_level` | `"INFO"` | ログレベル |
-| `env` | `"dev"` / `"prod"` | 実行環境 |
 | `llm_model` など | `"gpt-4o"` | 初回起動時の default プリセット作成に利用（任意） |
 
 ### 8.3 DBプリセット設定項目
