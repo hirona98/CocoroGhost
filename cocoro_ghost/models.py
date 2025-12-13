@@ -25,12 +25,24 @@ class GlobalSettings(Base):
     reminders_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     active_llm_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("llm_presets.id"))
     active_embedding_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("embedding_presets.id"))
+    active_system_prompt_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("system_prompt_presets.id"))
+    active_persona_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("persona_presets.id"))
+    active_contract_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("contract_presets.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     active_llm_preset: Mapped[Optional["LlmPreset"]] = relationship("LlmPreset", foreign_keys=[active_llm_preset_id])
     active_embedding_preset: Mapped[Optional["EmbeddingPreset"]] = relationship(
         "EmbeddingPreset", foreign_keys=[active_embedding_preset_id]
+    )
+    active_system_prompt_preset: Mapped[Optional["SystemPromptPreset"]] = relationship(
+        "SystemPromptPreset", foreign_keys=[active_system_prompt_preset_id]
+    )
+    active_persona_preset: Mapped[Optional["PersonaPreset"]] = relationship(
+        "PersonaPreset", foreign_keys=[active_persona_preset_id]
+    )
+    active_contract_preset: Mapped[Optional["ContractPreset"]] = relationship(
+        "ContractPreset", foreign_keys=[active_contract_preset_id]
     )
 
 
@@ -41,7 +53,6 @@ class LlmPreset(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
-    system_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     # LLM設定
     llm_api_key: Mapped[str] = mapped_column(String, nullable=False)
@@ -57,6 +68,45 @@ class LlmPreset(Base):
     image_model_api_key: Mapped[Optional[str]] = mapped_column(String)
     image_llm_base_url: Mapped[Optional[str]] = mapped_column(String)
     image_timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SystemPromptPreset(Base):
+    """システムプロンプトプリセット。"""
+
+    __tablename__ = "system_prompt_presets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PersonaPreset(Base):
+    """persona プロンプトプリセット。"""
+
+    __tablename__ = "persona_presets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    persona_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ContractPreset(Base):
+    """contract プロンプトプリセット。"""
+
+    __tablename__ = "contract_presets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    contract_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

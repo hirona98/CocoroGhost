@@ -149,26 +149,6 @@ create table if not exists payload_summary (
 create index if not exists idx_summary_scope on payload_summary(scope_type, scope_key);
 ```
 
-### PersonaAnchor（人格コア：常時注入）
-
-```sql
-create table if not exists payload_persona (
-  unit_id      integer primary key references units(id) on delete cascade,
-  persona_text text not null,
-  is_active    integer not null default 1
-);
-```
-
-### RelationshipContract（踏み込み/NG/介入許可：常時注入）
-
-```sql
-create table if not exists payload_contract (
-  unit_id       integer primary key references units(id) on delete cascade,
-  contract_text text not null,
-  is_active     integer not null default 1
-);
-```
-
 ### Capsule（短期状態：会話テンポのため）
 
 ```sql
@@ -219,8 +199,6 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 | EPISODE | 1 | 証跡（会話/出来事） |
 | FACT | 2 | 安定知識（好み/関係/設定） |
 | SUMMARY | 3 | 要約（週次/人物別/トピック別/共有ナラティブ） |
-| PERSONA | 4 | 人格コア |
-| CONTRACT | 5 | 関係契約 |
 | CAPSULE | 6 | 短期状態 |
 | LOOP | 7 | 未完了（open loops） |
 

@@ -38,7 +38,10 @@ def create_app() -> FastAPI:
         init_memory_db,
         init_settings_db,
         load_active_embedding_preset,
+        load_active_contract_preset,
         load_active_llm_preset,
+        load_active_persona_preset,
+        load_active_system_prompt_preset,
         load_global_settings,
         ensure_initial_settings,
         settings_session_scope,
@@ -60,10 +63,19 @@ def create_app() -> FastAPI:
         global_settings = load_global_settings(session)
         llm_preset = load_active_llm_preset(session)
         embedding_preset = load_active_embedding_preset(session)
+        system_prompt_preset = load_active_system_prompt_preset(session)
+        persona_preset = load_active_persona_preset(session)
+        contract_preset = load_active_contract_preset(session)
 
         # RuntimeConfig構築
         runtime_config = build_runtime_config(
-            toml_config, global_settings, llm_preset, embedding_preset
+            toml_config,
+            global_settings,
+            llm_preset,
+            embedding_preset,
+            system_prompt_preset,
+            persona_preset,
+            contract_preset,
         )
 
         # ConfigStore作成（プリセットオブジェクトをデタッチ状態で保持するためコピー）
@@ -71,9 +83,19 @@ def create_app() -> FastAPI:
         session.expunge(global_settings)
         session.expunge(llm_preset)
         session.expunge(embedding_preset)
+        session.expunge(system_prompt_preset)
+        session.expunge(persona_preset)
+        session.expunge(contract_preset)
 
         config_store = ConfigStore(
-            toml_config, runtime_config, global_settings, llm_preset, embedding_preset
+            toml_config,
+            runtime_config,
+            global_settings,
+            llm_preset,
+            embedding_preset,
+            system_prompt_preset,
+            persona_preset,
+            contract_preset,
         )
 
     set_global_config_store(config_store)

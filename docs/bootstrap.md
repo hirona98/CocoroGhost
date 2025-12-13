@@ -8,25 +8,34 @@
    - DDL: `docs/db_schema.md`
    - vec0: `docs/sqlite_vec.md`
 2. 最低限の seed を入れる（任意だが推奨）
-   - `payload_persona`（人格コア）を 1件（active）
-   - `payload_contract`（関係契約）を 1件（active）
+   - `system_prompt_presets`（system prompt）を 1件
+   - `persona_presets`（人格コア）を 1件
+   - `contract_presets`（関係契約）を 1件
+   - `global_settings.active_*_preset_id` を上記に紐付ける
 
 ## seed例（SQL）
 
-`memory_<memory_id>.db` に対して実行する。
+`settings.db` に対して実行する。
 
-> 実装では、`payload_persona` / `payload_contract` が 1件も無い場合に限り、起動時に default を自動seedする（`cocoro_ghost/db.py`）。
+> 実装では、`settings.db` が空の場合に限り、起動時に default を自動seedする（`cocoro_ghost/db.py` の `ensure_initial_settings`）。
 
 ```sql
+-- System prompt
+insert into system_prompt_presets(name, system_prompt, created_at, updated_at)
+values ('default', '（ここにsystem promptを書く）', datetime('now'), datetime('now'));
+
 -- Persona
-insert into units(kind, occurred_at, created_at, updated_at, source, state, confidence, salience, sensitivity, pin)
-values (4, strftime('%s','now'), strftime('%s','now'), strftime('%s','now'), 'seed', 0, 0.5, 0.0, 0, 1);
-insert into payload_persona(unit_id, persona_text, is_active)
-values (last_insert_rowid(), '（ここに人格コアを書く）', 1);
+insert into persona_presets(name, persona_text, created_at, updated_at)
+values ('default', '（ここに人格コアを書く）', datetime('now'), datetime('now'));
 
 -- Contract
-insert into units(kind, occurred_at, created_at, updated_at, source, state, confidence, salience, sensitivity, pin)
-values (5, strftime('%s','now'), strftime('%s','now'), strftime('%s','now'), 'seed', 0, 0.5, 0.0, 0, 1);
-insert into payload_contract(unit_id, contract_text, is_active)
-values (last_insert_rowid(), '（ここに関係契約を書く）', 1);
+insert into contract_presets(name, contract_text, created_at, updated_at)
+values ('default', '（ここに関係契約を書く）', datetime('now'), datetime('now'));
+
+-- global_settings の active_* を更新
+update global_settings
+set
+  active_system_prompt_preset_id = (select id from system_prompt_presets where name='default'),
+  active_persona_preset_id = (select id from persona_presets where name='default'),
+  active_contract_preset_id = (select id from contract_presets where name='default');
 ```

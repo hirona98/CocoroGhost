@@ -18,12 +18,10 @@ from cocoro_ghost.unit_enums import EntityType, LoopStatus, Sensitivity, Summary
 from cocoro_ghost.unit_models import (
     Entity,
     EntityAlias,
-    PayloadContract,
     PayloadCapsule,
     PayloadEpisode,
     PayloadFact,
     PayloadLoop,
-    PayloadPersona,
     PayloadSummary,
     Unit,
     UnitEntity,
@@ -224,6 +222,8 @@ def build_memory_pack(
     *,
     db: Session,
     llm_client: LlmClient,
+    persona_text: str | None,
+    contract_text: str | None,
     user_text: str,
     image_summaries: Sequence[str] | None,
     client_context: Dict[str, Any] | None,
@@ -234,23 +234,8 @@ def build_memory_pack(
 ) -> str:
     max_chars = _token_budget_to_char_budget(max_inject_tokens)
     sensitivity_max = int(intent.sensitivity_max)
-
-    persona_text = (
-        db.query(PayloadPersona.persona_text)
-        .join(Unit, Unit.id == PayloadPersona.unit_id)
-        .filter(PayloadPersona.is_active == 1, Unit.kind == int(UnitKind.PERSONA), Unit.sensitivity <= sensitivity_max)
-        .order_by(Unit.created_at.desc())
-        .limit(1)
-        .scalar()
-    )
-    contract_text = (
-        db.query(PayloadContract.contract_text)
-        .join(Unit, Unit.id == PayloadContract.unit_id)
-        .filter(PayloadContract.is_active == 1, Unit.kind == int(UnitKind.CONTRACT), Unit.sensitivity <= sensitivity_max)
-        .order_by(Unit.created_at.desc())
-        .limit(1)
-        .scalar()
-    )
+    persona_text = (persona_text or "").strip() or None
+    contract_text = (contract_text or "").strip() or None
 
     capsule_json: Optional[str] = None
     cap_row = (

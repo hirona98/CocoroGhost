@@ -153,64 +153,6 @@ def _create_memory_indexes(engine) -> None:
         conn.commit()
 
 
-def _ensure_default_persona_contract(session: Session) -> None:
-    from cocoro_ghost import prompts
-    from cocoro_ghost.unit_enums import Sensitivity, UnitKind, UnitState
-    from cocoro_ghost.unit_models import PayloadContract, PayloadPersona, Unit
-
-    now_ts = int(time.time())
-
-    has_persona = (
-        session.query(PayloadPersona.unit_id)
-        .join(Unit, Unit.id == PayloadPersona.unit_id)
-        .filter(Unit.kind == int(UnitKind.PERSONA), PayloadPersona.is_active == 1)
-        .limit(1)
-        .scalar()
-    )
-    if not has_persona:
-        unit = Unit(
-            kind=int(UnitKind.PERSONA),
-            occurred_at=now_ts,
-            created_at=now_ts,
-            updated_at=now_ts,
-            source="seed",
-            state=int(UnitState.RAW),
-            confidence=0.5,
-            salience=0.0,
-            sensitivity=int(Sensitivity.NORMAL),
-            pin=1,
-        )
-        session.add(unit)
-        session.flush()
-        session.add(PayloadPersona(unit_id=unit.id, persona_text=prompts.get_default_persona_anchor(), is_active=1))
-
-    has_contract = (
-        session.query(PayloadContract.unit_id)
-        .join(Unit, Unit.id == PayloadContract.unit_id)
-        .filter(Unit.kind == int(UnitKind.CONTRACT), PayloadContract.is_active == 1)
-        .limit(1)
-        .scalar()
-    )
-    if not has_contract:
-        unit = Unit(
-            kind=int(UnitKind.CONTRACT),
-            occurred_at=now_ts,
-            created_at=now_ts,
-            updated_at=now_ts,
-            source="seed",
-            state=int(UnitState.RAW),
-            confidence=0.5,
-            salience=0.0,
-            sensitivity=int(Sensitivity.NORMAL),
-            pin=1,
-        )
-        session.add(unit)
-        session.flush()
-        session.add(
-            PayloadContract(unit_id=unit.id, contract_text=prompts.get_default_relationship_contract(), is_active=1)
-        )
-
-
 # --- 設定DB ---
 
 
@@ -285,12 +227,6 @@ def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
 
     session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     _memory_sessions[memory_id] = _MemorySessionEntry(session_factory=session_factory, embedding_dimension=int(embedding_dimension))
-    session = session_factory()
-    try:
-        _ensure_default_persona_contract(session)
-        session.commit()
-    finally:
-        session.close()
     logger.info(f"記憶DB初期化完了: {db_url}")
     return session_factory
 
@@ -427,22 +363,34 @@ def search_similar_unit_ids(
 def ensure_initial_settings(session: Session, toml_config) -> None:
     """設定DBに必要な初期レコードが無ければ作成する。"""
     from cocoro_ghost import models
-    from cocoro_ghost.prompts import CHARACTER_SYSTEM_PROMPT
+    from cocoro_ghost import prompts
 
     # 既にアクティブなプリセットがあれば何もしない
     global_settings = session.query(models.GlobalSettings).first()
-    if (
-        global_settings is not None
-        and getattr(global_settings, "token", "")
-        and global_settings.active_llm_preset_id is not None
-        and getattr(global_settings, "active_embedding_preset_id", None) is not None
-    ):
-        active_llm = session.query(models.LlmPreset).filter_by(id=global_settings.active_llm_preset_id).first()
-        active_embedding = session.query(models.EmbeddingPreset).filter_by(
-            id=global_settings.active_embedding_preset_id
-        ).first()
-        if active_llm and (active_llm.system_prompt or "").strip() and active_embedding:
-            return
+    if global_settings is not None and getattr(global_settings, "token", ""):
+        ids = [
+            global_settings.active_llm_preset_id,
+            global_settings.active_embedding_preset_id,
+            global_settings.active_system_prompt_preset_id,
+            global_settings.active_persona_preset_id,
+            global_settings.active_contract_preset_id,
+        ]
+        if all(x is not None for x in ids):
+            active_llm = session.query(models.LlmPreset).filter_by(id=global_settings.active_llm_preset_id).first()
+            active_embedding = session.query(models.EmbeddingPreset).filter_by(
+                id=global_settings.active_embedding_preset_id
+            ).first()
+            active_system = session.query(models.SystemPromptPreset).filter_by(
+                id=global_settings.active_system_prompt_preset_id
+            ).first()
+            active_persona = session.query(models.PersonaPreset).filter_by(
+                id=global_settings.active_persona_preset_id
+            ).first()
+            active_contract = session.query(models.ContractPreset).filter_by(
+                id=global_settings.active_contract_preset_id
+            ).first()
+            if active_llm and active_embedding and active_system and active_persona and active_contract:
+                return
 
     logger.info("設定DBの初期化を行います（TOMLのLLM設定は使用しません）")
 
@@ -470,7 +418,6 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         logger.warning("LLMプリセットが無いため、空の default プリセットを作成します")
         llm_preset = models.LlmPreset(
             name="default",
-            system_prompt=toml_config.character_prompt or CHARACTER_SYSTEM_PROMPT,
             llm_api_key="",
             llm_model="unset",
             image_model="unset",
@@ -478,9 +425,6 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         )
         session.add(llm_preset)
         session.flush()
-
-    if not (llm_preset.system_prompt or "").strip():
-        llm_preset.system_prompt = toml_config.character_prompt or CHARACTER_SYSTEM_PROMPT
 
     if active_llm_id is None or int(llm_preset.id) != int(active_llm_id):
         global_settings.active_llm_preset_id = int(llm_preset.id)
@@ -508,6 +452,51 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
 
     if active_embedding_id is None or int(embedding_preset.id) != int(active_embedding_id):
         global_settings.active_embedding_preset_id = int(embedding_preset.id)
+
+    # SystemPromptPreset の用意
+    system_preset = None
+    active_system_id = global_settings.active_system_prompt_preset_id
+    if active_system_id is not None:
+        system_preset = session.query(models.SystemPromptPreset).filter_by(id=active_system_id).first()
+    if system_preset is None:
+        system_preset = session.query(models.SystemPromptPreset).first()
+    if system_preset is None:
+        system_preset = models.SystemPromptPreset(
+            name="default",
+            system_prompt=toml_config.character_prompt or prompts.get_character_prompt(),
+        )
+        session.add(system_preset)
+        session.flush()
+    if active_system_id is None or int(system_preset.id) != int(active_system_id):
+        global_settings.active_system_prompt_preset_id = int(system_preset.id)
+
+    # PersonaPreset の用意
+    persona_preset = None
+    active_persona_id = global_settings.active_persona_preset_id
+    if active_persona_id is not None:
+        persona_preset = session.query(models.PersonaPreset).filter_by(id=active_persona_id).first()
+    if persona_preset is None:
+        persona_preset = session.query(models.PersonaPreset).first()
+    if persona_preset is None:
+        persona_preset = models.PersonaPreset(name="default", persona_text=prompts.get_default_persona_anchor())
+        session.add(persona_preset)
+        session.flush()
+    if active_persona_id is None or int(persona_preset.id) != int(active_persona_id):
+        global_settings.active_persona_preset_id = int(persona_preset.id)
+
+    # ContractPreset の用意
+    contract_preset = None
+    active_contract_id = global_settings.active_contract_preset_id
+    if active_contract_id is not None:
+        contract_preset = session.query(models.ContractPreset).filter_by(id=active_contract_id).first()
+    if contract_preset is None:
+        contract_preset = session.query(models.ContractPreset).first()
+    if contract_preset is None:
+        contract_preset = models.ContractPreset(name="default", contract_text=prompts.get_default_relationship_contract())
+        session.add(contract_preset)
+        session.flush()
+    if active_contract_id is None or int(contract_preset.id) != int(active_contract_id):
+        global_settings.active_contract_preset_id = int(contract_preset.id)
 
     session.commit()
 
@@ -548,4 +537,46 @@ def load_active_embedding_preset(session: Session):
     preset = session.query(models.EmbeddingPreset).filter_by(id=active_id).first()
     if preset is None:
         raise RuntimeError(f"Embeddingプリセット(id={active_id})が存在しません")
+    return preset
+
+
+def load_active_system_prompt_preset(session: Session):
+    """アクティブなSystemPromptPresetを取得。"""
+    from cocoro_ghost import models
+
+    settings = load_global_settings(session)
+    if settings.active_system_prompt_preset_id is None:
+        raise RuntimeError("アクティブなシステムプロンプトプリセットが設定されていません")
+
+    preset = session.query(models.SystemPromptPreset).filter_by(id=settings.active_system_prompt_preset_id).first()
+    if preset is None:
+        raise RuntimeError(f"SystemPromptPreset(id={settings.active_system_prompt_preset_id})が存在しません")
+    return preset
+
+
+def load_active_persona_preset(session: Session):
+    """アクティブなPersonaPresetを取得。"""
+    from cocoro_ghost import models
+
+    settings = load_global_settings(session)
+    if settings.active_persona_preset_id is None:
+        raise RuntimeError("アクティブなpersonaプリセットが設定されていません")
+
+    preset = session.query(models.PersonaPreset).filter_by(id=settings.active_persona_preset_id).first()
+    if preset is None:
+        raise RuntimeError(f"PersonaPreset(id={settings.active_persona_preset_id})が存在しません")
+    return preset
+
+
+def load_active_contract_preset(session: Session):
+    """アクティブなContractPresetを取得。"""
+    from cocoro_ghost import models
+
+    settings = load_global_settings(session)
+    if settings.active_contract_preset_id is None:
+        raise RuntimeError("アクティブなcontractプリセットが設定されていません")
+
+    preset = session.query(models.ContractPreset).filter_by(id=settings.active_contract_preset_id).first()
+    if preset is None:
+        raise RuntimeError(f"ContractPreset(id={settings.active_contract_preset_id})が存在しません")
     return preset

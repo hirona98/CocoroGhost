@@ -1,4 +1,4 @@
-"""管理API（Unit閲覧・編集、persona/contract設定）。"""
+"""管理API（Unit閲覧・編集、ジョブ投入）。"""
 
 from __future__ import annotations
 
@@ -14,8 +14,6 @@ from cocoro_ghost.deps import get_config_store_dep
 from cocoro_ghost.topic_tags import canonicalize_topic_tags_json
 
 from cocoro_ghost.schemas import (
-    ContractUpsertRequest,
-    PersonaUpsertRequest,
     UnitDetailResponse,
     UnitListResponse,
     UnitMeta,
@@ -26,11 +24,9 @@ from cocoro_ghost.unit_enums import JobStatus, UnitKind
 from cocoro_ghost.unit_models import (
     Job,
     PayloadCapsule,
-    PayloadContract,
     PayloadEpisode,
     PayloadFact,
     PayloadLoop,
-    PayloadPersona,
     PayloadSummary,
     Unit,
 )
@@ -123,14 +119,6 @@ def get_unit(
                     "summary_text": ps.summary_text,
                     "summary_json": ps.summary_json,
                 }
-        elif unit.kind == int(UnitKind.PERSONA):
-            pp = db.query(PayloadPersona).filter(PayloadPersona.unit_id == unit_id).one_or_none()
-            if pp:
-                payload = {"persona_text": pp.persona_text, "is_active": pp.is_active}
-        elif unit.kind == int(UnitKind.CONTRACT):
-            pc = db.query(PayloadContract).filter(PayloadContract.unit_id == unit_id).one_or_none()
-            if pc:
-                payload = {"contract_text": pc.contract_text, "is_active": pc.is_active}
         elif unit.kind == int(UnitKind.CAPSULE):
             cap = db.query(PayloadCapsule).filter(PayloadCapsule.unit_id == unit_id).one_or_none()
             if cap:
@@ -208,86 +196,6 @@ def update_unit(
                 sensitivity=int(unit.sensitivity),
             )
         return _to_unit_meta(unit)
-
-
-@router.post("/memories/{memory_id}/persona")
-def set_persona(
-    memory_id: str,
-    request: PersonaUpsertRequest,
-    config_store: ConfigStore = Depends(get_config_store_dep),
-):
-    now_ts = int(time.time())
-    with memory_session_scope(memory_id, config_store.embedding_dimension) as db:
-        if request.set_active:
-            db.query(PayloadPersona).update({PayloadPersona.is_active: 0})
-
-        unit = Unit(
-            kind=int(UnitKind.PERSONA),
-            occurred_at=now_ts,
-            created_at=now_ts,
-            updated_at=now_ts,
-            source="admin",
-            state=0,
-            confidence=0.5,
-            salience=0.0,
-            sensitivity=int(request.sensitivity),
-            pin=1,
-        )
-        db.add(unit)
-        db.flush()
-        is_active = 1 if request.set_active else 0
-        db.add(PayloadPersona(unit_id=unit.id, persona_text=request.persona_text, is_active=is_active))
-        record_unit_version(
-            db,
-            unit_id=int(unit.id),
-            payload_obj={"persona_text": request.persona_text, "is_active": is_active},
-            patch_reason="admin_set_persona",
-            now_ts=now_ts,
-        )
-        return {"unit_id": int(unit.id)}
-
-
-@router.post("/memories/{memory_id}/contract")
-def set_contract(
-    memory_id: str,
-    request: ContractUpsertRequest,
-    config_store: ConfigStore = Depends(get_config_store_dep),
-):
-    now_ts = int(time.time())
-    with memory_session_scope(memory_id, config_store.embedding_dimension) as db:
-        if request.set_active:
-            db.query(PayloadContract).update({PayloadContract.is_active: 0})
-
-        unit = Unit(
-            kind=int(UnitKind.CONTRACT),
-            occurred_at=now_ts,
-            created_at=now_ts,
-            updated_at=now_ts,
-            source="admin",
-            state=0,
-            confidence=0.5,
-            salience=0.0,
-            sensitivity=int(request.sensitivity),
-            pin=1,
-        )
-        db.add(unit)
-        db.flush()
-        is_active = 1 if request.set_active else 0
-        db.add(
-            PayloadContract(
-                unit_id=unit.id,
-                contract_text=request.contract_text,
-                is_active=is_active,
-            )
-        )
-        record_unit_version(
-            db,
-            unit_id=int(unit.id),
-            payload_obj={"contract_text": request.contract_text, "is_active": is_active},
-            patch_reason="admin_set_contract",
-            now_ts=now_ts,
-        )
-        return {"unit_id": int(unit.id)}
 
 
 @router.post("/memories/{memory_id}/jobs/weekly_summary")

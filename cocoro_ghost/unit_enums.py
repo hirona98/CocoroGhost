@@ -9,8 +9,6 @@ class UnitKind(IntEnum):
     EPISODE = 1
     FACT = 2
     SUMMARY = 3
-    PERSONA = 4
-    CONTRACT = 5
     CAPSULE = 6
     LOOP = 7
 

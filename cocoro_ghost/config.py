@@ -11,7 +11,14 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 import tomli
 
 if TYPE_CHECKING:
-    from cocoro_ghost.models import EmbeddingPreset, GlobalSettings, LlmPreset
+    from cocoro_ghost.models import (
+        ContractPreset,
+        EmbeddingPreset,
+        GlobalSettings,
+        LlmPreset,
+        PersonaPreset,
+        SystemPromptPreset,
+    )
 
 
 @dataclass
@@ -33,7 +40,7 @@ class Config:
 
 @dataclass
 class RuntimeConfig:
-    """ランタイム設定（TOML + GlobalSettings + LlmPreset + EmbeddingPreset）。"""
+    """ランタイム設定（TOML + GlobalSettings + presets）。"""
 
     # TOML由来（変更不可）
     token: str
@@ -44,7 +51,6 @@ class RuntimeConfig:
 
     # LlmPreset由来
     llm_preset_name: str
-    system_prompt: str
     llm_api_key: str
     llm_model: str
     llm_base_url: Optional[str]
@@ -52,21 +58,29 @@ class RuntimeConfig:
     max_turns_window: int
     max_tokens_vision: int
     max_tokens: int
-    embedding_model: str
-    embedding_api_key: Optional[str]
-    embedding_base_url: Optional[str]
-    embedding_dimension: int
     image_model: str
     image_model_api_key: Optional[str]
     image_llm_base_url: Optional[str]
     image_timeout_seconds: int
-    similar_episodes_limit: int
-    max_inject_tokens: int
-    similar_limit_by_kind: Dict[str, int]
 
     # EmbeddingPreset由来
     embedding_preset_name: str
     memory_id: str
+    embedding_model: str
+    embedding_api_key: Optional[str]
+    embedding_base_url: Optional[str]
+    embedding_dimension: int
+    similar_episodes_limit: int
+    max_inject_tokens: int
+    similar_limit_by_kind: Dict[str, int]
+
+    # PromptPresets由来
+    system_prompt_preset_name: str
+    system_prompt: str
+    persona_preset_name: str
+    persona_text: str
+    contract_preset_name: str
+    contract_text: str
 
 
 class ConfigStore:
@@ -79,12 +93,18 @@ class ConfigStore:
         global_settings: "GlobalSettings",
         llm_preset: "LlmPreset",
         embedding_preset: "EmbeddingPreset",
+        system_prompt_preset: "SystemPromptPreset",
+        persona_preset: "PersonaPreset",
+        contract_preset: "ContractPreset",
     ) -> None:
         self._toml = toml_config
         self._runtime = runtime_config
         self._global_settings = global_settings
         self._llm_preset = llm_preset
         self._embedding_preset = embedding_preset
+        self._system_prompt_preset = system_prompt_preset
+        self._persona_preset = persona_preset
+        self._contract_preset = contract_preset
         self._lock = threading.Lock()
 
     @property
@@ -140,8 +160,11 @@ def build_runtime_config(
     global_settings: "GlobalSettings",
     llm_preset: "LlmPreset",
     embedding_preset: "EmbeddingPreset",
+    system_prompt_preset: "SystemPromptPreset",
+    persona_preset: "PersonaPreset",
+    contract_preset: "ContractPreset",
 ) -> RuntimeConfig:
-    """TOML、GlobalSettings、LlmPreset、EmbeddingPresetをマージしてRuntimeConfigを構築。"""
+    """TOML、GlobalSettings、各種プリセットをマージしてRuntimeConfigを構築。"""
     try:
         similar_limit_by_kind = json.loads(embedding_preset.similar_limit_by_kind_json or "{}")
         if not isinstance(similar_limit_by_kind, dict):
@@ -157,7 +180,6 @@ def build_runtime_config(
         exclude_keywords=json.loads(global_settings.exclude_keywords),
         # LlmPreset由来
         llm_preset_name=llm_preset.name,
-        system_prompt=llm_preset.system_prompt,
         llm_api_key=llm_preset.llm_api_key,
         llm_model=llm_preset.llm_model,
         llm_base_url=llm_preset.llm_base_url,
@@ -165,20 +187,27 @@ def build_runtime_config(
         max_turns_window=llm_preset.max_turns_window,
         max_tokens_vision=llm_preset.max_tokens_vision,
         max_tokens=llm_preset.max_tokens,
-        embedding_model=embedding_preset.embedding_model,
-        embedding_api_key=embedding_preset.embedding_api_key,
-        embedding_base_url=embedding_preset.embedding_base_url,
-        embedding_dimension=embedding_preset.embedding_dimension,
         image_model=llm_preset.image_model,
         image_model_api_key=llm_preset.image_model_api_key,
         image_llm_base_url=llm_preset.image_llm_base_url,
         image_timeout_seconds=llm_preset.image_timeout_seconds,
-        similar_episodes_limit=embedding_preset.similar_episodes_limit,
-        max_inject_tokens=embedding_preset.max_inject_tokens,
-        similar_limit_by_kind=similar_limit_by_kind,
         # EmbeddingPreset由来
         embedding_preset_name=embedding_preset.name,
         memory_id=embedding_preset.name,
+        embedding_model=embedding_preset.embedding_model,
+        embedding_api_key=embedding_preset.embedding_api_key,
+        embedding_base_url=embedding_preset.embedding_base_url,
+        embedding_dimension=embedding_preset.embedding_dimension,
+        similar_episodes_limit=embedding_preset.similar_episodes_limit,
+        max_inject_tokens=embedding_preset.max_inject_tokens,
+        similar_limit_by_kind=similar_limit_by_kind,
+        # PromptPresets由来
+        system_prompt_preset_name=system_prompt_preset.name,
+        system_prompt=system_prompt_preset.system_prompt,
+        persona_preset_name=persona_preset.name,
+        persona_text=persona_preset.persona_text,
+        contract_preset_name=contract_preset.name,
+        contract_text=contract_preset.contract_text,
     )
 
 

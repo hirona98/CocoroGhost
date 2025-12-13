@@ -66,23 +66,6 @@ class PayloadSummary(UnitBase):
     summary_text: Mapped[str] = mapped_column(Text, nullable=False)
     summary_json: Mapped[Optional[str]] = mapped_column(Text)
 
-
-class PayloadPersona(UnitBase):
-    __tablename__ = "payload_persona"
-
-    unit_id: Mapped[int] = mapped_column(ForeignKey("units.id", ondelete="CASCADE"), primary_key=True)
-    persona_text: Mapped[str] = mapped_column(Text, nullable=False)
-    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-
-
-class PayloadContract(UnitBase):
-    __tablename__ = "payload_contract"
-
-    unit_id: Mapped[int] = mapped_column(ForeignKey("units.id", ondelete="CASCADE"), primary_key=True)
-    contract_text: Mapped[str] = mapped_column(Text, nullable=False)
-    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-
-
 class PayloadCapsule(UnitBase):
     __tablename__ = "payload_capsule"
 

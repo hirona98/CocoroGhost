@@ -94,6 +94,8 @@ class MemoryManager:
                 memory_pack = build_memory_pack(
                     db=db,
                     llm_client=self.llm_client,
+                    persona_text=cfg.persona_text,
+                    contract_text=cfg.contract_text,
                     user_text=request.user_text,
                     image_summaries=image_summaries,
                     client_context=request.client_context,

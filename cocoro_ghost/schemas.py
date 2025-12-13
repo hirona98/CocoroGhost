@@ -84,18 +84,6 @@ class UnitUpdateRequest(BaseModel):
     salience: Optional[float] = None
 
 
-class PersonaUpsertRequest(BaseModel):
-    persona_text: str
-    set_active: bool = True
-    sensitivity: int = 0
-
-
-class ContractUpsertRequest(BaseModel):
-    contract_text: str
-    set_active: bool = True
-    sensitivity: int = 0
-
-
 class WeeklySummaryEnqueueRequest(BaseModel):
     week_key: Optional[str] = None
 
@@ -113,12 +101,20 @@ class FullSettingsResponse(BaseModel):
     # アクティブなプリセットID
     active_llm_preset_id: Optional[int] = None
     active_embedding_preset_id: Optional[int] = None
+    active_system_prompt_preset_id: Optional[int] = None
+    active_persona_preset_id: Optional[int] = None
+    active_contract_preset_id: Optional[int] = None
 
     # アクティブなLLMプリセット
     llm_preset: List["LlmPresetSettings"]
 
     # アクティブなEmbeddingプリセット
     embedding_preset: List["EmbeddingPresetSettings"]
+
+    # プロンプトプリセット
+    system_prompt_preset: List["SystemPromptPresetSettings"]
+    persona_preset: List["PersonaPresetSettings"]
+    contract_preset: List["ContractPresetSettings"]
 
 
 class ActivateResponse(BaseModel):
@@ -133,7 +129,6 @@ class LlmPresetSettings(BaseModel):
 
     llm_preset_id: int
     llm_preset_name: str
-    system_prompt: str
     llm_api_key: str
     llm_model: str
     reasoning_effort: Optional[str]
@@ -145,6 +140,30 @@ class LlmPresetSettings(BaseModel):
     image_llm_base_url: Optional[str]
     max_tokens_vision: int
     image_timeout_seconds: int
+
+
+class SystemPromptPresetSettings(BaseModel):
+    """設定一覧用システムプロンプトプリセット情報。"""
+
+    system_prompt_preset_id: int
+    system_prompt_preset_name: str
+    system_prompt: str
+
+
+class PersonaPresetSettings(BaseModel):
+    """設定一覧用personaプロンプトプリセット情報。"""
+
+    persona_preset_id: int
+    persona_preset_name: str
+    persona_text: str
+
+
+class ContractPresetSettings(BaseModel):
+    """設定一覧用contractプロンプトプリセット情報。"""
+
+    contract_preset_id: int
+    contract_preset_name: str
+    contract_text: str
 
 
 class EmbeddingPresetSettings(BaseModel):
@@ -181,5 +200,11 @@ class FullSettingsUpdateRequest(BaseModel):
     reminders: List[ReminderUpsertRequest]
     active_llm_preset_id: int
     active_embedding_preset_id: int
+    active_system_prompt_preset_id: int
+    active_persona_preset_id: int
+    active_contract_preset_id: int
     llm_preset: List[LlmPresetSettings]
     embedding_preset: List[EmbeddingPresetSettings]
+    system_prompt_preset: List[SystemPromptPresetSettings]
+    persona_preset: List[PersonaPresetSettings]
+    contract_preset: List[ContractPresetSettings]

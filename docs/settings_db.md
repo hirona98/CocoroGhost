@@ -19,16 +19,18 @@
 - `reminders_enabled`（INTEGER: 0/1）
 - `active_llm_preset_id`（INTEGER）
 - `active_embedding_preset_id`（INTEGER）
+- `active_system_prompt_preset_id`（INTEGER）
+- `active_persona_preset_id`（INTEGER）
+- `active_contract_preset_id`（INTEGER）
 
 ### `llm_presets`
 
-LLMの切替単位。LiteLLMの接続情報（chat/image）と `system_prompt` をここに持つ。
+LLMの切替単位。LiteLLMの接続情報（chat/image）をここに持つ。
 
 例カラム:
 
 - `llm_model`, `llm_api_key`, `llm_base_url`, ...
 - `image_model`, `image_model_api_key`, `image_llm_base_url`, ...
-- `system_prompt`
 
 ### `embedding_presets`
 
@@ -42,6 +44,33 @@ Embedding/検索パラメータの切替単位。
 - `similar_limit_by_kind_json`（種別ごとのKNN上限などをJSONで保持）
 - `similar_episodes_limit`
 
+### `system_prompt_presets`
+
+システムプロンプトの切替単位。
+
+例カラム:
+
+- `name`（TEXT）
+- `system_prompt`（TEXT）
+
+### `persona_presets`
+
+persona（人格コア）プロンプトの切替単位。
+
+例カラム:
+
+- `name`（TEXT）
+- `persona_text`（TEXT）
+
+### `contract_presets`
+
+contract（関係契約）プロンプトの切替単位。
+
+例カラム:
+
+- `name`（TEXT）
+- `contract_text`（TEXT）
+
 ### `reminders`（任意）
 
 リマインダー（時刻＋内容）を保持する。
@@ -52,5 +81,5 @@ Embedding/検索パラメータの切替単位。
 ## 初回起動時（推奨フロー）
 
 1. TOML（`config/setting.toml`）から `token` 等の最小値を読む
-2. `settings.db` が空なら `global_settings/llm_presets/embedding_presets` の default を作る
+2. `settings.db` が空なら `global_settings` と各種 `*_presets` の default を作り、`active_*_preset_id` を設定する
 3. 以降は `settings.db` を正として読み込む（TOMLは最小限の起動設定のみにする）

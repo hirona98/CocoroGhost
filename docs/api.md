@@ -49,7 +49,7 @@ data: {"message":"...","code":"..."}
 
 1. 画像要約（`images` がある場合）
 2. Schedulerで **MemoryPack** を生成
-3. LLMへ `system_prompt + persona + contract + memorypack + user_text` を注入
+3. LLMへ `system_prompt + memorypack + user_text` を注入（MemoryPack内に persona/contract を含む）
 4. 返答をSSEで配信
 5. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 6. Worker用ジョブを enqueue（reflection/extraction/embedding等）
@@ -120,53 +120,10 @@ data: {"message":"...","code":"..."}
 ### Worker と `memory_id`（必須）
 
 - `jobs` は `memory_<memory_id>.db` に保存されるため、Worker は **`memory_id` ごとに起動**する
-- **persona/contractの切替**
-  - `POST /api/memories/{memory_id}/persona`（新規追加・active化）
-  - `POST /api/memories/{memory_id}/contract`（新規追加・active化）
-  - active が 1件も無い場合は、記憶DB初期化時に default を自動seedする（`docs/bootstrap.md` 参照）
+- persona/contract は **settings 側のプロンプトプリセット**として管理し、`memory_id`（記憶DB）とは独立する（切替は `/api/settings`）
 
 - **ジョブ投入**
   - `POST /api/memories/{memory_id}/jobs/weekly_summary`（週次サマリ生成のenqueue）
-
-#### `POST /api/memories/{memory_id}/persona`
-
-active persona を新規追加する（`set_active=true` の場合、既存 active は解除される）。
-
-Request（`PersonaUpsertRequest`）
-
-```json
-{
-  "persona_text": "string",
-  "set_active": true,
-  "sensitivity": 0
-}
-```
-
-Response
-
-```json
-{ "unit_id": 12345 }
-```
-
-#### `POST /api/memories/{memory_id}/contract`
-
-active contract を新規追加する（`set_active=true` の場合、既存 active は解除される）。
-
-Request（`ContractUpsertRequest`）
-
-```json
-{
-  "contract_text": "string",
-  "set_active": true,
-  "sensitivity": 0
-}
-```
-
-Response
-
-```json
-{ "unit_id": 12345 }
-```
 
 ## 付加API
 
@@ -193,11 +150,13 @@ UI向けの「全設定」取得/更新。
   ],
   "active_llm_preset_id": 1,
   "active_embedding_preset_id": 1,
+  "active_system_prompt_preset_id": 1,
+  "active_persona_preset_id": 1,
+  "active_contract_preset_id": 1,
   "llm_preset": [
     {
       "llm_preset_id": 1,
       "llm_preset_name": "default",
-      "system_prompt": "string",
       "llm_api_key": "string",
       "llm_model": "string",
       "reasoning_effort": "optional",
@@ -220,6 +179,27 @@ UI向けの「全設定」取得/更新。
       "embedding_base_url": "optional",
       "embedding_dimension": 1536,
       "similar_episodes_limit": 10
+    }
+  ],
+  "system_prompt_preset": [
+    {
+      "system_prompt_preset_id": 1,
+      "system_prompt_preset_name": "default",
+      "system_prompt": "string"
+    }
+  ],
+  "persona_preset": [
+    {
+      "persona_preset_id": 1,
+      "persona_preset_name": "default",
+      "persona_text": "string"
+    }
+  ],
+  "contract_preset": [
+    {
+      "contract_preset_id": 1,
+      "contract_preset_name": "default",
+      "contract_text": "string"
     }
   ]
 }
@@ -242,11 +222,13 @@ UI向けの「全設定」取得/更新。
   ],
   "active_llm_preset_id": 1,
   "active_embedding_preset_id": 1,
+  "active_system_prompt_preset_id": 1,
+  "active_persona_preset_id": 1,
+  "active_contract_preset_id": 1,
   "llm_preset": [
     {
       "llm_preset_id": 1,
       "llm_preset_name": "default",
-      "system_prompt": "string",
       "llm_api_key": "string",
       "llm_model": "string",
       "reasoning_effort": "optional",
@@ -270,6 +252,27 @@ UI向けの「全設定」取得/更新。
       "embedding_dimension": 1536,
       "similar_episodes_limit": 10
     }
+  ],
+  "system_prompt_preset": [
+    {
+      "system_prompt_preset_id": 1,
+      "system_prompt_preset_name": "default",
+      "system_prompt": "string"
+    }
+  ],
+  "persona_preset": [
+    {
+      "persona_preset_id": 1,
+      "persona_preset_name": "default",
+      "persona_text": "string"
+    }
+  ],
+  "contract_preset": [
+    {
+      "contract_preset_id": 1,
+      "contract_preset_name": "default",
+      "contract_text": "string"
+    }
   ]
 }
 ```
@@ -280,9 +283,9 @@ UI向けの「全設定」取得/更新。
 
 #### 注意点（実装仕様）
 
-- `llm_preset` / `embedding_preset` は「配列」で、**複数件を一括更新**する（`*_preset_id` が未存在の場合は `400`）
+- `llm_preset` / `embedding_preset` / `system_prompt_preset` / `persona_preset` / `contract_preset` は「配列」で、**複数件を一括更新**する（`*_preset_id` が未存在の場合は `400`）
 - `reminders` は **全置き換え**（既存は削除されIDは作り直される）
-- `active_llm_preset_id` / `active_embedding_preset_id` は **更新後に参照可能なID**である必要がある（未存在は `400`）
+- `active_*_preset_id` は **更新後に参照可能なID**である必要がある（未存在は `400`）
 - `active_embedding_preset_id` で選択される `embedding_preset_name` は `memory_id` 扱いで、変更時はメモリDB初期化を検証する（失敗時 `400`）
 - `max_inject_tokens` / `similar_limit_by_kind` 等の詳細パラメータは現状API外
 

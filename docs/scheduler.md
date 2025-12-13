@@ -9,10 +9,11 @@
 ## 入力
 
 - `user_text`
-- `memory_id`
+- `memory_id`（対象の記憶DB）
 - `now_utc`（epoch sec）
 - `client_context`（任意）
 - `max_inject_tokens`（プリセット）
+- `persona_text` / `contract_text`（settings の active preset）
 
 ## 出力：MemoryPack（注入テキスト）
 
@@ -44,8 +45,8 @@
 ## 取得手順（規定）
 
 1. **常時注入（検索しない）**
-   - active persona（`payload_persona.is_active=1` の最新）
-   - active contract（`payload_contract.is_active=1` の最新）
+   - active persona（`settings.db` の `active_persona_preset_id`）
+   - active contract（`settings.db` の `active_contract_preset_id`）
 2. **Intent分類（軽量）**
    - small modelで JSON 1発（`docs/prompts.md` 参照）
 3. **Entity解決**

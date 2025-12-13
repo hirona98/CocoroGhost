@@ -24,6 +24,9 @@ def get_settings(
 
     llm_presets: list[schemas.LlmPresetSettings] = []
     embedding_presets: list[schemas.EmbeddingPresetSettings] = []
+    system_prompt_presets: list[schemas.SystemPromptPresetSettings] = []
+    persona_presets: list[schemas.PersonaPresetSettings] = []
+    contract_presets: list[schemas.ContractPresetSettings] = []
     reminders: list[schemas.ReminderSettings] = []
 
     for reminder in db.query(models.Reminder).order_by(models.Reminder.scheduled_at.asc(), models.Reminder.id.asc()).all():
@@ -39,7 +42,6 @@ def get_settings(
             schemas.LlmPresetSettings(
                 llm_preset_id=preset.id,
                 llm_preset_name=preset.name,
-                system_prompt=preset.system_prompt,
                 llm_api_key=preset.llm_api_key,
                 llm_model=preset.llm_model,
                 reasoning_effort=preset.reasoning_effort,
@@ -67,14 +69,47 @@ def get_settings(
             )
         )
 
+    for preset in db.query(models.SystemPromptPreset).order_by(models.SystemPromptPreset.id.asc()).all():
+        system_prompt_presets.append(
+            schemas.SystemPromptPresetSettings(
+                system_prompt_preset_id=preset.id,
+                system_prompt_preset_name=preset.name,
+                system_prompt=preset.system_prompt,
+            )
+        )
+
+    for preset in db.query(models.PersonaPreset).order_by(models.PersonaPreset.id.asc()).all():
+        persona_presets.append(
+            schemas.PersonaPresetSettings(
+                persona_preset_id=preset.id,
+                persona_preset_name=preset.name,
+                persona_text=preset.persona_text,
+            )
+        )
+
+    for preset in db.query(models.ContractPreset).order_by(models.ContractPreset.id.asc()).all():
+        contract_presets.append(
+            schemas.ContractPresetSettings(
+                contract_preset_id=preset.id,
+                contract_preset_name=preset.name,
+                contract_text=preset.contract_text,
+            )
+        )
+
     return schemas.FullSettingsResponse(
         exclude_keywords=json.loads(global_settings.exclude_keywords),
         reminders_enabled=global_settings.reminders_enabled,
         reminders=reminders,
         active_llm_preset_id=global_settings.active_llm_preset_id,
-        active_embedding_preset_id=getattr(global_settings, "active_embedding_preset_id", None),
+        active_embedding_preset_id=global_settings.active_embedding_preset_id,
+        active_system_prompt_preset_id=global_settings.active_system_prompt_preset_id,
+        active_persona_preset_id=global_settings.active_persona_preset_id,
+        active_contract_preset_id=global_settings.active_contract_preset_id,
         llm_preset=llm_presets,
         embedding_preset=embedding_presets,
+        system_prompt_preset=system_prompt_presets,
+        persona_preset=persona_presets,
+        contract_preset=contract_presets,
     )
 
 
@@ -83,7 +118,7 @@ def update_settings(
     request: schemas.FullSettingsUpdateRequest,
     db: Session = Depends(get_settings_db_dep),
 ):
-    """全設定をまとめて更新（アクティブなプリセットと共通設定）。"""
+    """全設定をまとめて更新（共通設定 + プリセット一覧 + active IDs）。"""
     from cocoro_ghost.config import ConfigStore, build_runtime_config, get_config_store, set_global_config_store
     from cocoro_ghost.db import init_memory_db
 
@@ -114,7 +149,6 @@ def update_settings(
         if preset is None:
             raise HTTPException(status_code=400, detail=f"llm_preset_id not found: {lp.llm_preset_id}")
         preset.name = lp.llm_preset_name
-        preset.system_prompt = lp.system_prompt
         preset.llm_api_key = lp.llm_api_key
         preset.llm_model = lp.llm_model
         preset.reasoning_effort = lp.reasoning_effort
@@ -142,9 +176,47 @@ def update_settings(
         preset.embedding_dimension = ep.embedding_dimension
         preset.similar_episodes_limit = ep.similar_episodes_limit
 
+    # SystemPromptプリセットの更新（複数件）
+    system_presets_by_id: dict[int, models.SystemPromptPreset] = {
+        int(p.id): p for p in db.query(models.SystemPromptPreset).order_by(models.SystemPromptPreset.id.asc()).all()
+    }
+    for sp in request.system_prompt_preset:
+        preset = system_presets_by_id.get(int(sp.system_prompt_preset_id))
+        if preset is None:
+            raise HTTPException(
+                status_code=400, detail=f"system_prompt_preset_id not found: {sp.system_prompt_preset_id}"
+            )
+        preset.name = sp.system_prompt_preset_name
+        preset.system_prompt = sp.system_prompt
+
+    # Personaプリセットの更新（複数件）
+    persona_presets_by_id: dict[int, models.PersonaPreset] = {
+        int(p.id): p for p in db.query(models.PersonaPreset).order_by(models.PersonaPreset.id.asc()).all()
+    }
+    for pp in request.persona_preset:
+        preset = persona_presets_by_id.get(int(pp.persona_preset_id))
+        if preset is None:
+            raise HTTPException(status_code=400, detail=f"persona_preset_id not found: {pp.persona_preset_id}")
+        preset.name = pp.persona_preset_name
+        preset.persona_text = pp.persona_text
+
+    # Contractプリセットの更新（複数件）
+    contract_presets_by_id: dict[int, models.ContractPreset] = {
+        int(p.id): p for p in db.query(models.ContractPreset).order_by(models.ContractPreset.id.asc()).all()
+    }
+    for cp in request.contract_preset:
+        preset = contract_presets_by_id.get(int(cp.contract_preset_id))
+        if preset is None:
+            raise HTTPException(status_code=400, detail=f"contract_preset_id not found: {cp.contract_preset_id}")
+        preset.name = cp.contract_preset_name
+        preset.contract_text = cp.contract_text
+
     # アクティブIDの更新
     global_settings.active_llm_preset_id = request.active_llm_preset_id
     global_settings.active_embedding_preset_id = request.active_embedding_preset_id
+    global_settings.active_system_prompt_preset_id = request.active_system_prompt_preset_id
+    global_settings.active_persona_preset_id = request.active_persona_preset_id
+    global_settings.active_contract_preset_id = request.active_contract_preset_id
 
     active_llm = db.query(models.LlmPreset).filter_by(id=global_settings.active_llm_preset_id).first()
     if not active_llm:
@@ -152,9 +224,26 @@ def update_settings(
     active_embedding = db.query(models.EmbeddingPreset).filter_by(id=global_settings.active_embedding_preset_id).first()
     if not active_embedding:
         raise HTTPException(status_code=400, detail="Active embedding preset is not set")
+    active_system = db.query(models.SystemPromptPreset).filter_by(id=global_settings.active_system_prompt_preset_id).first()
+    if not active_system:
+        raise HTTPException(status_code=400, detail="Active system prompt preset is not set")
+    active_persona = db.query(models.PersonaPreset).filter_by(id=global_settings.active_persona_preset_id).first()
+    if not active_persona:
+        raise HTTPException(status_code=400, detail="Active persona preset is not set")
+    active_contract = db.query(models.ContractPreset).filter_by(id=global_settings.active_contract_preset_id).first()
+    if not active_contract:
+        raise HTTPException(status_code=400, detail="Active contract preset is not set")
 
     # 変更後の設定で RuntimeConfig を組み立て、利用可能なメモリDBかを先に検証する
-    runtime_config = build_runtime_config(toml_config, global_settings, active_llm, active_embedding)
+    runtime_config = build_runtime_config(
+        toml_config,
+        global_settings,
+        active_llm,
+        active_embedding,
+        active_system,
+        active_persona,
+        active_contract,
+    )
     try:
         init_memory_db(runtime_config.memory_id, runtime_config.embedding_dimension)
     except Exception as exc:  # noqa: BLE001
@@ -167,7 +256,21 @@ def update_settings(
     db.expunge(global_settings)
     db.expunge(active_llm)
     db.expunge(active_embedding)
-    set_global_config_store(ConfigStore(toml_config, runtime_config, global_settings, active_llm, active_embedding))
+    db.expunge(active_system)
+    db.expunge(active_persona)
+    db.expunge(active_contract)
+    set_global_config_store(
+        ConfigStore(
+            toml_config,
+            runtime_config,
+            global_settings,
+            active_llm,
+            active_embedding,
+            active_system,
+            active_persona,
+            active_contract,
+        )
+    )
     reset_memory_manager()
 
     # 最新状態を返す
