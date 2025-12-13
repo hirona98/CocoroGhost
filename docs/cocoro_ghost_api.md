@@ -177,11 +177,23 @@ LiteLLM の Response API を前提にした cocoro_ghost の API 仕様。LLM �
 - メソッド: `GET`, `POST`
 - パス: `/api/settings`
 
+### POST リクエストボディ
+
+`GET` のレスポンスと同じ形を毎回すべて送る（部分更新は不可）。`reminders_enabled` でリマインダー機能の ON/OFF を切り替え、`reminders` は全置き換え。
+
+
 ### レスポンスボディ
 
 ```json
 {
   "exclude_keywords": ["パスワード", "銀行"],
+  "reminders_enabled": true,
+  "reminders": [
+    {
+      "scheduled_at": "2025-01-01T09:00:00Z",
+      "content": "薬を飲む"
+    }
+  ],
   "llm_preset": [
     {
       "llm_preset_id": 1,

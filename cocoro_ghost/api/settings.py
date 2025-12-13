@@ -23,12 +23,21 @@ def get_settings(
 
     llm_presets: list[schemas.LlmPresetSettings] = []
     embedding_presets: list[schemas.EmbeddingPresetSettings] = []
+    reminders: list[schemas.ReminderSettings] = []
 
     character_preset = None
     if global_settings.active_character_preset_id:
         preset = db.query(models.CharacterPreset).filter_by(id=global_settings.active_character_preset_id).first()
         if preset:
             character_preset = preset
+
+    for reminder in db.query(models.Reminder).order_by(models.Reminder.scheduled_at.asc(), models.Reminder.id.asc()).all():
+        reminders.append(
+            schemas.ReminderSettings(
+                scheduled_at=reminder.scheduled_at,
+                content=reminder.content,
+            )
+        )
 
     if global_settings.active_llm_preset_id:
         preset = db.query(models.LlmPreset).filter_by(id=global_settings.active_llm_preset_id).first()
@@ -66,6 +75,8 @@ def get_settings(
 
     return schemas.FullSettingsResponse(
         exclude_keywords=json.loads(global_settings.exclude_keywords),
+        reminders_enabled=global_settings.reminders_enabled,
+        reminders=reminders,
         llm_preset=llm_presets,
         embedding_preset=embedding_presets,
     )
@@ -80,8 +91,18 @@ def update_settings(
     global_settings = load_global_settings(db)
 
     # 共通設定更新
-    if request.exclude_keywords is not None:
-        global_settings.exclude_keywords = json.dumps(request.exclude_keywords)
+    global_settings.exclude_keywords = json.dumps(request.exclude_keywords)
+    global_settings.reminders_enabled = request.reminders_enabled
+
+    # リマインダー更新：常に「全置き換え」（IDは作り直される）
+    db.query(models.Reminder).delete(synchronize_session=False)
+    for item in request.reminders:
+        db.add(
+            models.Reminder(
+                scheduled_at=item.scheduled_at,
+                content=item.content,
+            )
+        )
 
     # アクティブなプリセットをロード
     active_llm = None
@@ -91,36 +112,37 @@ def update_settings(
     if global_settings.active_character_preset_id:
         active_character = db.query(models.CharacterPreset).filter_by(id=global_settings.active_character_preset_id).first()
 
-    if request.llm_preset:
-        if not active_llm:
-            raise HTTPException(status_code=400, detail="Active LLM preset is not set")
-        # 先頭のみ反映（単一アクティブ想定）
-        lp = request.llm_preset[0]
-        active_llm.llm_api_key = lp.llm_api_key or active_llm.llm_api_key
-        active_llm.llm_model = lp.llm_model
-        active_llm.reasoning_effort = lp.reasoning_effort
-        active_llm.llm_base_url = lp.llm_base_url
-        active_llm.max_turns_window = lp.max_turns_window
-        active_llm.max_tokens = lp.max_tokens
-        active_llm.image_model_api_key = lp.image_model_api_key
-        active_llm.image_model = lp.image_model
-        active_llm.image_llm_base_url = lp.image_llm_base_url
-        active_llm.max_tokens_vision = lp.max_tokens_vision
-        active_llm.image_timeout_seconds = lp.image_timeout_seconds
-        if active_character and lp.system_prompt:
-            active_character.system_prompt = lp.system_prompt
+    if not active_llm:
+        raise HTTPException(status_code=400, detail="Active LLM preset is not set")
+    if not active_character:
+        raise HTTPException(status_code=400, detail="Active character preset is not set")
 
-    if request.embedding_preset:
-        if not active_llm:
-            raise HTTPException(status_code=400, detail="Active LLM preset is not set")
-        ep = request.embedding_preset[0]
-        active_llm.embedding_api_key = ep.embedding_model_api_key or active_llm.embedding_api_key
-        active_llm.embedding_model = ep.embedding_model
-        active_llm.embedding_base_url = ep.embedding_base_url
-        active_llm.embedding_dimension = ep.embedding_dimension
-        active_llm.similar_episodes_limit = ep.similar_episodes_limit
-        if active_character:
-            active_character.memory_id = ep.embedding_preset_name
+    # 先頭のみ反映（単一アクティブ想定）
+    if len(request.llm_preset) != 1:
+        raise HTTPException(status_code=400, detail="llm_preset must have exactly 1 item")
+    lp = request.llm_preset[0]
+    active_llm.llm_api_key = lp.llm_api_key
+    active_llm.llm_model = lp.llm_model
+    active_llm.reasoning_effort = lp.reasoning_effort
+    active_llm.llm_base_url = lp.llm_base_url
+    active_llm.max_turns_window = lp.max_turns_window
+    active_llm.max_tokens = lp.max_tokens
+    active_llm.image_model_api_key = lp.image_model_api_key
+    active_llm.image_model = lp.image_model
+    active_llm.image_llm_base_url = lp.image_llm_base_url
+    active_llm.max_tokens_vision = lp.max_tokens_vision
+    active_llm.image_timeout_seconds = lp.image_timeout_seconds
+    active_character.system_prompt = lp.system_prompt
+
+    if len(request.embedding_preset) != 1:
+        raise HTTPException(status_code=400, detail="embedding_preset must have exactly 1 item")
+    ep = request.embedding_preset[0]
+    active_llm.embedding_api_key = ep.embedding_model_api_key
+    active_llm.embedding_model = ep.embedding_model
+    active_llm.embedding_base_url = ep.embedding_base_url
+    active_llm.embedding_dimension = ep.embedding_dimension
+    active_llm.similar_episodes_limit = ep.similar_episodes_limit
+    active_character.memory_id = ep.embedding_preset_name
 
     db.commit()
 

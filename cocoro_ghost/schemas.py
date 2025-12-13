@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import List, Optional
 
 from pydantic import BaseModel
@@ -54,6 +55,10 @@ class FullSettingsResponse(BaseModel):
     # 共通設定
     exclude_keywords: List[str]
 
+    # リマインダー
+    reminders_enabled: bool
+    reminders: List["ReminderSettings"] = []
+
     # アクティブなLLMプリセット
     llm_preset: List["LlmPresetSettings"]
 
@@ -74,7 +79,7 @@ class LlmPresetSettings(BaseModel):
     llm_preset_id: int
     llm_preset_name: str
     system_prompt: str
-    llm_api_key: Optional[str]
+    llm_api_key: str
     llm_model: str
     reasoning_effort: Optional[str]
     llm_base_url: Optional[str]
@@ -99,9 +104,25 @@ class EmbeddingPresetSettings(BaseModel):
     similar_episodes_limit: int
 
 
+class ReminderSettings(BaseModel):
+    """設定一覧用リマインダー情報。"""
+
+    scheduled_at: datetime
+    content: str
+
+
+class ReminderUpsertRequest(BaseModel):
+    """リマインダーの追加用（IDは扱わない）。"""
+
+    scheduled_at: datetime
+    content: str
+
+
 class FullSettingsUpdateRequest(BaseModel):
     """全設定更新リクエスト。"""
 
-    exclude_keywords: Optional[List[str]] = None
-    llm_preset: Optional[List[LlmPresetSettings]] = None
-    embedding_preset: Optional[List[EmbeddingPresetSettings]] = None
+    exclude_keywords: List[str]
+    reminders_enabled: bool
+    reminders: List[ReminderUpsertRequest]
+    llm_preset: List[LlmPresetSettings]
+    embedding_preset: List[EmbeddingPresetSettings]

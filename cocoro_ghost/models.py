@@ -88,6 +88,7 @@ class GlobalSettings(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     exclude_keywords: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    reminders_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     active_llm_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("llm_presets.id"))
     active_character_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("character_presets.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
@@ -145,5 +146,18 @@ class CharacterPreset(Base):
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     memory_id: Mapped[str] = mapped_column(String, nullable=False, default="default")
 
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Reminder(Base):
+    """リマインダー設定。"""
+
+    __tablename__ = "reminders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
