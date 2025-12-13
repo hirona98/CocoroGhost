@@ -11,6 +11,10 @@ CocoroAIのLLMと記憶処理を担当するPython/FastAPIバックエンドサ�
 - プリセット機能によるLLM設定の動的切り替え
 - 画像クリーンアップなどの定期実行タスク
 
+## ドキュメント
+
+- 仕様（パートナー最適 / sqlite-vec固定）: `docs/partner_spec/README.md`
+
 ## セットアップ
 
 ### 自動セットアップ（推奨）
