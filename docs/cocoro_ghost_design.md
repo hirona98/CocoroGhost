@@ -25,7 +25,15 @@
 - **印象スコア（salience_score）**: AIがどれだけ「印象的」と感じたか（0.0〜1.0）
 - **埋め込みベクトル**: 類似エピソード検索用
 
-### 2.2 人物プロフィール
+### 2.2 会話ログ（チャットの保存）
+
+`/chat` の「1リクエスト = 1往復」を、`episodes` の1レコードとして保存する（会話のアーカイブ用途）。
+
+- `episodes.user_text`: ユーザー発話
+- `episodes.reply_text`: アシスタント最終返答（SSEで配信したトークンを結合した最終テキスト）
+- 補足: system prompt / 類似エピソード注入文 / SSEトークン断片などの「内部コンテキスト」は `episodes` には保存しない
+
+### 2.3 人物プロフィール
 
 会話に登場した人物（ユーザー本人含む）を追跡・更新する。
 
@@ -34,7 +42,7 @@
 - **状況**: 現在の状況の要約（仕事・体調・家族構成等）
 - **スコア**: 親しさ（closeness）、気がかり度（worry）
 
-### 2.3 内的思考（Reflection）
+### 2.4 内的思考（Reflection）
 
 エピソード生成時にLLMへ問い合わせ、以下を含むJSONを生成する。
 
@@ -43,6 +51,14 @@
 - `topic_tags`: トピック
 - `salience_score`: 印象スコア
 - `persons`: 登場人物の情報更新（スコアのdelta、状況変化など）
+
+### 2.5 ベクトル検索（sqlite-vec）
+
+テキストそのものは `episodes` に保存し、類似検索用の「数値ベクトル」だけを sqlite-vec の仮想テーブル `episode_vectors` に保存する。
+
+- `episode_vectors` に入るのは `embedding float[dimension]`（数値配列）のみで、テキストは入らない
+- 紐づけは `rowid` を利用し、`episode_vectors.rowid == episodes.id` として扱う
+- 検索は `episode_vectors` の kNN（`MATCH` + `k`）で `episode_id(rowid)` と `distance` を得てから、`episodes` を参照して本文を取り出す
 
 ---
 
@@ -120,7 +136,7 @@
 | reflection_text | TEXT | Yes | 内的思考テキスト |
 | reflection_json | TEXT | Yes | reflection の元JSON |
 | salience_score | REAL | Yes | 印象スコア（0.0〜1.0） |
-| embedding_json_bytes | BLOB/TEXT | No | 埋め込みベクトル（バックアップ、JSON bytes）。類似検索は sqlite-vec 側の `episode_vectors` を使用 |
+| embedding_json_bytes | BLOB/TEXT | No | 埋め込みベクトル（バックアップ、JSON bytes）。実際の類似検索は sqlite-vec 側の `episode_vectors` を使用 |
 | raw_desktop_path | TEXT | No | デスクトップ画像パス（72時間有効） |
 | raw_camera_path | TEXT | No | カメラ画像パス（72時間有効） |
 | created_at | DATETIME | Yes | レコード作成時刻 |
@@ -171,6 +187,14 @@
 - エピソード系テーブル（episodes, persons, episode_persons）
 - sqlite-vec の `episode_vectors` 仮想テーブル
 
+#### 7.5.1 `episode_vectors`（sqlite-vec 仮想テーブル）
+
+`episode_vectors` は、エピソードの類似検索（ベクトル近傍検索）のためのインデックス。
+
+- 格納: `episode_vectors(rowid, embedding)`（`rowid` は `episodes.id` と同一）
+- `embedding` は `float[embedding_dimension]`（例: 1536次元）
+- 注意: sqlite-vec は拡張モジュールをロードして初めて参照できる（拡張未ロードの素のSQLiteクライアントでは見えない/エラーになる）
+
 ---
 
 ## 8. 設定管理
@@ -212,19 +236,20 @@
 
 ユーザーとの通常会話を処理する。
 
-**同期処理**（レスポンス前）:
-1. 直近エピソードからコンテキスト収集
-2. 類似エピソード検索（埋め込みベクトル）
-3. 画像がある場合は画像要約生成
-4. パートナーとしての返答生成（LLM呼び出し）
-5. `reply_text` をレスポンスとして返却
+**同期処理**（SSE配信中〜doneまで）:
+1. （任意）画像がある場合は画像要約生成
+2. クエリ埋め込みを生成し、`episode_vectors` で類似エピソードIDを検索
+3. 類似エピソードの本文を `episodes` から取得し、LLMの会話コンテキストに注入
+4. LLMの返答をストリーミングで配信（`token` イベント）
+5. 生成完了後、`episodes` に「1往復」を保存して `episode_id` を確定
+6. `done` イベントで `episode_id` と最終 `reply_text` を返却
 
 **非同期処理**（レスポンス後）:
 1. reflection 生成（内的思考JSON）
 2. 埋め込みベクトル生成
-3. `episodes` テーブルに保存
-4. `persons` テーブルのスコア・状況を更新
-5. `episode_persons` に紐づけを追加
+3. `episodes` の該当レコードを更新（感情/トピック/反省/埋め込みバックアップ等）
+4. `episode_vectors` に検索用ベクトルを upsert（`rowid = episode_id`）
+5. `persons` のスコア・状況を更新し、`episode_persons` に紐づけを追加
 
 ### 9.2 `/notification` フロー
 
