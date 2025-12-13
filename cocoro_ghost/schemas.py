@@ -20,6 +20,7 @@ class NotificationRequest(BaseModel):
     source_system: str
     title: str
     body: str
+    images: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class NotificationResponse(BaseModel):
@@ -30,6 +31,7 @@ class MetaRequestRequest(BaseModel):
     memory_id: Optional[str] = None
     instruction: str
     payload_text: str
+    images: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class MetaRequestResponse(BaseModel):

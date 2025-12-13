@@ -62,7 +62,11 @@ data: {"message":"...","code":"..."}
   "memory_id": "default",
   "source_system": "gmail",
   "title": "string",
-  "body": "string"
+  "body": "string",
+  "images": [
+    {"type": "desktop_capture", "base64": "..."},
+    {"type": "camera_capture", "base64": "..."}
+  ]
 }
 ```
 
@@ -73,6 +77,7 @@ data: {"message":"...","code":"..."}
 ```
 
 - 保存は `units(kind=EPISODE, source=notification)` + `payload_episode.user_text` に本文を入れ、必要なら `context_note` に構造化JSONを入れる
+- `images` がある場合は `payload_episode.image_summary` に要約を保存する
 
 ## `/api/meta_request`
 
@@ -82,7 +87,11 @@ data: {"message":"...","code":"..."}
 {
   "memory_id": "default",
   "instruction": "string",
-  "payload_text": "string"
+  "payload_text": "string",
+  "images": [
+    {"type": "desktop_capture", "base64": "..."},
+    {"type": "camera_capture", "base64": "..."}
+  ]
 }
 ```
 

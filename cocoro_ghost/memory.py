@@ -165,6 +165,9 @@ class MemoryManager:
         lock = _get_memory_lock(memory_id)
         now_ts = _now_utc_ts()
 
+        image_summaries = self._summarize_images(request.images)
+        image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
+
         base_text = f"{request.source_system}: {request.title}\n{request.body}"
         context_note = _json_dumps(
             {"source_system": request.source_system, "title": request.title, "body": request.body}
@@ -176,7 +179,7 @@ class MemoryManager:
                 source="notification",
                 user_text=base_text,
                 reply_text=None,
-                image_summary=None,
+                image_summary=image_summary_text,
                 context_note=context_note,
                 sensitivity=int(Sensitivity.NORMAL),
             )
@@ -188,6 +191,9 @@ class MemoryManager:
         lock = _get_memory_lock(memory_id)
         now_ts = _now_utc_ts()
 
+        image_summaries = self._summarize_images(request.images)
+        image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
+
         base_text = f"instruction: {request.instruction}\npayload: {request.payload_text}"
         context_note = _json_dumps({"instruction": request.instruction, "payload_text": request.payload_text})
         with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
@@ -197,7 +203,7 @@ class MemoryManager:
                 source="meta_request",
                 user_text=base_text,
                 reply_text=None,
-                image_summary=None,
+                image_summary=image_summary_text,
                 context_note=context_note,
                 sensitivity=int(Sensitivity.NORMAL),
             )
