@@ -31,7 +31,7 @@
 
 ### SSE Events
 
-推奨：SSEの `event` 名を固定し、`data` は JSON のみにする。
+SSEの `event` 名は固定し、`data` は JSON のみとする。
 
 ```text
 event: token
@@ -46,7 +46,7 @@ data: {"message":"...","code":"..."}
 
 ### サーバ内部フロー（同期）
 
-1. （任意）画像要約（vision）
+1. 画像要約（`images` がある場合）
 2. Schedulerで **MemoryPack** を生成
 3. LLMへ `system_prompt + persona + contract + memorypack + user_text` を注入
 4. 返答をSSEで配信
@@ -86,15 +86,15 @@ data: {"message":"...","code":"..."}
 }
 ```
 
-### Response（提案）
+### Response
 
 ```json
 { "unit_id": 34567 }
 ```
 
-## 管理API（提案：最小）
+## 管理API
 
-実装の都合でパスは調整してよいが、以下の機能は必要。
+以下を提供する。
 
 - **閲覧**
   - `GET /api/memories/{memory_id}/units?kind=&state=&limit=&offset=`
@@ -114,7 +114,7 @@ data: {"message":"...","code":"..."}
   - `POST /api/memories/{memory_id}/persona`（新規追加・active化）
   - `POST /api/memories/{memory_id}/contract`（新規追加・active化）
 
-- **ジョブ投入（任意）**
+- **ジョブ投入**
   - `POST /api/memories/{memory_id}/jobs/weekly_summary`（週次サマリ生成のenqueue）
 
 ## 付加API（既存互換）
@@ -124,3 +124,161 @@ data: {"message":"...","code":"..."}
 - `/api/capture`（desktop/camera のキャプチャ保存）
 - `/api/settings`（UI向けの設定取得/更新）
 - `/api/logs/stream`（WebSocketログ購読）
+
+## `/api/settings`
+
+UI向けの「全設定」取得/更新。
+
+### `GET /api/settings`
+
+#### Response（`FullSettingsResponse`）
+
+```json
+{
+  "exclude_keywords": ["例:除外したい単語"],
+  "reminders_enabled": true,
+  "reminders": [
+    {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
+  ],
+  "llm_preset": [
+    {
+      "llm_preset_id": 1,
+      "llm_preset_name": "default",
+      "system_prompt": "string",
+      "llm_api_key": "string",
+      "llm_model": "string",
+      "reasoning_effort": "optional",
+      "llm_base_url": "optional",
+      "max_turns_window": 20,
+      "max_tokens": 2048,
+      "image_model_api_key": "optional",
+      "image_model": "string",
+      "image_llm_base_url": "optional",
+      "max_tokens_vision": 1024,
+      "image_timeout_seconds": 30
+    }
+  ],
+  "embedding_preset": [
+    {
+      "embedding_preset_id": 1,
+      "embedding_preset_name": "default",
+      "embedding_model_api_key": "optional",
+      "embedding_model": "string",
+      "embedding_base_url": "optional",
+      "embedding_dimension": 1536,
+      "similar_episodes_limit": 10
+    }
+  ]
+}
+```
+
+- `scheduled_at` はISO 8601のdatetime（Pydanticがパース可能な形式）で返す
+
+### `POST /api/settings`
+
+全設定をまとめて更新（内部的には「アクティブなLLM/キャラクタープリセット」を更新する）。
+
+#### Request（`FullSettingsUpdateRequest`）
+
+```json
+{
+  "exclude_keywords": ["string"],
+  "reminders_enabled": true,
+  "reminders": [
+    {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
+  ],
+  "llm_preset": [
+    {
+      "llm_preset_id": 1,
+      "llm_preset_name": "default",
+      "system_prompt": "string",
+      "llm_api_key": "string",
+      "llm_model": "string",
+      "reasoning_effort": "optional",
+      "llm_base_url": "optional",
+      "max_turns_window": 20,
+      "max_tokens": 2048,
+      "image_model_api_key": "optional",
+      "image_model": "string",
+      "image_llm_base_url": "optional",
+      "max_tokens_vision": 1024,
+      "image_timeout_seconds": 30
+    }
+  ],
+  "embedding_preset": [
+    {
+      "embedding_preset_id": 1,
+      "embedding_preset_name": "default",
+      "embedding_model_api_key": "optional",
+      "embedding_model": "string",
+      "embedding_base_url": "optional",
+      "embedding_dimension": 1536,
+      "similar_episodes_limit": 10
+    }
+  ]
+}
+```
+
+#### Response
+
+- `GET /api/settings` と同一（更新後の最新状態を返す）
+
+#### 注意点（実装仕様）
+
+- `llm_preset` / `embedding_preset` は「配列」だが、実装は **各1件のみ**許可（それ以外は `400`）
+- `reminders` は **全置き換え**（既存は削除されIDは作り直される）
+- `embedding_preset[0].embedding_preset_name` は `memory_id` 扱いで、変更時はメモリDB初期化を検証する（失敗時 `400`）
+
+## `/api/capture`
+
+キャプチャ画像をUnit(Episode)として保存し、派生ジョブをenqueueする。
+
+### `POST /api/capture`
+
+#### Request（`CaptureRequest`）
+
+```json
+{
+  "capture_type": "desktop",
+  "image_base64": "string",
+  "context_text": "optional"
+}
+```
+
+- `capture_type`: `"desktop"` または `"camera"`
+- `image_base64`: 画像のbase64（data URLヘッダ無しの想定）
+- `context_text`: 保存時の `payload_episode.user_text` に入る（省略可）
+
+#### Response（`CaptureResponse`）
+
+```json
+{ "episode_id": 12345, "stored": true }
+```
+
+## `/api/logs/stream`（WebSocket）
+
+サーバログの購読（テキストフレームでJSONをpush）。
+
+- URL: `ws(s)://<host>/api/logs/stream`
+- 認証: `Authorization: Bearer <TOKEN>`（HTTPヘッダ）
+
+### メッセージ形式
+
+接続直後に直近最大500件のバッファを送信し、その後も新規ログを随時pushする。
+
+```json
+{"ts":"2025-12-13T10:00:00+00:00","level":"INFO","logger":"cocoro_ghost.main","msg":"string"}
+```
+
+- `ts`: UTCのISO 8601
+- `msg`: 改行はスペースに置換される
+
+## `/api/health`
+
+ヘルスチェック。
+
+### `GET /api/health`
+
+```json
+{ "status": "healthy" }
+```
