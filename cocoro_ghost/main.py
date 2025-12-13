@@ -37,7 +37,7 @@ def create_app() -> FastAPI:
     from cocoro_ghost.db import (
         init_memory_db,
         init_settings_db,
-        load_active_character_preset,
+        load_active_embedding_preset,
         load_active_llm_preset,
         load_global_settings,
         ensure_initial_settings,
@@ -59,21 +59,21 @@ def create_app() -> FastAPI:
     with settings_session_scope() as session:
         global_settings = load_global_settings(session)
         llm_preset = load_active_llm_preset(session)
-        character_preset = load_active_character_preset(session)
+        embedding_preset = load_active_embedding_preset(session)
 
         # RuntimeConfig構築
         runtime_config = build_runtime_config(
-            toml_config, global_settings, llm_preset, character_preset
+            toml_config, global_settings, llm_preset, embedding_preset
         )
 
         # ConfigStore作成（プリセットオブジェクトをデタッチ状態で保持するためコピー）
         # SQLAlchemyセッション終了後も使えるようにexpungeする
         session.expunge(global_settings)
         session.expunge(llm_preset)
-        session.expunge(character_preset)
+        session.expunge(embedding_preset)
 
         config_store = ConfigStore(
-            toml_config, runtime_config, global_settings, llm_preset, character_preset
+            toml_config, runtime_config, global_settings, llm_preset, embedding_preset
         )
 
     set_global_config_store(config_store)

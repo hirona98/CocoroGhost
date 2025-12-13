@@ -2,7 +2,7 @@
 
 ## 目的
 
-- アプリ起動に必要な最小設定（token等）と、運用中に切替えるプリセット（LLM/Character）を永続化する
+- アプリ起動に必要な最小設定（token等）と、運用中に切替えるプリセット（LLM/Embedding）を永続化する
 - 記憶DB（`memory_<memory_id>.db`）とは分離する
 
 ## テーブル（必須）
@@ -18,29 +18,31 @@
 - `exclude_keywords`（TEXT: JSON array）
 - `reminders_enabled`（INTEGER: 0/1）
 - `active_llm_preset_id`（INTEGER）
-- `active_character_preset_id`（INTEGER）
+- `active_embedding_preset_id`（INTEGER）
 
 ### `llm_presets`
 
-LLM/Embeddingの切替単位。LiteLLMの接続情報もここに持つ。
+LLMの切替単位。LiteLLMの接続情報（chat/image）と `system_prompt` をここに持つ。
 
 例カラム:
 
 - `llm_model`, `llm_api_key`, `llm_base_url`, ...
-- `embedding_model`, `embedding_dimension`, `embedding_base_url`, ...
-- `max_inject_tokens`
-- `similar_limit_by_kind_json`（種別ごとのKNN上限などをJSONで保持）
+- `image_model`, `image_model_api_key`, `image_llm_base_url`, ...
+- `system_prompt`
 
-### `character_presets`
+### `embedding_presets`
 
-キャラクター（system prompt）と、紐づく `memory_id` を保持する。
+Embedding/検索パラメータの切替単位。
 
 例カラム:
 
-- `system_prompt`
-- `memory_id`
+- `name`（TEXT: `memory_id`。`memory_<name>.db` の `<name>` 部分）
+- `embedding_model`, `embedding_dimension`, `embedding_base_url`, ...
+- `max_inject_tokens`
+- `similar_limit_by_kind_json`（種別ごとのKNN上限などをJSONで保持）
+- `similar_episodes_limit`
 
-### `reminders`（任意 / 既存互換）
+### `reminders`（任意）
 
 リマインダー（時刻＋内容）を保持する。
 
@@ -50,5 +52,5 @@ LLM/Embeddingの切替単位。LiteLLMの接続情報もここに持つ。
 ## 初回起動時（推奨フロー）
 
 1. TOML（`config/setting.toml`）から `token` 等の最小値を読む
-2. `settings.db` が空なら `global_settings/llm_presets/character_presets` の default を作る
+2. `settings.db` が空なら `global_settings/llm_presets/embedding_presets` の default を作る
 3. 以降は `settings.db` を正として読み込む（TOMLは最小限の起動設定のみにする）

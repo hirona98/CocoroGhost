@@ -2,7 +2,7 @@
 
 ## ベースパス
 
-- 実装は既存互換のため **`/api` プレフィックス**を使用する（例: `/api/chat`）
+- APIは **`/api` プレフィックス**を使用する（例: `/api/chat`）
 
 ## 認証
 
@@ -168,7 +168,7 @@ Response
 { "unit_id": 12345 }
 ```
 
-## 付加API（既存互換）
+## 付加API
 
 パートナー最適コアではないが、現行実装に含まれる。
 
@@ -191,6 +191,8 @@ UI向けの「全設定」取得/更新。
   "reminders": [
     {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
   ],
+  "active_llm_preset_id": 1,
+  "active_embedding_preset_id": 1,
   "llm_preset": [
     {
       "llm_preset_id": 1,
@@ -227,7 +229,7 @@ UI向けの「全設定」取得/更新。
 
 ### `POST /api/settings`
 
-全設定をまとめて更新（内部的には「アクティブなLLM/キャラクタープリセット」を更新する）。
+全設定をまとめて更新（共通設定 + プリセット一覧 + `active_*_preset_id` を更新する）。
 
 #### Request（`FullSettingsUpdateRequest`）
 
@@ -238,6 +240,8 @@ UI向けの「全設定」取得/更新。
   "reminders": [
     {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
   ],
+  "active_llm_preset_id": 1,
+  "active_embedding_preset_id": 1,
   "llm_preset": [
     {
       "llm_preset_id": 1,
@@ -276,10 +280,11 @@ UI向けの「全設定」取得/更新。
 
 #### 注意点（実装仕様）
 
-- `llm_preset` / `embedding_preset` は「配列」だが、実装は **各1件のみ**許可（それ以外は `400`）
+- `llm_preset` / `embedding_preset` は「配列」で、**複数件を一括更新**する（`*_preset_id` が未存在の場合は `400`）
 - `reminders` は **全置き換え**（既存は削除されIDは作り直される）
-- `embedding_preset[0].embedding_preset_name` は `memory_id` 扱いで、変更時はメモリDB初期化を検証する（失敗時 `400`）
-- `/api/settings` は「アクティブなプリセット 1件」を更新するのみ（プリセットの追加/切替や `max_inject_tokens` 等の詳細パラメータ操作はAPI外）
+- `active_llm_preset_id` / `active_embedding_preset_id` は **更新後に参照可能なID**である必要がある（未存在は `400`）
+- `active_embedding_preset_id` で選択される `embedding_preset_name` は `memory_id` 扱いで、変更時はメモリDB初期化を検証する（失敗時 `400`）
+- `max_inject_tokens` / `similar_limit_by_kind` 等の詳細パラメータは現状API外
 
 ## `/api/capture`
 

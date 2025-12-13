@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Iterator
 
 from sqlalchemy import create_engine, event, text
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -21,7 +20,7 @@ logger = logging.getLogger(__name__)
 # vec_units は本文を置かず unit_id で JOIN して取得する。
 VEC_UNITS_TABLE_NAME = "vec_units"
 
-# 設定DB用 Base（GlobalSettings, LlmPreset, CharacterPreset, 旧SettingPreset）
+# 設定DB用 Base（GlobalSettings, LlmPreset, EmbeddingPreset）
 Base = declarative_base()
 
 # 記憶DB用 Base（Unit/payload/entities/jobs 等：新仕様）
@@ -154,20 +153,6 @@ def _create_memory_indexes(engine) -> None:
         conn.commit()
 
 
-def _upgrade_memory_db_schema(engine) -> None:
-    # 既存DB向けの軽量アップグレード（運用していない前提でも、開発中に古いDBが残りやすい）
-    with engine.connect() as conn:
-        for stmt in [
-            "ALTER TABLE payload_summary ADD COLUMN summary_json TEXT",
-        ]:
-            try:
-                conn.execute(text(stmt))
-            except OperationalError:
-                # 既にカラムが存在する場合など
-                pass
-        conn.commit()
-
-
 def _ensure_default_persona_contract(session: Session) -> None:
     from cocoro_ghost import prompts
     from cocoro_ghost.unit_enums import Sensitivity, UnitKind, UnitState
@@ -238,21 +223,6 @@ def init_settings_db() -> None:
     engine = create_engine(db_url, future=True, connect_args=connect_args)
     SettingsSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     Base.metadata.create_all(bind=engine)
-
-    # 既存DB向けの軽量アップグレード（運用していない前提でも、開発中に古いDBが残りやすい）
-    with engine.connect() as conn:
-        for stmt in [
-            "ALTER TABLE global_settings ADD COLUMN token TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE global_settings ADD COLUMN reminders_enabled INTEGER NOT NULL DEFAULT 1",
-            "ALTER TABLE llm_presets ADD COLUMN max_inject_tokens INTEGER NOT NULL DEFAULT 1200",
-            "ALTER TABLE llm_presets ADD COLUMN similar_limit_by_kind_json TEXT NOT NULL DEFAULT '{}'",
-        ]:
-            try:
-                conn.execute(text(stmt))
-            except OperationalError:
-                # 既にカラムが存在する場合など
-                pass
-        conn.commit()
     logger.info(f"設定DB初期化完了: {db_url}")
 
 
@@ -307,7 +277,6 @@ def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
     import cocoro_ghost.unit_models  # noqa: F401
 
     UnitBase.metadata.create_all(bind=engine)
-    _upgrade_memory_db_schema(engine)
     _create_memory_indexes(engine)
 
     # sqlite-vec拡張を有効化
@@ -466,9 +435,14 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         global_settings is not None
         and getattr(global_settings, "token", "")
         and global_settings.active_llm_preset_id is not None
-        and global_settings.active_character_preset_id is not None
+        and getattr(global_settings, "active_embedding_preset_id", None) is not None
     ):
-        return
+        active_llm = session.query(models.LlmPreset).filter_by(id=global_settings.active_llm_preset_id).first()
+        active_embedding = session.query(models.EmbeddingPreset).filter_by(
+            id=global_settings.active_embedding_preset_id
+        ).first()
+        if active_llm and (active_llm.system_prompt or "").strip() and active_embedding:
+            return
 
     logger.info("設定DBの初期化を行います（TOMLのLLM設定は使用しません）")
 
@@ -487,51 +461,53 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
 
     # LlmPresetの用意（存在しない/アクティブでない場合は空のdefaultを作成）
     llm_preset = None
-    if global_settings.active_llm_preset_id is not None:
-        llm_preset = (
-            session.query(models.LlmPreset).filter_by(id=global_settings.active_llm_preset_id).first()
-        )
+    active_llm_id = global_settings.active_llm_preset_id
+    if active_llm_id is not None:
+        llm_preset = session.query(models.LlmPreset).filter_by(id=active_llm_id).first()
     if llm_preset is None:
         llm_preset = session.query(models.LlmPreset).first()
     if llm_preset is None:
         logger.warning("LLMプリセットが無いため、空の default プリセットを作成します")
         llm_preset = models.LlmPreset(
             name="default",
+            system_prompt=toml_config.character_prompt or CHARACTER_SYSTEM_PROMPT,
             llm_api_key="",
             llm_model="unset",
-            embedding_model="unset",
-            embedding_api_key=None,
-            embedding_dimension=toml_config.embedding_dimension,
             image_model="unset",
             image_timeout_seconds=toml_config.image_timeout_seconds,
-            similar_episodes_limit=toml_config.similar_episodes_limit,
-            max_inject_tokens=1200,
-            similar_limit_by_kind_json="{}",
         )
         session.add(llm_preset)
         session.flush()
 
-    # CharacterPresetの用意（存在しない/アクティブでない場合はdefaultを作成）
-    char_preset = None
-    if global_settings.active_character_preset_id is not None:
-        char_preset = (
-            session.query(models.CharacterPreset).filter_by(id=global_settings.active_character_preset_id).first()
-        )
-    if char_preset is None:
-        char_preset = session.query(models.CharacterPreset).first()
-    if char_preset is None:
-        char_preset = models.CharacterPreset(
+    if not (llm_preset.system_prompt or "").strip():
+        llm_preset.system_prompt = toml_config.character_prompt or CHARACTER_SYSTEM_PROMPT
+
+    if active_llm_id is None or int(llm_preset.id) != int(active_llm_id):
+        global_settings.active_llm_preset_id = int(llm_preset.id)
+
+    # EmbeddingPreset の用意（存在しない/アクティブでない場合は default を作成）
+    embedding_preset = None
+    active_embedding_id = getattr(global_settings, "active_embedding_preset_id", None)
+    if active_embedding_id is not None:
+        embedding_preset = session.query(models.EmbeddingPreset).filter_by(id=active_embedding_id).first()
+    if embedding_preset is None:
+        embedding_preset = session.query(models.EmbeddingPreset).first()
+    if embedding_preset is None:
+        embedding_preset = models.EmbeddingPreset(
             name="default",
-            system_prompt=toml_config.character_prompt or CHARACTER_SYSTEM_PROMPT,
-            memory_id="default",
+            embedding_model=toml_config.embedding_model or "unset",
+            embedding_api_key=None,
+            embedding_base_url=None,
+            embedding_dimension=int(toml_config.embedding_dimension),
+            similar_episodes_limit=int(toml_config.similar_episodes_limit),
+            max_inject_tokens=1200,
+            similar_limit_by_kind_json="{}",
         )
-        session.add(char_preset)
+        session.add(embedding_preset)
         session.flush()
 
-    if global_settings.active_llm_preset_id is None:
-        global_settings.active_llm_preset_id = llm_preset.id
-    if global_settings.active_character_preset_id is None:
-        global_settings.active_character_preset_id = char_preset.id
+    if active_embedding_id is None or int(embedding_preset.id) != int(active_embedding_id):
+        global_settings.active_embedding_preset_id = int(embedding_preset.id)
 
     session.commit()
 
@@ -560,16 +536,16 @@ def load_active_llm_preset(session: Session):
     return preset
 
 
-def load_active_character_preset(session: Session):
-    """アクティブなCharacterPresetを取得。"""
+def load_active_embedding_preset(session: Session):
+    """アクティブなEmbeddingPresetを取得。"""
     from cocoro_ghost import models
 
     settings = load_global_settings(session)
-    if settings.active_character_preset_id is None:
-        raise RuntimeError("アクティブなキャラクタープリセットが設定されていません")
+    active_id = getattr(settings, "active_embedding_preset_id", None)
+    if active_id is None:
+        raise RuntimeError("アクティブなEmbeddingプリセットが設定されていません")
 
-    preset = session.query(models.CharacterPreset).filter_by(id=settings.active_character_preset_id).first()
+    preset = session.query(models.EmbeddingPreset).filter_by(id=active_id).first()
     if preset is None:
-        raise RuntimeError(f"キャラクタープリセット(id={settings.active_character_preset_id})が存在しません")
+        raise RuntimeError(f"Embeddingプリセット(id={active_id})が存在しません")
     return preset
-

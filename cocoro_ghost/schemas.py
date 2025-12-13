@@ -110,6 +110,10 @@ class FullSettingsResponse(BaseModel):
     reminders_enabled: bool
     reminders: List["ReminderSettings"] = Field(default_factory=list)
 
+    # アクティブなプリセットID
+    active_llm_preset_id: Optional[int] = None
+    active_embedding_preset_id: Optional[int] = None
+
     # アクティブなLLMプリセット
     llm_preset: List["LlmPresetSettings"]
 
@@ -175,5 +179,7 @@ class FullSettingsUpdateRequest(BaseModel):
     exclude_keywords: List[str]
     reminders_enabled: bool
     reminders: List[ReminderUpsertRequest]
+    active_llm_preset_id: int
+    active_embedding_preset_id: int
     llm_preset: List[LlmPresetSettings]
     embedding_preset: List[EmbeddingPresetSettings]
