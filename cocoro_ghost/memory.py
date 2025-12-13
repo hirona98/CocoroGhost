@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from cocoro_ghost import models, schemas
 from cocoro_ghost.config import ConfigStore
-from cocoro_ghost.db import memory_session_scope, search_similar_episodes, upsert_episode_embedding
+from cocoro_ghost.db import memory_session_scope, search_similar_episode_ids, upsert_episode_vector
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost import prompts
 from cocoro_ghost.reflection import EpisodeReflection, PersonUpdate, generate_reflection
@@ -61,7 +61,9 @@ class MemoryManager:
             search_embed = self.llm_client.generate_embedding(
                 ["\n".join(filter(None, [request.text, request.context_hint, image_summary]))]
             )[0]
-            similar_rows = search_similar_episodes(db, search_embed, limit=self.config_store.config.similar_episodes_limit)
+            similar_rows = search_similar_episode_ids(
+                db, search_embed, limit=self.config_store.config.similar_episodes_limit
+            )
             if similar_rows:
                 episode_ids = [row.episode_id for row in similar_rows]
                 episodes = (
@@ -331,7 +333,7 @@ class MemoryManager:
             topic_tags=",".join(reflection.topic_tags) if reflection else None,
             salience_score=reflection.salience_score if reflection else 0.0,
             episode_comment=reflection.episode_comment if reflection else None,
-            episode_embedding=json.dumps(embedding).encode("utf-8") if embedding is not None else None,
+            embedding_json_bytes=json.dumps(embedding).encode("utf-8") if embedding is not None else None,
             raw_desktop_path=raw_path if source == "desktop_capture" else None,
             raw_camera_path=raw_path if source == "camera_capture" else None,
         )
@@ -341,7 +343,7 @@ class MemoryManager:
         if reflection:
             self._update_persons(db, episode.id, reflection.persons)
         if embedding is not None:
-            upsert_episode_embedding(db, episode.id, embedding)
+            upsert_episode_vector(db, episode.id, embedding)
         return episode.id
 
     def _process_chat_background(
@@ -376,12 +378,12 @@ class MemoryManager:
             episode.topic_tags = ",".join(reflection.topic_tags)
             episode.salience_score = reflection.salience_score
             episode.episode_comment = reflection.episode_comment
-            episode.episode_embedding = json.dumps(embedding).encode("utf-8")
+            episode.embedding_json_bytes = json.dumps(embedding).encode("utf-8")
             db.add(episode)
             db.commit()
             self._update_persons(db, episode.id, reflection.persons)
             try:
-                upsert_episode_embedding(db, episode.id, embedding)
+                upsert_episode_vector(db, episode.id, embedding)
             except Exception as exc:  # noqa: BLE001
                 import sqlite3
                 if isinstance(exc.__cause__, sqlite3.OperationalError) and "Dimension mismatch" in str(exc.__cause__):

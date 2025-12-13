@@ -120,7 +120,7 @@
 | reflection_text | TEXT | Yes | 内的思考テキスト |
 | reflection_json | TEXT | Yes | reflection の元JSON |
 | salience_score | REAL | Yes | 印象スコア（0.0〜1.0） |
-| episode_embedding | BLOB/TEXT | No | 埋め込みベクトル |
+| embedding_json_bytes | BLOB/TEXT | No | 埋め込みベクトル（バックアップ、JSON bytes）。類似検索は sqlite-vec 側の `episode_vectors` を使用 |
 | raw_desktop_path | TEXT | No | デスクトップ画像パス（72時間有効） |
 | raw_camera_path | TEXT | No | カメラ画像パス（72時間有効） |
 | created_at | DATETIME | Yes | レコード作成時刻 |
@@ -169,7 +169,7 @@
 ### 7.5 記憶DB（`memory_<memory_id>.db`）
 
 - エピソード系テーブル（episodes, persons, episode_persons）
-- sqlite-vec の `episode_embeddings` 仮想テーブル
+- sqlite-vec の `episode_vectors` 仮想テーブル
 
 ---
 

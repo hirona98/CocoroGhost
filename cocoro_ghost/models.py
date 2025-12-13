@@ -32,7 +32,9 @@ class Episode(MemoryBase):
     reflection_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
     salience_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     episode_comment: Mapped[Optional[str]] = mapped_column(Text)
-    episode_embedding: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+    # ベクトル検索用の埋め込みの「バックアップ」(JSONをbytes化したもの)。
+    # sqlite-vec の仮想テーブル（episode_vectors）とは別物なので、名前を分けて混同を避ける。
+    embedding_json_bytes: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
     raw_desktop_path: Mapped[Optional[str]] = mapped_column(Text)
     raw_camera_path: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)

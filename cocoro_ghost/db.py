@@ -13,6 +13,9 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 logger = logging.getLogger(__name__)
 
+# sqlite-vec 仮想テーブル名（検索用ベクトルインデックス）
+VECTOR_TABLE_NAME = "episode_vectors"
+
 # 設定DB用 Base（GlobalSettings, LlmPreset, CharacterPreset, 旧SettingPreset）
 Base = declarative_base()
 
@@ -66,10 +69,12 @@ def _create_engine_with_vec_support(db_url: str):
 
 
 def _enable_sqlite_vec(engine, dimension: int) -> None:
-    """episode_embeddings仮想テーブルを作成。sqlite-vec拡張は接続時に自動ロードされる。"""
+    """sqlite-vec の仮想テーブルを作成。sqlite-vec拡張は接続時に自動ロードされる。"""
     with engine.connect() as conn:
         conn.execute(
-            text(f"CREATE VIRTUAL TABLE IF NOT EXISTS episode_embeddings USING vec0(embedding float[{dimension}])")
+            text(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS {VECTOR_TABLE_NAME} USING vec0(embedding float[{dimension}])"
+            )
         )
         conn.commit()
 
@@ -163,24 +168,24 @@ def memory_session_scope(memory_id: str, embedding_dimension: int) -> Iterator[S
 # --- 埋め込みベクトル操作 ---
 
 
-def upsert_episode_embedding(session: Session, episode_id: int, embedding: list[float]) -> None:
-    """エピソードの埋め込みベクトルを更新または挿入。"""
+def upsert_episode_vector(session: Session, episode_id: int, embedding: list[float]) -> None:
+    """エピソードの検索用ベクトルを更新または挿入（sqlite-vec仮想テーブル）。"""
     embedding_json = json.dumps(embedding)
-    session.execute(text("DELETE FROM episode_embeddings WHERE rowid = :episode_id"), {"episode_id": episode_id})
+    session.execute(text(f"DELETE FROM {VECTOR_TABLE_NAME} WHERE rowid = :episode_id"), {"episode_id": episode_id})
     session.execute(
-        text("INSERT INTO episode_embeddings(rowid, embedding) VALUES (:episode_id, :embedding)"),
+        text(f"INSERT INTO {VECTOR_TABLE_NAME}(rowid, embedding) VALUES (:episode_id, :embedding)"),
         {"episode_id": episode_id, "embedding": embedding_json},
     )
 
 
-def search_similar_episodes(session: Session, query_embedding: list[float], limit: int = 5):
-    """類似エピソードを検索。"""
+def search_similar_episode_ids(session: Session, query_embedding: list[float], limit: int = 5):
+    """類似エピソードIDを検索（sqlite-vec仮想テーブル）。"""
     query_json = json.dumps(query_embedding)
     rows = session.execute(
         text(
-            """
+            f"""
             SELECT rowid as episode_id, distance
-            FROM episode_embeddings
+            FROM {VECTOR_TABLE_NAME}
             WHERE embedding MATCH :query
               AND k = :limit
             ORDER BY distance ASC
