@@ -9,18 +9,25 @@ from pathlib import Path
 from typing import Iterator
 
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 logger = logging.getLogger(__name__)
 
 # sqlite-vec 仮想テーブル名（検索用ベクトルインデックス）
-VECTOR_TABLE_NAME = "episode_vectors"
+# - legacy: episode_vectors（episodes.rowidと同一）
+# - partner: vec_units（unit_idでJOINする索引）
+LEGACY_VECTOR_TABLE_NAME = "episode_vectors"
+VEC_UNITS_TABLE_NAME = "vec_units"
 
 # 設定DB用 Base（GlobalSettings, LlmPreset, CharacterPreset, 旧SettingPreset）
 Base = declarative_base()
 
 # 記憶DB用 Base（Episode, Person, EpisodePerson）
 MemoryBase = declarative_base()
+
+# 記憶DB用 Base（Unit/payload/entities/jobs 等：新仕様）
+UnitBase = declarative_base()
 
 # グローバルセッション（設定DB用）
 SettingsSessionLocal: sessionmaker | None = None
@@ -65,6 +72,14 @@ def _create_engine_with_vec_support(db_url: str):
                 logger.error("sqlite-vec拡張のロードに失敗しました", exc_info=exc)
                 raise
 
+            # 接続ごとに必要なPRAGMAを適用（foreign_keysは接続ごとに有効化が必要）
+            try:
+                dbapi_conn.execute("PRAGMA foreign_keys=ON")
+                dbapi_conn.execute("PRAGMA synchronous=NORMAL")
+                dbapi_conn.execute("PRAGMA temp_store=MEMORY")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("SQLite PRAGMAの適用に失敗しました", exc_info=exc)
+
     return engine
 
 
@@ -73,9 +88,46 @@ def _enable_sqlite_vec(engine, dimension: int) -> None:
     with engine.connect() as conn:
         conn.execute(
             text(
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS {VECTOR_TABLE_NAME} USING vec0(embedding float[{dimension}])"
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS {VEC_UNITS_TABLE_NAME} USING vec0("
+                f"unit_id integer primary key, "
+                f"embedding float[{dimension}] distance_metric=cosine, "
+                f"kind integer partition key, "
+                f"occurred_day integer, "
+                f"state integer, "
+                f"sensitivity integer"
+                f")"
             )
         )
+        conn.commit()
+
+
+def _apply_memory_pragmas(engine) -> None:
+    with engine.connect() as conn:
+        conn.execute(text("PRAGMA journal_mode=WAL"))
+        conn.execute(text("PRAGMA synchronous=NORMAL"))
+        conn.execute(text("PRAGMA temp_store=MEMORY"))
+        conn.execute(text("PRAGMA foreign_keys=ON"))
+        conn.commit()
+
+
+def _create_memory_indexes(engine) -> None:
+    stmts = [
+        "CREATE INDEX IF NOT EXISTS idx_units_kind_created ON units(kind, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_units_occurred ON units(occurred_at)",
+        "CREATE INDEX IF NOT EXISTS idx_units_state ON units(state)",
+        "CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities(etype, name)",
+        "CREATE INDEX IF NOT EXISTS idx_entity_aliases_alias ON entity_aliases(alias)",
+        "CREATE INDEX IF NOT EXISTS idx_unit_entities_entity ON unit_entities(entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_fact_subject_pred ON payload_fact(subject_entity_id, predicate)",
+        "CREATE INDEX IF NOT EXISTS idx_summary_scope ON payload_summary(scope_type, scope_key)",
+        "CREATE INDEX IF NOT EXISTS idx_loop_status_due ON payload_loop(status, due_at)",
+        "CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after)",
+    ]
+    with engine.connect() as conn:
+        for stmt in stmts:
+            conn.execute(text(stmt))
         conn.commit()
 
 
@@ -91,6 +143,21 @@ def init_settings_db() -> None:
     engine = create_engine(db_url, future=True, connect_args=connect_args)
     SettingsSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     Base.metadata.create_all(bind=engine)
+
+    # 既存DB向けの軽量アップグレード（運用していない前提でも、開発中に古いDBが残りやすい）
+    with engine.connect() as conn:
+        for stmt in [
+            "ALTER TABLE global_settings ADD COLUMN token TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE global_settings ADD COLUMN reminders_enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE llm_presets ADD COLUMN max_inject_tokens INTEGER NOT NULL DEFAULT 1200",
+            "ALTER TABLE llm_presets ADD COLUMN similar_limit_by_kind_json TEXT NOT NULL DEFAULT '{}'",
+        ]:
+            try:
+                conn.execute(text(stmt))
+            except OperationalError:
+                # 既にカラムが存在する場合など
+                pass
+        conn.commit()
     logger.info(f"設定DB初期化完了: {db_url}")
 
 
@@ -132,8 +199,13 @@ def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
     db_url = get_memory_db_path(memory_id)
     engine = _create_engine_with_vec_support(db_url)
 
-    # 記憶用テーブルを作成
-    MemoryBase.metadata.create_all(bind=engine)
+    _apply_memory_pragmas(engine)
+
+    # 記憶用テーブルを作成（Unitベース新仕様）
+    import cocoro_ghost.unit_models  # noqa: F401
+
+    UnitBase.metadata.create_all(bind=engine)
+    _create_memory_indexes(engine)
 
     # sqlite-vec拡張を有効化
     if db_url.startswith("sqlite"):
@@ -168,32 +240,78 @@ def memory_session_scope(memory_id: str, embedding_dimension: int) -> Iterator[S
 # --- 埋め込みベクトル操作 ---
 
 
-def upsert_episode_vector(session: Session, episode_id: int, embedding: list[float]) -> None:
-    """エピソードの検索用ベクトルを更新または挿入（sqlite-vec仮想テーブル）。"""
+def upsert_unit_vector(
+    session: Session,
+    *,
+    unit_id: int,
+    embedding: list[float],
+    kind: int,
+    occurred_at: int | None,
+    state: int,
+    sensitivity: int,
+) -> None:
+    """Unitの検索用ベクトルを更新または挿入（sqlite-vec仮想テーブル）。"""
     embedding_json = json.dumps(embedding)
-    session.execute(text(f"DELETE FROM {VECTOR_TABLE_NAME} WHERE rowid = :episode_id"), {"episode_id": episode_id})
+    occurred_day = (occurred_at // 86400) if occurred_at is not None else None
+    session.execute(text(f"DELETE FROM {VEC_UNITS_TABLE_NAME} WHERE unit_id = :unit_id"), {"unit_id": unit_id})
     session.execute(
-        text(f"INSERT INTO {VECTOR_TABLE_NAME}(rowid, embedding) VALUES (:episode_id, :embedding)"),
-        {"episode_id": episode_id, "embedding": embedding_json},
+        text(
+            f"""
+            INSERT INTO {VEC_UNITS_TABLE_NAME}(unit_id, embedding, kind, occurred_day, state, sensitivity)
+            VALUES (:unit_id, :embedding, :kind, :occurred_day, :state, :sensitivity)
+            """
+        ),
+        {
+            "unit_id": unit_id,
+            "embedding": embedding_json,
+            "kind": kind,
+            "occurred_day": occurred_day,
+            "state": state,
+            "sensitivity": sensitivity,
+        },
     )
 
 
-def search_similar_episode_ids(session: Session, query_embedding: list[float], limit: int = 5):
-    """類似エピソードIDを検索（sqlite-vec仮想テーブル）。"""
+def search_similar_unit_ids(
+    session: Session,
+    *,
+    query_embedding: list[float],
+    k: int,
+    kind: int,
+    max_sensitivity: int,
+    occurred_day_range: tuple[int, int] | None = None,
+) -> list:
+    """類似Unit IDを検索（sqlite-vec仮想テーブル）。"""
     query_json = json.dumps(query_embedding)
+    day_filter = ""
+    params = {
+        "query": query_json,
+        "k": k,
+        "kind": kind,
+        "max_sensitivity": max_sensitivity,
+    }
+    if occurred_day_range is not None:
+        day_filter = "AND occurred_day BETWEEN :d0 AND :d1"
+        params["d0"] = occurred_day_range[0]
+        params["d1"] = occurred_day_range[1]
+
     rows = session.execute(
         text(
             f"""
-            SELECT rowid as episode_id, distance
-            FROM {VECTOR_TABLE_NAME}
+            SELECT unit_id, distance
+            FROM {VEC_UNITS_TABLE_NAME}
             WHERE embedding MATCH :query
-              AND k = :limit
+              AND k = :k
+              AND kind = :kind
+              AND state IN (0, 1, 2)
+              AND sensitivity <= :max_sensitivity
+              {day_filter}
             ORDER BY distance ASC
             """
         ),
-        {"query": query_json, "limit": limit},
+        params,
     ).fetchall()
-    return rows
+    return list(rows)
 
 
 # --- 初期設定作成 ---
@@ -208,6 +326,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     global_settings = session.query(models.GlobalSettings).first()
     if (
         global_settings is not None
+        and getattr(global_settings, "token", "")
         and global_settings.active_llm_preset_id is not None
         and global_settings.active_character_preset_id is not None
     ):
@@ -218,12 +337,15 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     # GlobalSettingsの用意
     if global_settings is None:
         global_settings = models.GlobalSettings(
+            token=toml_config.token,
             exclude_keywords=json.dumps(toml_config.exclude_keywords or [])
         )
         session.add(global_settings)
         session.flush()
     elif not global_settings.exclude_keywords:
         global_settings.exclude_keywords = json.dumps(toml_config.exclude_keywords or [])
+    if not getattr(global_settings, "token", ""):
+        global_settings.token = toml_config.token
 
     # LlmPresetの用意（存在しない/アクティブでない場合は空のdefaultを作成）
     llm_preset = None
@@ -245,6 +367,8 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             image_model="unset",
             image_timeout_seconds=toml_config.image_timeout_seconds,
             similar_episodes_limit=toml_config.similar_episodes_limit,
+            max_inject_tokens=1200,
+            similar_limit_by_kind_json="{}",
         )
         session.add(llm_preset)
         session.flush()

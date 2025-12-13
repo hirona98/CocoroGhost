@@ -181,6 +181,31 @@ class LlmClient:
 
         return litellm.completion(**kwargs)
 
+    def generate_json_response(
+        self,
+        *,
+        system_prompt: str,
+        user_text: str,
+        temperature: float = 0.1,
+        max_tokens: Optional[int] = None,
+    ):
+        """JSON（json_object）を生成（Response オブジェクト）。"""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ]
+
+        kwargs = self._build_completion_kwargs(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            api_key=self.api_key,
+            base_url=self.llm_base_url,
+            max_tokens=max_tokens or self.max_tokens,
+            response_format={"type": "json_object"},
+        )
+        return litellm.completion(**kwargs)
+
     def generate_embedding(
         self,
         texts: List[str],

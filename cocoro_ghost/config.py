@@ -6,7 +6,7 @@ import json
 import pathlib
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import tomli
 
@@ -61,6 +61,8 @@ class RuntimeConfig:
     image_llm_base_url: Optional[str]
     image_timeout_seconds: int
     similar_episodes_limit: int
+    max_inject_tokens: int
+    similar_limit_by_kind: Dict[str, int]
 
     # CharacterPreset由来
     character_preset_name: str
@@ -141,9 +143,16 @@ def build_runtime_config(
     character_preset: "CharacterPreset",
 ) -> RuntimeConfig:
     """TOML、GlobalSettings、LlmPreset、CharacterPresetをマージしてRuntimeConfigを構築。"""
+    try:
+        similar_limit_by_kind = json.loads(llm_preset.similar_limit_by_kind_json or "{}")
+        if not isinstance(similar_limit_by_kind, dict):
+            similar_limit_by_kind = {}
+    except Exception:  # noqa: BLE001
+        similar_limit_by_kind = {}
+
     return RuntimeConfig(
         # TOML由来
-        token=toml_config.token,
+        token=global_settings.token or toml_config.token,
         log_level=toml_config.log_level,
         # GlobalSettings由来
         exclude_keywords=json.loads(global_settings.exclude_keywords),
@@ -165,6 +174,8 @@ def build_runtime_config(
         image_llm_base_url=llm_preset.image_llm_base_url,
         image_timeout_seconds=llm_preset.image_timeout_seconds,
         similar_episodes_limit=llm_preset.similar_episodes_limit,
+        max_inject_tokens=llm_preset.max_inject_tokens,
+        similar_limit_by_kind=similar_limit_by_kind,
         # CharacterPreset由来
         character_preset_name=character_preset.name,
         system_prompt=character_preset.system_prompt,

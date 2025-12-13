@@ -71,6 +71,15 @@ python -X utf8 run.py
 
 サーバーは `http://0.0.0.0:55601` で起動します。
 
+## Worker（jobs処理）
+
+`/chat` などで保存された `jobs` を処理する Worker は別プロセスで起動できます。
+
+```bash
+.venv\Scripts\activate
+python -X utf8 run_worker.py
+```
+
 ## 設定管理
 
 #### 1. 基本設定（起動時必須）

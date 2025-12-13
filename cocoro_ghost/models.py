@@ -89,6 +89,7 @@ class GlobalSettings(Base):
     __tablename__ = "global_settings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token: Mapped[str] = mapped_column(Text, nullable=False, default="")
     exclude_keywords: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     reminders_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     active_llm_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("llm_presets.id"))
@@ -133,6 +134,8 @@ class LlmPreset(Base):
 
     # 記憶検索パラメータ
     similar_episodes_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    max_inject_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=1200)
+    similar_limit_by_kind_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

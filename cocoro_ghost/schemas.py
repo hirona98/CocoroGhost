@@ -3,39 +3,37 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
 
 class ChatRequest(BaseModel):
-    user_id: str = "default"
-    text: str
-    context_hint: Optional[str] = None
-    image_base64: Optional[str] = None  # BASE64エンコードされた画像データ
+    memory_id: str = "default"
+    user_text: str
+    images: List[Dict[str, str]] = []
+    client_context: Optional[Dict[str, Any]] = None
 
 
 class NotificationRequest(BaseModel):
+    memory_id: str = "default"
     source_system: str
     title: str
     body: str
-    image_base64: Optional[str] = None  # BASE64エンコードされた画像データ
 
 
 class NotificationResponse(BaseModel):
-    llm_response: dict
-    episode_id: int
+    unit_id: int
 
 
 class MetaRequestRequest(BaseModel):
+    memory_id: str = "default"
     instruction: str
     payload_text: str
-    image_base64: Optional[str] = None  # BASE64エンコードされた画像データ
 
 
 class MetaRequestResponse(BaseModel):
-    llm_response: dict
-    episode_id: int
+    unit_id: int
 
 
 class CaptureRequest(BaseModel):
