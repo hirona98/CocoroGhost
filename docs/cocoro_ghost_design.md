@@ -2,9 +2,6 @@
 
 この設計は、`cocoro_ghost` を「AIパートナー」として最適化するための新仕様です。詳細設計は `docs/partner_spec/` 以下に分割しています。
 
-- 旧設計（episodes/persons中心）は `docs/legacy/cocoro_ghost_design_legacy.md` を参照
-- 旧API仕様は `docs/legacy/cocoro_ghost_api_legacy.md` を参照
-
 ## 目的
 
 - 人格の一貫性（PersonaAnchor）
@@ -30,6 +27,6 @@
 - Worker仕様: `docs/partner_spec/worker.md`
 - LLM JSONスキーマ: `docs/partner_spec/prompts.md`
 - API仕様: `docs/partner_spec/api.md`
-- 初期化/移行: `docs/partner_spec/migration.md`（既存DBがある場合のみ）
+- 初期化: `docs/partner_spec/bootstrap.md`
 - 実装計画: `docs/partner_spec/implementation_plan.md`
 - テスト/DoD: `docs/partner_spec/testing.md`

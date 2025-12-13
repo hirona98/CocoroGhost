@@ -80,15 +80,14 @@
 
 ## 4. 既存コードへの当て込み（目安）
 
-現行の責務と新仕様の責務が大きく異なるため、運用前提なら **置換（新仕様へ一括移行）** がシンプル。  
-既存データ取り込みや互換が必要な場合のみ、並走→切替（段階的移行）を検討する。
+現行の責務と新仕様の責務が大きく異なるため、運用前提なら **置換（新仕様へ切替）** がシンプル。
 
 - `cocoro_ghost/models.py`
   - 旧: `Episode/Person/EpisodePerson`
   - 新: `Unit` と `payload_*`、`Entity*`、`Job` を追加（またはファイル分割）
 - `cocoro_ghost/db.py`
   - 旧: `episode_vectors` の作成・検索
-  - 新: `vec_units` の作成・upsert・KNN、PRAGMA適用、（将来的に）マイグレーション補助
+  - 新: `vec_units` の作成・upsert・KNN、PRAGMA適用
 - `cocoro_ghost/memory.py`
   - 旧: /chat の同期+類似検索+反省の一部
   - 新: /chat 同期は「保存（RAW）+ enqueue」まで。派生はWorkerへ委譲
@@ -97,14 +96,7 @@
   - `cocoro_ghost/worker.py`（jobs実行）
   - `cocoro_ghost/store.py`（Unit/payloadの保存・読み取りAPI）
 
-## 5. 互換/移行の考え方（必要時のみ）
-
-- 既存データを取り込みたい場合のみ `docs/partner_spec/migration.md` を参照
-- クライアントAPI互換が必要なら
-  - 旧 `user_id/text/image_base64` と、新 `memory_id/user_text/images[]` の両対応期間を作る
-  - SSEは `type` 埋め込み方式→ `event` 名方式へ段階的に移行（両方送る等）
-
-## 6. リスクとチェックリスト
+## 5. リスクとチェックリスト
 
 - embedding次元の変更は vec0 に直撃する（再構築/別DBが必要）
 - sqlite-vecのバージョン固定（依存関係のピン留め）が必須
