@@ -8,6 +8,7 @@
 
 - `Authorization: Bearer <TOKEN>`（固定トークン）
 - トークン管理は `settings.db` の `global_settings.token` を正とする（初回のみTOMLから投入してもよい）
+- `token` は `/api/settings` では更新しない（変更する場合は `settings.db` を編集して再起動）
 
 ## `/api/chat`（SSE）
 
@@ -122,9 +123,50 @@ data: {"message":"...","code":"..."}
 - **persona/contractの切替**
   - `POST /api/memories/{memory_id}/persona`（新規追加・active化）
   - `POST /api/memories/{memory_id}/contract`（新規追加・active化）
+  - active が 1件も無い場合は、記憶DB初期化時に default を自動seedする（`docs/bootstrap.md` 参照）
 
 - **ジョブ投入**
   - `POST /api/memories/{memory_id}/jobs/weekly_summary`（週次サマリ生成のenqueue）
+
+#### `POST /api/memories/{memory_id}/persona`
+
+active persona を新規追加する（`set_active=true` の場合、既存 active は解除される）。
+
+Request（`PersonaUpsertRequest`）
+
+```json
+{
+  "persona_text": "string",
+  "set_active": true,
+  "sensitivity": 0
+}
+```
+
+Response
+
+```json
+{ "unit_id": 12345 }
+```
+
+#### `POST /api/memories/{memory_id}/contract`
+
+active contract を新規追加する（`set_active=true` の場合、既存 active は解除される）。
+
+Request（`ContractUpsertRequest`）
+
+```json
+{
+  "contract_text": "string",
+  "set_active": true,
+  "sensitivity": 0
+}
+```
+
+Response
+
+```json
+{ "unit_id": 12345 }
+```
 
 ## 付加API（既存互換）
 
@@ -237,6 +279,7 @@ UI向けの「全設定」取得/更新。
 - `llm_preset` / `embedding_preset` は「配列」だが、実装は **各1件のみ**許可（それ以外は `400`）
 - `reminders` は **全置き換え**（既存は削除されIDは作り直される）
 - `embedding_preset[0].embedding_preset_name` は `memory_id` 扱いで、変更時はメモリDB初期化を検証する（失敗時 `400`）
+- `/api/settings` は「アクティブなプリセット 1件」を更新するのみ（プリセットの追加/切替や `max_inject_tokens` 等の詳細パラメータ操作はAPI外）
 
 ## `/api/capture`
 
