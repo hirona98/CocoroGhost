@@ -27,8 +27,7 @@
 7. `docs/partner_spec/prompts.md`（LLM JSONスキーマ）
 8. `docs/partner_spec/api.md`（API仕様 / SSE）
 9. `docs/partner_spec/bootstrap.md`（初期DB作成）
-10. `docs/partner_spec/implementation_plan.md`（実装タスク分解・進め方）
-11. `docs/partner_spec/testing.md`（テスト/DoD）
+10. `docs/partner_spec/testing.md`（テスト/DoD）
 
 ## 用語（最小）
 

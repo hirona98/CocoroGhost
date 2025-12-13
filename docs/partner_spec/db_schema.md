@@ -26,7 +26,7 @@ create table if not exists units (
   created_at    integer not null,
   updated_at    integer not null,
 
-  source        text,                    -- chat/desktop/camera/notification/meta_request/...
+  source        text,                    -- chat/desktop_capture/camera_capture/notification/meta_request/...
   state         integer not null default 0,   -- UnitState
   confidence    real    not null default 0.5, -- 0..1
   salience      real    not null default 0.0, -- 0..1
@@ -251,6 +251,21 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 | TOPIC | 5 |
 | ORG | 6 |
 
+### RelationType（実装固定・例）
+
+`edges.rel_type` の値。必要に応じて拡張してよいが、運用中に値を変えない。
+
+| name | value |
+|---|---:|
+| OTHER | 0 |
+| FRIEND | 1 |
+| FAMILY | 2 |
+| COLLEAGUE | 3 |
+| PARTNER | 4 |
+| LIKES | 5 |
+| DISLIKES | 6 |
+| RELATED | 7 |
+
 ### SummaryScopeType（例）
 
 | name | value | scope_key例 |
@@ -269,4 +284,3 @@ PRAGMA synchronous=NORMAL;
 PRAGMA temp_store=MEMORY;
 PRAGMA foreign_keys=ON;
 ```
-

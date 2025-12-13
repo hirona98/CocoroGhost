@@ -6,7 +6,7 @@ CocoroAIのLLMと記憶処理を担当するPython/FastAPIバックエンドサ�
 
 - FastAPIによるREST APIサーバー
 - LLMとの対話処理
-- SQLiteベースのエピソード記憶管理
+- SQLiteベースのUnit記憶管理（Episode/Fact/Summary/Persona/Contract/Loop）
 - sqlite-vecによるベクトル検索
 - プリセット機能によるLLM設定の動的切り替え
 - 画像クリーンアップなどの定期実行タスク

@@ -3,9 +3,9 @@
 ## コンポーネント
 
 - **API Server（FastAPI）**
-  - `/chat`（SSE）
-  - `/notification`
-  - `/meta_request`
+  - `/api/chat`（SSE）
+  - `/api/notification`
+  - `/api/meta_request`
   - 管理API（メモリ閲覧・編集・ピン留め等：本ディレクトリの提案に従い追加）
 - **Memory Store（SQLite: `memory_<memory_id>.db`）**
   - `units` + `payload_*` による Unit化
@@ -24,7 +24,7 @@
 
 ```mermaid
 flowchart LR
-  U[User/UI] -->|/chat SSE| API[FastAPI]
+  U[User/UI] -->|/api/chat SSE| API[FastAPI]
   API -->|Intent classify| SCH[Scheduler]
   SCH -->|MemoryPack| API
   API -->|LLM chat| LLM[LLM API via LiteLLM]
@@ -40,7 +40,7 @@ flowchart LR
 
 ## 同期/非同期の責務分離
 
-### 同期（/chatのSSE中にやること）
+### 同期（/api/chat のSSE中にやること）
 
 - （任意）画像要約（Vision）
 - Schedulerで **MemoryPack** を生成（主に既存DBの参照）
@@ -65,4 +65,3 @@ flowchart LR
 - 記憶は `memory_<memory_id>.db`
   - `units` + `payload_*` + `entities` 等
   - `vec_units`（sqlite-vec 仮想テーブル）
-

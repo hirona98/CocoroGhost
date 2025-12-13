@@ -28,10 +28,9 @@
 ## 受け入れ条件（Definition of Done）
 
 - sqlite-vec を使った KNN取得→JOIN→注入が動く（kパラメータ方式）
-- 1回の `/chat` で
+- 1回の `/api/chat` で
   - SSEが返る
   - episodeが保存される（`units(kind=EPISODE)+payload_episode`）
   - workerが派生（reflection/entities/facts/loops/embedding）を追加できる
 - 週次summaryが生成され、次回会話で注入される
 - persona/contractが常時注入され、人格が崩れにくい
-

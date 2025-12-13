@@ -23,8 +23,8 @@
 - `extract_facts(unit_id)`
 - `extract_loops(unit_id)`
 - `upsert_embeddings(unit_id)`（episode/fact/summary/loop…必要種別）
-- `weekly_summary(memory_id, week_key)`（定期）
-- `capsule_refresh(memory_id)`（任意）
+- `weekly_summary(week_key)`（定期 / `memory_id` は Worker が扱うDBで暗黙）
+- `capsule_refresh(limit)`（任意 / `limit` は直近件数、デフォルト5）
 
 ## 冪等性ルール（必須）
 
@@ -53,4 +53,3 @@
 3. 実行
 4. 成功: `status=2`, `updated_at=now`
 5. 失敗: `tries += 1`, `last_error` 記録、`status=0` に戻して `run_after` を指数バックオフ、一定回数で `status=3`
-

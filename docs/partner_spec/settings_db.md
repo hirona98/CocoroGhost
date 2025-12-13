@@ -15,7 +15,8 @@
 例カラム:
 
 - `token`（TEXT）
-- `exclude_keywords_json`（TEXT: JSON array）
+- `exclude_keywords`（TEXT: JSON array）
+- `reminders_enabled`（INTEGER: 0/1）
 - `active_llm_preset_id`（INTEGER）
 - `active_character_preset_id`（INTEGER）
 
@@ -39,9 +40,15 @@ LLM/Embeddingの切替単位。LiteLLMの接続情報もここに持つ。
 - `system_prompt`
 - `memory_id`
 
+### `reminders`（任意 / 既存互換）
+
+リマインダー（時刻＋内容）を保持する。
+
+- `scheduled_at`（DATETIME）
+- `content`（TEXT）
+
 ## 初回起動時（推奨フロー）
 
 1. TOML（`config/setting.toml`）から `token` 等の最小値を読む
 2. `settings.db` が空なら `global_settings/llm_presets/character_presets` の default を作る
 3. 以降は `settings.db` を正として読み込む（TOMLは最小限の起動設定のみにする）
-

@@ -28,5 +28,4 @@
 - LLM JSONスキーマ: `docs/partner_spec/prompts.md`
 - API仕様: `docs/partner_spec/api.md`
 - 初期化: `docs/partner_spec/bootstrap.md`
-- 実装計画: `docs/partner_spec/implementation_plan.md`
 - テスト/DoD: `docs/partner_spec/testing.md`

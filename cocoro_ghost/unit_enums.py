@@ -37,6 +37,21 @@ class EntityType(IntEnum):
     ORG = 6
 
 
+class EntityRole(IntEnum):
+    MENTIONED = 1
+
+
+class RelationType(IntEnum):
+    OTHER = 0
+    FRIEND = 1
+    FAMILY = 2
+    COLLEAGUE = 3
+    PARTNER = 4
+    LIKES = 5
+    DISLIKES = 6
+    RELATED = 7
+
+
 class SummaryScopeType(IntEnum):
     DAILY = 1
     WEEKLY = 2
@@ -55,4 +70,3 @@ class JobStatus(IntEnum):
     RUNNING = 1
     DONE = 2
     FAILED = 3
-

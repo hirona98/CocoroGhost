@@ -60,6 +60,7 @@
 ```
 
 - `entities` / `entity_aliases` / `unit_entities` / `edges` を upsert
+- `relations.rel` は `friend|family|colleague|partner|likes|dislikes|related|other` を推奨（実装側で `RelationType` にマップする）
 
 ## Fact抽出（安定知識）
 
@@ -110,4 +111,3 @@
 ```
 
 - `units(kind=SUMMARY, scope_type=RELATIONSHIP, scope_key=2025-W50)` + `payload_summary`
-

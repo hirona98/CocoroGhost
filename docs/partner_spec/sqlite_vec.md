@@ -11,6 +11,11 @@
 - Python（`sqlite3` / SQLAlchemy）で `enable_load_extension(True)` → `load_extension(...)`
 - Windows配布時は拡張DLL/SOの同梱とパス解決が必要
 
+本リポジトリの実装例:
+
+- `cocoro_ghost/db.py` で接続時に `sqlite_vec` パッケージ同梱の `vec0` をロードする
+- SQLAlchemy の `connect` イベントで `dbapi_conn.load_extension(<path-to-vec0>)` を実行する
+
 ## `vec_units`（kind partition + metadata filtering）
 
 - embedding は `distance_metric=cosine` 推奨
@@ -85,4 +90,3 @@ order by knn.distance;
 
 - `unit_id` をキーとして upsert（同一unitの再埋め込みでも整合）
 - `occurred_day/state/sensitivity/kind` は `units` 更新と **同期**して更新する
-

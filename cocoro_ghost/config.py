@@ -20,7 +20,6 @@ class Config:
 
     token: str
     log_level: str
-    # 以下は初回マイグレーション用（オプション）
     llm_api_key: str = ""
     llm_model: str = ""
     embedding_model: str = ""

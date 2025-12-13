@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import logging
+import re
+import time
 from pathlib import Path
 from typing import Iterator
 
@@ -15,16 +18,11 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 logger = logging.getLogger(__name__)
 
 # sqlite-vec 仮想テーブル名（検索用ベクトルインデックス）
-# - legacy: episode_vectors（episodes.rowidと同一）
-# - partner: vec_units（unit_idでJOINする索引）
-LEGACY_VECTOR_TABLE_NAME = "episode_vectors"
+# vec_units は本文を置かず unit_id で JOIN して取得する。
 VEC_UNITS_TABLE_NAME = "vec_units"
 
 # 設定DB用 Base（GlobalSettings, LlmPreset, CharacterPreset, 旧SettingPreset）
 Base = declarative_base()
-
-# 記憶DB用 Base（Episode, Person, EpisodePerson）
-MemoryBase = declarative_base()
 
 # 記憶DB用 Base（Unit/payload/entities/jobs 等：新仕様）
 UnitBase = declarative_base()
@@ -33,7 +31,13 @@ UnitBase = declarative_base()
 SettingsSessionLocal: sessionmaker | None = None
 
 # 記憶DBセッションのキャッシュ（memory_id -> sessionmaker）
-_memory_sessions: dict[str, sessionmaker] = {}
+@dataclasses.dataclass(frozen=True)
+class _MemorySessionEntry:
+    session_factory: sessionmaker
+    embedding_dimension: int
+
+
+_memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
 def get_data_dir() -> Path:
@@ -61,7 +65,9 @@ def _create_engine_with_vec_support(db_url: str):
     engine = create_engine(db_url, future=True, connect_args=connect_args)
 
     if db_url.startswith("sqlite"):
-        vec_path = str(Path(sqlite_vec.__file__).parent / "vec0")
+        vec_path = getattr(sqlite_vec, "loadable_path", None)
+        vec_path = vec_path() if callable(vec_path) else str(Path(sqlite_vec.__file__).parent / "vec0")
+        vec_path = str(vec_path)
 
         @event.listens_for(engine, "connect")
         def load_sqlite_vec_extension(dbapi_conn, connection_record):
@@ -86,6 +92,23 @@ def _create_engine_with_vec_support(db_url: str):
 def _enable_sqlite_vec(engine, dimension: int) -> None:
     """sqlite-vec の仮想テーブルを作成。sqlite-vec拡張は接続時に自動ロードされる。"""
     with engine.connect() as conn:
+        existing = conn.execute(
+            text(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name = :name"
+            ),
+            {"name": VEC_UNITS_TABLE_NAME},
+        ).fetchone()
+        if existing is not None and existing[0]:
+            m = re.search(r"embedding\s+float\[(\d+)\]", str(existing[0]))
+            if m:
+                found = int(m.group(1))
+                if found != int(dimension):
+                    raise RuntimeError(
+                        f"{VEC_UNITS_TABLE_NAME} embedding dimension mismatch: db={found}, expected={dimension}. "
+                        "次元数を変える場合は別DBへ移行/再構築してください。"
+                    )
+            else:
+                logger.warning("vec_units schema parse failed", extra={"sql": str(existing[0])})
         conn.execute(
             text(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS {VEC_UNITS_TABLE_NAME} USING vec0("
@@ -129,6 +152,64 @@ def _create_memory_indexes(engine) -> None:
         for stmt in stmts:
             conn.execute(text(stmt))
         conn.commit()
+
+
+def _ensure_default_persona_contract(session: Session) -> None:
+    from cocoro_ghost import prompts
+    from cocoro_ghost.unit_enums import Sensitivity, UnitKind, UnitState
+    from cocoro_ghost.unit_models import PayloadContract, PayloadPersona, Unit
+
+    now_ts = int(time.time())
+
+    has_persona = (
+        session.query(PayloadPersona.unit_id)
+        .join(Unit, Unit.id == PayloadPersona.unit_id)
+        .filter(Unit.kind == int(UnitKind.PERSONA), PayloadPersona.is_active == 1)
+        .limit(1)
+        .scalar()
+    )
+    if not has_persona:
+        unit = Unit(
+            kind=int(UnitKind.PERSONA),
+            occurred_at=now_ts,
+            created_at=now_ts,
+            updated_at=now_ts,
+            source="seed",
+            state=int(UnitState.RAW),
+            confidence=0.5,
+            salience=0.0,
+            sensitivity=int(Sensitivity.NORMAL),
+            pin=1,
+        )
+        session.add(unit)
+        session.flush()
+        session.add(PayloadPersona(unit_id=unit.id, persona_text=prompts.get_default_persona_anchor(), is_active=1))
+
+    has_contract = (
+        session.query(PayloadContract.unit_id)
+        .join(Unit, Unit.id == PayloadContract.unit_id)
+        .filter(Unit.kind == int(UnitKind.CONTRACT), PayloadContract.is_active == 1)
+        .limit(1)
+        .scalar()
+    )
+    if not has_contract:
+        unit = Unit(
+            kind=int(UnitKind.CONTRACT),
+            occurred_at=now_ts,
+            created_at=now_ts,
+            updated_at=now_ts,
+            source="seed",
+            state=int(UnitState.RAW),
+            confidence=0.5,
+            salience=0.0,
+            sensitivity=int(Sensitivity.NORMAL),
+            pin=1,
+        )
+        session.add(unit)
+        session.flush()
+        session.add(
+            PayloadContract(unit_id=unit.id, contract_text=prompts.get_default_relationship_contract(), is_active=1)
+        )
 
 
 # --- 設定DB ---
@@ -193,8 +274,15 @@ def settings_session_scope() -> Iterator[Session]:
 
 def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
     """指定されたmemory_idの記憶DBを初期化し、sessionmakerを返す。"""
-    if memory_id in _memory_sessions:
-        return _memory_sessions[memory_id]
+    entry = _memory_sessions.get(memory_id)
+    if entry is not None:
+        if int(entry.embedding_dimension) != int(embedding_dimension):
+            raise RuntimeError(
+                f"memory_id={memory_id} は既に embedding_dimension={entry.embedding_dimension} で初期化済みです。"
+                f"要求された embedding_dimension={embedding_dimension} とは一致しません。"
+                "次元数を変える場合は別memory_idを使うかDBを再構築してください。"
+            )
+        return entry.session_factory
 
     db_url = get_memory_db_path(memory_id)
     engine = _create_engine_with_vec_support(db_url)
@@ -212,7 +300,13 @@ def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
         _enable_sqlite_vec(engine, embedding_dimension)
 
     session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
-    _memory_sessions[memory_id] = session_factory
+    _memory_sessions[memory_id] = _MemorySessionEntry(session_factory=session_factory, embedding_dimension=int(embedding_dimension))
+    session = session_factory()
+    try:
+        _ensure_default_persona_contract(session)
+        session.commit()
+    finally:
+        session.close()
     logger.info(f"記憶DB初期化完了: {db_url}")
     return session_factory
 
@@ -265,6 +359,35 @@ def upsert_unit_vector(
             "unit_id": unit_id,
             "embedding": embedding_json,
             "kind": kind,
+            "occurred_day": occurred_day,
+            "state": state,
+            "sensitivity": sensitivity,
+        },
+    )
+
+
+def sync_unit_vector_metadata(
+    session: Session,
+    *,
+    unit_id: int,
+    occurred_at: int | None,
+    state: int,
+    sensitivity: int,
+) -> None:
+    """vec_units の metadata columns を units と同期する（埋め込みは更新しない）。"""
+    occurred_day = (occurred_at // 86400) if occurred_at is not None else None
+    session.execute(
+        text(
+            f"""
+            UPDATE {VEC_UNITS_TABLE_NAME}
+               SET occurred_day = :occurred_day,
+                   state = :state,
+                   sensitivity = :sensitivity
+             WHERE unit_id = :unit_id
+            """
+        ),
+        {
+            "unit_id": unit_id,
             "occurred_day": occurred_day,
             "state": state,
             "sensitivity": sensitivity,

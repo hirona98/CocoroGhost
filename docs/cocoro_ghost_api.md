@@ -4,11 +4,11 @@
 
 ## 共通事項
 
-- ベースパス: 実装は既存互換のため `/api` プレフィックスを維持してよい（例: `/api/chat`）
+- ベースパス: 実装は既存互換のため `/api` プレフィックスを維持している（例: `/api/chat`）
 - 認証: `Authorization: Bearer <TOKEN>`（固定トークン）
 - ストレージ: `settings.db` + `memory_<memory_id>.db`
 
-## 1. `/chat`（SSE）
+## 1. `/api/chat`（SSE）
 
 ### Request（JSON）
 
@@ -46,7 +46,7 @@ data: {"message":"...","code":"..."}
 - Scheduler が MemoryPack を編成し、`persona/contract/facts/summaries/loops/episodes` を規定順で注入する
 - 保存は `units(kind=EPISODE)` + `payload_episode` を RAW で行い、派生処理は `jobs` に積む
 
-## 2. `/notification`
+## 2. `/api/notification`
 
 ### Request
 
@@ -65,7 +65,7 @@ data: {"message":"...","code":"..."}
 { "unit_id": 23456 }
 ```
 
-## 3. `/meta_request`
+## 3. `/api/meta_request`
 
 ### Request
 
@@ -86,4 +86,3 @@ data: {"message":"...","code":"..."}
 ## 4. 管理API（提案）
 
 メモリ閲覧・編集・ピン留め等。最小案は `docs/partner_spec/api.md` に記載。
-

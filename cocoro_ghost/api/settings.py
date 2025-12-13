@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from cocoro_ghost import models, schemas
 from cocoro_ghost.db import load_global_settings
+from cocoro_ghost.deps import reset_memory_manager
 from cocoro_ghost.deps import get_settings_db_dep
 
 router = APIRouter()
@@ -88,6 +89,11 @@ def update_settings(
     db: Session = Depends(get_settings_db_dep),
 ):
     """全設定をまとめて更新（アクティブなプリセットと共通設定）。"""
+    from cocoro_ghost.config import ConfigStore, build_runtime_config, get_config_store, set_global_config_store
+    from cocoro_ghost.db import init_memory_db
+
+    current_store = get_config_store()
+    toml_config = current_store.toml_config
     global_settings = load_global_settings(db)
 
     # 共通設定更新
@@ -144,7 +150,22 @@ def update_settings(
     active_llm.similar_episodes_limit = ep.similar_episodes_limit
     active_character.memory_id = ep.embedding_preset_name
 
+    # 変更後の設定で RuntimeConfig を組み立て、利用可能なメモリDBかを先に検証する
+    runtime_config = build_runtime_config(toml_config, global_settings, active_llm, active_character)
+    try:
+        init_memory_db(runtime_config.memory_id, runtime_config.embedding_dimension)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"memory DB init failed: {exc}") from exc
+
     db.commit()
+
+    # 設定変更をランタイムへ即時反映
+    db.expunge(global_settings)
+    db.expunge(active_llm)
+    db.expunge(active_character)
+    set_global_config_store(ConfigStore(toml_config, runtime_config, global_settings, active_llm, active_character))
+    reset_memory_manager()
 
     # 最新状態を返す
     return get_settings(db=db)

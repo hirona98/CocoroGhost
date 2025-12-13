@@ -9,7 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_utils.tasks import repeat_every
 
 from cocoro_ghost import log_stream
-from cocoro_ghost.api import capture, chat, logs, meta_request, notification, settings
+from cocoro_ghost.api import admin, capture, chat, logs, meta_request, notification, settings
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.logging_config import setup_logging
@@ -89,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(meta_request.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(capture.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(settings.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(admin.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(logs.router, prefix="/api")
 
     @app.get("/api/health")

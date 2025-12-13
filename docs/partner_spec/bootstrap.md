@@ -15,6 +15,8 @@
 
 `memory_<memory_id>.db` に対して実行する。
 
+> 実装では、`payload_persona` / `payload_contract` が 1件も無い場合に限り、起動時に default を自動seedする（`cocoro_ghost/db.py`）。
+
 ```sql
 -- Persona
 insert into units(kind, occurred_at, created_at, updated_at, source, state, confidence, salience, sensitivity, pin)

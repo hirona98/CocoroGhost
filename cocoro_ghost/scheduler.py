@@ -13,16 +13,20 @@ from sqlalchemy.orm import Session
 
 from cocoro_ghost.db import search_similar_unit_ids
 from cocoro_ghost.llm_client import LlmClient
-from cocoro_ghost.unit_enums import LoopStatus, Sensitivity, SummaryScopeType, UnitKind
+from cocoro_ghost import prompts
+from cocoro_ghost.unit_enums import EntityType, LoopStatus, Sensitivity, SummaryScopeType, UnitKind
 from cocoro_ghost.unit_models import (
     Entity,
+    EntityAlias,
     PayloadContract,
+    PayloadCapsule,
     PayloadEpisode,
     PayloadFact,
     PayloadLoop,
     PayloadPersona,
     PayloadSummary,
     Unit,
+    UnitEntity,
 )
 
 
@@ -38,7 +42,8 @@ def utc_week_key(ts: int) -> str:
 
 def _token_budget_to_char_budget(max_inject_tokens: int) -> int:
     # 日本語でも荒く扱えるよう、ここでは固定倍率で近似する（厳密さより安全側）。
-    return max(2000, max_inject_tokens * 4)
+    # max_inject_tokens を上限として扱う（厳密なtoken計測は行わない）。
+    return max(0, max_inject_tokens * 4)
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,73 @@ def classify_intent_rule_based(user_text: str) -> IntentResult:
         suggest_summary_scope=["weekly", "person", "topic"],
         sensitivity_max=int(Sensitivity.PRIVATE),
     )
+
+
+def _parse_intent_json(user_text: str, data: Any) -> IntentResult:
+    fallback = classify_intent_rule_based(user_text)
+    if not isinstance(data, dict):
+        return fallback
+
+    intent = str(data.get("intent") or "").strip()
+    allowed = {"smalltalk", "counsel", "task", "settings", "recall", "confirm", "meta"}
+    if intent not in allowed:
+        intent = fallback.intent
+
+    def _to_bool(v: Any, default: bool) -> bool:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return bool(v)
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("true", "1", "yes", "y"):
+                return True
+            if s in ("false", "0", "no", "n"):
+                return False
+        return default
+
+    need_evidence = _to_bool(data.get("need_evidence"), default=True)
+    need_loops = _to_bool(data.get("need_loops"), default=True)
+
+    scope_raw = data.get("suggest_summary_scope")
+    suggest_summary_scope: List[str] = []
+    if isinstance(scope_raw, list):
+        for x in scope_raw:
+            s = str(x).strip()
+            if s:
+                suggest_summary_scope.append(s)
+    if not suggest_summary_scope:
+        suggest_summary_scope = fallback.suggest_summary_scope
+
+    sens_raw = data.get("sensitivity_max")
+    try:
+        sens_i = int(sens_raw)
+    except Exception:  # noqa: BLE001
+        sens_i = int(fallback.sensitivity_max)
+    sens_i = max(int(Sensitivity.NORMAL), min(int(Sensitivity.SECRET), sens_i))
+
+    return IntentResult(
+        intent=intent,
+        need_evidence=need_evidence,
+        need_loops=need_loops,
+        suggest_summary_scope=suggest_summary_scope,
+        sensitivity_max=sens_i,
+    )
+
+
+def classify_intent(*, llm_client: LlmClient, user_text: str) -> IntentResult:
+    """軽量intent分類（JSON）。失敗時はルールベースへフォールバック。"""
+    try:
+        resp = llm_client.generate_json_response(
+            system_prompt=prompts.get_intent_classify_prompt(),
+            user_text=user_text,
+            temperature=0.0,
+            max_tokens=256,
+        )
+        data = json.loads(llm_client.response_content(resp))
+        return _parse_intent_json(user_text, data)
+    except Exception:  # noqa: BLE001
+        return classify_intent_rule_based(user_text)
 
 
 def _format_topic_tags(topic_tags: Optional[str]) -> List[str]:
@@ -114,6 +186,36 @@ def _fact_score(now: int, unit: Unit) -> float:
     return 0.45 * float(unit.confidence or 0.0) + 0.25 * float(unit.salience or 0.0) + 0.20 * rec + 0.10 * pin_boost
 
 
+def _resolve_entity_ids_from_text(db: Session, text: str) -> set[int]:
+    t = (text or "").strip()
+    if not t:
+        return set()
+
+    ids: set[int] = set()
+    for entity_id, alias in db.query(EntityAlias.entity_id, EntityAlias.alias).all():
+        a = (alias or "").strip()
+        if a and a in t:
+            ids.add(int(entity_id))
+
+    for entity_id, name in db.query(Entity.id, Entity.name).all():
+        n = (name or "").strip()
+        if n and n in t:
+            ids.add(int(entity_id))
+
+    return ids
+
+
+def _get_user_entity_id(db: Session) -> Optional[int]:
+    row = (
+        db.query(Entity.id)
+        .filter(Entity.etype == int(EntityType.PERSON), Entity.normalized == "user")
+        .order_by(Entity.id.asc())
+        .limit(1)
+        .scalar()
+    )
+    return int(row) if row is not None else None
+
+
 def build_memory_pack(
     *,
     db: Session,
@@ -123,10 +225,11 @@ def build_memory_pack(
     client_context: Dict[str, Any] | None,
     now_ts: int,
     max_inject_tokens: int,
-    sensitivity_max: int,
     similar_episode_k: int,
+    intent: IntentResult,
 ) -> str:
     max_chars = _token_budget_to_char_budget(max_inject_tokens)
+    sensitivity_max = int(intent.sensitivity_max)
 
     persona_text = (
         db.query(PayloadPersona.persona_text)
@@ -145,16 +248,53 @@ def build_memory_pack(
         .scalar()
     )
 
-    capsule_json = None
-    # Capsuleは任意（実装が未導入でも空でよい）
+    capsule_json: Optional[str] = None
+    cap_row = (
+        db.query(Unit, PayloadCapsule)
+        .join(PayloadCapsule, PayloadCapsule.unit_id == Unit.id)
+        .filter(
+            Unit.kind == int(UnitKind.CAPSULE),
+            Unit.state.in_([0, 1, 2]),
+            Unit.sensitivity <= sensitivity_max,
+            (PayloadCapsule.expires_at.is_(None) | (PayloadCapsule.expires_at > now_ts)),
+        )
+        .order_by(Unit.created_at.desc(), Unit.id.desc())
+        .first()
+    )
+    if cap_row:
+        _cu, cap = cap_row
+        capsule_json = (cap.capsule_json or "").strip() or None
 
-    # Facts（簡易：関連entity無しでも、上位をスコアで取得）
-    fact_rows: List[tuple[Unit, PayloadFact]] = (
+    # Facts（intent→entity解決→スコアで上位）
+    entity_text = "\n".join(filter(None, [user_text, *(image_summaries or [])]))
+    matched_entity_ids = _resolve_entity_ids_from_text(db, entity_text)
+    user_entity_id = _get_user_entity_id(db)
+    fact_entity_ids = set(matched_entity_ids)
+    if user_entity_id is not None:
+        fact_entity_ids.add(user_entity_id)
+
+    fact_q = (
         db.query(Unit, PayloadFact)
         .join(PayloadFact, PayloadFact.unit_id == Unit.id)
         .filter(Unit.kind == int(UnitKind.FACT), Unit.state.in_([0, 1, 2]), Unit.sensitivity <= sensitivity_max)
-        .all()
     )
+    if fact_entity_ids:
+        ids = sorted(fact_entity_ids)
+        fact_q = fact_q.filter(
+            (Unit.pin == 1)
+            | (PayloadFact.subject_entity_id.in_(ids))
+            | (PayloadFact.object_entity_id.in_(ids))
+            | (PayloadFact.subject_entity_id.is_(None))
+        )
+        fact_rows: List[tuple[Unit, PayloadFact]] = fact_q.all()
+    else:
+        recent_rows: List[tuple[Unit, PayloadFact]] = fact_q.order_by(Unit.created_at.desc()).limit(200).all()
+        pinned_rows: List[tuple[Unit, PayloadFact]] = fact_q.filter(Unit.pin == 1).all()
+        by_id: Dict[int, tuple[Unit, PayloadFact]] = {int(u.id): (u, f) for u, f in recent_rows}
+        for u, f in pinned_rows:
+            by_id.setdefault(int(u.id), (u, f))
+        fact_rows = list(by_id.values())
+
     fact_rows.sort(key=lambda r: _fact_score(now_ts, r[0]), reverse=True)
     fact_rows = fact_rows[: min(12, len(fact_rows))]
 
@@ -178,41 +318,103 @@ def build_memory_pack(
 
     week_key = utc_week_key(now_ts)
     summary_texts: List[str] = []
-    summary_row = (
-        db.query(Unit, PayloadSummary)
-        .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.SUMMARY),
-            Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= sensitivity_max,
-            PayloadSummary.scope_type == int(SummaryScopeType.RELATIONSHIP),
-            PayloadSummary.scope_key == week_key,
-        )
-        .order_by(Unit.created_at.desc())
-        .first()
-    )
-    if summary_row:
-        _, ps = summary_row
-        summary_texts.append(ps.summary_text.strip())
+    scopes = intent.suggest_summary_scope or ["weekly", "person", "topic"]
 
-    loop_rows: List[tuple[Unit, PayloadLoop]] = (
-        db.query(Unit, PayloadLoop)
-        .join(PayloadLoop, PayloadLoop.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.LOOP),
-            Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= sensitivity_max,
-            PayloadLoop.status == int(LoopStatus.OPEN),
+    def add_summary(scope_type: int, scope_key: Optional[str], *, fallback_latest: bool = False) -> None:
+        base_q = (
+            db.query(Unit, PayloadSummary)
+            .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
+            .filter(
+                Unit.kind == int(UnitKind.SUMMARY),
+                Unit.state.in_([0, 1, 2]),
+                Unit.sensitivity <= sensitivity_max,
+                PayloadSummary.scope_type == int(scope_type),
+            )
         )
-        .order_by(PayloadLoop.due_at.asc().nulls_last(), Unit.created_at.desc())
-        .limit(8)
-        .all()
-    )
-    loop_lines = [f"- {pl.loop_text.strip()}" for _u, pl in loop_rows if pl.loop_text.strip()]
+
+        row = None
+        if scope_key is not None:
+            row = (
+                base_q.filter(PayloadSummary.scope_key == scope_key)
+                .order_by(Unit.created_at.desc(), Unit.id.desc())
+                .first()
+            )
+        if row is None and fallback_latest:
+            row = base_q.order_by(Unit.created_at.desc(), Unit.id.desc()).first()
+        if row:
+            _su, ps = row
+            text_ = (ps.summary_text or "").strip()
+            if text_:
+                summary_texts.append(text_)
+
+    if "weekly" in scopes:
+        # 現週のサマリがまだ無い場合は最新のRELATIONSHIPサマリを注入する
+        add_summary(int(SummaryScopeType.RELATIONSHIP), week_key, fallback_latest=True)
+
+    if matched_entity_ids and ("person" in scopes or "topic" in scopes):
+        ents = db.query(Entity).filter(Entity.id.in_(sorted(matched_entity_ids))).all()
+        if "person" in scopes:
+            for e in ents:
+                if int(e.etype) != int(EntityType.PERSON):
+                    continue
+                add_summary(int(SummaryScopeType.PERSON), f"person:{int(e.id)}")
+        if "topic" in scopes:
+            for e in ents:
+                if int(e.etype) != int(EntityType.TOPIC):
+                    continue
+                key = (e.normalized or e.name or "").strip().lower()
+                if key:
+                    add_summary(int(SummaryScopeType.TOPIC), f"topic:{key}")
+
+    loop_lines: List[str] = []
+    if intent.need_loops:
+        loop_base = (
+            db.query(Unit, PayloadLoop)
+            .join(PayloadLoop, PayloadLoop.unit_id == Unit.id)
+            .filter(
+                Unit.kind == int(UnitKind.LOOP),
+                Unit.state.in_([0, 1, 2]),
+                Unit.sensitivity <= sensitivity_max,
+                PayloadLoop.status == int(LoopStatus.OPEN),
+            )
+        )
+        loop_rows: List[tuple[Unit, PayloadLoop]] = []
+        if matched_entity_ids:
+            entity_ids = sorted(matched_entity_ids)
+            cand = (
+                loop_base.join(UnitEntity, UnitEntity.unit_id == Unit.id)
+                .filter(UnitEntity.entity_id.in_(entity_ids))
+                .order_by(PayloadLoop.due_at.asc().nulls_last(), Unit.created_at.desc(), Unit.id.desc())
+                .limit(16)
+                .all()
+            )
+            seen: set[int] = set()
+            for u, pl in cand:
+                if int(u.id) in seen:
+                    continue
+                seen.add(int(u.id))
+                loop_rows.append((u, pl))
+                if len(loop_rows) >= 8:
+                    break
+            if len(loop_rows) < 8:
+                exclude_ids = [int(u.id) for u, _pl in loop_rows]
+                more = (
+                    loop_base.filter(~Unit.id.in_(exclude_ids) if exclude_ids else True)
+                    .order_by(PayloadLoop.due_at.asc().nulls_last(), Unit.created_at.desc(), Unit.id.desc())
+                    .limit(8 - len(loop_rows))
+                    .all()
+                )
+                loop_rows.extend(more)
+        else:
+            loop_rows = (
+                loop_base.order_by(PayloadLoop.due_at.asc().nulls_last(), Unit.created_at.desc(), Unit.id.desc())
+                .limit(8)
+                .all()
+            )
+        loop_lines = [f"- {pl.loop_text.strip()}" for _u, pl in loop_rows if pl.loop_text.strip()]
 
     # Episode evidence（KNN）
     evidence_lines: List[str] = []
-    intent = classify_intent_rule_based(user_text)
     if intent.need_evidence and similar_episode_k > 0:
         embed_input = "\n".join(filter(None, [user_text, *(image_summaries or [])]))
         try:
@@ -276,20 +478,78 @@ def build_memory_pack(
             return f"[{title}]\n\n"
         return f"[{title}]\n" + "\n".join(body_lines) + "\n\n"
 
-    parts: List[str] = []
-    parts.append(section("PERSONA_ANCHOR", [persona_text.strip()] if persona_text else []))
-    parts.append(section("RELATIONSHIP_CONTRACT", [contract_text.strip()] if contract_text else []))
-    if capsule_json:
-        parts.append(section("CONTEXT_CAPSULE", [capsule_json]))
-    else:
-        parts.append(section("CONTEXT_CAPSULE", capsule_parts))
-    parts.append(section("STABLE_FACTS", fact_lines))
-    parts.append(section("SHARED_NARRATIVE", summary_texts))
-    parts.append(section("OPEN_LOOPS", loop_lines))
-    parts.append(section("EPISODE_EVIDENCE", evidence_lines))
+    def assemble(
+        *,
+        capsule_lines: Sequence[str],
+        facts: Sequence[str],
+        summaries: Sequence[str],
+        loops: Sequence[str],
+        evidence: Sequence[str],
+    ) -> str:
+        parts: List[str] = []
+        parts.append(section("PERSONA_ANCHOR", [persona_text.strip()] if persona_text else []))
+        parts.append(section("RELATIONSHIP_CONTRACT", [contract_text.strip()] if contract_text else []))
+        parts.append(section("CONTEXT_CAPSULE", capsule_lines))
+        parts.append(section("STABLE_FACTS", facts))
+        parts.append(section("SHARED_NARRATIVE", summaries))
+        parts.append(section("OPEN_LOOPS", loops))
+        parts.append(section("EPISODE_EVIDENCE", evidence))
+        return "".join(parts)
 
-    pack = "".join(parts)
+    capsule_lines: List[str] = []
+    if capsule_json:
+        capsule_lines.append(capsule_json)
+    capsule_lines.extend(capsule_parts)
+
+    facts = list(fact_lines)
+    summaries = list(summary_texts)
+    loops = list(loop_lines)
+    evidence = list(evidence_lines)
+
+    pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
     if len(pack) <= max_chars:
         return pack
-    return pack[:max_chars] + "\n"
 
+    # budget超過時は優先順に落とす（仕様: scheduler.md）
+    evidence = []
+    pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
+    if len(pack) <= max_chars:
+        return pack
+
+    while loops and len(pack) > max_chars:
+        loops = loops[:-1]
+        pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
+    if len(pack) <= max_chars:
+        return pack
+
+    if summaries:
+        # まず数を絞る（relationshipを優先）
+        summaries = summaries[:1]
+        pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
+        if len(pack) > max_chars:
+            # 次に本文を短縮
+            s0 = summaries[0]
+            budget = max(120, min(600, max_chars // 3))
+            if len(s0) > budget:
+                summaries = [s0[: budget].rstrip() + "…"]
+                pack = assemble(
+                    capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence
+                )
+    if len(pack) <= max_chars:
+        return pack
+
+    while facts and len(pack) > max_chars:
+        facts = facts[:-1]
+        pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
+    if len(pack) <= max_chars:
+        return pack
+
+    while capsule_lines and len(pack) > max_chars:
+        capsule_lines = capsule_lines[:-1]
+        pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
+    if len(pack) <= max_chars:
+        return pack
+
+    if max_chars <= 0:
+        return ""
+    return pack[: max(0, max_chars - 1)] + "\n"

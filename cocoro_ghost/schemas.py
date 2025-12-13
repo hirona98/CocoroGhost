@@ -5,18 +5,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
-    memory_id: str = "default"
+    memory_id: Optional[str] = None
     user_text: str
-    images: List[Dict[str, str]] = []
+    images: List[Dict[str, str]] = Field(default_factory=list)
     client_context: Optional[Dict[str, Any]] = None
 
 
 class NotificationRequest(BaseModel):
-    memory_id: str = "default"
+    memory_id: Optional[str] = None
     source_system: str
     title: str
     body: str
@@ -27,7 +27,7 @@ class NotificationResponse(BaseModel):
 
 
 class MetaRequestRequest(BaseModel):
-    memory_id: str = "default"
+    memory_id: Optional[str] = None
     instruction: str
     payload_text: str
 
@@ -47,6 +47,57 @@ class CaptureResponse(BaseModel):
     stored: bool
 
 
+class UnitMeta(BaseModel):
+    id: int
+    kind: int
+    occurred_at: Optional[int] = None
+    created_at: int
+    updated_at: int
+    source: Optional[str] = None
+    state: int
+    confidence: float
+    salience: float
+    sensitivity: int
+    pin: int
+    topic_tags: Optional[str] = None
+    emotion_label: Optional[str] = None
+    emotion_intensity: Optional[float] = None
+
+
+class UnitListResponse(BaseModel):
+    items: List[UnitMeta]
+
+
+class UnitDetailResponse(BaseModel):
+    unit: UnitMeta
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class UnitUpdateRequest(BaseModel):
+    pin: Optional[int] = None
+    sensitivity: Optional[int] = None
+    state: Optional[int] = None
+    topic_tags: Optional[str] = None
+    confidence: Optional[float] = None
+    salience: Optional[float] = None
+
+
+class PersonaUpsertRequest(BaseModel):
+    persona_text: str
+    set_active: bool = True
+    sensitivity: int = 0
+
+
+class ContractUpsertRequest(BaseModel):
+    contract_text: str
+    set_active: bool = True
+    sensitivity: int = 0
+
+
+class WeeklySummaryEnqueueRequest(BaseModel):
+    week_key: Optional[str] = None
+
+
 class FullSettingsResponse(BaseModel):
     """全設定統合レスポンス。"""
 
@@ -55,7 +106,7 @@ class FullSettingsResponse(BaseModel):
 
     # リマインダー
     reminders_enabled: bool
-    reminders: List["ReminderSettings"] = []
+    reminders: List["ReminderSettings"] = Field(default_factory=list)
 
     # アクティブなLLMプリセット
     llm_preset: List["LlmPresetSettings"]

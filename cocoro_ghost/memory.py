@@ -15,7 +15,7 @@ from cocoro_ghost import schemas
 from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.llm_client import LlmClient
-from cocoro_ghost.scheduler import build_memory_pack, classify_intent_rule_based
+from cocoro_ghost.scheduler import build_memory_pack, classify_intent
 from cocoro_ghost.unit_enums import Sensitivity, UnitKind, UnitState
 from cocoro_ghost.unit_models import Job, PayloadEpisode, Unit
 
@@ -51,8 +51,6 @@ class MemoryManager:
         self.config_store = config_store
 
     def _sse(self, event: str, payload: dict) -> str:
-        if "type" not in payload:
-            payload = {"type": event, **payload}
         return f"event: {event}\ndata: {_json_dumps(payload)}\n\n"
 
     def _summarize_images(self, images: Sequence[Dict[str, str]] | None) -> List[str]:
@@ -86,7 +84,7 @@ class MemoryManager:
         now_ts = _now_utc_ts()
 
         image_summaries = self._summarize_images(request.images)
-        intent = classify_intent_rule_based(request.user_text)
+        intent = classify_intent(llm_client=self.llm_client, user_text=request.user_text)
 
         try:
             with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
@@ -101,8 +99,8 @@ class MemoryManager:
                     client_context=request.client_context,
                     now_ts=now_ts,
                     max_inject_tokens=int(cfg.max_inject_tokens),
-                    sensitivity_max=int(intent.sensitivity_max),
                     similar_episode_k=similar_k,
+                    intent=intent,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error("MemoryPack生成に失敗しました", exc_info=exc)
@@ -168,6 +166,9 @@ class MemoryManager:
         now_ts = _now_utc_ts()
 
         base_text = f"{request.source_system}: {request.title}\n{request.body}"
+        context_note = _json_dumps(
+            {"source_system": request.source_system, "title": request.title, "body": request.body}
+        )
         with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
             unit_id = self._create_episode_unit(
                 db,
@@ -176,7 +177,7 @@ class MemoryManager:
                 user_text=base_text,
                 reply_text=None,
                 image_summary=None,
-                context_note=None,
+                context_note=context_note,
                 sensitivity=int(Sensitivity.NORMAL),
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
@@ -188,6 +189,7 @@ class MemoryManager:
         now_ts = _now_utc_ts()
 
         base_text = f"instruction: {request.instruction}\npayload: {request.payload_text}"
+        context_note = _json_dumps({"instruction": request.instruction, "payload_text": request.payload_text})
         with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
             unit_id = self._create_episode_unit(
                 db,
@@ -196,7 +198,7 @@ class MemoryManager:
                 user_text=base_text,
                 reply_text=None,
                 image_summary=None,
-                context_note=None,
+                context_note=context_note,
                 sensitivity=int(Sensitivity.NORMAL),
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
@@ -284,12 +286,16 @@ class MemoryManager:
             "extract_facts",
             "extract_loops",
             "upsert_embeddings",
+            "capsule_refresh",
         ]
         for kind in kinds:
+            payload = {"unit_id": unit_id}
+            if kind == "capsule_refresh":
+                payload = {"limit": 5}
             db.add(
                 Job(
                     kind=kind,
-                    payload_json=_json_dumps({"unit_id": unit_id}),
+                    payload_json=_json_dumps(payload),
                     status=0,
                     run_after=now_ts,
                     tries=0,
