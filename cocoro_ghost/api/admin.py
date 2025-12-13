@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import time
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,8 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope, sync_unit_vector_metadata
 from cocoro_ghost.deps import get_config_store_dep
-import json
-import time
+from cocoro_ghost.topic_tags import canonicalize_topic_tags_json
 
 from cocoro_ghost.schemas import (
     ContractUpsertRequest,
@@ -120,6 +121,7 @@ def get_unit(
                     "range_start": ps.range_start,
                     "range_end": ps.range_end,
                     "summary_text": ps.summary_text,
+                    "summary_json": ps.summary_json,
                 }
         elif unit.kind == int(UnitKind.PERSONA):
             pp = db.query(PayloadPersona).filter(PayloadPersona.unit_id == unit_id).one_or_none()
@@ -170,7 +172,10 @@ def update_unit(
         if request.state is not None:
             unit.state = int(request.state)
         if request.topic_tags is not None:
-            unit.topic_tags = request.topic_tags
+            try:
+                unit.topic_tags = canonicalize_topic_tags_json(request.topic_tags)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail="topic_tags must be a JSON array string") from exc
         if request.confidence is not None:
             unit.confidence = float(request.confidence)
         if request.salience is not None:

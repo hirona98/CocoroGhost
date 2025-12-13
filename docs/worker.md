@@ -7,7 +7,7 @@
 
 ## Jobテーブル（必須）
 
-`jobs` テーブルは `memory_<memory_id>.db` に永続化する（DDLは `docs/partner_spec/db_schema.md`）。
+`jobs` テーブルは `memory_<memory_id>.db` に永続化する（DDLは `docs/db_schema.md`）。
 
 ### status
 
@@ -45,6 +45,22 @@
 
 - JSONを正規化（キー順ソート等）した文字列のhash（例: SHA-256）を推奨
 - 同一hashなら再実行しても「更新なし」として扱う
+
+## 複数 memory_id の運用（必須）
+
+- Worker は **`memory_<memory_id>.db` ごとに 1プロセス**で動かす（1DB=1ジョブキュー）
+- 複数 `memory_id` を運用する場合は、`memory_id` ごとに Worker を起動する
+  - 例: `python -X utf8 run_worker.py --memory-id default` / `python -X utf8 run_worker.py --memory-id alice`
+
+## topic_tags の保存（推奨）
+
+- `units.topic_tags` は **JSON array文字列**で固定（CSV禁止）
+- 保存前に NFKC 正規化 + trim + 重複除去 + ソートを行い、`payload_hash` が安定するようにする
+
+## Weekly Summary の保存（推奨）
+
+- `payload_summary.summary_text` は注入用のプレーンテキスト
+- `payload_summary.summary_json` に LLM 出力JSON（`summary_text/key_events/relationship_state`）を丸ごと保存する
 
 ## Workerループ（実装指針）
 

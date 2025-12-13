@@ -64,6 +64,7 @@ class PayloadSummary(UnitBase):
     range_start: Mapped[Optional[int]] = mapped_column(Integer)
     range_end: Mapped[Optional[int]] = mapped_column(Integer)
     summary_text: Mapped[str] = mapped_column(Text, nullable=False)
+    summary_json: Mapped[Optional[str]] = mapped_column(Text)
 
 
 class PayloadPersona(UnitBase):
@@ -179,4 +180,3 @@ class Job(UnitBase):
     last_error: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
-

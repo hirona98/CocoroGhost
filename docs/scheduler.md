@@ -47,7 +47,7 @@
    - active persona（`payload_persona.is_active=1` の最新）
    - active contract（`payload_contract.is_active=1` の最新）
 2. **Intent分類（軽量）**
-   - small modelで JSON 1発（`docs/partner_spec/prompts.md` 参照）
+   - small modelで JSON 1発（`docs/prompts.md` 参照）
 3. **Entity解決**
    - 文字列から alias 参照（`entities` + `entity_aliases`）
    - 足りなければLLM抽出（Workerでも可、同期が重い場合は後回し）
@@ -82,4 +82,3 @@
   3. SHARED_NARRATIVE（段落短縮）
   4. STABLE_FACTS（低スコアを削る）
   5. PERSONA/CONTRACT は原則維持（人格崩壊の原因になるため）
-

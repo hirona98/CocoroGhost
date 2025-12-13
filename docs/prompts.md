@@ -111,3 +111,4 @@
 ```
 
 - `units(kind=SUMMARY, scope_type=RELATIONSHIP, scope_key=2025-W50)` + `payload_summary`
+- `payload_summary.summary_json` に LLM の出力JSONを丸ごと保存（`summary_text` は注入用のプレーンテキストとして残す）

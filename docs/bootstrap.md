@@ -5,8 +5,8 @@
 ## 手順
 
 1. `settings.db` と `memory_<memory_id>.db` を初期化する
-   - DDL: `docs/partner_spec/db_schema.md`
-   - vec0: `docs/partner_spec/sqlite_vec.md`
+   - DDL: `docs/db_schema.md`
+   - vec0: `docs/sqlite_vec.md`
 2. 最低限の seed を入れる（任意だが推奨）
    - `payload_persona`（人格コア）を 1件（active）
    - `payload_contract`（関係契約）を 1件（active）

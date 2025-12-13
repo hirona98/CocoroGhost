@@ -101,6 +101,15 @@ data: {"message":"...","code":"..."}
   - `GET /api/memories/{memory_id}/units/{unit_id}`
 - **メタ更新（版管理）**
   - `PATCH /api/memories/{memory_id}/units/{unit_id}`（`pin/sensitivity/state/topic_tags` など）
+
+### `topic_tags` の表現（必須）
+
+- `topic_tags` は **JSON array文字列**で固定（例: `["仕事","読書"]`）
+- 保存時に正規化（NFKC + 重複除去 + ソート）して `payload_hash` を安定させる
+
+### Worker と `memory_id`（必須）
+
+- `jobs` は `memory_<memory_id>.db` に保存されるため、Worker は **`memory_id` ごとに起動**する
 - **persona/contractの切替**
   - `POST /api/memories/{memory_id}/persona`（新規追加・active化）
   - `POST /api/memories/{memory_id}/contract`（新規追加・active化）

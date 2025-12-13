@@ -18,15 +18,15 @@
 
 ## ドキュメント一覧（読む順番）
 
-1. `docs/partner_spec/architecture.md`（全体像・データフロー）
-2. `docs/partner_spec/settings_db.md`（settings.db / token / presets）
-3. `docs/partner_spec/db_schema.md`（DDL / Enum / 永続化ルール）
-4. `docs/partner_spec/sqlite_vec.md`（vec0設計・KNN→JOIN）
-5. `docs/partner_spec/scheduler.md`（MemoryPack編成・スコア・圧縮）
-6. `docs/partner_spec/worker.md`（ジョブ・冪等性・版管理）
-7. `docs/partner_spec/prompts.md`（LLM JSONスキーマ）
-8. `docs/partner_spec/api.md`（API仕様 / SSE）
-9. `docs/partner_spec/bootstrap.md`（初期DB作成）
+1. `docs/architecture.md`（全体像・データフロー）
+2. `docs/settings_db.md`（settings.db / token / presets）
+3. `docs/db_schema.md`（DDL / Enum / 永続化ルール）
+4. `docs/sqlite_vec.md`（vec0設計・KNN→JOIN）
+5. `docs/scheduler.md`（MemoryPack編成・スコア・圧縮）
+6. `docs/worker.md`（ジョブ・冪等性・版管理）
+7. `docs/prompts.md`（LLM JSONスキーマ）
+8. `docs/api.md`（API仕様 / SSE）
+9. `docs/bootstrap.md`（初期DB作成）
 
 ## 用語（最小）
 

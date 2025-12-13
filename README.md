@@ -13,7 +13,7 @@ CocoroAIのLLMと記憶処理を担当するPython/FastAPIバックエンドサ�
 
 ## ドキュメント
 
-- 仕様（パートナー最適 / sqlite-vec固定）: `docs/partner_spec/README.md`
+- 仕様（パートナー最適 / sqlite-vec固定）: `docs/README.md`
 
 ## セットアップ
 
@@ -82,6 +82,12 @@ python -X utf8 run.py
 ```bash
 .venv\Scripts\activate
 python -X utf8 run_worker.py
+```
+
+複数 `memory_id` を運用する場合は `memory_<memory_id>.db` ごとに Worker を起動します。
+
+```bash
+python -X utf8 run_worker.py --memory-id default
 ```
 
 ## 設定管理

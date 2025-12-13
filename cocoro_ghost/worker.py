@@ -38,7 +38,8 @@ from cocoro_ghost.unit_models import (
     Unit,
     UnitEntity,
 )
-from cocoro_ghost.versioning import record_unit_version
+from cocoro_ghost.versioning import canonical_json_dumps, record_unit_version
+from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
 
 
 logger = logging.getLogger(__name__)
@@ -241,8 +242,11 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     unit.emotion_intensity = float(data.get("emotion_intensity") or 0.0)
     unit.salience = float(data.get("salience_score") or 0.0)
     unit.confidence = float(data.get("confidence") or 0.5)
-    topic_tags = data.get("topic_tags") or []
-    unit.topic_tags = _json_dumps(topic_tags) if isinstance(topic_tags, list) else str(topic_tags)
+    topic_tags_raw = data.get("topic_tags")
+    topic_tags = topic_tags_raw if isinstance(topic_tags_raw, list) else []
+    canonical_tags = canonicalize_topic_tags(topic_tags)
+    data["topic_tags"] = canonical_tags
+    unit.topic_tags = dumps_topic_tags_json(canonical_tags)
     unit.state = int(UnitState.VALIDATED)
     unit.updated_at = now_ts
     pe.reflection_json = raw_json
@@ -990,6 +994,29 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
         return
+    key_events_raw = data.get("key_events") or []
+    key_events: list[dict[str, Any]] = []
+    if isinstance(key_events_raw, list):
+        for item in key_events_raw:
+            if not isinstance(item, dict):
+                continue
+            why = str(item.get("why") or "").strip()
+            try:
+                unit_id = int(item.get("unit_id"))
+            except Exception:  # noqa: BLE001
+                continue
+            if not why:
+                continue
+            key_events.append({"unit_id": unit_id, "why": why})
+    key_events = key_events[:5]
+
+    relationship_state = str(data.get("relationship_state") or "").strip()
+    summary_obj = {
+        "summary_text": summary_text,
+        "key_events": key_events,
+        "relationship_state": relationship_state,
+    }
+    summary_json = canonical_json_dumps(summary_obj)
 
     existing = (
         session.query(Unit, PayloadSummary)
@@ -1008,7 +1035,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
         "scope_key": week_key,
         "range_start": range_start,
         "range_end": range_end,
-        "summary_text": summary_text,
+        "summary": summary_obj,
     }
 
     if existing is None:
@@ -1034,6 +1061,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
                 range_start=range_start,
                 range_end=range_end,
                 summary_text=summary_text,
+                summary_json=summary_json,
             )
         )
         record_unit_version(
@@ -1060,6 +1088,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
     unit, ps = existing
     before_text = ps.summary_text
     ps.summary_text = summary_text
+    ps.summary_json = summary_json
     ps.range_start = range_start
     ps.range_end = range_end
     unit.updated_at = now_ts

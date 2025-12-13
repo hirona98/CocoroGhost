@@ -1,5 +1,6 @@
 """cocoro_ghost Worker 起動スクリプト"""
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -8,7 +9,14 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="cocoro_ghost worker runner")
+    parser.add_argument("--memory-id", dest="memory_id", default=None, help="override target memory_id")
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = _parse_args()
     from cocoro_ghost.config import ConfigStore, build_runtime_config, load_config, set_global_config_store
     from cocoro_ghost.db import (
         ensure_initial_settings,
@@ -42,7 +50,8 @@ def main() -> None:
         config_store = ConfigStore(toml_config, runtime_config, global_settings, llm_preset, character_preset)
 
     set_global_config_store(config_store)
-    init_memory_db(runtime_config.memory_id, runtime_config.embedding_dimension)
+    memory_id = str(args.memory_id).strip() if args.memory_id is not None else runtime_config.memory_id
+    init_memory_db(memory_id, runtime_config.embedding_dimension)
 
     llm_client = LlmClient(
         model=runtime_config.llm_model,
@@ -61,7 +70,7 @@ def main() -> None:
     )
 
     run_forever(
-        memory_id=runtime_config.memory_id,
+        memory_id=memory_id,
         embedding_dimension=runtime_config.embedding_dimension,
         llm_client=llm_client,
     )
@@ -69,4 +78,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

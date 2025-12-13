@@ -154,6 +154,20 @@ def _create_memory_indexes(engine) -> None:
         conn.commit()
 
 
+def _upgrade_memory_db_schema(engine) -> None:
+    # 既存DB向けの軽量アップグレード（運用していない前提でも、開発中に古いDBが残りやすい）
+    with engine.connect() as conn:
+        for stmt in [
+            "ALTER TABLE payload_summary ADD COLUMN summary_json TEXT",
+        ]:
+            try:
+                conn.execute(text(stmt))
+            except OperationalError:
+                # 既にカラムが存在する場合など
+                pass
+        conn.commit()
+
+
 def _ensure_default_persona_contract(session: Session) -> None:
     from cocoro_ghost import prompts
     from cocoro_ghost.unit_enums import Sensitivity, UnitKind, UnitState
@@ -293,6 +307,7 @@ def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
     import cocoro_ghost.unit_models  # noqa: F401
 
     UnitBase.metadata.create_all(bind=engine)
+    _upgrade_memory_db_schema(engine)
     _create_memory_indexes(engine)
 
     # sqlite-vec拡張を有効化
@@ -557,5 +572,4 @@ def load_active_character_preset(session: Session):
     if preset is None:
         raise RuntimeError(f"キャラクタープリセット(id={settings.active_character_preset_id})が存在しません")
     return preset
-
 

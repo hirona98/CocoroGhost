@@ -34,7 +34,7 @@ create table if not exists units (
   pin           integer not null default 0,   -- 0/1
 
   -- 任意：検索補助
-  topic_tags    text,                    -- "仕事,読書" etc（CSV or JSON）
+  topic_tags    text,                    -- JSON array string（例: ["仕事","読書"]）
   emotion_label text,                    -- joy/sadness/anger/fear/neutral
   emotion_intensity real                 -- 0..1
 );
@@ -142,7 +142,8 @@ create table if not exists payload_summary (
   scope_key    text not null,       -- "2025-W50", "person:123", "topic:unity" ...
   range_start  integer,
   range_end    integer,
-  summary_text text not null
+  summary_text text not null,
+  summary_json text              -- JSON string（LLM出力を丸ごと保存、例: {"summary_text":...,"key_events":[...],"relationship_state":...}）
 );
 
 create index if not exists idx_summary_scope on payload_summary(scope_type, scope_key);

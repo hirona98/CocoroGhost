@@ -153,10 +153,14 @@ def _format_topic_tags(topic_tags: Optional[str]) -> List[str]:
     try:
         loaded = json.loads(topic_tags)
         if isinstance(loaded, list):
-            return [str(x) for x in loaded]
+            from cocoro_ghost.topic_tags import canonicalize_topic_tags
+
+            return canonicalize_topic_tags(loaded)
     except Exception:  # noqa: BLE001
         pass
-    return [x.strip() for x in topic_tags.split(",") if x.strip()]
+    from cocoro_ghost.topic_tags import canonicalize_topic_tags
+
+    return canonicalize_topic_tags([x.strip() for x in topic_tags.split(",") if x.strip()])
 
 
 def _format_fact_line(
