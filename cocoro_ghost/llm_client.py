@@ -10,6 +10,14 @@ from typing import Any, Dict, Generator, Iterable, List, Optional
 import litellm
 
 
+def _truncate_for_log(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...(truncated)"
+
+
 def _response_to_dict(resp: Any) -> Dict[str, Any]:
     """LiteLLM Response をシリアライズ可能な dict に変換。"""
     if hasattr(resp, "model_dump"):
@@ -55,6 +63,9 @@ def _delta_content(resp: Any) -> str:
 
 class LlmClient:
     """LLM APIクライアント。"""
+
+    _INFO_PREVIEW_CHARS = 300
+    _DEBUG_PREVIEW_CHARS = 5000
 
     def __init__(
         self,
@@ -132,6 +143,22 @@ class LlmClient:
 
         return kwargs
 
+    def _log_received(self, *, kind: str, content: str, stream: bool, resp: Any | None = None) -> None:
+        if content is None:
+            content = ""
+
+        if content:
+            preview = _truncate_for_log(content.replace("\r", "").replace("\n", "\\n"), self._INFO_PREVIEW_CHARS)
+            self.logger.info("LLM %s received (%s, %d chars): %s", kind, "stream" if stream else "single", len(content), preview)
+        else:
+            self.logger.info("LLM %s received (%s, empty)", kind, "stream" if stream else "single")
+
+        if self.logger.isEnabledFor(logging.DEBUG):
+            debug_text = _truncate_for_log(content, self._DEBUG_PREVIEW_CHARS)
+            self.logger.debug("LLM %s content: %s", kind, debug_text)
+            if resp is not None:
+                self.logger.debug("LLM %s raw response: %s", kind, _response_to_dict(resp))
+
     def generate_reply_response(
         self,
         system_prompt: str,
@@ -156,7 +183,10 @@ class LlmClient:
             stream=stream,
         )
 
-        return litellm.completion(**kwargs)
+        resp = litellm.completion(**kwargs)
+        if not stream:
+            self._log_received(kind="reply", content=_first_choice_content(resp), stream=False, resp=resp)
+        return resp
 
     def generate_reflection_response(
         self,
@@ -285,10 +315,17 @@ class LlmClient:
 
     def stream_delta_chunks(self, resp_stream: Iterable[Any]) -> Generator[str, None, None]:
         """LiteLLM の streaming Response から delta.content を逐次抽出。"""
-        for chunk in resp_stream:
-            delta = _delta_content(chunk)
-            if delta:
-                yield delta
+        parts: List[str] = []
+        try:
+            for chunk in resp_stream:
+                delta = _delta_content(chunk)
+                if delta:
+                    parts.append(delta)
+                    yield delta
+        finally:
+            content = "".join(parts)
+            if content:
+                self._log_received(kind="reply", content=content, stream=True)
 
     # 既存コード互換のためのラッパー（文字列を返す）
     def generate_reflection(
