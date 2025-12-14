@@ -14,6 +14,8 @@ from typing import Iterator
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
+from cocoro_ghost.defaults import DEFAULT_EXCLUDE_KEYWORDS_JSON
+
 logger = logging.getLogger(__name__)
 
 # sqlite-vec 仮想テーブル名（検索用ベクトルインデックス）
@@ -394,12 +396,12 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     if global_settings is None:
         global_settings = models.GlobalSettings(
             token=toml_config.token,
-            exclude_keywords=json.dumps(toml_config.exclude_keywords or [])
+            exclude_keywords=DEFAULT_EXCLUDE_KEYWORDS_JSON,
         )
         session.add(global_settings)
         session.flush()
     elif not global_settings.exclude_keywords:
-        global_settings.exclude_keywords = json.dumps(toml_config.exclude_keywords or [])
+        global_settings.exclude_keywords = DEFAULT_EXCLUDE_KEYWORDS_JSON
     if not getattr(global_settings, "token", ""):
         global_settings.token = toml_config.token
 
@@ -418,7 +420,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             llm_api_key="",
             llm_model="openai/gpt-5-mini",
             image_model="gpt-5-mini",
-            image_timeout_seconds=toml_config.image_timeout_seconds,
+            image_timeout_seconds=60,
         )
         session.add(llm_preset)
         session.flush()

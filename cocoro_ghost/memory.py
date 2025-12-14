@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import threading
 import time
 from typing import Any, Dict, Generator, List, Optional, Sequence
@@ -25,6 +26,19 @@ from cocoro_ghost.unit_models import Job, PayloadEpisode, Unit
 logger = logging.getLogger(__name__)
 
 _memory_locks: dict[str, threading.Lock] = {}
+
+_REGEX_META_CHARS = re.compile(r"[.^$*+?{}\[\]\\|()]")
+
+
+def _matches_exclude_keyword(pattern: str, text: str) -> bool:
+    if not pattern:
+        return False
+    if _REGEX_META_CHARS.search(pattern):
+        try:
+            return re.search(pattern, text) is not None
+        except re.error:
+            return pattern in text
+    return pattern in text
 
 _INTERNAL_CONTEXT_GUARD_PROMPT = """
 内部注入コンテキストの取り扱い:
@@ -304,7 +318,7 @@ class MemoryManager:
 
         text_to_check = request.context_text or ""
         for keyword in cfg.exclude_keywords:
-            if keyword and keyword in text_to_check:
+            if _matches_exclude_keyword(keyword, text_to_check):
                 logger.info("capture skipped due to exclude keyword", extra={"keyword": keyword})
                 return schemas.CaptureResponse(episode_id=-1, stored=False)
 

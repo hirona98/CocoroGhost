@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import pathlib
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 import tomli
@@ -26,15 +26,6 @@ class Config:
 
     token: str
     log_level: str
-    llm_api_key: str = ""
-    llm_model: str = ""
-    embedding_model: str = ""
-    embedding_dimension: int = 3072
-    image_model: str = ""
-    image_timeout_seconds: int = 60
-    exclude_keywords: List[str] = field(default_factory=list)
-    character_prompt: Optional[str] = None
-    similar_episodes_limit: int = 5
 
 
 @dataclass
@@ -134,18 +125,15 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
     with config_path.open("rb") as f:
         data = tomli.load(f)
 
+    allowed_keys = {"token", "log_level"}
+    unknown_keys = sorted(set(data.keys()) - allowed_keys)
+    if unknown_keys:
+        keys = ", ".join(repr(k) for k in unknown_keys)
+        raise ValueError(f"unknown config key(s): {keys} (allowed: 'token', 'log_level')")
+
     config = Config(
         token=_require(data, "token"),
         log_level=_require(data, "log_level"),
-        llm_api_key=data.get("llm_api_key", ""),
-        llm_model=data.get("llm_model", ""),
-        embedding_model=data.get("embedding_model", ""),
-        embedding_dimension=int(data.get("embedding_dimension", 3072)),
-        image_model=data.get("image_model", ""),
-        image_timeout_seconds=int(data.get("image_timeout_seconds", 60)),
-        exclude_keywords=list(data.get("exclude_keywords", [])),
-        character_prompt=data.get("character_prompt"),
-        similar_episodes_limit=int(data.get("similar_episodes_limit", 5)),
     )
     return config
 

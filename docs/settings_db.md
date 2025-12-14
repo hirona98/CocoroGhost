@@ -2,7 +2,7 @@
 
 ## 目的
 
-- アプリ起動に必要な最小設定（token等）と、運用中に切替えるプリセット（LLM/Embedding）を永続化する
+- アプリ起動に必要な最小設定（token / log_level）と、運用中に切替えるプリセット（LLM/Embedding）を永続化する
 - 記憶DB（`memory_<memory_id>.db`）とは分離する
 
 ## テーブル
@@ -78,6 +78,6 @@ contract（関係契約）プロンプトの切替単位。
 
 ## 初期化（起動時）
 
-1. TOML（`config/setting.toml`）から `token` 等の最小値を読む
+1. TOML（`config/setting.toml`）から `token` / `log_level` を読む
 2. `settings.db` が空なら `global_settings` と各種 `*_presets` の default を作り、`active_*_preset_id` を設定する
 3. 以降は `settings.db` を正として読み込む（TOMLは最小限の起動設定のみにする）
