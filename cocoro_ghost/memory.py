@@ -129,6 +129,14 @@ class MemoryManager:
 
         image_summaries = self._summarize_images(request.images)
         intent = classify_intent(llm_client=self.llm_client, user_text=request.user_text)
+        logger.info(
+            "<<<< INTENT: intent=%s need_evidence=%s need_loops=%s sensitivity_max=%s suggest_summary_scope=%s >>>>",
+            intent.intent,
+            intent.need_evidence,
+            intent.need_loops,
+            intent.sensitivity_max,
+            intent.suggest_summary_scope,
+        )
 
         try:
             with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
