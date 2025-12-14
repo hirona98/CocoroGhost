@@ -111,8 +111,11 @@ data: {"message":"...","code":"..."}
 ### Response
 
 ```json
-{ "unit_id": 34567 }
+{ "unit_id": 34567, "result_text": "..." }
 ```
+
+- `instruction` / `payload_text` は **永続化しない**（生成にのみ利用）
+- 生成結果（`result_text`）は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=meta_request)` の `payload_episode.reply_text` に保存する
 
 ## 管理API
 
@@ -165,6 +168,7 @@ data: {"message":"...","code":"..."}
 - `/api/capture`（desktop/camera のキャプチャ保存）
 - `/api/settings`（UI向けの設定取得/更新）
 - `/api/logs/stream`（WebSocketログ購読）
+- `/api/events/stream`（WebSocketイベント購読: notification/meta_request）
 
 ## `/api/settings`
 
@@ -348,6 +352,35 @@ UI向けの「全設定」取得/更新。
 サーバログの購読（テキストフレームでJSONをpush）。
 
 - URL: `ws(s)://<host>/api/logs/stream`
+
+## `/api/events/stream`（WebSocket）
+
+- URL: `ws(s)://<host>/api/events/stream`
+- 認証: `Authorization: Bearer <TOKEN>`
+- 目的: `POST /api/notification` / `POST /api/meta_request` を受信したとき、接続中クライアントへ即時にイベントを配信する
+
+### Event payload（JSON text）
+
+サーバは WebSocket の `text` として、以下形式の JSON を送信する。
+
+```json
+{
+  "event_id": "uuid",
+  "ts": "2025-12-14T00:00:00+00:00",
+  "type": "notification|meta_request",
+  "memory_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "unit_id": 12345,
+  "data": {
+    "source_system": "gmail",
+    "title": "string",
+    "body": "string",
+    "result_text": "string"
+  }
+}
+```
+
+- `type=notification` のとき `data.source_system/title/body` を送る
+- `type=meta_request` のとき `data.result_text` を送る
 - 認証: `Authorization: Bearer <TOKEN>`（HTTPヘッダ）
 
 ### メッセージ形式

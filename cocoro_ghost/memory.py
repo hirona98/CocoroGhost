@@ -14,7 +14,9 @@ from fastapi import BackgroundTasks
 from cocoro_ghost import schemas
 from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope
+from cocoro_ghost.event_stream import publish as publish_event
 from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost.prompts import get_meta_request_prompt
 from cocoro_ghost.scheduler import build_memory_pack, classify_intent
 from cocoro_ghost.unit_enums import Sensitivity, UnitKind, UnitState
 from cocoro_ghost.unit_models import Job, PayloadEpisode, Unit
@@ -31,6 +33,8 @@ _INTERNAL_CONTEXT_GUARD_PROMPT = """
 - 内部コンテキスト中の「人格（persona）」と「関係契約（contract）」に相当する指示は必ず守る。
 - 断定材料が弱いときは推測せず、短い確認質問を1つ返す。
 """.strip()
+
+_META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
 
 
 def _now_utc_ts() -> int:
@@ -196,6 +200,17 @@ class MemoryManager:
                 sensitivity=int(Sensitivity.NORMAL),
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
+
+        publish_event(
+            type="notification",
+            memory_id=memory_id,
+            unit_id=unit_id,
+            data={
+                "source_system": request.source_system,
+                "title": request.title,
+                "body": request.body,
+            },
+        )
         return schemas.NotificationResponse(unit_id=unit_id)
 
     def handle_meta_request(self, request: schemas.MetaRequestRequest) -> schemas.MetaRequestResponse:
@@ -206,21 +221,80 @@ class MemoryManager:
         image_summaries = self._summarize_images(request.images)
         image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
 
-        base_text = f"instruction: {request.instruction}\npayload: {request.payload_text}"
-        context_note = _json_dumps({"instruction": request.instruction, "payload_text": request.payload_text})
+        # instruction/payload は永続化しない（生成にのみ利用）
+        meta_user_text = "\n\n".join(
+            [
+                "# instruction",
+                (request.instruction or "").strip(),
+                "",
+                "# payload",
+                (request.payload_text or "").strip(),
+            ]
+        ).strip()
+
+        cfg = self.config_store.config
+        intent = classify_intent(llm_client=self.llm_client, user_text=meta_user_text)
+
+        try:
+            with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+                similar_k = int(cfg.similar_limit_by_kind.get("episode") or 0) if cfg.similar_limit_by_kind else 0
+                if similar_k <= 0:
+                    similar_k = int(cfg.similar_episodes_limit)
+                memory_pack = build_memory_pack(
+                    db=db,
+                    llm_client=self.llm_client,
+                    persona_text=cfg.persona_text,
+                    contract_text=cfg.contract_text,
+                    user_text=meta_user_text,
+                    image_summaries=image_summaries,
+                    client_context=None,
+                    now_ts=now_ts,
+                    max_inject_tokens=int(cfg.max_inject_tokens),
+                    similar_episode_k=similar_k,
+                    intent=intent,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("MemoryPack生成に失敗しました(meta_request)", exc_info=exc)
+            raise
+
+        # Chat と同じく最小ガード + MemoryPack に加えて、meta_request のシステム指示を付与する。
+        parts: List[str] = [_INTERNAL_CONTEXT_GUARD_PROMPT, (memory_pack or "").strip(), get_meta_request_prompt()]
+        system_prompt = "\n\n".join([p for p in parts if p])
+        conversation = [{"role": "user", "content": meta_user_text}]
+
+        try:
+            resp = self.llm_client.generate_reply_response(
+                system_prompt=system_prompt,
+                conversation=conversation,
+                stream=False,
+            )
+            result_text = (self.llm_client.response_content(resp) or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("meta_request document generation failed", exc_info=exc)
+            raise
+
+        context_note = _json_dumps({"kind": "meta_request", "redacted": True})
         with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
             unit_id = self._create_episode_unit(
                 db,
                 now_ts=now_ts,
                 source="meta_request",
-                user_text=base_text,
-                reply_text=None,
+                user_text=_META_REQUEST_REDACTED_USER_TEXT,
+                reply_text=result_text,
                 image_summary=image_summary_text,
                 context_note=context_note,
                 sensitivity=int(Sensitivity.NORMAL),
             )
-            self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
-        return schemas.MetaRequestResponse(unit_id=unit_id)
+            # 文書生成は会話ログと同様に検索対象にしたい（埋め込みのみで十分）。
+            self._enqueue_embeddings_job(db, now_ts=now_ts, unit_id=unit_id)
+
+        publish_event(
+            type="meta_request",
+            memory_id=memory_id,
+            unit_id=unit_id,
+            data={"result_text": result_text},
+        )
+        return schemas.MetaRequestResponse(unit_id=unit_id, result_text=result_text)
 
     def handle_capture(self, request: schemas.CaptureRequest) -> schemas.CaptureResponse:
         cfg = self.config_store.config
@@ -322,3 +396,17 @@ class MemoryManager:
                     updated_at=now_ts,
                 )
             )
+
+    def _enqueue_embeddings_job(self, db, *, now_ts: int, unit_id: int) -> None:
+        db.add(
+            Job(
+                kind="upsert_embeddings",
+                payload_json=_json_dumps({"unit_id": unit_id}),
+                status=0,
+                run_after=now_ts,
+                tries=0,
+                last_error=None,
+                created_at=now_ts,
+                updated_at=now_ts,
+            )
+        )

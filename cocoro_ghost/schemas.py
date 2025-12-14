@@ -36,6 +36,7 @@ class MetaRequestRequest(BaseModel):
 
 class MetaRequestResponse(BaseModel):
     unit_id: int
+    result_text: str
 
 
 class CaptureRequest(BaseModel):

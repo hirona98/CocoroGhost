@@ -8,8 +8,8 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_utils.tasks import repeat_every
 
-from cocoro_ghost import log_stream
-from cocoro_ghost.api import admin, capture, chat, logs, meta_request, notification, settings
+from cocoro_ghost import event_stream, log_stream
+from cocoro_ghost.api import admin, capture, chat, events, logs, meta_request, notification, settings
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.logging_config import setup_logging
@@ -108,6 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(settings.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(admin.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(logs.router, prefix="/api")
+    app.include_router(events.router, prefix="/api")
 
     @app.get("/api/health")
     async def health():
@@ -128,9 +129,19 @@ def create_app() -> FastAPI:
         log_stream.install_log_handler(loop)
         await log_stream.start_dispatcher()
 
+    @app.on_event("startup")
+    async def start_event_stream_dispatcher() -> None:
+        loop = asyncio.get_running_loop()
+        event_stream.install(loop)
+        await event_stream.start_dispatcher()
+
     @app.on_event("shutdown")
     async def stop_log_stream_dispatcher() -> None:
         await log_stream.stop_dispatcher()
+
+    @app.on_event("shutdown")
+    async def stop_event_stream_dispatcher() -> None:
+        await event_stream.stop_dispatcher()
 
     return app
 
