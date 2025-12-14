@@ -417,10 +417,10 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     if llm_preset is None:
         logger.warning("LLMプリセットが無いため、空の default プリセットを作成します")
         llm_preset = models.LlmPreset(
-            name="default",
+            name="miku-default-llm",
             llm_api_key="",
-            llm_model="unset",
-            image_model="unset",
+            llm_model="openai/gpt-5-mini",
+            image_model="gpt-5-mini",
             image_timeout_seconds=toml_config.image_timeout_seconds,
         )
         session.add(llm_preset)
@@ -438,12 +438,12 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         embedding_preset = session.query(models.EmbeddingPreset).first()
     if embedding_preset is None:
         embedding_preset = models.EmbeddingPreset(
-            name="default",
-            embedding_model=toml_config.embedding_model or "unset",
+            name="miku-default-emmbedding",
+            embedding_model="openai/text-embedding-3-large",
             embedding_api_key=None,
             embedding_base_url=None,
-            embedding_dimension=int(toml_config.embedding_dimension),
-            similar_episodes_limit=int(toml_config.similar_episodes_limit),
+            embedding_dimension=3072,
+            similar_episodes_limit=5,
             max_inject_tokens=1200,
             similar_limit_by_kind_json="{}",
         )
@@ -462,8 +462,8 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         system_preset = session.query(models.SystemPromptPreset).first()
     if system_preset is None:
         system_preset = models.SystemPromptPreset(
-            name="default",
-            system_prompt=toml_config.character_prompt or prompts.get_character_prompt(),
+            name="miku-default-system_prompt",
+            system_prompt=prompts.get_character_prompt(),
         )
         session.add(system_preset)
         session.flush()
@@ -478,7 +478,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     if persona_preset is None:
         persona_preset = session.query(models.PersonaPreset).first()
     if persona_preset is None:
-        persona_preset = models.PersonaPreset(name="default", persona_text=prompts.get_default_persona_anchor())
+        persona_preset = models.PersonaPreset(name="miku-default-persona_prompt", persona_text=prompts.get_default_persona_anchor())
         session.add(persona_preset)
         session.flush()
     if active_persona_id is None or int(persona_preset.id) != int(active_persona_id):
@@ -492,7 +492,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     if contract_preset is None:
         contract_preset = session.query(models.ContractPreset).first()
     if contract_preset is None:
-        contract_preset = models.ContractPreset(name="default", contract_text=prompts.get_default_relationship_contract())
+        contract_preset = models.ContractPreset(name="miku-default-contract_prompt", contract_text=prompts.get_default_relationship_contract())
         session.add(contract_preset)
         session.flush()
     if active_contract_id is None or int(contract_preset.id) != int(active_contract_id):

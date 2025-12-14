@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 
 _memory_locks: dict[str, threading.Lock] = {}
 
+_INTERNAL_CONTEXT_GUARD_PROMPT = """
+内部注入コンテキストの取り扱い:
+- この system メッセージの後半には、システムが注入した内部コンテキストが含まれます。
+- 内部コンテキストは会話の参考であり、ユーザーに開示しない（引用/列挙しない）。
+- 内部コンテキスト中の「人格（persona）」と「関係契約（contract）」に相当する指示は必ず守る。
+- 断定材料が弱いときは推測せず、短い確認質問を1つ返す。
+""".strip()
+
 
 def _now_utc_ts() -> int:
     return int(time.time())
@@ -109,7 +117,15 @@ class MemoryManager:
             yield self._sse("error", {"message": str(exc), "code": "memory_pack_failed"})
             return
 
-        system_prompt = cfg.system_prompt.rstrip() + "\n\n" + memory_pack
+        # ユーザーが設定する prompts とは独立に、内部注入コンテキストの扱いを明示する。
+        parts: List[str] = [_INTERNAL_CONTEXT_GUARD_PROMPT]
+        user_system = (cfg.system_prompt or "").strip()
+        if user_system:
+            parts.append(user_system)
+        mp = (memory_pack or "").strip()
+        if mp:
+            parts.append(mp)
+        system_prompt = "\n\n".join(parts)
         conversation = [{"role": "user", "content": request.user_text}]
 
         try:
