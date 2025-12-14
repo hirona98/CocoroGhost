@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 # vec_units は本文を置かず unit_id で JOIN して取得する。
 VEC_UNITS_TABLE_NAME = "vec_units"
 
+# FTS5 仮想テーブル名（BM25インデックス）
+EPISODE_FTS_TABLE_NAME = "episode_fts"
+
 # 設定DB用 Base（GlobalSettings, LlmPreset, EmbeddingPreset）
 Base = declarative_base()
 
@@ -125,6 +128,78 @@ def _enable_sqlite_vec(engine, dimension: int) -> None:
         conn.commit()
 
 
+def _enable_episode_fts(engine) -> None:
+    """Episode の BM25 検索用に FTS5 仮想テーブルと同期トリガーを用意する。"""
+    with engine.connect() as conn:
+        existed = (
+            conn.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:name"),
+                {"name": EPISODE_FTS_TABLE_NAME},
+            ).fetchone()
+            is not None
+        )
+
+        conn.execute(
+            text(
+                f"""
+                CREATE VIRTUAL TABLE IF NOT EXISTS {EPISODE_FTS_TABLE_NAME} USING fts5(
+                    user_text,
+                    reply_text,
+                    content='payload_episode',
+                    content_rowid='unit_id',
+                    tokenize='unicode61'
+                )
+                """
+            )
+        )
+
+        # external content FTS はトリガーで追従させる
+        conn.execute(
+            text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_ai
+                AFTER INSERT ON payload_episode
+                BEGIN
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, user_text, reply_text)
+                    VALUES (new.unit_id, new.user_text, new.reply_text);
+                END;
+                """
+            )
+        )
+        conn.execute(
+            text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_ad
+                AFTER DELETE ON payload_episode
+                BEGIN
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, user_text, reply_text)
+                    VALUES ('delete', old.unit_id, old.user_text, old.reply_text);
+                END;
+                """
+            )
+        )
+        conn.execute(
+            text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_au
+                AFTER UPDATE ON payload_episode
+                BEGIN
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, user_text, reply_text)
+                    VALUES ('delete', old.unit_id, old.user_text, old.reply_text);
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, user_text, reply_text)
+                    VALUES (new.unit_id, new.user_text, new.reply_text);
+                END;
+                """
+            )
+        )
+
+        if not existed:
+            # 初回作成時のみ rebuild（既存の payload_episode を索引化）
+            conn.execute(text(f"INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}) VALUES ('rebuild')"))
+
+        conn.commit()
+
+
 def _apply_memory_pragmas(engine) -> None:
     with engine.connect() as conn:
         conn.execute(text("PRAGMA journal_mode=WAL"))
@@ -222,6 +297,7 @@ def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
 
     UnitBase.metadata.create_all(bind=engine)
     _create_memory_indexes(engine)
+    _enable_episode_fts(engine)
 
     # sqlite-vec拡張を有効化
     if db_url.startswith("sqlite"):

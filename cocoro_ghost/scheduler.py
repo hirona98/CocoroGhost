@@ -5,15 +5,11 @@ from __future__ import annotations
 import json
 import math
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
-from cocoro_ghost.db import search_similar_unit_ids
-from cocoro_ghost.llm_client import LlmClient
-from cocoro_ghost import prompts
 from cocoro_ghost.unit_enums import EntityType, LoopStatus, Sensitivity, SummaryScopeType, UnitKind
 from cocoro_ghost.unit_models import (
     Entity,
@@ -26,6 +22,9 @@ from cocoro_ghost.unit_models import (
     Unit,
     UnitEntity,
 )
+
+if TYPE_CHECKING:
+    from cocoro_ghost.retriever import RankedEpisode
 
 
 def now_utc_ts() -> int:
@@ -42,107 +41,6 @@ def _token_budget_to_char_budget(max_inject_tokens: int) -> int:
     # 日本語でも荒く扱えるよう、ここでは固定倍率で近似する（厳密さより安全側）。
     # max_inject_tokens を上限として扱う（厳密なtoken計測は行わない）。
     return max(0, max_inject_tokens * 4)
-
-
-@dataclass(frozen=True)
-class IntentResult:
-    intent: str
-    need_evidence: bool
-    need_loops: bool
-    suggest_summary_scope: List[str]
-    sensitivity_max: int
-
-
-def classify_intent_rule_based(user_text: str) -> IntentResult:
-    t = (user_text or "").strip()
-    recall_kw = ["覚えて", "思い出", "前に", "この前", "昔", "いつ", "どこ", "確認", "なんだっけ"]
-    settings_kw = ["設定", "プロンプト", "キャラ", "口調", "変更", "変えて"]
-    task_kw = ["TODO", "やること", "タスク", "締切", "予定", "リマインド"]
-
-    intent = "smalltalk"
-    if any(k in t for k in settings_kw):
-        intent = "settings"
-    elif any(k in t for k in task_kw):
-        intent = "task"
-    elif any(k in t for k in recall_kw):
-        intent = "recall"
-
-    need_evidence = intent in ("recall", "confirm")
-    need_loops = True
-    return IntentResult(
-        intent=intent,
-        need_evidence=need_evidence,
-        need_loops=need_loops,
-        suggest_summary_scope=["weekly", "person", "topic"],
-        sensitivity_max=int(Sensitivity.PRIVATE),
-    )
-
-
-def _parse_intent_json(user_text: str, data: Any) -> IntentResult:
-    fallback = classify_intent_rule_based(user_text)
-    if not isinstance(data, dict):
-        return fallback
-
-    intent = str(data.get("intent") or "").strip()
-    allowed = {"smalltalk", "counsel", "task", "settings", "recall", "confirm", "meta"}
-    if intent not in allowed:
-        intent = fallback.intent
-
-    def _to_bool(v: Any, default: bool) -> bool:
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, (int, float)):
-            return bool(v)
-        if isinstance(v, str):
-            s = v.strip().lower()
-            if s in ("true", "1", "yes", "y"):
-                return True
-            if s in ("false", "0", "no", "n"):
-                return False
-        return default
-
-    need_evidence = _to_bool(data.get("need_evidence"), default=True)
-    need_loops = _to_bool(data.get("need_loops"), default=True)
-
-    scope_raw = data.get("suggest_summary_scope")
-    suggest_summary_scope: List[str] = []
-    if isinstance(scope_raw, list):
-        for x in scope_raw:
-            s = str(x).strip()
-            if s:
-                suggest_summary_scope.append(s)
-    if not suggest_summary_scope:
-        suggest_summary_scope = fallback.suggest_summary_scope
-
-    sens_raw = data.get("sensitivity_max")
-    try:
-        sens_i = int(sens_raw)
-    except Exception:  # noqa: BLE001
-        sens_i = int(fallback.sensitivity_max)
-    sens_i = max(int(Sensitivity.NORMAL), min(int(Sensitivity.SECRET), sens_i))
-
-    return IntentResult(
-        intent=intent,
-        need_evidence=need_evidence,
-        need_loops=need_loops,
-        suggest_summary_scope=suggest_summary_scope,
-        sensitivity_max=sens_i,
-    )
-
-
-def classify_intent(*, llm_client: LlmClient, user_text: str) -> IntentResult:
-    """軽量intent分類（JSON）。失敗時はルールベースへフォールバック。"""
-    try:
-        resp = llm_client.generate_json_response(
-            system_prompt=prompts.get_intent_classify_prompt(),
-            user_text=user_text,
-            temperature=0.0,
-            max_tokens=256,
-        )
-        data = json.loads(llm_client.response_content(resp))
-        return _parse_intent_json(user_text, data)
-    except Exception:  # noqa: BLE001
-        return classify_intent_rule_based(user_text)
 
 
 def _format_topic_tags(topic_tags: Optional[str]) -> List[str]:
@@ -218,10 +116,24 @@ def _get_user_entity_id(db: Session) -> Optional[int]:
     return int(row) if row is not None else None
 
 
+def should_inject_episodes(relevant_episodes: Sequence["RankedEpisode"]) -> bool:
+    if not relevant_episodes:
+        return False
+
+    high_count = sum(1 for e in relevant_episodes if e.relevance == "high")
+    if high_count >= 1:
+        return True
+
+    medium_count = sum(1 for e in relevant_episodes if e.relevance == "medium")
+    if medium_count >= 2:
+        return True
+
+    return False
+
+
 def build_memory_pack(
     *,
     db: Session,
-    llm_client: LlmClient,
     persona_text: str | None,
     contract_text: str | None,
     user_text: str,
@@ -229,11 +141,11 @@ def build_memory_pack(
     client_context: Dict[str, Any] | None,
     now_ts: int,
     max_inject_tokens: int,
-    similar_episode_k: int,
-    intent: IntentResult,
+    relevant_episodes: Sequence["RankedEpisode"],
+    injection_strategy: str | None = None,
 ) -> str:
     max_chars = _token_budget_to_char_budget(max_inject_tokens)
-    sensitivity_max = int(intent.sensitivity_max)
+    sensitivity_max = int(Sensitivity.PRIVATE)
     persona_text = (persona_text or "").strip() or None
     contract_text = (contract_text or "").strip() or None
 
@@ -307,7 +219,7 @@ def build_memory_pack(
 
     week_key = utc_week_key(now_ts)
     summary_texts: List[str] = []
-    scopes = intent.suggest_summary_scope or ["weekly", "person", "topic"]
+    scopes = ["weekly", "person", "topic"]
 
     def add_summary(scope_type: int, scope_key: Optional[str], *, fallback_latest: bool = False) -> None:
         base_q = (
@@ -356,93 +268,97 @@ def build_memory_pack(
                     add_summary(int(SummaryScopeType.TOPIC), f"topic:{key}")
 
     loop_lines: List[str] = []
-    if intent.need_loops:
-        loop_base = (
-            db.query(Unit, PayloadLoop)
-            .join(PayloadLoop, PayloadLoop.unit_id == Unit.id)
-            .filter(
-                Unit.kind == int(UnitKind.LOOP),
-                Unit.state.in_([0, 1, 2]),
-                Unit.sensitivity <= sensitivity_max,
-                PayloadLoop.status == int(LoopStatus.OPEN),
-            )
+    loop_base = (
+        db.query(Unit, PayloadLoop)
+        .join(PayloadLoop, PayloadLoop.unit_id == Unit.id)
+        .filter(
+            Unit.kind == int(UnitKind.LOOP),
+            Unit.state.in_([0, 1, 2]),
+            Unit.sensitivity <= sensitivity_max,
+            PayloadLoop.status == int(LoopStatus.OPEN),
         )
-        loop_rows: List[tuple[Unit, PayloadLoop]] = []
-        if matched_entity_ids:
-            entity_ids = sorted(matched_entity_ids)
-            cand = (
-                loop_base.join(UnitEntity, UnitEntity.unit_id == Unit.id)
-                .filter(UnitEntity.entity_id.in_(entity_ids))
+    )
+    loop_rows: List[tuple[Unit, PayloadLoop]] = []
+    if matched_entity_ids:
+        entity_ids = sorted(matched_entity_ids)
+        cand = (
+            loop_base.join(UnitEntity, UnitEntity.unit_id == Unit.id)
+            .filter(UnitEntity.entity_id.in_(entity_ids))
+            .order_by(PayloadLoop.due_at.asc().nulls_last(), Unit.created_at.desc(), Unit.id.desc())
+            .limit(16)
+            .all()
+        )
+        seen: set[int] = set()
+        for u, pl in cand:
+            if int(u.id) in seen:
+                continue
+            seen.add(int(u.id))
+            loop_rows.append((u, pl))
+            if len(loop_rows) >= 8:
+                break
+        if len(loop_rows) < 8:
+            exclude_ids = [int(u.id) for u, _pl in loop_rows]
+            more = (
+                loop_base.filter(~Unit.id.in_(exclude_ids) if exclude_ids else True)
                 .order_by(PayloadLoop.due_at.asc().nulls_last(), Unit.created_at.desc(), Unit.id.desc())
-                .limit(16)
+                .limit(8 - len(loop_rows))
                 .all()
             )
-            seen: set[int] = set()
-            for u, pl in cand:
-                if int(u.id) in seen:
-                    continue
-                seen.add(int(u.id))
-                loop_rows.append((u, pl))
-                if len(loop_rows) >= 8:
-                    break
-            if len(loop_rows) < 8:
-                exclude_ids = [int(u.id) for u, _pl in loop_rows]
-                more = (
-                    loop_base.filter(~Unit.id.in_(exclude_ids) if exclude_ids else True)
-                    .order_by(PayloadLoop.due_at.asc().nulls_last(), Unit.created_at.desc(), Unit.id.desc())
-                    .limit(8 - len(loop_rows))
-                    .all()
-                )
-                loop_rows.extend(more)
-        else:
-            loop_rows = (
-                loop_base.order_by(PayloadLoop.due_at.asc().nulls_last(), Unit.created_at.desc(), Unit.id.desc())
-                .limit(8)
-                .all()
-            )
-        loop_lines = [f"- {pl.loop_text.strip()}" for _u, pl in loop_rows if pl.loop_text.strip()]
+            loop_rows.extend(more)
+    else:
+        loop_rows = (
+            loop_base.order_by(PayloadLoop.due_at.asc().nulls_last(), Unit.created_at.desc(), Unit.id.desc())
+            .limit(8)
+            .all()
+        )
+    loop_lines = [f"- {pl.loop_text.strip()}" for _u, pl in loop_rows if pl.loop_text.strip()]
 
-    # Episode evidence（KNN）
+    # Episode evidence（Retriever）
     evidence_lines: List[str] = []
-    if intent.need_evidence and similar_episode_k > 0:
-        embed_input = "\n".join(filter(None, [user_text, *(image_summaries or [])]))
-        try:
-            query_embedding = llm_client.generate_embedding([embed_input])[0]
-            # 直近365日を対象（過去が巨大になっても検索が爆発しにくいように）
-            d1 = (now_ts // 86400)
-            d0 = d1 - 365
-            knn_rows = search_similar_unit_ids(
-                db,
-                query_embedding=query_embedding,
-                k=similar_episode_k,
-                kind=int(UnitKind.EPISODE),
-                max_sensitivity=sensitivity_max,
-                occurred_day_range=(d0, d1),
-            )
-            if knn_rows:
-                ids = [int(r.unit_id) for r in knn_rows]
-                ep_rows = (
-                    db.query(Unit, PayloadEpisode)
-                    .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-                    .filter(Unit.id.in_(ids))
-                    .all()
-                )
-                ep_by_id = {int(u.id): (u, pe) for u, pe in ep_rows}
-                for r in knn_rows:
-                    u_pe = ep_by_id.get(int(r.unit_id))
-                    if not u_pe:
-                        continue
-                    u, pe = u_pe
-                    ts = u.occurred_at or u.created_at
-                    date_s = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
-                    ut = (pe.user_text or "").strip().replace("\n", " ")
-                    rt = (pe.reply_text or "").strip().replace("\n", " ")
-                    ut = ut[:180]
-                    rt = rt[:220]
-                    evidence_lines.append(f'- {date_s} "{ut}" / "{rt}"')
-        except Exception:
-            # evidenceは補助なので、失敗しても空でよい
-            evidence_lines = []
+    if should_inject_episodes(relevant_episodes):
+        strategy = (injection_strategy or "quote_key_parts").strip() or "quote_key_parts"
+        if strategy not in {"quote_key_parts", "summarize", "full"}:
+            strategy = "quote_key_parts"
+
+        def _norm(text: str) -> str:
+            return " ".join((text or "").replace("\r", "").replace("\n", " ").split())
+
+        def _truncate(text: str, limit: int) -> str:
+            t = _norm(text)
+            if limit <= 0 or len(t) <= limit:
+                return t
+            return t[:limit].rstrip() + "…"
+
+        if strategy == "full":
+            user_limit, reply_limit = 420, 520
+        elif strategy == "summarize":
+            user_limit, reply_limit = 180, 220
+        else:
+            user_limit, reply_limit = 120, 160
+
+        evidence_lines.append("以下は現在の会話に関連する過去のやりとりです。")
+        evidence_lines.append("")
+        for e in relevant_episodes:
+            ts = int(e.occurred_at)
+            date_s = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            evidence_lines.append(f"[{date_s}]")
+
+            ut = _truncate(e.user_text, user_limit)
+            rt = _truncate(e.reply_text, reply_limit)
+            reason = _truncate(e.reason, 180)
+
+            if strategy == "summarize":
+                combined = _truncate(" / ".join([x for x in [ut, rt] if x]), 380)
+                evidence_lines.append(f"要点: {combined}")
+            else:
+                if ut:
+                    evidence_lines.append(f'User: 「{ut}」')
+                if rt:
+                    evidence_lines.append(f'Partner: 「{rt}」')
+
+            if reason:
+                evidence_lines.append(f"→ 関連: {reason}")
+            evidence_lines.append("")
 
     # Context capsule（軽量）
     capsule_parts: List[str] = []

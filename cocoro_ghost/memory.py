@@ -18,7 +18,8 @@ from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.event_stream import publish as publish_event
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
-from cocoro_ghost.scheduler import build_memory_pack, classify_intent, classify_intent_rule_based
+from cocoro_ghost.retriever import Retriever
+from cocoro_ghost.scheduler import build_memory_pack
 from cocoro_ghost.unit_enums import Sensitivity, UnitKind, UnitState
 from cocoro_ghost.unit_models import Job, PayloadEpisode, Unit
 
@@ -117,6 +118,44 @@ class MemoryManager:
             logger.warning("画像要約に失敗しました", exc_info=exc)
             return ["画像要約に失敗しました"]
 
+    def _load_recent_conversation(
+        self,
+        db,
+        *,
+        turns: int,
+        exclude_unit_id: int | None = None,
+    ) -> List[Dict[str, str]]:
+        if turns <= 0:
+            return []
+
+        q = (
+            db.query(Unit, PayloadEpisode)
+            .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
+            .filter(
+                Unit.kind == int(UnitKind.EPISODE),
+                Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+                Unit.sensitivity <= int(Sensitivity.PRIVATE),
+                PayloadEpisode.reply_text.isnot(None),
+            )
+        )
+        if exclude_unit_id is not None:
+            q = q.filter(Unit.id != int(exclude_unit_id))
+
+        rows: List[tuple[Unit, PayloadEpisode]] = (
+            q.order_by(Unit.occurred_at.desc().nulls_last(), Unit.created_at.desc(), Unit.id.desc()).limit(int(turns)).all()
+        )
+        rows.reverse()
+
+        messages: List[Dict[str, str]] = []
+        for _u, pe in rows:
+            ut = (pe.user_text or "").strip()
+            rt = (pe.reply_text or "").strip()
+            if ut:
+                messages.append({"role": "user", "content": ut})
+            if rt:
+                messages.append({"role": "assistant", "content": rt})
+        return messages
+
     def stream_chat(
         self,
         request: schemas.ChatRequest,
@@ -128,24 +167,18 @@ class MemoryManager:
         now_ts = _now_utc_ts()
 
         image_summaries = self._summarize_images(request.images)
-        intent = classify_intent(llm_client=self.llm_client, user_text=request.user_text)
-        logger.info(
-            "<<<< INTENT: intent=%s need_evidence=%s need_loops=%s sensitivity_max=%s suggest_summary_scope=%s >>>>",
-            intent.intent,
-            intent.need_evidence,
-            intent.need_loops,
-            intent.sensitivity_max,
-            intent.suggest_summary_scope,
-        )
 
         try:
             with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
-                similar_k = int(cfg.similar_limit_by_kind.get("episode") or 0) if cfg.similar_limit_by_kind else 0
-                if similar_k <= 0:
-                    similar_k = int(cfg.similar_episodes_limit)
+                recent_conversation = self._load_recent_conversation(db, turns=3)
+                retriever = Retriever(llm_client=self.llm_client, db=db)
+                relevant_episodes = retriever.retrieve(
+                    request.user_text,
+                    recent_conversation,
+                    max_results=int(cfg.similar_episodes_limit or 5),
+                )
                 memory_pack = build_memory_pack(
                     db=db,
-                    llm_client=self.llm_client,
                     persona_text=cfg.persona_text,
                     contract_text=cfg.contract_text,
                     user_text=request.user_text,
@@ -153,8 +186,8 @@ class MemoryManager:
                     client_context=request.client_context,
                     now_ts=now_ts,
                     max_inject_tokens=int(cfg.max_inject_tokens),
-                    similar_episode_k=similar_k,
-                    intent=intent,
+                    relevant_episodes=relevant_episodes,
+                    injection_strategy=retriever.last_injection_strategy,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error("MemoryPack生成に失敗しました", exc_info=exc)
@@ -287,17 +320,19 @@ class MemoryManager:
         ).strip()
 
         cfg = self.config_store.config
-        intent = classify_intent_rule_based(notification_user_text)
 
         memory_pack = ""
         try:
             with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
-                similar_k = int(cfg.similar_limit_by_kind.get("episode") or 0) if cfg.similar_limit_by_kind else 0
-                if similar_k <= 0:
-                    similar_k = int(cfg.similar_episodes_limit)
+                recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
+                retriever = Retriever(llm_client=self.llm_client, db=db)
+                relevant_episodes = retriever.retrieve(
+                    notification_user_text,
+                    recent_conversation,
+                    max_results=int(cfg.similar_episodes_limit or 5),
+                )
                 memory_pack = build_memory_pack(
                     db=db,
-                    llm_client=self.llm_client,
                     persona_text=cfg.persona_text,
                     contract_text=cfg.contract_text,
                     user_text=notification_user_text,
@@ -305,8 +340,8 @@ class MemoryManager:
                     client_context=None,
                     now_ts=now_ts,
                     max_inject_tokens=int(cfg.max_inject_tokens),
-                    similar_episode_k=similar_k,
-                    intent=intent,
+                    relevant_episodes=relevant_episodes,
+                    injection_strategy=retriever.last_injection_strategy,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error("MemoryPack生成に失敗しました(notification)", exc_info=exc)
@@ -413,17 +448,19 @@ class MemoryManager:
         ).strip()
 
         cfg = self.config_store.config
-        intent = classify_intent(llm_client=self.llm_client, user_text=meta_user_text)
 
         memory_pack = ""
         try:
             with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
-                similar_k = int(cfg.similar_limit_by_kind.get("episode") or 0) if cfg.similar_limit_by_kind else 0
-                if similar_k <= 0:
-                    similar_k = int(cfg.similar_episodes_limit)
+                recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
+                retriever = Retriever(llm_client=self.llm_client, db=db)
+                relevant_episodes = retriever.retrieve(
+                    meta_user_text,
+                    recent_conversation,
+                    max_results=int(cfg.similar_episodes_limit or 5),
+                )
                 memory_pack = build_memory_pack(
                     db=db,
-                    llm_client=self.llm_client,
                     persona_text=cfg.persona_text,
                     contract_text=cfg.contract_text,
                     user_text=meta_user_text,
@@ -431,8 +468,8 @@ class MemoryManager:
                     client_context=None,
                     now_ts=now_ts,
                     max_inject_tokens=int(cfg.max_inject_tokens),
-                    similar_episode_k=similar_k,
-                    intent=intent,
+                    relevant_episodes=relevant_episodes,
+                    injection_strategy=retriever.last_injection_strategy,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error("MemoryPack生成に失敗しました(meta_request)", exc_info=exc)
