@@ -19,7 +19,6 @@
 - `reminders_enabled`（INTEGER: 0/1）
 - `active_llm_preset_id`（TEXT: UUID）
 - `active_embedding_preset_id`（TEXT: UUID / `memory_id`）
-- `active_system_prompt_preset_id`（TEXT: UUID）
 - `active_persona_preset_id`（TEXT: UUID）
 - `active_contract_preset_id`（TEXT: UUID）
 
@@ -49,16 +48,6 @@ Embedding/検索パラメータの切替単位。
 補足:
 
 - 記憶DBは `memory_<embedding_preset_id>.db`（`embedding_preset_id` はUUID）として管理する
-
-### `system_prompt_presets`
-
-システムプロンプトの切替単位。
-
-例カラム:
-
-- `name`（TEXT）
-- `archived`（INTEGER: 0/1）
-- `system_prompt`（TEXT）
 
 ### `persona_presets`
 

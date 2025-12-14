@@ -41,7 +41,6 @@ def create_app() -> FastAPI:
         load_active_contract_preset,
         load_active_llm_preset,
         load_active_persona_preset,
-        load_active_system_prompt_preset,
         load_global_settings,
         ensure_initial_settings,
         settings_session_scope,
@@ -63,7 +62,6 @@ def create_app() -> FastAPI:
         global_settings = load_global_settings(session)
         llm_preset = load_active_llm_preset(session)
         embedding_preset = load_active_embedding_preset(session)
-        system_prompt_preset = load_active_system_prompt_preset(session)
         persona_preset = load_active_persona_preset(session)
         contract_preset = load_active_contract_preset(session)
 
@@ -73,7 +71,6 @@ def create_app() -> FastAPI:
             global_settings,
             llm_preset,
             embedding_preset,
-            system_prompt_preset,
             persona_preset,
             contract_preset,
         )
@@ -83,7 +80,6 @@ def create_app() -> FastAPI:
         session.expunge(global_settings)
         session.expunge(llm_preset)
         session.expunge(embedding_preset)
-        session.expunge(system_prompt_preset)
         session.expunge(persona_preset)
         session.expunge(contract_preset)
 
@@ -93,7 +89,6 @@ def create_app() -> FastAPI:
             global_settings,
             llm_preset,
             embedding_preset,
-            system_prompt_preset,
             persona_preset,
             contract_preset,
         )

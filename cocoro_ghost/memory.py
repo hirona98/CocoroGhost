@@ -117,15 +117,9 @@ class MemoryManager:
             yield self._sse("error", {"message": str(exc), "code": "memory_pack_failed"})
             return
 
-        # ユーザーが設定する prompts とは独立に、内部注入コンテキストの扱いを明示する。
-        parts: List[str] = [_INTERNAL_CONTEXT_GUARD_PROMPT]
-        user_system = (cfg.system_prompt or "").strip()
-        if user_system:
-            parts.append(user_system)
-        mp = (memory_pack or "").strip()
-        if mp:
-            parts.append(mp)
-        system_prompt = "\n\n".join(parts)
+        # ユーザーが設定する persona/contract とは独立に、最小のガードをコード側で付与する。
+        parts: List[str] = [_INTERNAL_CONTEXT_GUARD_PROMPT, (memory_pack or "").strip()]
+        system_prompt = "\n\n".join([p for p in parts if p])
         conversation = [{"role": "user", "content": request.user_text}]
 
         try:

@@ -3,14 +3,6 @@
 from __future__ import annotations
 
 
-CHARACTER_SYSTEM_PROMPT = """
-あなたはユーザーのパートナーAIです。日本語で会話します。
-
-最重要ルール:
-- 1回の応答は最大で50文字まで（できれば1行）。
-""".strip()
-
-
 REFLECTION_SYSTEM_PROMPT = """
 あなたは cocoro_ghost の「内的思考（reflection）」モジュールです。
 与えられたユーザーとのやりとりや状況、（あれば）画像の要約から、
@@ -202,10 +194,6 @@ DEFAULT_RELATIONSHIP_CONTRACT = """
 - 政治的・宗教的な立場を押し付けない（聞かれたら中立に整理する）。
 - 実在の人物のなりすましや、根拠のない批判・誹謗中傷をしない。
 """.strip()
-
-
-def get_character_prompt() -> str:
-    return CHARACTER_SYSTEM_PROMPT
 
 
 def get_reflection_prompt() -> str:

@@ -101,7 +101,6 @@ class FullSettingsResponse(BaseModel):
     # アクティブなプリセットID
     active_llm_preset_id: Optional[str] = None
     active_embedding_preset_id: Optional[str] = None
-    active_system_prompt_preset_id: Optional[str] = None
     active_persona_preset_id: Optional[str] = None
     active_contract_preset_id: Optional[str] = None
 
@@ -111,8 +110,7 @@ class FullSettingsResponse(BaseModel):
     # アクティブなEmbeddingプリセット
     embedding_preset: List["EmbeddingPresetSettings"]
 
-    # プロンプトプリセット
-    system_prompt_preset: List["SystemPromptPresetSettings"]
+    # プロンプトプリセット（ユーザー編集対象）
     persona_preset: List["PersonaPresetSettings"]
     contract_preset: List["ContractPresetSettings"]
 
@@ -140,14 +138,6 @@ class LlmPresetSettings(BaseModel):
     image_llm_base_url: Optional[str]
     max_tokens_vision: int
     image_timeout_seconds: int
-
-
-class SystemPromptPresetSettings(BaseModel):
-    """設定一覧用システムプロンプトプリセット情報。"""
-
-    system_prompt_preset_id: str
-    system_prompt_preset_name: str
-    system_prompt: str
 
 
 class PersonaPresetSettings(BaseModel):
@@ -200,11 +190,9 @@ class FullSettingsUpdateRequest(BaseModel):
     reminders: List[ReminderUpsertRequest]
     active_llm_preset_id: str
     active_embedding_preset_id: str
-    active_system_prompt_preset_id: str
     active_persona_preset_id: str
     active_contract_preset_id: str
     llm_preset: List[LlmPresetSettings]
     embedding_preset: List[EmbeddingPresetSettings]
-    system_prompt_preset: List[SystemPromptPresetSettings]
     persona_preset: List[PersonaPresetSettings]
     contract_preset: List[ContractPresetSettings]

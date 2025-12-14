@@ -17,7 +17,6 @@ if TYPE_CHECKING:
         GlobalSettings,
         LlmPreset,
         PersonaPreset,
-        SystemPromptPreset,
     )
 
 
@@ -74,9 +73,7 @@ class RuntimeConfig:
     max_inject_tokens: int
     similar_limit_by_kind: Dict[str, int]
 
-    # PromptPresets由来
-    system_prompt_preset_name: str
-    system_prompt: str
+    # PromptPresets由来（ユーザー編集対象）
     persona_preset_name: str
     persona_text: str
     contract_preset_name: str
@@ -93,7 +90,6 @@ class ConfigStore:
         global_settings: "GlobalSettings",
         llm_preset: "LlmPreset",
         embedding_preset: "EmbeddingPreset",
-        system_prompt_preset: "SystemPromptPreset",
         persona_preset: "PersonaPreset",
         contract_preset: "ContractPreset",
     ) -> None:
@@ -102,7 +98,6 @@ class ConfigStore:
         self._global_settings = global_settings
         self._llm_preset = llm_preset
         self._embedding_preset = embedding_preset
-        self._system_prompt_preset = system_prompt_preset
         self._persona_preset = persona_preset
         self._contract_preset = contract_preset
         self._lock = threading.Lock()
@@ -160,7 +155,6 @@ def build_runtime_config(
     global_settings: "GlobalSettings",
     llm_preset: "LlmPreset",
     embedding_preset: "EmbeddingPreset",
-    system_prompt_preset: "SystemPromptPreset",
     persona_preset: "PersonaPreset",
     contract_preset: "ContractPreset",
 ) -> RuntimeConfig:
@@ -202,8 +196,6 @@ def build_runtime_config(
         max_inject_tokens=embedding_preset.max_inject_tokens,
         similar_limit_by_kind=similar_limit_by_kind,
         # PromptPresets由来
-        system_prompt_preset_name=system_prompt_preset.name,
-        system_prompt=system_prompt_preset.system_prompt,
         persona_preset_name=persona_preset.name,
         persona_text=persona_preset.persona_text,
         contract_preset_name=contract_preset.name,

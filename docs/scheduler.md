@@ -43,7 +43,7 @@
 ```
 
 補足:
-- MemoryPack は `system_prompt + memorypack + user_text` の形で LLM に渡される（仕様: `docs/api.md`）。
+- MemoryPack は `guard_prompt + memorypack + user_text` の形で LLM に渡される（仕様: `docs/api.md`）。
 - MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（ユーザー設定の prompt に書かせず、コード側でガードするのが推奨。例: `cocoro_ghost/memory.py`）。
 
 ## 取得手順（規定）

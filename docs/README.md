@@ -37,11 +37,11 @@
   - Canonical: ユーザー発話や通知本文など「改変しないログ」（例: `EPISODE`）。
   - Derived: Workerで抽出/統合された「解釈・要約・構造化」（例: `FACT` / `SUMMARY` / `LOOP` / `CAPSULE`）。
 - **MemoryPack**: `/api/chat` の同期処理中に、Schedulerが「LLMへ注入するため」に組み立てるテキストパック。見出し順（`[PERSONA_ANCHOR]` 等）に沿って、検索結果をそのまま貼らずに圧縮・整形する（仕様: `docs/scheduler.md`、実装: `cocoro_ghost/scheduler.py`）。
-- **System Prompt / Persona / Contract**: LLM注入プロンプトを “役割” で分けたもの。
-  - System Prompt: LLMの基本ルール/安全/出力形式など、会話全体のOS的な前提。
+- **Persona / Contract**: LLM注入プロンプトを「人格」と「関係契約」に分けたもの。
   - Persona: 人格・口調・価値観の中核（崩れると会話の一貫性が壊れる）。
   - Contract: 踏み込み/介入の許可、NG、距離感、取り扱い注意などの「関係契約」。
-  - 注入上は、System Prompt は `system_prompt` として渡し、Persona/Contract は MemoryPack の先頭セクションに含める（`docs/scheduler.md` / `docs/api.md`）。
+  - 注入上は、Persona/Contract は MemoryPack の先頭セクションに含める（`docs/scheduler.md` / `docs/api.md`）。
+  - 内部注入コンテキストの取り扱い（秘匿/ガード）はコード側の固定プロンプトで行う（実装: `cocoro_ghost/memory.py`）。
 - **Preset（settings）**: `settings.db` に永続化する切替単位。
-  - LLM/Embeddingの接続情報・検索予算だけでなく、System Prompt/Persona/Contract もそれぞれ “プリセット” として保持し、`active_*_preset_id` でアクティブを選ぶ（`docs/settings_db.md`）。
+  - LLM/Embeddingの接続情報・検索予算に加え、Persona/Contract をプリセットとして保持し、`active_*_preset_id` でアクティブを選ぶ（`docs/settings_db.md`）。
 - **memory_id**: 記憶DBファイル名を選ぶための識別子。`EmbeddingPreset.id`（UUID）を `memory_id` として扱い、`memory_<memory_id>.db` を開く（`docs/settings_db.md` / `docs/api.md`）。

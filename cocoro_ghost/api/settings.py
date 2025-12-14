@@ -37,7 +37,6 @@ def get_settings(
 
     llm_presets: list[schemas.LlmPresetSettings] = []
     embedding_presets: list[schemas.EmbeddingPresetSettings] = []
-    system_prompt_presets: list[schemas.SystemPromptPresetSettings] = []
     persona_presets: list[schemas.PersonaPresetSettings] = []
     contract_presets: list[schemas.ContractPresetSettings] = []
     reminders: list[schemas.ReminderSettings] = []
@@ -87,17 +86,6 @@ def get_settings(
         )
 
     for preset in (
-        db.query(models.SystemPromptPreset).filter_by(archived=False).order_by(models.SystemPromptPreset.id.asc()).all()
-    ):
-        system_prompt_presets.append(
-            schemas.SystemPromptPresetSettings(
-                system_prompt_preset_id=preset.id,
-                system_prompt_preset_name=preset.name,
-                system_prompt=preset.system_prompt,
-            )
-        )
-
-    for preset in (
         db.query(models.PersonaPreset).filter_by(archived=False).order_by(models.PersonaPreset.id.asc()).all()
     ):
         persona_presets.append(
@@ -125,12 +113,10 @@ def get_settings(
         reminders=reminders,
         active_llm_preset_id=global_settings.active_llm_preset_id,
         active_embedding_preset_id=global_settings.active_embedding_preset_id,
-        active_system_prompt_preset_id=global_settings.active_system_prompt_preset_id,
         active_persona_preset_id=global_settings.active_persona_preset_id,
         active_contract_preset_id=global_settings.active_contract_preset_id,
         llm_preset=llm_presets,
         embedding_preset=embedding_presets,
-        system_prompt_preset=system_prompt_presets,
         persona_preset=persona_presets,
         contract_preset=contract_presets,
     )
@@ -151,12 +137,10 @@ def commit_settings(
 
     llm_ids = [str(x.llm_preset_id) for x in request.llm_preset]
     embedding_ids = [str(x.embedding_preset_id) for x in request.embedding_preset]
-    system_prompt_ids = [str(x.system_prompt_preset_id) for x in request.system_prompt_preset]
     persona_ids = [str(x.persona_preset_id) for x in request.persona_preset]
     contract_ids = [str(x.contract_preset_id) for x in request.contract_preset]
     _ensure_unique_ids("llm_preset", llm_ids)
     _ensure_unique_ids("embedding_preset", embedding_ids)
-    _ensure_unique_ids("system_prompt_preset", system_prompt_ids)
     _ensure_unique_ids("persona_preset", persona_ids)
     _ensure_unique_ids("contract_preset", contract_ids)
 
@@ -164,10 +148,6 @@ def commit_settings(
         raise HTTPException(status_code=400, detail="active_llm_preset_id must be included in llm_preset list")
     if str(request.active_embedding_preset_id) not in set(embedding_ids):
         raise HTTPException(status_code=400, detail="active_embedding_preset_id must be included in embedding_preset list")
-    if str(request.active_system_prompt_preset_id) not in set(system_prompt_ids):
-        raise HTTPException(
-            status_code=400, detail="active_system_prompt_preset_id must be included in system_prompt_preset list"
-        )
     if str(request.active_persona_preset_id) not in set(persona_ids):
         raise HTTPException(status_code=400, detail="active_persona_preset_id must be included in persona_preset list")
     if str(request.active_contract_preset_id) not in set(contract_ids):
@@ -265,31 +245,6 @@ def commit_settings(
         if str(preset.id) not in embedding_id_set:
             preset.archived = True
 
-    # SystemPromptプリセットの更新（複数件 / 全置換 + アーカイブ）
-    system_existing = db.query(models.SystemPromptPreset).order_by(models.SystemPromptPreset.id.asc()).all()
-    system_presets_by_id: dict[str, models.SystemPromptPreset] = {str(p.id): p for p in system_existing}
-    for sp in request.system_prompt_preset:
-        preset_id = str(sp.system_prompt_preset_id)
-        preset = system_presets_by_id.get(preset_id)
-        if preset is None:
-            preset = models.SystemPromptPreset(
-                id=preset_id,
-                name=sp.system_prompt_preset_name,
-                archived=False,
-                system_prompt=sp.system_prompt,
-            )
-            db.add(preset)
-            system_presets_by_id[preset_id] = preset
-        else:
-            preset.archived = False
-            preset.name = sp.system_prompt_preset_name
-            preset.system_prompt = sp.system_prompt
-
-    system_id_set = set(system_prompt_ids)
-    for preset in system_existing:
-        if str(preset.id) not in system_id_set:
-            preset.archived = True
-
     # Personaプリセットの更新（複数件 / 全置換 + アーカイブ）
     persona_existing = db.query(models.PersonaPreset).order_by(models.PersonaPreset.id.asc()).all()
     persona_presets_by_id: dict[str, models.PersonaPreset] = {str(p.id): p for p in persona_existing}
@@ -343,7 +298,6 @@ def commit_settings(
     # アクティブIDの更新
     global_settings.active_llm_preset_id = request.active_llm_preset_id
     global_settings.active_embedding_preset_id = request.active_embedding_preset_id
-    global_settings.active_system_prompt_preset_id = request.active_system_prompt_preset_id
     global_settings.active_persona_preset_id = request.active_persona_preset_id
     global_settings.active_contract_preset_id = request.active_contract_preset_id
 
@@ -355,13 +309,6 @@ def commit_settings(
     )
     if not active_embedding:
         raise HTTPException(status_code=400, detail="Active embedding preset is not set")
-    active_system = (
-        db.query(models.SystemPromptPreset)
-        .filter_by(id=global_settings.active_system_prompt_preset_id, archived=False)
-        .first()
-    )
-    if not active_system:
-        raise HTTPException(status_code=400, detail="Active system prompt preset is not set")
     active_persona = db.query(models.PersonaPreset).filter_by(id=global_settings.active_persona_preset_id, archived=False).first()
     if not active_persona:
         raise HTTPException(status_code=400, detail="Active persona preset is not set")
@@ -377,7 +324,6 @@ def commit_settings(
         global_settings,
         active_llm,
         active_embedding,
-        active_system,
         active_persona,
         active_contract,
     )
@@ -397,7 +343,6 @@ def commit_settings(
     db.expunge(global_settings)
     db.expunge(active_llm)
     db.expunge(active_embedding)
-    db.expunge(active_system)
     db.expunge(active_persona)
     db.expunge(active_contract)
     set_global_config_store(
@@ -407,7 +352,6 @@ def commit_settings(
             global_settings,
             active_llm,
             active_embedding,
-            active_system,
             active_persona,
             active_contract,
         )

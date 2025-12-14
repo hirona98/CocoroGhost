@@ -371,7 +371,6 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         ids = [
             global_settings.active_llm_preset_id,
             global_settings.active_embedding_preset_id,
-            global_settings.active_system_prompt_preset_id,
             global_settings.active_persona_preset_id,
             global_settings.active_contract_preset_id,
         ]
@@ -380,16 +379,13 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             active_embedding = session.query(models.EmbeddingPreset).filter_by(
                 id=global_settings.active_embedding_preset_id, archived=False
             ).first()
-            active_system = session.query(models.SystemPromptPreset).filter_by(
-                id=global_settings.active_system_prompt_preset_id, archived=False
-            ).first()
             active_persona = session.query(models.PersonaPreset).filter_by(
                 id=global_settings.active_persona_preset_id, archived=False
             ).first()
             active_contract = session.query(models.ContractPreset).filter_by(
                 id=global_settings.active_contract_preset_id, archived=False
             ).first()
-            if active_llm and active_embedding and active_system and active_persona and active_contract:
+            if active_llm and active_embedding and active_persona and active_contract:
                 return
 
     logger.info("設定DBの初期化を行います（TOMLのLLM設定は使用しません）")
@@ -454,24 +450,6 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
 
     if active_embedding_id is None or str(embedding_preset.id) != str(active_embedding_id):
         global_settings.active_embedding_preset_id = str(embedding_preset.id)
-
-    # SystemPromptPreset の用意
-    system_preset = None
-    active_system_id = global_settings.active_system_prompt_preset_id
-    if active_system_id is not None:
-        system_preset = session.query(models.SystemPromptPreset).filter_by(id=active_system_id, archived=False).first()
-    if system_preset is None:
-        system_preset = session.query(models.SystemPromptPreset).filter_by(archived=False).first()
-    if system_preset is None:
-        system_preset = models.SystemPromptPreset(
-            name="miku-default-system_prompt",
-            archived=False,
-            system_prompt=prompts.get_character_prompt(),
-        )
-        session.add(system_preset)
-        session.flush()
-    if active_system_id is None or str(system_preset.id) != str(active_system_id):
-        global_settings.active_system_prompt_preset_id = str(system_preset.id)
 
     # PersonaPreset の用意
     persona_preset = None
@@ -548,20 +526,6 @@ def load_active_embedding_preset(session: Session):
     preset = session.query(models.EmbeddingPreset).filter_by(id=active_id, archived=False).first()
     if preset is None:
         raise RuntimeError(f"Embeddingプリセット(id={active_id})が存在しません")
-    return preset
-
-
-def load_active_system_prompt_preset(session: Session):
-    """アクティブなSystemPromptPresetを取得。"""
-    from cocoro_ghost import models
-
-    settings = load_global_settings(session)
-    if settings.active_system_prompt_preset_id is None:
-        raise RuntimeError("アクティブなシステムプロンプトプリセットが設定されていません")
-
-    preset = session.query(models.SystemPromptPreset).filter_by(id=settings.active_system_prompt_preset_id, archived=False).first()
-    if preset is None:
-        raise RuntimeError(f"SystemPromptPreset(id={settings.active_system_prompt_preset_id})が存在しません")
     return preset
 
 

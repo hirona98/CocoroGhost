@@ -44,7 +44,7 @@ flowchart LR
 
 - （任意）画像要約（Vision）
 - Schedulerで **MemoryPack** を生成（主に既存DBの参照）
-- `system_prompt + memorypack + user_text` をLLMへ注入（MemoryPack内に persona/contract を含む）
+- `guard_prompt + memorypack + user_text` をLLMへ注入（MemoryPack内に persona/contract を含む）
 - 返答をSSEで配信
 - `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 - Worker用ジョブを enqueue（reflection/extraction/embedding等）
@@ -61,7 +61,7 @@ flowchart LR
 ## ストレージ境界
 
 - 設定は `settings.db`
-  - token / active preset / prompt presets / 注入予算 等
+  - token / active preset / persona・contract / 注入予算 等
 - 記憶は `memory_<memory_id>.db`
   - `units` + `payload_*` + `entities` 等
   - `vec_units`（sqlite-vec 仮想テーブル）

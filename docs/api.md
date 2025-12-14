@@ -55,7 +55,7 @@ data: {"message":"...","code":"..."}
 
 1. 画像要約（`images` がある場合）
 2. Schedulerで **MemoryPack** を生成
-3. LLMへ `system_prompt + memorypack + user_text` を注入（MemoryPack内に persona/contract を含む）
+3. LLMへ `guard_prompt + memorypack + user_text` を注入（MemoryPack内に persona/contract を含む）
 4. 返答をSSEで配信
 5. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 6. Worker用ジョブを enqueue（reflection/extraction/embedding等）
@@ -183,7 +183,6 @@ UI向けの「全設定」取得/更新。
   ],
   "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "active_system_prompt_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "llm_preset": [
@@ -212,13 +211,6 @@ UI向けの「全設定」取得/更新。
       "embedding_base_url": "optional",
       "embedding_dimension": 1536,
       "similar_episodes_limit": 10
-    }
-  ],
-  "system_prompt_preset": [
-    {
-      "system_prompt_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-      "system_prompt_preset_name": "default",
-      "system_prompt": "string"
     }
   ],
   "persona_preset": [
@@ -262,7 +254,6 @@ UI向けの「全設定」取得/更新。
   ],
   "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "active_system_prompt_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "llm_preset": [
@@ -293,13 +284,6 @@ UI向けの「全設定」取得/更新。
       "similar_episodes_limit": 10
     }
   ],
-  "system_prompt_preset": [
-    {
-      "system_prompt_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-      "system_prompt_preset_name": "default",
-      "system_prompt": "string"
-    }
-  ],
   "persona_preset": [
     {
       "persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
@@ -323,7 +307,7 @@ UI向けの「全設定」取得/更新。
 
 #### 注意点（実装仕様）
 
-- `llm_preset` / `embedding_preset` / `system_prompt_preset` / `persona_preset` / `contract_preset` は「配列」で、**複数件を一括確定**する（全置換コミット）
+- `llm_preset` / `embedding_preset` / `persona_preset` / `contract_preset` は「配列」で、**複数件を一括確定**する（全置換コミット）
 - `reminders` は **全置き換え**（既存は削除されIDは作り直される）
 - 各配列内で `*_preset_id` が重複している場合は `400`
 - `active_*_preset_id` は **対応する配列に含まれるID**である必要がある（未存在/アーカイブは `400`）
