@@ -446,6 +446,8 @@ def build_memory_pack(
 
     # Context capsule（軽量）
     capsule_parts: List[str] = []
+    now_local = datetime.fromtimestamp(now_ts).astimezone().isoformat()
+    capsule_parts.append(f"now_local: {now_local}")
     if client_context:
         active_app = str(client_context.get("active_app") or "").strip()
         window_title = str(client_context.get("window_title") or "").strip()
