@@ -27,13 +27,13 @@ flowchart LR
   U[User/UI] -->|/api/chat SSE| API[FastAPI]
   API -->|Intent classify| SCH[Scheduler]
   SCH -->|MemoryPack| API
-  API -->|LLM chat| LLM[LLM API via LiteLLM]
-  API -->|Save episode (raw)| DB[(SQLite memory_<id>.db)]
-  API -->|Enqueue jobs| Q[(Jobs table)]
-  W[Worker] -->|Dequeue| Q
-  W -->|Reflection/Entities/Facts/Summaries/Loops| DB
-  W -->|Embeddings| EMB[Embedding API via LiteLLM]
-  W -->|Upsert vectors| VEC[(sqlite-vec vec0)]
+	  API -->|LLM chat| LLM[LLM API via LiteLLM]
+	  API -->|Save episode (raw)| DB[(SQLite memory_XXX.db)]
+	  API -->|Enqueue jobs| Q[(Jobs table)]
+	  W[Worker] -->|Dequeue| Q
+	  W -->|Reflection/Entities/Facts/Summaries/Loops| DB
+	  W -->|Embeddings| EMB[Embedding API via LiteLLM]
+	  W -->|Upsert vectors| VEC[(sqlite-vec vec0)]
   SCH -->|KNN candidates| VEC
   SCH -->|JOIN payload| DB
 ```

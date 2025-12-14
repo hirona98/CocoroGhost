@@ -387,15 +387,6 @@ UI向けの「全設定」取得/更新。
 
 例）
 ```json
-
-{
-  "unit_id": 12345,
-  "type": "meta_request",
-  "data": {
-    "message": "AIパートナーのセリフ"
-  }
-}
-
 {
   "unit_id": 12345,
   "type": "notification",
