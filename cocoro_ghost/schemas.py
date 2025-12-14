@@ -175,13 +175,13 @@ class LlmPresetSettings(BaseModel):
     llm_preset_name: str
     llm_api_key: str
     llm_model: str
-    reasoning_effort: Optional[str]
-    llm_base_url: Optional[str]
+    reasoning_effort: Optional[str] = None
+    llm_base_url: Optional[str] = None
     max_turns_window: int
     max_tokens: int
-    image_model_api_key: Optional[str]
+    image_model_api_key: Optional[str] = None
     image_model: str
-    image_llm_base_url: Optional[str]
+    image_llm_base_url: Optional[str] = None
     max_tokens_vision: int
     image_timeout_seconds: int
 
@@ -207,9 +207,9 @@ class EmbeddingPresetSettings(BaseModel):
 
     embedding_preset_id: str
     embedding_preset_name: str
-    embedding_model_api_key: Optional[str]
+    embedding_model_api_key: Optional[str] = None
     embedding_model: str
-    embedding_base_url: Optional[str]
+    embedding_base_url: Optional[str] = None
     embedding_dimension: int
     similar_episodes_limit: int
 
