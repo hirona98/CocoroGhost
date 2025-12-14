@@ -103,6 +103,49 @@ sequenceDiagram
 - Summary生成（週次/人物/トピック/関係性）
 - Embedding生成と `vec_units` upsert（種別ごとに方針を決める）
 
+#### Workerの責務（もう少し詳しく）
+
+- **入力は「episode（RAW）」と jobs キュー**：APIが `units(kind=EPISODE)` をRAW保存し、必要な派生ジョブ（reflection/entity/fact/loop/summary/embedding等）を `jobs` にenqueueする
+- **派生物はすべてUnitとして永続化**：facts/summaries/loops/entities/edges/vec_units など、後段のSchedulerが参照する「注入材料」を増やす
+- **冪等（再実行可能）を前提に設計**：同じ `unit_id` に対する同種ジョブは何度走っても整合が崩れないよう upsert + 版管理で扱う
+- **失敗はリトライ**：一時的なLLM失敗や拡張ロード失敗でも、`tries` と `run_after` を使ってバックオフし、上限回数で `failed` に落とす
+- **DB境界**：Workerは `memory_<memory_id>.db` を対象に動作し、原則「1DB=1 Workerプロセス」でジョブキューを直列に捌く
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant API as FastAPI
+  participant DB as Memory DB (SQLite)
+  participant Q as jobs table
+  participant W as Worker (per memory_id)
+  participant LLM as LLM (JSON tasks)
+  participant EMB as Embedding API
+  participant VEC as vec_units (vec0)
+
+  API->>DB: save Unit(kind=EPISODE) RAW
+  API->>Q: enqueue jobs\nreflect/extract_entities/extract_facts/extract_loops/upsert_embeddings/...
+  loop polling
+    W->>Q: select queued jobs (run_after<=now)\nORDER BY run_after,id
+    W->>Q: claim job (status=running)
+    alt reflection/entities/facts/loops/summary
+      W->>LLM: generate JSON
+      LLM-->>W: JSON
+      W->>DB: upsert derived units\n+ unit_versions (history)
+    else embeddings
+      W->>EMB: embed texts
+      EMB-->>W: embeddings
+      W->>VEC: upsert vec_units (unit_id, embedding,\nkind/state/sensitivity/occurred_day)
+    end
+    alt success
+      W->>Q: status=done
+    else transient failure
+      W->>Q: tries+=1, last_error,\nstatus=queued, run_after=backoff
+    else permanent failure
+      W->>Q: status=failed
+    end
+  end
+```
+
 ## ストレージ境界
 
 - 設定は `settings.db`
