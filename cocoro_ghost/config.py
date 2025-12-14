@@ -193,7 +193,7 @@ def build_runtime_config(
         image_timeout_seconds=llm_preset.image_timeout_seconds,
         # EmbeddingPreset由来
         embedding_preset_name=embedding_preset.name,
-        memory_id=embedding_preset.name,
+        memory_id=str(embedding_preset.id),
         embedding_model=embedding_preset.embedding_model,
         embedding_api_key=embedding_preset.embedding_api_key,
         embedding_base_url=embedding_preset.embedding_base_url,

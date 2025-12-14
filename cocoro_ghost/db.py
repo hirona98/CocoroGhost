@@ -426,8 +426,8 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         session.add(llm_preset)
         session.flush()
 
-    if active_llm_id is None or int(llm_preset.id) != int(active_llm_id):
-        global_settings.active_llm_preset_id = int(llm_preset.id)
+    if active_llm_id is None or str(llm_preset.id) != str(active_llm_id):
+        global_settings.active_llm_preset_id = str(llm_preset.id)
 
     # EmbeddingPreset の用意（存在しない/アクティブでない場合は default を作成）
     embedding_preset = None
@@ -450,8 +450,8 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         session.add(embedding_preset)
         session.flush()
 
-    if active_embedding_id is None or int(embedding_preset.id) != int(active_embedding_id):
-        global_settings.active_embedding_preset_id = int(embedding_preset.id)
+    if active_embedding_id is None or str(embedding_preset.id) != str(active_embedding_id):
+        global_settings.active_embedding_preset_id = str(embedding_preset.id)
 
     # SystemPromptPreset の用意
     system_preset = None
@@ -467,8 +467,8 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         )
         session.add(system_preset)
         session.flush()
-    if active_system_id is None or int(system_preset.id) != int(active_system_id):
-        global_settings.active_system_prompt_preset_id = int(system_preset.id)
+    if active_system_id is None or str(system_preset.id) != str(active_system_id):
+        global_settings.active_system_prompt_preset_id = str(system_preset.id)
 
     # PersonaPreset の用意
     persona_preset = None
@@ -481,8 +481,8 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         persona_preset = models.PersonaPreset(name="miku-default-persona_prompt", persona_text=prompts.get_default_persona_anchor())
         session.add(persona_preset)
         session.flush()
-    if active_persona_id is None or int(persona_preset.id) != int(active_persona_id):
-        global_settings.active_persona_preset_id = int(persona_preset.id)
+    if active_persona_id is None or str(persona_preset.id) != str(active_persona_id):
+        global_settings.active_persona_preset_id = str(persona_preset.id)
 
     # ContractPreset の用意
     contract_preset = None
@@ -495,8 +495,8 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         contract_preset = models.ContractPreset(name="miku-default-contract_prompt", contract_text=prompts.get_default_relationship_contract())
         session.add(contract_preset)
         session.flush()
-    if active_contract_id is None or int(contract_preset.id) != int(active_contract_id):
-        global_settings.active_contract_preset_id = int(contract_preset.id)
+    if active_contract_id is None or str(contract_preset.id) != str(active_contract_id):
+        global_settings.active_contract_preset_id = str(contract_preset.id)
 
     session.commit()
 

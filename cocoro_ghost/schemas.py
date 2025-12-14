@@ -99,11 +99,11 @@ class FullSettingsResponse(BaseModel):
     reminders: List["ReminderSettings"] = Field(default_factory=list)
 
     # アクティブなプリセットID
-    active_llm_preset_id: Optional[int] = None
-    active_embedding_preset_id: Optional[int] = None
-    active_system_prompt_preset_id: Optional[int] = None
-    active_persona_preset_id: Optional[int] = None
-    active_contract_preset_id: Optional[int] = None
+    active_llm_preset_id: Optional[str] = None
+    active_embedding_preset_id: Optional[str] = None
+    active_system_prompt_preset_id: Optional[str] = None
+    active_persona_preset_id: Optional[str] = None
+    active_contract_preset_id: Optional[str] = None
 
     # アクティブなLLMプリセット
     llm_preset: List["LlmPresetSettings"]
@@ -127,7 +127,7 @@ class ActivateResponse(BaseModel):
 class LlmPresetSettings(BaseModel):
     """設定一覧用LLMプリセット情報。"""
 
-    llm_preset_id: int
+    llm_preset_id: str
     llm_preset_name: str
     llm_api_key: str
     llm_model: str
@@ -145,7 +145,7 @@ class LlmPresetSettings(BaseModel):
 class SystemPromptPresetSettings(BaseModel):
     """設定一覧用システムプロンプトプリセット情報。"""
 
-    system_prompt_preset_id: int
+    system_prompt_preset_id: str
     system_prompt_preset_name: str
     system_prompt: str
 
@@ -153,7 +153,7 @@ class SystemPromptPresetSettings(BaseModel):
 class PersonaPresetSettings(BaseModel):
     """設定一覧用personaプロンプトプリセット情報。"""
 
-    persona_preset_id: int
+    persona_preset_id: str
     persona_preset_name: str
     persona_text: str
 
@@ -161,7 +161,7 @@ class PersonaPresetSettings(BaseModel):
 class ContractPresetSettings(BaseModel):
     """設定一覧用contractプロンプトプリセット情報。"""
 
-    contract_preset_id: int
+    contract_preset_id: str
     contract_preset_name: str
     contract_text: str
 
@@ -169,7 +169,7 @@ class ContractPresetSettings(BaseModel):
 class EmbeddingPresetSettings(BaseModel):
     """設定一覧用Embeddingプリセット情報。"""
 
-    embedding_preset_id: int
+    embedding_preset_id: str
     embedding_preset_name: str
     embedding_model_api_key: Optional[str]
     embedding_model: str
@@ -198,11 +198,11 @@ class FullSettingsUpdateRequest(BaseModel):
     exclude_keywords: List[str]
     reminders_enabled: bool
     reminders: List[ReminderUpsertRequest]
-    active_llm_preset_id: int
-    active_embedding_preset_id: int
-    active_system_prompt_preset_id: int
-    active_persona_preset_id: int
-    active_contract_preset_id: int
+    active_llm_preset_id: str
+    active_embedding_preset_id: str
+    active_system_prompt_preset_id: str
+    active_persona_preset_id: str
+    active_contract_preset_id: str
     llm_preset: List[LlmPresetSettings]
     embedding_preset: List[EmbeddingPresetSettings]
     system_prompt_preset: List[SystemPromptPresetSettings]

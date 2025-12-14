@@ -44,4 +44,4 @@
   - 注入上は、System Prompt は `system_prompt` として渡し、Persona/Contract は MemoryPack の先頭セクションに含める（`docs/scheduler.md` / `docs/api.md`）。
 - **Preset（settings）**: `settings.db` に永続化する切替単位。
   - LLM/Embeddingの接続情報・検索予算だけでなく、System Prompt/Persona/Contract もそれぞれ “プリセット” として保持し、`active_*_preset_id` でアクティブを選ぶ（`docs/settings_db.md`）。
-- **memory_id**: 記憶DBファイル名を選ぶための識別子。`EmbeddingPreset.name` を `memory_id` として扱い、`memory_<memory_id>.db` を開く（`docs/settings_db.md` / `docs/api.md`）。
+- **memory_id**: 記憶DBファイル名を選ぶための識別子。`EmbeddingPreset.id`（UUID）を `memory_id` として扱い、`memory_<memory_id>.db` を開く（`docs/settings_db.md` / `docs/api.md`）。

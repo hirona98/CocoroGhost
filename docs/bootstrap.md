@@ -18,19 +18,21 @@ DBは `settings.db` と `memory_<memory_id>.db` を新規作成し、スキー�
 `settings.db` に対して実行する。
 
 > 実装では、`settings.db` が空の場合に限り、起動時に default を自動seedする（`cocoro_ghost/db.py` の `ensure_initial_settings`）。
+>
+> なお、本プロジェクトはプリセットの主キーに UUID（TEXT）を使用するため、SQLで直接seedする場合は `id` を明示的に指定する（UUIDを事前生成する）必要がある。
 
 ```sql
 -- System prompt
-insert into system_prompt_presets(name, system_prompt, created_at, updated_at)
-values ('default', '（ここにsystem promptを書く）', datetime('now'), datetime('now'));
+insert into system_prompt_presets(id, name, system_prompt, created_at, updated_at)
+values ('xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', 'default', '（ここにsystem promptを書く）', datetime('now'), datetime('now'));
 
 -- Persona
-insert into persona_presets(name, persona_text, created_at, updated_at)
-values ('default', '（ここに人格コアを書く）', datetime('now'), datetime('now'));
+insert into persona_presets(id, name, persona_text, created_at, updated_at)
+values ('xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', 'default', '（ここに人格コアを書く）', datetime('now'), datetime('now'));
 
 -- Contract
-insert into contract_presets(name, contract_text, created_at, updated_at)
-values ('default', '（ここに関係契約を書く）', datetime('now'), datetime('now'));
+insert into contract_presets(id, name, contract_text, created_at, updated_at)
+values ('xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', 'default', '（ここに関係契約を書く）', datetime('now'), datetime('now'));
 
 -- global_settings の active_* を更新
 update global_settings

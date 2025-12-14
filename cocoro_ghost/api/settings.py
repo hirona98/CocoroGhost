@@ -141,11 +141,11 @@ def update_settings(
         )
 
     # LLMプリセットの更新（複数件）
-    llm_presets_by_id: dict[int, models.LlmPreset] = {
-        int(p.id): p for p in db.query(models.LlmPreset).order_by(models.LlmPreset.id.asc()).all()
+    llm_presets_by_id: dict[str, models.LlmPreset] = {
+        str(p.id): p for p in db.query(models.LlmPreset).order_by(models.LlmPreset.id.asc()).all()
     }
     for lp in request.llm_preset:
-        preset = llm_presets_by_id.get(int(lp.llm_preset_id))
+        preset = llm_presets_by_id.get(str(lp.llm_preset_id))
         if preset is None:
             raise HTTPException(status_code=400, detail=f"llm_preset_id not found: {lp.llm_preset_id}")
         preset.name = lp.llm_preset_name
@@ -162,11 +162,11 @@ def update_settings(
         preset.image_timeout_seconds = lp.image_timeout_seconds
 
     # Embeddingプリセットの更新（複数件）
-    embedding_presets_by_id: dict[int, models.EmbeddingPreset] = {
-        int(p.id): p for p in db.query(models.EmbeddingPreset).order_by(models.EmbeddingPreset.id.asc()).all()
+    embedding_presets_by_id: dict[str, models.EmbeddingPreset] = {
+        str(p.id): p for p in db.query(models.EmbeddingPreset).order_by(models.EmbeddingPreset.id.asc()).all()
     }
     for ep in request.embedding_preset:
-        preset = embedding_presets_by_id.get(int(ep.embedding_preset_id))
+        preset = embedding_presets_by_id.get(str(ep.embedding_preset_id))
         if preset is None:
             raise HTTPException(status_code=400, detail=f"embedding_preset_id not found: {ep.embedding_preset_id}")
         preset.name = ep.embedding_preset_name
@@ -177,11 +177,11 @@ def update_settings(
         preset.similar_episodes_limit = ep.similar_episodes_limit
 
     # SystemPromptプリセットの更新（複数件）
-    system_presets_by_id: dict[int, models.SystemPromptPreset] = {
-        int(p.id): p for p in db.query(models.SystemPromptPreset).order_by(models.SystemPromptPreset.id.asc()).all()
+    system_presets_by_id: dict[str, models.SystemPromptPreset] = {
+        str(p.id): p for p in db.query(models.SystemPromptPreset).order_by(models.SystemPromptPreset.id.asc()).all()
     }
     for sp in request.system_prompt_preset:
-        preset = system_presets_by_id.get(int(sp.system_prompt_preset_id))
+        preset = system_presets_by_id.get(str(sp.system_prompt_preset_id))
         if preset is None:
             raise HTTPException(
                 status_code=400, detail=f"system_prompt_preset_id not found: {sp.system_prompt_preset_id}"
@@ -190,22 +190,22 @@ def update_settings(
         preset.system_prompt = sp.system_prompt
 
     # Personaプリセットの更新（複数件）
-    persona_presets_by_id: dict[int, models.PersonaPreset] = {
-        int(p.id): p for p in db.query(models.PersonaPreset).order_by(models.PersonaPreset.id.asc()).all()
+    persona_presets_by_id: dict[str, models.PersonaPreset] = {
+        str(p.id): p for p in db.query(models.PersonaPreset).order_by(models.PersonaPreset.id.asc()).all()
     }
     for pp in request.persona_preset:
-        preset = persona_presets_by_id.get(int(pp.persona_preset_id))
+        preset = persona_presets_by_id.get(str(pp.persona_preset_id))
         if preset is None:
             raise HTTPException(status_code=400, detail=f"persona_preset_id not found: {pp.persona_preset_id}")
         preset.name = pp.persona_preset_name
         preset.persona_text = pp.persona_text
 
     # Contractプリセットの更新（複数件）
-    contract_presets_by_id: dict[int, models.ContractPreset] = {
-        int(p.id): p for p in db.query(models.ContractPreset).order_by(models.ContractPreset.id.asc()).all()
+    contract_presets_by_id: dict[str, models.ContractPreset] = {
+        str(p.id): p for p in db.query(models.ContractPreset).order_by(models.ContractPreset.id.asc()).all()
     }
     for cp in request.contract_preset:
-        preset = contract_presets_by_id.get(int(cp.contract_preset_id))
+        preset = contract_presets_by_id.get(str(cp.contract_preset_id))
         if preset is None:
             raise HTTPException(status_code=400, detail=f"contract_preset_id not found: {cp.contract_preset_id}")
         preset.name = cp.contract_preset_name

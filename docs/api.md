@@ -16,7 +16,7 @@
 
 ```json
 {
-  "memory_id": "default",
+  "memory_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "user_text": "string",
   "images": [
     {"type": "desktop_capture", "base64": "..."},
@@ -30,7 +30,7 @@
 }
 ```
 
-- `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `embedding_preset_name` を `memory_id` として使用する）
+- `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `active_embedding_preset_id` を `memory_id` として使用する）
 - `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
 - `client_context` は省略可能（指定時は `payload_episode.context_note` にJSON文字列として保存される）
 
@@ -66,7 +66,7 @@ data: {"message":"...","code":"..."}
 
 ```json
 {
-  "memory_id": "default",
+  "memory_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "source_system": "gmail",
   "title": "string",
   "body": "string",
@@ -77,7 +77,7 @@ data: {"message":"...","code":"..."}
 }
 ```
 
-- `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `embedding_preset_name` を `memory_id` として使用する）
+- `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `active_embedding_preset_id` を `memory_id` として使用する）
 - `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
 
 ### Response
@@ -95,7 +95,7 @@ data: {"message":"...","code":"..."}
 
 ```json
 {
-  "memory_id": "default",
+  "memory_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "instruction": "string",
   "payload_text": "string",
   "images": [
@@ -105,7 +105,7 @@ data: {"message":"...","code":"..."}
 }
 ```
 
-- `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `embedding_preset_name` を `memory_id` として使用する）
+- `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `active_embedding_preset_id` を `memory_id` として使用する）
 - `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
 
 ### Response
@@ -181,14 +181,14 @@ UI向けの「全設定」取得/更新。
   "reminders": [
     {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
   ],
-  "active_llm_preset_id": 1,
-  "active_embedding_preset_id": 1,
-  "active_system_prompt_preset_id": 1,
-  "active_persona_preset_id": 1,
-  "active_contract_preset_id": 1,
+  "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "active_system_prompt_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "active_contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "llm_preset": [
     {
-      "llm_preset_id": 1,
+      "llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
       "llm_preset_name": "default",
       "llm_api_key": "string",
       "llm_model": "string",
@@ -205,7 +205,7 @@ UI向けの「全設定」取得/更新。
   ],
   "embedding_preset": [
     {
-      "embedding_preset_id": 1,
+      "embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
       "embedding_preset_name": "default",
       "embedding_model_api_key": "optional",
       "embedding_model": "string",
@@ -216,21 +216,21 @@ UI向けの「全設定」取得/更新。
   ],
   "system_prompt_preset": [
     {
-      "system_prompt_preset_id": 1,
+      "system_prompt_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
       "system_prompt_preset_name": "default",
       "system_prompt": "string"
     }
   ],
   "persona_preset": [
     {
-      "persona_preset_id": 1,
+      "persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
       "persona_preset_name": "default",
       "persona_text": "string"
     }
   ],
   "contract_preset": [
     {
-      "contract_preset_id": 1,
+      "contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
       "contract_preset_name": "default",
       "contract_text": "string"
     }
@@ -253,14 +253,14 @@ UI向けの「全設定」取得/更新。
   "reminders": [
     {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
   ],
-  "active_llm_preset_id": 1,
-  "active_embedding_preset_id": 1,
-  "active_system_prompt_preset_id": 1,
-  "active_persona_preset_id": 1,
-  "active_contract_preset_id": 1,
+  "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "active_system_prompt_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "active_contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "llm_preset": [
     {
-      "llm_preset_id": 1,
+      "llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
       "llm_preset_name": "default",
       "llm_api_key": "string",
       "llm_model": "string",
@@ -277,7 +277,7 @@ UI向けの「全設定」取得/更新。
   ],
   "embedding_preset": [
     {
-      "embedding_preset_id": 1,
+      "embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
       "embedding_preset_name": "default",
       "embedding_model_api_key": "optional",
       "embedding_model": "string",
@@ -288,21 +288,21 @@ UI向けの「全設定」取得/更新。
   ],
   "system_prompt_preset": [
     {
-      "system_prompt_preset_id": 1,
+      "system_prompt_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
       "system_prompt_preset_name": "default",
       "system_prompt": "string"
     }
   ],
   "persona_preset": [
     {
-      "persona_preset_id": 1,
+      "persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
       "persona_preset_name": "default",
       "persona_text": "string"
     }
   ],
   "contract_preset": [
     {
-      "contract_preset_id": 1,
+      "contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
       "contract_preset_name": "default",
       "contract_text": "string"
     }
@@ -319,7 +319,7 @@ UI向けの「全設定」取得/更新。
 - `llm_preset` / `embedding_preset` / `system_prompt_preset` / `persona_preset` / `contract_preset` は「配列」で、**複数件を一括更新**する（`*_preset_id` が未存在の場合は `400`）
 - `reminders` は **全置き換え**（既存は削除されIDは作り直される）
 - `active_*_preset_id` は **更新後に参照可能なID**である必要がある（未存在は `400`）
-- `active_embedding_preset_id` で選択される `embedding_preset_name` は `memory_id` 扱いで、変更時はメモリDB初期化を検証する（失敗時 `400`）
+- `active_embedding_preset_id` は `memory_id` 扱いで、変更時はメモリDB初期化を検証する（失敗時 `400`）
 - `max_inject_tokens` / `similar_limit_by_kind` 等の詳細パラメータは現状API外
 
 ## `/api/capture`

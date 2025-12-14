@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -14,20 +15,35 @@ from cocoro_ghost.db import Base
 # --- 設定DB用モデル ---
 
 
+_UUID_STR_LEN = 36
+
+
+def _uuid_str() -> str:
+    return str(uuid4())
+
+
 class GlobalSettings(Base):
     """共通設定。"""
 
     __tablename__ = "global_settings"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     token: Mapped[str] = mapped_column(Text, nullable=False, default="")
     exclude_keywords: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     reminders_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    active_llm_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("llm_presets.id"))
-    active_embedding_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("embedding_presets.id"))
-    active_system_prompt_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("system_prompt_presets.id"))
-    active_persona_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("persona_presets.id"))
-    active_contract_preset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("contract_presets.id"))
+    active_llm_preset_id: Mapped[Optional[str]] = mapped_column(String(_UUID_STR_LEN), ForeignKey("llm_presets.id"))
+    active_embedding_preset_id: Mapped[Optional[str]] = mapped_column(
+        String(_UUID_STR_LEN), ForeignKey("embedding_presets.id")
+    )
+    active_system_prompt_preset_id: Mapped[Optional[str]] = mapped_column(
+        String(_UUID_STR_LEN), ForeignKey("system_prompt_presets.id")
+    )
+    active_persona_preset_id: Mapped[Optional[str]] = mapped_column(
+        String(_UUID_STR_LEN), ForeignKey("persona_presets.id")
+    )
+    active_contract_preset_id: Mapped[Optional[str]] = mapped_column(
+        String(_UUID_STR_LEN), ForeignKey("contract_presets.id")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -51,7 +67,7 @@ class LlmPreset(Base):
 
     __tablename__ = "llm_presets"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
 
     # LLM設定
@@ -78,7 +94,7 @@ class SystemPromptPreset(Base):
 
     __tablename__ = "system_prompt_presets"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -91,7 +107,7 @@ class PersonaPreset(Base):
 
     __tablename__ = "persona_presets"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     persona_text: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -104,7 +120,7 @@ class ContractPreset(Base):
 
     __tablename__ = "contract_presets"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     contract_text: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -117,8 +133,8 @@ class EmbeddingPreset(Base):
 
     __tablename__ = "embedding_presets"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    # name は memory_id として扱う（`memory_<name>.db` の <name> 部分）
+    id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
+    # name は表示名（memory_id ではない）
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
 
     # Embedding設定
@@ -141,7 +157,7 @@ class Reminder(Base):
 
     __tablename__ = "reminders"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)

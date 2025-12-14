@@ -17,11 +17,11 @@
 - `token`（TEXT）
 - `exclude_keywords`（TEXT: JSON array）
 - `reminders_enabled`（INTEGER: 0/1）
-- `active_llm_preset_id`（INTEGER）
-- `active_embedding_preset_id`（INTEGER）
-- `active_system_prompt_preset_id`（INTEGER）
-- `active_persona_preset_id`（INTEGER）
-- `active_contract_preset_id`（INTEGER）
+- `active_llm_preset_id`（TEXT: UUID）
+- `active_embedding_preset_id`（TEXT: UUID / `memory_id`）
+- `active_system_prompt_preset_id`（TEXT: UUID）
+- `active_persona_preset_id`（TEXT: UUID）
+- `active_contract_preset_id`（TEXT: UUID）
 
 ### `llm_presets`
 
@@ -38,11 +38,15 @@ Embedding/検索パラメータの切替単位。
 
 例カラム:
 
-- `name`（TEXT: `memory_id`。`memory_<name>.db` の `<name>` 部分）
+- `name`（TEXT: 表示名）
 - `embedding_model`, `embedding_dimension`, `embedding_base_url`, ...
 - `max_inject_tokens`
 - `similar_limit_by_kind_json`（種別ごとのKNN上限などをJSONで保持）
 - `similar_episodes_limit`
+
+補足:
+
+- 記憶DBは `memory_<embedding_preset_id>.db`（`embedding_preset_id` はUUID）として管理する
 
 ### `system_prompt_presets`
 
