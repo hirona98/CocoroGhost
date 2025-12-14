@@ -419,7 +419,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             archived=False,
             llm_api_key="",
             llm_model="openai/gpt-5-mini",
-            image_model="gpt-5-mini",
+            image_model="openai/gpt-5-mini",
             image_timeout_seconds=60,
         )
         session.add(llm_preset)
