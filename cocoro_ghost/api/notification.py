@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 
 from cocoro_ghost import schemas
 from cocoro_ghost.deps import get_memory_manager
@@ -15,8 +15,8 @@ router = APIRouter()
 @router.post("/notification", response_model=schemas.NotificationResponse)
 def notification(
     request: schemas.NotificationRequest,
+    background_tasks: BackgroundTasks,
     memory_manager: MemoryManager = Depends(get_memory_manager),
 ):
     """通知をUnit(Episode)として保存し、派生ジョブを積む。"""
-    return memory_manager.handle_notification(request)
-
+    return memory_manager.handle_notification(request, background_tasks=background_tasks)

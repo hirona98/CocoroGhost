@@ -40,11 +40,8 @@ logger = logging.getLogger(__name__)
 def _serialize_event(event: AppEvent) -> str:
     return json.dumps(
         {
-            "event_id": event.event_id,
-            "ts": event.ts,
-            "type": event.type,
-            "memory_id": event.memory_id,
             "unit_id": event.unit_id,
+            "type": event.type,
             "data": event.data,
         },
         ensure_ascii=False,
@@ -136,4 +133,3 @@ async def _dispatch_loop() -> None:
 
         for ws in dead_clients:
             await remove_client(ws)
-

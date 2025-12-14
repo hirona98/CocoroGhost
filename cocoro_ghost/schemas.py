@@ -16,10 +16,8 @@ class ChatRequest(BaseModel):
 
 
 class NotificationRequest(BaseModel):
-    memory_id: Optional[str] = None
     source_system: str
-    title: str
-    body: str
+    text: str
     images: List[Dict[str, str]] = Field(default_factory=list)
 
 
@@ -36,7 +34,6 @@ class MetaRequestRequest(BaseModel):
 
 class MetaRequestResponse(BaseModel):
     unit_id: int
-    result_text: str
 
 
 class CaptureRequest(BaseModel):

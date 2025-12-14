@@ -65,3 +65,62 @@ flowchart LR
 - 記憶は `memory_<memory_id>.db`
   - `units` + `payload_*` + `entities` 等
   - `vec_units`（sqlite-vec 仮想テーブル）
+
+
+## `/api/notification` の処理シーケンス
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant UI as Client
+  participant API as FastAPI
+  participant MM as MemoryManager
+  participant SCH as Scheduler
+  participant DB as Memory DB (SQLite)
+  participant LLM as LLM API
+  participant Q as Jobs (DB)
+  participant WS as /api/events/stream (WebSocket)
+
+  UI->>API: POST /api/notification\n{source_system,text,images?}
+  API->>MM: handle_notification(request)\n(create placeholder unit)
+  MM->>DB: save Unit(kind=EPISODE, source=notification)\nuser_text=system_text, reply_text=null
+  API-->>UI: 200 {unit_id}
+  Note over API,MM: BackgroundTasks (after response)
+  MM->>LLM: (optional) summarize images
+  MM->>SCH: build MemoryPack
+  SCH->>DB: read units/entities/summaries
+  SCH-->>MM: MemoryPack
+  MM->>LLM: generate partner message\n(external prompt)
+  MM->>DB: update payload_episode.reply_text/image_summary
+  MM->>Q: enqueue jobs (reflection/extraction/embedding...)
+  MM-->>WS: publish {unit_id,type,data{system_text,message}}
+```
+
+## `/api/meta_request` の処理シーケンス
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant UI as Client
+  participant API as FastAPI
+  participant MM as MemoryManager
+  participant SCH as Scheduler
+  participant DB as Memory DB (SQLite)
+  participant LLM as LLM API
+  participant Q as Jobs (DB)
+  participant WS as /api/events/stream (WebSocket)
+
+  UI->>API: POST /api/meta_request\n{memory_id?,instruction,payload_text,images?}
+  API->>MM: handle_meta_request(request)\n(create placeholder unit)
+  MM->>DB: save Unit(kind=EPISODE, source=meta_request)\nuser_text=[redacted], reply_text=null
+  API-->>UI: 200 {unit_id}
+  Note over API,MM: BackgroundTasks (after response)
+  MM->>LLM: (optional) summarize images
+  MM->>SCH: build MemoryPack
+  SCH->>DB: read units/entities/summaries
+  SCH-->>MM: MemoryPack
+  MM->>LLM: generate partner message\n(meta_request prompt)
+  MM->>DB: update payload_episode.reply_text/image_summary
+  MM->>Q: enqueue embeddings job
+  MM-->>WS: publish {unit_id,type,data{message}}
+```

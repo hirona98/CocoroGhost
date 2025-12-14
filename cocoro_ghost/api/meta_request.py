@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 
 from cocoro_ghost import schemas
 from cocoro_ghost.deps import get_memory_manager
@@ -15,8 +15,8 @@ router = APIRouter()
 @router.post("/meta_request", response_model=schemas.MetaRequestResponse)
 def meta_request(
     request: schemas.MetaRequestRequest,
+    background_tasks: BackgroundTasks,
     memory_manager: MemoryManager = Depends(get_memory_manager),
 ):
     """メタ要求をUnit(Episode)として保存し、派生ジョブを積む。"""
-    return memory_manager.handle_meta_request(request)
-
+    return memory_manager.handle_meta_request(request, background_tasks=background_tasks)
