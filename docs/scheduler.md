@@ -39,7 +39,12 @@
 - ...
 
 [EPISODE_EVIDENCE]
-- ...
+以下は現在の会話に関連する過去のやりとりです。
+
+[YYYY-MM-DD] タイトル（任意）
+User: 「...」
+Partner: 「...」
+→ 関連: （短い理由）
 ```
 
 補足:
@@ -51,8 +56,9 @@
 1. **常時注入（検索しない）**
    - active persona（`settings.db` の `active_persona_preset_id`）
    - active contract（`settings.db` の `active_contract_preset_id`）
-2. **Intent分類（軽量）**
-   - small modelで JSON 1発（`docs/prompts.md` 参照）
+2. **Contextual Memory Retrieval（Retriever）**
+   - Query Expansion → Hybrid Search（Vector + BM25）→ LLM Reranking（`docs/retrieval.md`）
+   - relevant episodes（最大5件）を取得する
 3. **Entity解決**
    - 文字列から alias 参照（`entities` + `entity_aliases`）
    - 足りなければLLM抽出（Workerでも可、同期が重い場合は後回し）
@@ -62,12 +68,12 @@
    - 週次（RELATIONSHIP）＋該当topic/person
 6. **OpenLoops取得**
    - openのみ、due順、entity一致を優先
-7. **必要時だけ Episode KNN**
-   - intentが「回想/確認/過去参照」寄り
-   - または facts/summaries で不足と判断したとき
+7. **Episode evidence 注入**
+   - `should_inject_episodes(relevant_episodes)` が true のときだけ `[EPISODE_EVIDENCE]` を組み込む
+   - `injection_strategy`（quote_key_parts/summarize/full）に応じて整形する
 8. **圧縮**
    - facts: 箇条書き（1件 1〜2行）
-   - episodes: 抜粋（最大N件、1件あたり最大M文字）
+   - episodes: 抜粋/要約（最大N件、1件あたり最大M文字）
 
 ## スコア（例：facts）
 

@@ -116,6 +116,22 @@ create table if not exists payload_episode (
 );
 ```
 
+### Episode FTS（BM25：検索インデックス）
+
+Hybrid Search（Vector + BM25）の BM25 側を担う。詳細は `docs/retrieval.md` を参照。
+
+```sql
+-- payload_episode を対象にした FTS5 仮想テーブル（BM25）
+-- 注意: external content FTS は INSERT/UPDATE/DELETE に追従するトリガー（または再構築手順）が必要
+CREATE VIRTUAL TABLE IF NOT EXISTS episode_fts USING fts5(
+  user_text,
+  reply_text,
+  content='payload_episode',
+  content_rowid='unit_id',
+  tokenize='unicode61'
+);
+```
+
 ### Fact（安定知識：証拠リンク）
 
 ```sql
