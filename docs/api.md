@@ -60,61 +60,102 @@ data: {"message":"...","code":"..."}
 5. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 6. Worker用ジョブを enqueue（reflection/extraction/embedding等）
 
-## `/api/notification`
+## `/api/v1/notification`
 
-### Request
+### Request（JSON）
 
 ```json
 {
-  "source_system": "gmail",
-  "text": "string",
+  "from": "アプリ名",
+  "message": "通知メッセージ",
   "images": [
-    {"type": "desktop_capture", "base64": "..."},
-    {"type": "camera_capture", "base64": "..."}
+    "data:image/jpeg;base64,/9j/4AAQ...",
+    "data:image/png;base64,iVBORw0KGgo..."
   ]
 }
 ```
 
-- `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
+- `images` は省略可能（最大5枚）
+- `images` の要素は `data:image/*;base64,...` 形式の Data URI
 
 ### Response
 
-```json
-{ "unit_id": 23456 }
+- `204 No Content`
+
+### 例（cURL）
+
+```bash
+curl -X POST http://127.0.0.1:55604/api/v1/notification \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -d '{"from":"MyApp","message":"処理完了","images":["data:image/jpeg;base64,..."]}'
+```
+
+```bash
+curl -X POST http://127.0.0.1:55604/api/v1/notification \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -d '{"from":"MyApp","message":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
+```
+
+### 例（PowerShell）
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:55604/api/v1/notification" `
+  -ContentType "application/json; charset=utf-8" `
+  -Headers @{ Authorization = "Bearer <TOKEN>" } `
+  -Body '{"from":"MyApp","message":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
 ```
 
 - HTTPレスポンスは先に返り、パートナーのセリフ（`data.message`）は `/api/events/stream` で後から届く
 - 保存は `units(kind=EPISODE, source=notification)` + `payload_episode.user_text` に本文を入れ、必要なら `context_note` に構造化JSONを入れる
 - `images` がある場合は `payload_episode.image_summary` に要約を保存する
 
-## `/api/meta_request`
 
-### Request
+## `/api/v1/meta_request`
+
+### Request（JSON）
 
 ```json
 {
-  "memory_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "instruction": "string",
-  "payload_text": "string",
+  "prompt": "任意のプロンプトやメッセージ",
   "images": [
-    {"type": "desktop_capture", "base64": "..."},
-    {"type": "camera_capture", "base64": "..."}
+    "data:image/jpeg;base64,/9j/4AAQ...",
+    "data:image/png;base64,iVBORw0KGgo..."
   ]
 }
 ```
 
-- `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `active_embedding_preset_id` を `memory_id` として使用する）
-- `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
+- `images` は省略可能（最大5枚）
+- `images` の要素は `data:image/*;base64,...` 形式の Data URI
 
 ### Response
 
-```json
-{ "unit_id": 34567 }
+- `204 No Content`
+
+### 例（cURL）
+
+```bash
+curl -X POST http://127.0.0.1:55604/api/v1/meta_request \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -d '{"prompt":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。：～ニュース内容～"}'
+```
+
+### 例（PowerShell）
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:55604/api/v1/meta_request" `
+  -ContentType "application/json; charset=utf-8" `
+  -Headers @{ Authorization = "Bearer <TOKEN>" } `
+  -Body '{"prompt":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。：～ニュース内容～"}'
 ```
 
 - HTTPレスポンスは先に返り、パートナーのセリフ（`data.message`）は `/api/events/stream` で後から届く
-- `instruction` / `payload_text` は **永続化しない**（生成にのみ利用）
-- 生成結果（`result_text`）は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=meta_request)` の `payload_episode.reply_text` に保存する
+- `prompt` は **永続化しない**（生成にのみ利用）
+- 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=meta_request)` の `payload_episode.reply_text` に保存する
 
 ## 管理API
 
@@ -368,7 +409,7 @@ UI向けの「全設定」取得/更新。
 
 - URL: `ws(s)://<host>/api/events/stream`
 - 認証: `Authorization: Bearer <TOKEN>`
-- 目的: `POST /api/notification` / `POST /api/meta_request` を受信したとき、接続中クライアントへ即時にイベントを配信する
+- 目的: `POST /api/v1/notification` / `POST /api/v1/meta_request` を受信したとき、接続中クライアントへ即時にイベントを配信する
 
 ### Event payload（JSON text）
 
@@ -391,7 +432,7 @@ UI向けの「全設定」取得/更新。
   "unit_id": 12345,
   "type": "notification",
   "data": {
-    "system_text": "[notificationのsource_system] notificationのtext",
+    "system_text": "[notificationのfrom] notificationのmessage",
     "message": "AIパートナーのセリフ"
   }
 }

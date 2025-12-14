@@ -2,10 +2,29 @@
 
 from __future__ import annotations
 
+import base64
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+_DATA_URI_IMAGE_RE = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.*)$", re.DOTALL)
+
+
+def data_uri_image_to_base64(data_uri: str) -> str:
+    m = _DATA_URI_IMAGE_RE.match((data_uri or "").strip())
+    if not m:
+        raise ValueError("invalid data URI (expected data:image/*;base64,...)")
+    b64 = re.sub(r"\s+", "", (m.group(2) or "").strip())
+    if not b64:
+        raise ValueError("empty base64 payload in data URI")
+    try:
+        base64.b64decode(b64, validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("invalid base64 payload in data URI") from exc
+    return b64
 
 
 class ChatRequest(BaseModel):
@@ -21,6 +40,21 @@ class NotificationRequest(BaseModel):
     images: List[Dict[str, str]] = Field(default_factory=list)
 
 
+class NotificationV1Request(BaseModel):
+    from_: str = Field(validation_alias="from")
+    message: str = Field(validation_alias="message")
+    images: List[str] = Field(default_factory=list, max_length=5)
+
+    @field_validator("images")
+    @classmethod
+    def _validate_images(cls, v: List[str]) -> List[str]:
+        if len(v) > 5:
+            raise ValueError("images must contain at most 5 items")
+        for item in v:
+            data_uri_image_to_base64(item)
+        return v
+
+
 class NotificationResponse(BaseModel):
     unit_id: int
 
@@ -30,6 +64,20 @@ class MetaRequestRequest(BaseModel):
     instruction: str
     payload_text: str
     images: List[Dict[str, str]] = Field(default_factory=list)
+
+
+class MetaRequestV1Request(BaseModel):
+    prompt: str
+    images: List[str] = Field(default_factory=list, max_length=5)
+
+    @field_validator("images")
+    @classmethod
+    def _validate_images(cls, v: List[str]) -> List[str]:
+        if len(v) > 5:
+            raise ValueError("images must contain at most 5 items")
+        for item in v:
+            data_uri_image_to_base64(item)
+        return v
 
 
 class MetaRequestResponse(BaseModel):

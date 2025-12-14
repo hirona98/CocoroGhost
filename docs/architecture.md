@@ -4,8 +4,8 @@
 
 - **API Server（FastAPI）**
   - `/api/chat`（SSE）
-  - `/api/notification`
-  - `/api/meta_request`
+  - `/api/v1/notification`
+  - `/api/v1/meta_request`
   - 管理API（メモリ閲覧・編集・ピン留め等）
 - **Memory Store（SQLite: `memory_<memory_id>.db`）**
   - `units` + `payload_*` による Unit化
@@ -67,7 +67,7 @@ flowchart LR
   - `vec_units`（sqlite-vec 仮想テーブル）
 
 
-## `/api/notification` の処理シーケンス
+## `/api/v1/notification` の処理シーケンス
 
 ```mermaid
 sequenceDiagram
@@ -81,10 +81,10 @@ sequenceDiagram
   participant Q as Jobs (DB)
   participant WS as /api/events/stream (WebSocket)
 
-  UI->>API: POST /api/notification\n{source_system,text,images?}
+  UI->>API: POST /api/v1/notification\n{from,message,images?}
   API->>MM: handle_notification(request)\n(create placeholder unit)
   MM->>DB: save Unit(kind=EPISODE, source=notification)\nuser_text=system_text, reply_text=null
-  API-->>UI: 200 {unit_id}
+  API-->>UI: 204 No Content
   Note over API,MM: BackgroundTasks (after response)
   MM->>LLM: (optional) summarize images
   MM->>SCH: build MemoryPack
@@ -96,7 +96,7 @@ sequenceDiagram
   MM-->>WS: publish {unit_id,type,data{system_text,message}}
 ```
 
-## `/api/meta_request` の処理シーケンス
+## `/api/v1/meta_request` の処理シーケンス
 
 ```mermaid
 sequenceDiagram
@@ -110,10 +110,10 @@ sequenceDiagram
   participant Q as Jobs (DB)
   participant WS as /api/events/stream (WebSocket)
 
-  UI->>API: POST /api/meta_request\n{memory_id?,instruction,payload_text,images?}
+  UI->>API: POST /api/v1/meta_request\n{prompt,images?}
   API->>MM: handle_meta_request(request)\n(create placeholder unit)
   MM->>DB: save Unit(kind=EPISODE, source=meta_request)\nuser_text=[redacted], reply_text=null
-  API-->>UI: 200 {unit_id}
+  API-->>UI: 204 No Content
   Note over API,MM: BackgroundTasks (after response)
   MM->>LLM: (optional) summarize images
   MM->>SCH: build MemoryPack
