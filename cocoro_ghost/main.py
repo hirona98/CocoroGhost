@@ -12,7 +12,7 @@ from cocoro_ghost import event_stream, log_stream
 from cocoro_ghost.api import admin, capture, chat, events, logs, meta_request, notification, settings
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
-from cocoro_ghost.logging_config import setup_logging
+from cocoro_ghost.logging_config import setup_logging, suppress_uvicorn_access_log_paths
 
 
 security = HTTPBearer()
@@ -49,6 +49,7 @@ def create_app() -> FastAPI:
     # 1. TOML設定読み込み
     toml_config = load_config()
     setup_logging(toml_config.log_level)
+    suppress_uvicorn_access_log_paths("/api/health")
 
     # 2. 設定DB初期化
     init_settings_db()
