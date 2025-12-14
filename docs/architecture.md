@@ -28,7 +28,7 @@ flowchart LR
   API -->|Intent classify| SCH[Scheduler]
   SCH -->|MemoryPack| API
 	  API -->|LLM chat| LLM[LLM API via LiteLLM]
-	  API -->|Save episode (raw)| DB[(SQLite memory_XXX.db)]
+	  API -->|Save episode RAW| DB[(SQLite memory_XXX.db)]
 	  API -->|Enqueue jobs| Q[(Jobs table)]
 	  W[Worker] -->|Dequeue| Q
 	  W -->|Reflection/Entities/Facts/Summaries/Loops| DB
@@ -48,6 +48,51 @@ flowchart LR
 - 返答をSSEで配信
 - `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 - Worker用ジョブを enqueue（reflection/extraction/embedding等）
+
+#### Intent分類（同期・軽量）
+
+Intent分類は「何をどれだけ注入するか（取得計画）」を毎ターン切り替えるために使う。
+
+- `intent.need_evidence=true` のときだけ Episode のKNN検索を行い、`[EPISODE_EVIDENCE]` を組み込む（それ以外は省略してレイテンシ/コストを抑える）
+- `intent.need_loops` / `intent.suggest_summary_scope` で `[OPEN_LOOPS]` / `[SHARED_NARRATIVE]` の注入方針を切り替える
+- `intent.sensitivity_max` で、同期で参照・注入できる機微度の上限を制御する
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant UI as Client
+  participant API as FastAPI
+  participant ILLM as Small LLM (intent)
+  participant SCH as Scheduler
+  participant DB as Memory DB (SQLite)
+  participant EMB as Embedding API
+  participant VEC as Vector Index (vec0)
+  participant LLM as LLM (chat)
+  participant Q as Jobs (DB)
+  participant W as Worker
+
+  UI->>API: POST /api/chat (SSE)\n{user_text, images?, client_context?}
+  API->>ILLM: intent classify (JSON)
+  ILLM-->>API: IntentResult
+  API->>SCH: build MemoryPack\n(intent, token budget)
+  SCH->>DB: read capsule/facts/summaries/loops
+  alt intent.need_evidence == true
+    SCH->>EMB: embed query
+    EMB-->>SCH: embedding
+    SCH->>VEC: KNN search (episodes)
+    VEC-->>SCH: candidate unit_ids
+    SCH->>DB: join payloads (episode evidence)
+  end
+  SCH-->>API: MemoryPack
+  API->>LLM: chat\n(guard + pack + user_text)
+  LLM-->>API: streamed tokens
+  API-->>UI: SSE stream
+  API->>DB: save Unit(kind=EPISODE) RAW
+  API->>Q: enqueue jobs\n(reflect/extract/embed...)
+  Note over W,Q: async (after response)
+  W->>Q: dequeue
+  W->>DB: write derived units\n(facts/loops/summaries/embeddings)
+```
 
 ### 非同期（Workerがやること）
 
