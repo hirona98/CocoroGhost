@@ -1,38 +1,3 @@
 # cocoro_ghost 起動設定
-# LLM/キャラクター設定はDBで管理されます（プリセット機能）
-# DBは data/ ディレクトリに自動作成されます:
-#   - data/settings.db: 設定・プリセット
-#   - data/memory_{id}.db: 記憶データ
-
-# 必須設定（CocoroConsoleのBearer Token設定と一致させること）
 token = "cocoro_token"
 log_level = "INFO"
-env = "dev"
-
-# --- 初回起動時のマイグレーション用（オプション） ---
-# DBにプリセットがない場合、以下の設定から default プリセットが作成されます
-# 2回目以降は無視されます
-
-# LLMプリセット用
-# llm_api_key = "your-llm-api-key-here"
-# llm_model = "gpt-4o"
-# llm_base_url = ""  # OpenAI互換APIのベースURL（省略可）
-# reasoning_effort = ""  # 推論の努力レベル（省略可）
-# max_turns_window = 50  # 会話履歴の最大ターン数
-# max_tokens_vision = 4096  # Vision用の最大トークン数
-# max_tokens = 4096  # 通常の最大トークン数
-# embedding_model = "text-embedding-3-small"
-# embedding_api_key = ""  # Embedding用APIキー（LLMと別の場合）
-# embedding_base_url = ""  # Embedding用ベースURL（省略可）
-# embedding_dimension = 1536
-# image_model = "gpt-4o-mini"
-# image_model_api_key = ""  # 画像モデル用APIキー（LLMと別の場合）
-# image_llm_base_url = ""  # 画像LLM用ベースURL（省略可）
-# image_timeout_seconds = 60
-# similar_episodes_limit = 5
-
-# キャラクタープリセット用
-# character_prompt = "あなたは..."
-
-# 共通設定用
-# exclude_keywords = ["パスワード", "銀行"]

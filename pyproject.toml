@@ -13,7 +13,7 @@ dependencies = [
   "python-multipart",
   "httpx",
   "tomli",
-  "sqlite-vec",
+  "sqlite-vec==0.1.6",
   "typing_inspect",
 ]
 

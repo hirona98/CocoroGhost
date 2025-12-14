@@ -8,8 +8,8 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_utils.tasks import repeat_every
 
-from cocoro_ghost import log_stream
-from cocoro_ghost.api import capture, chat, logs, meta_request, notification, settings
+from cocoro_ghost import event_stream, log_stream
+from cocoro_ghost.api import admin, capture, chat, events, logs, meta_request, notification, settings
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.logging_config import setup_logging
@@ -37,10 +37,12 @@ def create_app() -> FastAPI:
     from cocoro_ghost.db import (
         init_memory_db,
         init_settings_db,
-        load_active_character_preset,
+        load_active_embedding_preset,
+        load_active_contract_preset,
         load_active_llm_preset,
+        load_active_persona_preset,
         load_global_settings,
-        migrate_toml_to_v2_if_needed,
+        ensure_initial_settings,
         settings_session_scope,
     )
 
@@ -51,29 +53,44 @@ def create_app() -> FastAPI:
     # 2. 設定DB初期化
     init_settings_db()
 
-    # 3. マイグレーション（旧SettingPreset -> 新テーブル or TOML -> 新テーブル）
+    # 3. 初期設定レコードの作成
     with settings_session_scope() as session:
-        migrate_toml_to_v2_if_needed(session, toml_config)
+        ensure_initial_settings(session, toml_config)
 
     # 4. アクティブなプリセットを読み込み
     with settings_session_scope() as session:
         global_settings = load_global_settings(session)
         llm_preset = load_active_llm_preset(session)
-        character_preset = load_active_character_preset(session)
+        embedding_preset = load_active_embedding_preset(session)
+        persona_preset = load_active_persona_preset(session)
+        contract_preset = load_active_contract_preset(session)
 
         # RuntimeConfig構築
         runtime_config = build_runtime_config(
-            toml_config, global_settings, llm_preset, character_preset
+            toml_config,
+            global_settings,
+            llm_preset,
+            embedding_preset,
+            persona_preset,
+            contract_preset,
         )
 
         # ConfigStore作成（プリセットオブジェクトをデタッチ状態で保持するためコピー）
         # SQLAlchemyセッション終了後も使えるようにexpungeする
         session.expunge(global_settings)
         session.expunge(llm_preset)
-        session.expunge(character_preset)
+        session.expunge(embedding_preset)
+        session.expunge(persona_preset)
+        session.expunge(contract_preset)
 
         config_store = ConfigStore(
-            toml_config, runtime_config, global_settings, llm_preset, character_preset
+            toml_config,
+            runtime_config,
+            global_settings,
+            llm_preset,
+            embedding_preset,
+            persona_preset,
+            contract_preset,
         )
 
     set_global_config_store(config_store)
@@ -89,7 +106,9 @@ def create_app() -> FastAPI:
     app.include_router(meta_request.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(capture.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(settings.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(admin.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(logs.router, prefix="/api")
+    app.include_router(events.router, prefix="/api")
 
     @app.get("/api/health")
     async def health():
@@ -110,9 +129,19 @@ def create_app() -> FastAPI:
         log_stream.install_log_handler(loop)
         await log_stream.start_dispatcher()
 
+    @app.on_event("startup")
+    async def start_event_stream_dispatcher() -> None:
+        loop = asyncio.get_running_loop()
+        event_stream.install(loop)
+        await event_stream.start_dispatcher()
+
     @app.on_event("shutdown")
     async def stop_log_stream_dispatcher() -> None:
         await log_stream.stop_dispatcher()
+
+    @app.on_event("shutdown")
+    async def stop_event_stream_dispatcher() -> None:
+        await event_stream.stop_dispatcher()
 
     return app
 

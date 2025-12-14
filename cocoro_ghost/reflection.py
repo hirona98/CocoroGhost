@@ -1,4 +1,4 @@
-"""reflection 生成と検証。"""
+"""reflection 生成と検証（Unitベース）。"""
 
 from __future__ import annotations
 
@@ -11,68 +11,44 @@ from cocoro_ghost import prompts
 
 
 @dataclass
-class PersonUpdate:
-    name: str
-    is_user: bool
-    relation_update_note: Optional[str]
-    status_update_note: Optional[str]
-    closeness_delta: float
-    worry_delta: float
-
-
-@dataclass
 class EpisodeReflection:
     reflection_text: str
     emotion_label: str
     emotion_intensity: float
     topic_tags: List[str]
     salience_score: float
-    episode_comment: str
-    persons: List[PersonUpdate]
+    confidence: float
     raw_json: str
 
 
-def _validate_person(raw: dict) -> PersonUpdate:
-    try:
-        return PersonUpdate(
-            name=str(raw["name"]),
-            is_user=bool(raw["is_user"]),
-            relation_update_note=raw.get("relation_update_note"),
-            status_update_note=raw.get("status_update_note"),
-            closeness_delta=float(raw.get("closeness_delta", 0.0)),
-            worry_delta=float(raw.get("worry_delta", 0.0)),
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError("invalid person entry in reflection") from exc
+def generate_reflection(
+    llm_client: LlmClient,
+    *,
+    context_text: str,
+    image_descriptions: Optional[List[str]] = None,
+) -> EpisodeReflection:
+    ctx = context_text
+    if image_descriptions:
+        ctx = "\n".join([ctx, *image_descriptions])
 
-
-def generate_reflection(llm_client: LlmClient, context_text: str, image_descriptions: Optional[List[str]] = None) -> EpisodeReflection:
-    raw = llm_client.generate_reflection(
-        system_prompt=prompts.get_reflection_prompt(),
-        context_text=context_text,
-        image_descriptions=image_descriptions,
-    )
-    if isinstance(raw, str):
-        try:
-            raw_json = raw
-            raw = json.loads(raw)
-        except json.JSONDecodeError as exc:  # noqa: B902
-            raise ValueError("reflection JSON parse failed") from exc
-    else:
-        raw_json = json.dumps(raw, ensure_ascii=False)
+    resp = llm_client.generate_json_response(system_prompt=prompts.get_reflection_prompt(), user_text=ctx)
+    raw_text = llm_client.response_content(resp)
+    raw_json = raw_text
+    data = json.loads(raw_text)
 
     try:
-        persons_raw = raw.get("persons", []) or []
-        persons = [_validate_person(p) for p in persons_raw]
+        topic_tags = data.get("topic_tags") or []
+        if not isinstance(topic_tags, list):
+            topic_tags = []
         return EpisodeReflection(
-            reflection_text=str(raw["reflection_text"]),
-            emotion_label=str(raw["emotion_label"]),
-            emotion_intensity=float(raw["emotion_intensity"]),
-            topic_tags=list(raw.get("topic_tags", [])),
-            salience_score=float(raw["salience_score"]),
-            episode_comment=str(raw.get("episode_comment", "")),
-            persons=persons,
+            reflection_text=str(data.get("reflection_text") or ""),
+            emotion_label=str(data.get("emotion_label") or "neutral"),
+            emotion_intensity=float(data.get("emotion_intensity") or 0.0),
+            topic_tags=[str(x) for x in topic_tags],
+            salience_score=float(data.get("salience_score") or 0.0),
+            confidence=float(data.get("confidence") or 0.0),
             raw_json=raw_json,
         )
     except Exception as exc:  # noqa: BLE001
         raise ValueError("invalid reflection fields") from exc
+

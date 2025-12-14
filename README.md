@@ -6,10 +6,14 @@ CocoroAIのLLMと記憶処理を担当するPython/FastAPIバックエンドサ�
 
 - FastAPIによるREST APIサーバー
 - LLMとの対話処理
-- SQLiteベースのエピソード記憶管理
+- SQLiteベースのUnit記憶管理（Episode/Fact/Summary/Capsule/Loop）
 - sqlite-vecによるベクトル検索
-- プリセット機能によるLLM設定の動的切り替え
+- プリセット機能によるLLM/Embedding/プロンプト設定の動的切り替え
 - 画像クリーンアップなどの定期実行タスク
+
+## ドキュメント
+
+- 仕様（パートナー最適 / sqlite-vec固定）: `docs/README.md`
 
 ## セットアップ
 
@@ -48,10 +52,9 @@ setup.bat
 4. **設定ファイルの編集**
 
    `config/setting.toml` を編集して、最小限の起動設定を記述：
+
    - `token`: API認証トークン
    - `log_level`: ログレベル
-   - `env`: 環境（dev/prod）
-   - （初回のみ）LLM/Embedding設定を入れておくと default プリセットが自動生成されます
 
    ※ DBファイルは `data/settings.db` と `data/memory_<memory_id>.db` に自動作成されます
 
@@ -72,6 +75,21 @@ python -X utf8 run.py
 
 サーバーは `http://0.0.0.0:55601` で起動します。
 
+## Worker（jobs処理）
+
+`/chat` などで保存された `jobs` を処理する Worker は別プロセスで起動できます。
+
+```bash
+.venv\Scripts\activate
+python -X utf8 run_worker.py
+```
+
+複数 `memory_id` を運用する場合は `memory_<memory_id>.db` ごとに Worker を起動します。
+
+```bash
+python -X utf8 run_worker.py --memory-id default
+```
+
 ## 設定管理
 
 #### 1. 基本設定（起動時必須）
@@ -80,8 +98,6 @@ python -X utf8 run.py
 
 - `token`: API認証トークン
 - `log_level`: ログレベル（DEBUG, INFO, WARNING, ERROR）
-- `env`: 環境（dev/prod）
-- （初回のみ）LLM/Embedding設定を入れておくと default プリセットが自動生成される
 
 #### 2. LLM設定
 
