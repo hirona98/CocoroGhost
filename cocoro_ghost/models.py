@@ -69,6 +69,7 @@ class LlmPreset(Base):
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # LLM設定
     llm_api_key: Mapped[str] = mapped_column(String, nullable=False)
@@ -96,6 +97,7 @@ class SystemPromptPreset(Base):
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
@@ -109,6 +111,7 @@ class PersonaPreset(Base):
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     persona_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
@@ -122,6 +125,7 @@ class ContractPreset(Base):
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     contract_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
@@ -136,6 +140,7 @@ class EmbeddingPreset(Base):
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     # name は表示名（memory_id ではない）
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Embedding設定
     embedding_model: Mapped[str] = mapped_column(String, nullable=False)

@@ -376,18 +376,18 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             global_settings.active_contract_preset_id,
         ]
         if all(x is not None for x in ids):
-            active_llm = session.query(models.LlmPreset).filter_by(id=global_settings.active_llm_preset_id).first()
+            active_llm = session.query(models.LlmPreset).filter_by(id=global_settings.active_llm_preset_id, archived=False).first()
             active_embedding = session.query(models.EmbeddingPreset).filter_by(
-                id=global_settings.active_embedding_preset_id
+                id=global_settings.active_embedding_preset_id, archived=False
             ).first()
             active_system = session.query(models.SystemPromptPreset).filter_by(
-                id=global_settings.active_system_prompt_preset_id
+                id=global_settings.active_system_prompt_preset_id, archived=False
             ).first()
             active_persona = session.query(models.PersonaPreset).filter_by(
-                id=global_settings.active_persona_preset_id
+                id=global_settings.active_persona_preset_id, archived=False
             ).first()
             active_contract = session.query(models.ContractPreset).filter_by(
-                id=global_settings.active_contract_preset_id
+                id=global_settings.active_contract_preset_id, archived=False
             ).first()
             if active_llm and active_embedding and active_system and active_persona and active_contract:
                 return
@@ -411,13 +411,14 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     llm_preset = None
     active_llm_id = global_settings.active_llm_preset_id
     if active_llm_id is not None:
-        llm_preset = session.query(models.LlmPreset).filter_by(id=active_llm_id).first()
+        llm_preset = session.query(models.LlmPreset).filter_by(id=active_llm_id, archived=False).first()
     if llm_preset is None:
-        llm_preset = session.query(models.LlmPreset).first()
+        llm_preset = session.query(models.LlmPreset).filter_by(archived=False).first()
     if llm_preset is None:
         logger.warning("LLMプリセットが無いため、空の default プリセットを作成します")
         llm_preset = models.LlmPreset(
             name="miku-default-llm",
+            archived=False,
             llm_api_key="",
             llm_model="openai/gpt-5-mini",
             image_model="gpt-5-mini",
@@ -433,12 +434,13 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     embedding_preset = None
     active_embedding_id = getattr(global_settings, "active_embedding_preset_id", None)
     if active_embedding_id is not None:
-        embedding_preset = session.query(models.EmbeddingPreset).filter_by(id=active_embedding_id).first()
+        embedding_preset = session.query(models.EmbeddingPreset).filter_by(id=active_embedding_id, archived=False).first()
     if embedding_preset is None:
-        embedding_preset = session.query(models.EmbeddingPreset).first()
+        embedding_preset = session.query(models.EmbeddingPreset).filter_by(archived=False).first()
     if embedding_preset is None:
         embedding_preset = models.EmbeddingPreset(
             name="miku-default-emmbedding",
+            archived=False,
             embedding_model="openai/text-embedding-3-large",
             embedding_api_key=None,
             embedding_base_url=None,
@@ -457,12 +459,13 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     system_preset = None
     active_system_id = global_settings.active_system_prompt_preset_id
     if active_system_id is not None:
-        system_preset = session.query(models.SystemPromptPreset).filter_by(id=active_system_id).first()
+        system_preset = session.query(models.SystemPromptPreset).filter_by(id=active_system_id, archived=False).first()
     if system_preset is None:
-        system_preset = session.query(models.SystemPromptPreset).first()
+        system_preset = session.query(models.SystemPromptPreset).filter_by(archived=False).first()
     if system_preset is None:
         system_preset = models.SystemPromptPreset(
             name="miku-default-system_prompt",
+            archived=False,
             system_prompt=prompts.get_character_prompt(),
         )
         session.add(system_preset)
@@ -474,11 +477,15 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     persona_preset = None
     active_persona_id = global_settings.active_persona_preset_id
     if active_persona_id is not None:
-        persona_preset = session.query(models.PersonaPreset).filter_by(id=active_persona_id).first()
+        persona_preset = session.query(models.PersonaPreset).filter_by(id=active_persona_id, archived=False).first()
     if persona_preset is None:
-        persona_preset = session.query(models.PersonaPreset).first()
+        persona_preset = session.query(models.PersonaPreset).filter_by(archived=False).first()
     if persona_preset is None:
-        persona_preset = models.PersonaPreset(name="miku-default-persona_prompt", persona_text=prompts.get_default_persona_anchor())
+        persona_preset = models.PersonaPreset(
+            name="miku-default-persona_prompt",
+            archived=False,
+            persona_text=prompts.get_default_persona_anchor(),
+        )
         session.add(persona_preset)
         session.flush()
     if active_persona_id is None or str(persona_preset.id) != str(active_persona_id):
@@ -488,11 +495,15 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     contract_preset = None
     active_contract_id = global_settings.active_contract_preset_id
     if active_contract_id is not None:
-        contract_preset = session.query(models.ContractPreset).filter_by(id=active_contract_id).first()
+        contract_preset = session.query(models.ContractPreset).filter_by(id=active_contract_id, archived=False).first()
     if contract_preset is None:
-        contract_preset = session.query(models.ContractPreset).first()
+        contract_preset = session.query(models.ContractPreset).filter_by(archived=False).first()
     if contract_preset is None:
-        contract_preset = models.ContractPreset(name="miku-default-contract_prompt", contract_text=prompts.get_default_relationship_contract())
+        contract_preset = models.ContractPreset(
+            name="miku-default-contract_prompt",
+            archived=False,
+            contract_text=prompts.get_default_relationship_contract(),
+        )
         session.add(contract_preset)
         session.flush()
     if active_contract_id is None or str(contract_preset.id) != str(active_contract_id):
@@ -519,7 +530,7 @@ def load_active_llm_preset(session: Session):
     if settings.active_llm_preset_id is None:
         raise RuntimeError("アクティブなLLMプリセットが設定されていません")
 
-    preset = session.query(models.LlmPreset).filter_by(id=settings.active_llm_preset_id).first()
+    preset = session.query(models.LlmPreset).filter_by(id=settings.active_llm_preset_id, archived=False).first()
     if preset is None:
         raise RuntimeError(f"LLMプリセット(id={settings.active_llm_preset_id})が存在しません")
     return preset
@@ -534,7 +545,7 @@ def load_active_embedding_preset(session: Session):
     if active_id is None:
         raise RuntimeError("アクティブなEmbeddingプリセットが設定されていません")
 
-    preset = session.query(models.EmbeddingPreset).filter_by(id=active_id).first()
+    preset = session.query(models.EmbeddingPreset).filter_by(id=active_id, archived=False).first()
     if preset is None:
         raise RuntimeError(f"Embeddingプリセット(id={active_id})が存在しません")
     return preset
@@ -548,7 +559,7 @@ def load_active_system_prompt_preset(session: Session):
     if settings.active_system_prompt_preset_id is None:
         raise RuntimeError("アクティブなシステムプロンプトプリセットが設定されていません")
 
-    preset = session.query(models.SystemPromptPreset).filter_by(id=settings.active_system_prompt_preset_id).first()
+    preset = session.query(models.SystemPromptPreset).filter_by(id=settings.active_system_prompt_preset_id, archived=False).first()
     if preset is None:
         raise RuntimeError(f"SystemPromptPreset(id={settings.active_system_prompt_preset_id})が存在しません")
     return preset
@@ -562,7 +573,7 @@ def load_active_persona_preset(session: Session):
     if settings.active_persona_preset_id is None:
         raise RuntimeError("アクティブなpersonaプリセットが設定されていません")
 
-    preset = session.query(models.PersonaPreset).filter_by(id=settings.active_persona_preset_id).first()
+    preset = session.query(models.PersonaPreset).filter_by(id=settings.active_persona_preset_id, archived=False).first()
     if preset is None:
         raise RuntimeError(f"PersonaPreset(id={settings.active_persona_preset_id})が存在しません")
     return preset
@@ -576,7 +587,7 @@ def load_active_contract_preset(session: Session):
     if settings.active_contract_preset_id is None:
         raise RuntimeError("アクティブなcontractプリセットが設定されていません")
 
-    preset = session.query(models.ContractPreset).filter_by(id=settings.active_contract_preset_id).first()
+    preset = session.query(models.ContractPreset).filter_by(id=settings.active_contract_preset_id, archived=False).first()
     if preset is None:
         raise RuntimeError(f"ContractPreset(id={settings.active_contract_preset_id})が存在しません")
     return preset

@@ -240,9 +240,16 @@ UI向けの「全設定」取得/更新。
 
 - `scheduled_at` はISO 8601のdatetime（Pydanticがパース可能な形式）で返す
 
-### `POST /api/settings`
+### `PUT /api/settings`
 
-全設定をまとめて更新（共通設定 + プリセット一覧 + `active_*_preset_id` を更新する）。
+全設定をまとめて確定（共通設定 + プリセット一覧 + `active_*_preset_id`）。
+
+このAPIは「設定画面の OK/適用」向けに **全置換コミット** として動作する:
+
+- `*_preset` 各配列は **最終的に残したいプリセットの完成形**を送る
+- サーバ側は `*_preset_id`（UUID）で upsert する（未存在なら作成、存在すれば更新）
+- リクエストに含まれない既存プリセットは **削除せず `archived=true` にする**
+- `GET /api/settings` は `archived=false` のもののみ返す
 
 #### Request（`FullSettingsUpdateRequest`）
 
@@ -316,9 +323,10 @@ UI向けの「全設定」取得/更新。
 
 #### 注意点（実装仕様）
 
-- `llm_preset` / `embedding_preset` / `system_prompt_preset` / `persona_preset` / `contract_preset` は「配列」で、**複数件を一括更新**する（`*_preset_id` が未存在の場合は `400`）
+- `llm_preset` / `embedding_preset` / `system_prompt_preset` / `persona_preset` / `contract_preset` は「配列」で、**複数件を一括確定**する（全置換コミット）
 - `reminders` は **全置き換え**（既存は削除されIDは作り直される）
-- `active_*_preset_id` は **更新後に参照可能なID**である必要がある（未存在は `400`）
+- 各配列内で `*_preset_id` が重複している場合は `400`
+- `active_*_preset_id` は **対応する配列に含まれるID**である必要がある（未存在/アーカイブは `400`）
 - `active_embedding_preset_id` は `memory_id` 扱いで、変更時はメモリDB初期化を検証する（失敗時 `400`）
 - `max_inject_tokens` / `similar_limit_by_kind` 等の詳細パラメータは現状API外
 

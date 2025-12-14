@@ -29,6 +29,7 @@ LLMの切替単位。LiteLLMの接続情報（chat/image）をここに持つ。
 
 例カラム:
 
+- `archived`（INTEGER: 0/1）
 - `llm_model`, `llm_api_key`, `llm_base_url`, ...
 - `image_model`, `image_model_api_key`, `image_llm_base_url`, ...
 
@@ -39,6 +40,7 @@ Embedding/検索パラメータの切替単位。
 例カラム:
 
 - `name`（TEXT: 表示名）
+- `archived`（INTEGER: 0/1）
 - `embedding_model`, `embedding_dimension`, `embedding_base_url`, ...
 - `max_inject_tokens`
 - `similar_limit_by_kind_json`（種別ごとのKNN上限などをJSONで保持）
@@ -55,6 +57,7 @@ Embedding/検索パラメータの切替単位。
 例カラム:
 
 - `name`（TEXT）
+- `archived`（INTEGER: 0/1）
 - `system_prompt`（TEXT）
 
 ### `persona_presets`
@@ -64,6 +67,7 @@ persona（人格コア）プロンプトの切替単位。
 例カラム:
 
 - `name`（TEXT）
+- `archived`（INTEGER: 0/1）
 - `persona_text`（TEXT）
 
 ### `contract_presets`
@@ -73,6 +77,7 @@ contract（関係契約）プロンプトの切替単位。
 例カラム:
 
 - `name`（TEXT）
+- `archived`（INTEGER: 0/1）
 - `contract_text`（TEXT）
 
 ### `reminders`（任意）
