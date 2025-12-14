@@ -1,4 +1,4 @@
-# API仕様（パートナー最適 / units前提）
+# API仕様
 
 ## ベースパス
 
@@ -6,7 +6,7 @@
 
 ## 認証
 
-- `Authorization: Bearer <TOKEN>`（固定トークン）
+- `Authorization: Bearer <TOKEN>`
 - トークン管理は `settings.db` の `global_settings.token` を正とする（初回のみTOMLから投入してもよい）
 - `token` は `/api/settings` では更新しない（変更する場合は `settings.db` を編集して再起動）
 
@@ -30,9 +30,13 @@
 }
 ```
 
+- `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `embedding_preset_name` を `memory_id` として使用する）
+- `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
+- `client_context` は省略可能（指定時は `payload_episode.context_note` にJSON文字列として保存される）
+
 ### SSE Events
 
-SSEの `event` 名は固定し、`data` は JSON のみとする。
+SSEの `event` 名は `token` / `done` / `error` を使用し、`data` は JSON のみとする。
 
 ```text
 event: token
@@ -44,6 +48,8 @@ data: {"episode_unit_id":12345,"reply_text":"...","usage":{...}}
 event: error
 data: {"message":"...","code":"..."}
 ```
+
+- `done.usage` は現状 `{}`（予約フィールド）
 
 ### サーバ内部フロー（同期）
 
@@ -71,6 +77,9 @@ data: {"message":"...","code":"..."}
 }
 ```
 
+- `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `embedding_preset_name` を `memory_id` として使用する）
+- `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
+
 ### Response
 
 ```json
@@ -96,6 +105,9 @@ data: {"message":"...","code":"..."}
 }
 ```
 
+- `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `embedding_preset_name` を `memory_id` として使用する）
+- `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
+
 ### Response
 
 ```json
@@ -110,14 +122,14 @@ data: {"message":"...","code":"..."}
   - `GET /api/memories/{memory_id}/units?kind=&state=&limit=&offset=`
   - `GET /api/memories/{memory_id}/units/{unit_id}`
 - **メタ更新（版管理）**
-  - `PATCH /api/memories/{memory_id}/units/{unit_id}`（`pin/sensitivity/state/topic_tags` など）
+  - `PATCH /api/memories/{memory_id}/units/{unit_id}`（`pin/sensitivity/state/topic_tags/confidence/salience` など）
 
-### `topic_tags` の表現（必須）
+### `topic_tags` の表現
 
-- `topic_tags` は **JSON array文字列**で固定（例: `["仕事","読書"]`）
+- `topic_tags` は **JSON array文字列**（例: `["仕事","読書"]`）
 - 保存時に正規化（NFKC + 重複除去 + ソート）して `payload_hash` を安定させる
 
-### Worker と `memory_id`（必須）
+### Worker と `memory_id`
 
 - `jobs` は `memory_<memory_id>.db` に保存されるため、Worker は **`memory_id` ごとに起動**する
 - persona/contract は **settings 側のプロンプトプリセット**として管理し、`memory_id`（記憶DB）とは独立する（切替は `/api/settings`）
@@ -125,9 +137,30 @@ data: {"message":"...","code":"..."}
 - **ジョブ投入**
   - `POST /api/memories/{memory_id}/jobs/weekly_summary`（週次サマリ生成のenqueue）
 
+### `POST /api/memories/{memory_id}/jobs/weekly_summary`
+
+週次サマリ生成ジョブを enqueue する。
+
+#### Request（JSON）
+
+```json
+{
+  "week_key": "optional"
+}
+```
+
+- リクエストボディは `{}` でも送る
+- `week_key` は省略可能。省略時はWorker側で「現在のUTC週（`YYYY-Www`）」が採用される
+
+#### Response（JSON）
+
+```json
+{ "job_id": 123 }
+```
+
 ## 付加API
 
-パートナー最適コアではないが、現行実装に含まれる。
+現行実装に含まれる。
 
 - `/api/capture`（desktop/camera のキャプチャ保存）
 - `/api/settings`（UI向けの設定取得/更新）
@@ -279,7 +312,7 @@ UI向けの「全設定」取得/更新。
 
 #### Response
 
-- `GET /api/settings` と同一（更新後の最新状態を返す）
+- `GET /api/settings` と同一（更新後の状態を返す）
 
 #### 注意点（実装仕様）
 
@@ -308,6 +341,9 @@ UI向けの「全設定」取得/更新。
 - `capture_type`: `"desktop"` または `"camera"`
 - `image_base64`: 画像のbase64（data URLヘッダ無しの想定）
 - `context_text`: 保存時の `payload_episode.user_text` に入る（省略可）
+
+- `context_text` が `exclude_keywords` のいずれかを含む場合、保存せずに `{"episode_id":-1,"stored":false}` を返す（除外機能）
+- `capture_type` は現状厳密バリデーションしない（`"desktop"` 以外は `"camera"` 扱い）
 
 #### Response（`CaptureResponse`）
 
@@ -341,4 +377,14 @@ UI向けの「全設定」取得/更新。
 
 ```json
 { "status": "healthy" }
+```
+
+## `/`（参考）
+
+APIベースパス外だが、簡易確認用に提供している。
+
+### `GET /`
+
+```json
+{ "message": "CocoroGhost API is running" }
 ```

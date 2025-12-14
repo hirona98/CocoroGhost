@@ -17,7 +17,7 @@
 
 ## 出力：MemoryPack（注入テキスト）
 
-固定の見出し順で構成（LLMの挙動が安定する）
+以下の見出し順で構成（LLMの挙動が安定する）
 
 ```text
 [PERSONA_ANCHOR]

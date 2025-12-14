@@ -1,4 +1,4 @@
-# アーキテクチャ（パートナー最適 / sqlite-vec固定）
+# アーキテクチャ
 
 ## コンポーネント
 
@@ -6,7 +6,7 @@
   - `/api/chat`（SSE）
   - `/api/notification`
   - `/api/meta_request`
-  - 管理API（メモリ閲覧・編集・ピン留め等：本ディレクトリの提案に従い追加）
+  - 管理API（メモリ閲覧・編集・ピン留め等）
 - **Memory Store（SQLite: `memory_<memory_id>.db`）**
   - `units` + `payload_*` による Unit化
   - 版管理（`unit_versions`）と来歴/信頼度を保持
@@ -53,7 +53,7 @@ flowchart LR
 
 - Reflection（感情・トピック・salience/confidenceの更新）
 - Entity抽出・名寄せ（`entities` / `unit_entities` / `edges`）
-- Fact抽出（`units(kind=FACT)` + `payload_fact`、証拠リンク必須）
+- Fact抽出（`units(kind=FACT)` + `payload_fact`、証拠リンクを保存）
 - OpenLoop抽出（`units(kind=LOOP)` + `payload_loop`）
 - Summary生成（週次/人物/トピック/関係性）
 - Embedding生成と `vec_units` upsert（種別ごとに方針を決める）

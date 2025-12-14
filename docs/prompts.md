@@ -4,7 +4,7 @@
 
 - 出力は **必ずJSON**（前後に説明文を付けない）
 - 推測が不確実なら conservative（例: `need_evidence=true` / `confidence`低め）
-- JSONは key を固定し、型を守る（`null` は許可）
+- JSONは決められた key を使い、型を守る（`null` は許可）
 
 ## Intent分類（small model推奨）
 
@@ -20,7 +20,7 @@
 }
 ```
 
-### System（固定）
+### System
 
 - 出力は必ずJSON
 - 推測が不確実なら conservative（need_evidence=true）

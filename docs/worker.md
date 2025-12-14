@@ -5,7 +5,7 @@
 - APIプロセスのレイテンシを守るため、重い処理を非同期化する
 - Derivedメモリ（facts/summaries/loops/entities/embeddings）を増やし、長期の一貫性を強化する
 
-## Jobテーブル（必須）
+## Jobテーブル
 
 `jobs` テーブルは `memory_<memory_id>.db` に永続化する（DDLは `docs/db_schema.md`）。
 
@@ -16,7 +16,7 @@
 - 2 done
 - 3 failed
 
-## ジョブ種別（必須）
+## ジョブ種別
 
 - `reflect_episode(unit_id)`
 - `extract_entities(unit_id)`
@@ -26,7 +26,7 @@
 - `weekly_summary(week_key)`（定期 / `memory_id` は Worker が扱うDBで暗黙）
 - `capsule_refresh(limit)`（任意 / `limit` は直近件数、デフォルト5）
 
-## 冪等性ルール（必須）
+## 冪等性ルール
 
 - 同じ `unit_id` に対する同種ジョブは **何度実行しても整合が保てる**こと
 - Upsertは `unit_id` をキーにする
@@ -46,7 +46,7 @@
 - JSONを正規化（キー順ソート等）した文字列のhash（例: SHA-256）を推奨
 - 同一hashなら再実行しても「更新なし」として扱う
 
-## 複数 memory_id の運用（必須）
+## 複数 memory_id の運用
 
 - Worker は **`memory_<memory_id>.db` ごとに 1プロセス**で動かす（1DB=1ジョブキュー）
 - 複数 `memory_id` を運用する場合は、`memory_id` ごとに Worker を起動する
@@ -54,7 +54,7 @@
 
 ## topic_tags の保存（推奨）
 
-- `units.topic_tags` は **JSON array文字列**で固定（CSV禁止）
+- `units.topic_tags` は **JSON array文字列**で保存する（CSVは使わない）
 - 保存前に NFKC 正規化 + trim + 重複除去 + ソートを行い、`payload_hash` が安定するようにする
 
 ## Weekly Summary の保存（推奨）

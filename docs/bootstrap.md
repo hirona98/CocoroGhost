@@ -1,13 +1,13 @@
-# 初期化（運用前提：新規DB）
+# 初期化
 
-本プロジェクトは「運用中データの移行」を前提にしないため、**新仕様のスキーマでDBを新規初期化**します。
+DBは `settings.db` と `memory_<memory_id>.db` を新規作成し、スキーマを初期化する。
 
 ## 手順
 
 1. `settings.db` と `memory_<memory_id>.db` を初期化する
    - DDL: `docs/db_schema.md`
    - vec0: `docs/sqlite_vec.md`
-2. 最低限の seed を入れる（任意だが推奨）
+2. 必要なら最低限の seed を入れる
    - `system_prompt_presets`（system prompt）を 1件
    - `persona_presets`（人格コア）を 1件
    - `contract_presets`（関係契約）を 1件

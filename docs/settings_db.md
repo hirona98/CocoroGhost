@@ -5,12 +5,12 @@
 - アプリ起動に必要な最小設定（token等）と、運用中に切替えるプリセット（LLM/Embedding）を永続化する
 - 記憶DB（`memory_<memory_id>.db`）とは分離する
 
-## テーブル（必須）
+## テーブル
 
 ### `global_settings`
 
 - 単一行（グローバル）
-- 固定トークンは **DBを正** とする（初回のみTOMLから投入してよい）
+- token は **DBを正** とする（初回のみTOMLから投入してよい）
 
 例カラム:
 
@@ -78,7 +78,7 @@ contract（関係契約）プロンプトの切替単位。
 - `scheduled_at`（DATETIME）
 - `content`（TEXT）
 
-## 初回起動時（推奨フロー）
+## 初期化（起動時）
 
 1. TOML（`config/setting.toml`）から `token` 等の最小値を読む
 2. `settings.db` が空なら `global_settings` と各種 `*_presets` の default を作り、`active_*_preset_id` を設定する

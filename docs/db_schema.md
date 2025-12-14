@@ -1,18 +1,18 @@
 # DB設計（Unit化 + Payload分離）
 
-## 設計思想（必須）
+## 設計思想
 
 - **“Unit（共通メタ）＋ Payload（種別ごとの内容）”** に統一する
 - すべての記憶は `units` に 1行の共通メタを持つ
-- 本文は `payload_*` に分離（種別で固定スキーマ化）
+- 本文は `payload_*` に分離（種別ごとにスキーマ分離）
 - ベクター索引は `vec_units`（sqlite-vec）に分離
   - `unit_id` で JOIN して本文を取得（sqlite-vec推奨パターン）
 
-## 時刻と型（必須）
+## 時刻と型
 
 - 時刻は **UTC epoch seconds（INTEGER）** を推奨
   - SQLiteの比較・index最適化のため
-- JSON文字列は `TEXT` で保持（将来 `json_extract` 等で参照する前提）
+- JSON文字列は `TEXT` で保持（必要なら `json_extract` 等で参照する）
 
 ## DDL（memory_<memory_id>.db）
 
@@ -101,7 +101,7 @@ create table if not exists unit_versions (
 );
 ```
 
-## Payloadテーブル（パートナー最適）
+## Payloadテーブル
 
 ### Episode（証跡：出来事/会話ログ）
 
@@ -116,7 +116,7 @@ create table if not exists payload_episode (
 );
 ```
 
-### Fact（安定知識：証拠リンク必須）
+### Fact（安定知識：証拠リンク）
 
 ```sql
 create table if not exists payload_fact (
@@ -190,7 +190,7 @@ create table if not exists jobs (
 create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 ```
 
-## Enum定義（実装で固定すること）
+## Enum定義（実装準拠）
 
 ### UnitKind
 
@@ -219,7 +219,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 | PRIVATE | 1 | UI/外部連携で取り扱い注意 |
 | SECRET | 2 | 原則注入しない（明示要求時のみ） |
 
-### EntityType（例）
+### EntityType
 
 | name | value |
 |---|---:|
@@ -230,9 +230,9 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 | TOPIC | 5 |
 | ORG | 6 |
 
-### RelationType（実装固定・例）
+### RelationType
 
-`edges.rel_type` の値。必要に応じて拡張してよいが、運用中に値を変えない。
+`edges.rel_type` の値。必要に応じて拡張してよいが、運用中に値は変更しない。
 
 | name | value |
 |---|---:|
@@ -245,7 +245,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 | DISLIKES | 6 |
 | RELATED | 7 |
 
-### SummaryScopeType（例）
+### SummaryScopeType
 
 | name | value | scope_key例 |
 |---|---:|---|

@@ -1,9 +1,8 @@
 # sqlite-vec（vec0）設計
 
-## 方針（必須）
+## 方針
 
-- sqlite-vec は **pre-v1**（破壊的変更があり得る）なので **バージョン固定**する
-  - metadata/partition/aux は **v0.1.6**で追加（本仕様は v0.1.6+ を前提）
+- sqlite-vec は **v0.1.6+** を使用する（metadata/partition/aux 対応）
 - vec0 は「索引」。本文は `payload_*` に置き、`unit_id` でJOINして取得する
 
 ## 拡張ロード（Python）
@@ -39,7 +38,7 @@ create virtual table if not exists vec_units using vec0(
 ```
 
 > `float[1536]` は例です。実装では `settings.db` の `embedding_dimension` に合わせて作成します。  
-> 次元数を変える場合は「別DBに移行 or 再構築」を前提にします（既存vec0との互換は期待しない）。
+> 次元数を変える場合は「別DBを用意 or 再構築」する（既存vec0との互換は期待しない）。
 
 ## KNN基本クエリ（候補ID＋distance）
 
