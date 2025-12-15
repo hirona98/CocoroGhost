@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -133,6 +134,14 @@ class Retriever:
     _MAX_SENSITIVITY = int(Sensitivity.PRIVATE)
     _OCCURRED_DAY_RANGE = 365
     _RRF_K = 60
+    _EXPAND_MAX_TOKENS_INITIAL = 1024
+    _EXPAND_MAX_TOKENS_STEP = 2048
+    _EXPAND_MAX_TOKENS_MAX = 4096
+    _RERANK_MAX_TOKENS_INITIAL = 2048
+    _RERANK_MAX_TOKENS_MAX = 4096
+    _TOKENS_LOCK = threading.Lock()
+    _expand_max_tokens_current: int = _EXPAND_MAX_TOKENS_INITIAL
+    _rerank_max_tokens_current: int = _RERANK_MAX_TOKENS_INITIAL
 
     def __init__(self, llm_client: LlmClient, db: Session):
         self.llm_client = llm_client
@@ -174,17 +183,69 @@ class Retriever:
             ]
         ).strip()
 
+        def _finish_reason(resp: Any) -> str:
+            try:
+                choice = resp.choices[0]
+                finish_reason = getattr(choice, "finish_reason", None) or choice.get("finish_reason")
+                return str(finish_reason or "")
+            except Exception:  # noqa: BLE001
+                return ""
+
+        resp: Any | None = None
         try:
+            expand_max_tokens = self.__class__._expand_max_tokens_current
             resp = self.llm_client.generate_json_response(
                 system_prompt=prompts.get_retrieval_query_expansion_prompt(),
                 user_text=payload,
                 temperature=0.2,
-                max_tokens=512,
+                max_tokens=expand_max_tokens,
             )
-            data = json.loads(self.llm_client.response_content(resp))
+            data = self.llm_client.response_json(resp)
         except Exception as exc:  # noqa: BLE001
-            self.logger.debug("query expansion failed", exc_info=exc)
-            return []
+            finish_reason = _finish_reason(resp) if resp is not None else ""
+            if (
+                finish_reason == "length"
+                and self.__class__._expand_max_tokens_current < self._EXPAND_MAX_TOKENS_MAX
+                and self._EXPAND_MAX_TOKENS_MAX > 0
+            ):
+                with self.__class__._TOKENS_LOCK:
+                    prev = self.__class__._expand_max_tokens_current
+                    # 1024 -> 2048 -> 4096 の段階引き上げ
+                    if prev < self._EXPAND_MAX_TOKENS_STEP:
+                        self.__class__._expand_max_tokens_current = self._EXPAND_MAX_TOKENS_STEP
+                    else:
+                        self.__class__._expand_max_tokens_current = self._EXPAND_MAX_TOKENS_MAX
+                    next_ = self.__class__._expand_max_tokens_current
+                self.logger.warning(
+                    "query expansion max_tokens increased (%d -> %d) due to truncated JSON output (finish_reason=length)",
+                    prev,
+                    next_,
+                )
+                try:
+                    expand_max_tokens = self.__class__._expand_max_tokens_current
+                    resp = self.llm_client.generate_json_response(
+                        system_prompt=prompts.get_retrieval_query_expansion_prompt(),
+                        user_text=payload,
+                        temperature=0.2,
+                        max_tokens=expand_max_tokens,
+                    )
+                    data = self.llm_client.response_json(resp)
+                except Exception as exc2:  # noqa: BLE001
+                    self.logger.warning(
+                        "query expansion fallback: proceeding without expanded queries (finish_reason=%s, max_tokens=%d)",
+                        _finish_reason(resp) if resp is not None else "",
+                        self.__class__._expand_max_tokens_current,
+                    )
+                    self.logger.debug("query expansion retry failed", exc_info=exc2)
+                    return []
+            else:
+                self.logger.warning(
+                    "query expansion fallback: proceeding without expanded queries (finish_reason=%s, max_tokens=%d)",
+                    finish_reason,
+                    self.__class__._expand_max_tokens_current,
+                )
+                self.logger.debug("query expansion failed", exc_info=exc)
+                return []
 
         expanded_raw = data.get("expanded_queries") if isinstance(data, dict) else None
         refs_raw = data.get("detected_references") if isinstance(data, dict) else None
@@ -411,17 +472,83 @@ class Retriever:
             ]
         ).strip()
 
+        def _finish_reason(resp: Any) -> str:
+            try:
+                choice = resp.choices[0]
+                finish_reason = getattr(choice, "finish_reason", None) or choice.get("finish_reason")
+                return str(finish_reason or "")
+            except Exception:  # noqa: BLE001
+                return ""
+
         try:
+            rerank_max_tokens = self.__class__._rerank_max_tokens_current
             resp = self.llm_client.generate_json_response(
                 system_prompt=prompts.get_retrieval_rerank_prompt(),
                 user_text=payload,
                 temperature=0.0,
-                max_tokens=768,
+                max_tokens=rerank_max_tokens,
             )
-            data = json.loads(self.llm_client.response_content(resp))
+            data = self.llm_client.response_json(resp)
         except Exception as exc:  # noqa: BLE001
-            self.logger.debug("rerank failed", exc_info=exc)
-            return []
+            # トークン不足で途中切れ（finish_reason=length）の場合のみ、アプリ終了まで rerank の上限を引き上げる
+            try:
+                finish_reason = _finish_reason(resp)  # type: ignore[has-type]
+            except Exception:  # noqa: BLE001
+                finish_reason = ""
+            if (
+                finish_reason == "length"
+                and self.__class__._rerank_max_tokens_current < self._RERANK_MAX_TOKENS_MAX
+                and self._RERANK_MAX_TOKENS_MAX > 0
+            ):
+                with self.__class__._TOKENS_LOCK:
+                    prev = self.__class__._rerank_max_tokens_current
+                    self.__class__._rerank_max_tokens_current = self._RERANK_MAX_TOKENS_MAX
+                    next_ = self.__class__._rerank_max_tokens_current
+                self.logger.warning(
+                    "rerank max_tokens increased (%d -> %d) due to truncated JSON output (finish_reason=length)",
+                    prev,
+                    next_,
+                )
+                try:
+                    rerank_max_tokens = self.__class__._rerank_max_tokens_current
+                    resp = self.llm_client.generate_json_response(
+                        system_prompt=prompts.get_retrieval_rerank_prompt(),
+                        user_text=payload,
+                        temperature=0.0,
+                        max_tokens=rerank_max_tokens,
+                    )
+                    data = self.llm_client.response_json(resp)
+                except Exception as exc2:  # noqa: BLE001
+                    self.logger.warning(
+                        "rerank fallback: using retrieval order (finish_reason=%s, max_tokens=%d)",
+                        _finish_reason(resp) if resp is not None else "",
+                        self.__class__._rerank_max_tokens_current,
+                    )
+                    self.logger.debug("rerank retry failed; falling back to candidate order", exc_info=exc2)
+                    data = None
+            else:
+                self.logger.warning(
+                    "rerank fallback: using retrieval order (finish_reason=%s, max_tokens=%d)",
+                    finish_reason,
+                    self.__class__._rerank_max_tokens_current,
+                )
+                self.logger.debug("rerank failed; falling back to candidate order", exc_info=exc)
+                data = None
+
+            if data is None:
+                fallback: list[RankedEpisode] = []
+                for c in list(candidates)[: max(0, max_results)]:
+                    fallback.append(
+                        RankedEpisode(
+                            unit_id=int(c.unit_id),
+                            user_text=c.user_text,
+                            reply_text=c.reply_text,
+                            occurred_at=c.occurred_at,
+                            relevance="medium",
+                            reason="LLM rerank failed; fallback to retrieval order",
+                        )
+                    )
+                return fallback
 
         if not isinstance(data, dict):
             return []
