@@ -62,6 +62,8 @@
 MemoryPack に注入
 ```
 
+> 高速化メモ: LLM呼び出し（Phase 1/3）がレイテンシ支配になる場合、LLMレスのFast Path（RRF + 軽量スコアリング）に置換する計画を `docs/retrieval_fastpath.md` にまとめた。
+
 ### シーケンス図
 
 ```mermaid

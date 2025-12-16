@@ -24,6 +24,7 @@
 4. `docs/sqlite_vec.md`（vec0設計・KNN→JOIN）
 5. `docs/scheduler.md`（MemoryPack編成・スコア・圧縮）
 6. `docs/retrieval.md`（文脈考慮型記憶検索・Intent廃止）
+6.1. `docs/retrieval_fastpath.md`（Retriever高速化: LLMレス改造計画）
 7. `docs/worker.md`（ジョブ・冪等性・版管理）
 8. `docs/prompts.md`（LLM JSONスキーマ）
 9. `docs/api.md`（API仕様 / SSE）
