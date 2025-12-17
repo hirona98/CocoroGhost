@@ -168,9 +168,13 @@ class MemoryManager:
 
         image_summaries = self._summarize_images(request.images)
 
+        conversation: List[Dict[str, str]] = []
         try:
             with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
                 recent_conversation = self._load_recent_conversation(db, turns=3)
+                llm_turns_window = int(getattr(cfg, "max_turns_window", 0) or 0)
+                if llm_turns_window > 0:
+                    conversation = self._load_recent_conversation(db, turns=llm_turns_window)
                 retriever = Retriever(llm_client=self.llm_client, db=db)
                 relevant_episodes = retriever.retrieve(
                     request.user_text,
@@ -197,7 +201,7 @@ class MemoryManager:
         # ユーザーが設定する persona/contract とは独立に、最小のガードをコード側で付与する。
         parts: List[str] = [_INTERNAL_CONTEXT_GUARD_PROMPT, (memory_pack or "").strip()]
         system_prompt = "\n\n".join([p for p in parts if p])
-        conversation = [{"role": "user", "content": request.user_text}]
+        conversation = [*conversation, {"role": "user", "content": request.user_text}]
 
         try:
             resp_stream = self.llm_client.generate_reply_response(
