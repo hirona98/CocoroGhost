@@ -23,8 +23,7 @@
 3. `docs/db_schema.md`（DDL / Enum / 永続化ルール）
 4. `docs/sqlite_vec.md`（vec0設計・KNN→JOIN）
 5. `docs/scheduler.md`（MemoryPack編成・スコア・圧縮）
-6. `docs/retrieval.md`（文脈考慮型記憶検索・Intent廃止）
-6.1. `docs/retrieval_fastpath.md`（Retriever高速化: LLMレス改造計画）
+6. `docs/retrieval.md`（記憶検索: LLMレス高速化版）
 7. `docs/worker.md`（ジョブ・冪等性・版管理）
 8. `docs/prompts.md`（LLM JSONスキーマ）
 9. `docs/api.md`（API仕様 / SSE）
@@ -39,7 +38,7 @@
   - Canonical: ユーザー発話や通知本文など「改変しないログ」（例: `EPISODE`）。
   - Derived: Workerで抽出/統合された「解釈・要約・構造化」（例: `FACT` / `SUMMARY` / `LOOP` / `CAPSULE`）。
 - **MemoryPack**: `/api/chat` の同期処理中に、Schedulerが「LLMへ注入するため」に組み立てるテキストパック。見出し順（`[PERSONA_ANCHOR]` 等）に沿って、検索結果をそのまま貼らずに圧縮・整形する（仕様: `docs/scheduler.md`、実装: `cocoro_ghost/scheduler.py`）。
-- **Retriever**: 文脈考慮型の記憶検索システム。Query Expansion → Contextual KNN → LLM Reranking の3段階で、会話に関連する過去のエピソードを選別する（仕様: `docs/retrieval.md`）。従来の Intent 分類を廃止し、常時・文脈考慮型の検索に移行。
+- **Retriever**: 記憶検索システム。固定クエリ → Hybrid Search (Vector + BM25) → ヒューリスティック Rerank の3段階で、会話に関連する過去のエピソードを高速に選別する（仕様: `docs/retrieval.md`）。LLMレスで高速に動作。
 - **Persona / Contract**: LLM注入プロンプトを「人格」と「関係契約」に分けたもの。
   - Persona: 人格・口調・価値観の中核（崩れると会話の一貫性が壊れる）。
   - Contract: 踏み込み/介入の許可、NG、距離感、取り扱い注意などの「関係契約」。
