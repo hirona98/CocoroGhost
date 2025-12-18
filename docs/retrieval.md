@@ -205,8 +205,10 @@ final = 0.55 * rrf_norm + 0.35 * lex + 0.10 * rec
 分かち書き不要で安定する、文字単位の3-gramを使用。
 
 ```python
-def _char_ngrams(text, n=3, max_chars=1200):
-    t = clip_text(text, max_chars)
+def _char_ngrams(text, *, n=3, max_chars=1200, tail=False):
+    t = _clip_text(text, max_chars=max_chars, tail=tail)
+    if not t or len(t) <= n:
+        return {t} if t else set()
     return {t[i:i+n] for i in range(len(t) - n + 1)}
 
 def _dice(a: set, b: set) -> float:

@@ -14,7 +14,8 @@
   - `vec_units` は「索引」（`unit_id` と `embedding`）のみ保持
   - kind partition と metadata filtering を活用（sqlite-vec v0.1.6+）
 - **Retriever（文脈考慮型記憶検索）**
-  - Query Expansion → Hybrid Search（Vector + BM25）→ LLM Reranking の3段階で、関連する過去エピソードを選別する
+  - 固定クエリ → Hybrid Search（Vector + BM25）→ ヒューリスティック Rerank の3段階で、関連する過去エピソードを高速に選別する
+  - **LLMレス**: Query Expansion / LLM Reranking は廃止し、軽量・高速に動作
   - 仕様: `docs/retrieval.md`
 - **Scheduler（取得計画器）**
   - 検索結果の生注入ではなく、**MemoryPack** を編成して注入
@@ -39,10 +40,11 @@ flowchart LR
   W -->|Reflection/Entities/Facts/Summaries/Loops| DB
   W -->|Embeddings| EMB[Embedding API via LiteLLM]
   W -->|Upsert vectors| VEC[(sqlite-vec vec0)]
-  RET -->|Embeddings| EMB
-  RET -->|Vector search| VEC
-  RET -->|BM25 search| FTS[(FTS5 episode_fts)]
+  RET -->|Embed queries| EMB
+  RET -->|Hybrid: Vector| VEC
+  RET -->|Hybrid: BM25| FTS[(FTS5 episode_fts)]
   RET -->|JOIN payload| DB
+  RET -->|Heuristic Rerank| RET
 ```
 
 ## 同期/非同期の責務分離
@@ -57,13 +59,13 @@ flowchart LR
 - `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 - Worker用ジョブを enqueue（reflection/extraction/embedding等）
 
-#### Contextual Memory Retrieval（同期）
+#### Contextual Memory Retrieval（同期・LLMレス）
 
-Retriever は「暗黙参照」や「会話の流れ」を取り込み、現在の会話に関連する過去エピソードを選別する。
+Retriever は「暗黙参照」や「会話の流れ」を取り込み、現在の会話に関連する過去エピソードを高速に選別する。
 
-- Phase 1: Query Expansion（暗黙参照の展開、複合クエリ分解）
-- Phase 2: Hybrid Search（vec0 + FTS5）
-- Phase 3: LLM Reranking（high/medium の上位のみ返す）
+- Phase 1: 固定クエリ生成（LLMレス。user_text / context+user_text の2本）
+- Phase 2: Hybrid Search（vec0 + FTS5）→ RRFマージ
+- Phase 3: ヒューリスティック Rerank（LLMレス。RRF + 文字n-gram類似度 + recency で軽量スコアリング）
 - Scheduler は relevant episodes を受け取り、ルール（例: high>=1 or medium>=2）と予算で `[EPISODE_EVIDENCE]` を注入する（満たさない場合は省略）
 
 ```mermaid
@@ -77,25 +79,28 @@ sequenceDiagram
   participant FTS as FTS5 (episode_fts)
   participant EMB as Embedding API
   participant VEC as Vector Index (vec0)
-  participant RLLM as LLM (retrieval)
   participant LLM as LLM (chat)
   participant Q as Jobs (DB)
   participant W as Worker
 
   UI->>API: POST /api/chat (SSE)\n{user_text, images?, client_context?}
   API->>RET: retrieve(user_text)\n(+ recent conversation)
-  RET->>RLLM: query expansion (JSON)
-  RLLM-->>RET: expanded_queries[]
+  Note over RET: Phase 1: 固定クエリ生成\n(user_text, context+user_text)
   RET->>EMB: embed queries
   EMB-->>RET: embeddings
-  RET->>VEC: KNN search (episodes)
-  VEC-->>RET: candidate unit_ids
-  RET->>FTS: BM25 search (episodes)
-  FTS-->>RET: candidate unit_ids
+  Note over RET,FTS: Phase 2: Hybrid Search
+  par 並列検索
+    RET->>VEC: KNN search (episodes)
+    VEC-->>RET: candidate unit_ids
+  and
+    RET->>FTS: BM25 search (episodes)
+    FTS-->>RET: candidate unit_ids
+  end
+  RET->>RET: RRF merge
   RET->>DB: join payloads (episode candidates)
   DB-->>RET: candidates
-  RET->>RLLM: rerank (JSON)
-  RLLM-->>RET: relevant_episodes[]
+  Note over RET: Phase 3: ヒューリスティック Rerank\n(RRF + lex + recency)
+  RET-->>API: relevant_episodes[]
   API->>SCH: build MemoryPack\n(relevant episodes, token budget)
   SCH->>DB: read capsule/facts/summaries/loops
   SCH-->>API: MemoryPack

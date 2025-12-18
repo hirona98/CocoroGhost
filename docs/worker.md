@@ -50,7 +50,8 @@
 
 - Worker は **`memory_<memory_id>.db` ごとに 1プロセス**で動かす（1DB=1ジョブキュー）
 - 複数 `memory_id` を運用する場合は、`memory_id` ごとに Worker を起動する
-  - 例: `python -X utf8 run_worker.py --memory-id default` / `python -X utf8 run_worker.py --memory-id alice`
+  - 通常 `memory_id` は `settings.db` の `embedding_presets.id`（UUID）で、`active_embedding_preset_id` が既定で使われる
+  - 例: `python -X utf8 run_worker.py --memory-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 
 ## topic_tags の保存（推奨）
 

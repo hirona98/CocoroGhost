@@ -56,9 +56,9 @@ Partner: 「...」
 1. **常時注入（検索しない）**
    - active persona（`settings.db` の `active_persona_preset_id`）
    - active contract（`settings.db` の `active_contract_preset_id`）
-2. **Contextual Memory Retrieval（Retriever）**
-   - Query Expansion → Hybrid Search（Vector + BM25）→ LLM Reranking（`docs/retrieval.md`）
-   - relevant episodes（最大5件）を取得する
+2. **Contextual Memory Retrieval（Retriever・LLMレス）**
+   - 固定クエリ → Hybrid Search（Vector + BM25）→ ヒューリスティック Rerank（`docs/retrieval.md`）
+   - relevant episodes（最大5件）を高速に取得する
 3. **Entity解決**
    - 文字列から alias 参照（`entities` + `entity_aliases`）
    - 足りなければLLM抽出（Workerでも可、同期が重い場合は後回し）
