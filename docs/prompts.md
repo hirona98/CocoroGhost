@@ -6,65 +6,13 @@
 - 推測が不確実なら conservative（例: 不確実な項目は出力しない / `confidence`低め）
 - JSONは決められた key を使い、型を守る（`null` は許可）
 
-## Intent分類（廃止予定）
+## 記憶検索（Retriever）
 
-> **注意**: Intent分類は `docs/retrieval.md` の Contextual Memory Retrieval に置き換える方針です。
-> 現行の実装には残っているが、新Retriever導入時に削除します。
+記憶検索（Retriever）は **LLMを使用しない**。詳細は `docs/retrieval.md` を参照。
 
-### 出力JSON（削除予定）
-
-```json
-{
-  "intent": "smalltalk|counsel|task|settings|recall|confirm|meta",
-  "need_evidence": true,
-  "need_loops": true,
-  "suggest_summary_scope": ["weekly", "person", "topic"],
-  "sensitivity_max": 1
-}
-```
-
-## Query Expansion（Retrieval Phase 1）
-
-> 詳細は `docs/retrieval.md` を参照
-
-### 出力JSON
-
-```json
-{
-  "expanded_queries": ["展開されたクエリ1", "展開されたクエリ2"],
-  "detected_references": [
-    {"type": "anaphora|temporal|ellipsis|topic", "surface": "表層形", "resolved": "解決後"}
-  ]
-}
-```
-
-### System
-
-- ユーザー発話と直近の会話履歴から、暗黙に参照されている話題を特定
-- expanded_queries は最大5件
-- 明確に特定できないものは含めない
-
-## Episode Reranking（Retrieval Phase 3）
-
-> 詳細は `docs/retrieval.md` を参照
-
-### 出力JSON
-
-```json
-{
-  "relevant_episodes": [
-    {"unit_id": 12345, "relevance": "high|medium", "reason": "選択理由"}
-  ],
-  "injection_strategy": "quote_key_parts|summarize|full"
-}
-```
-
-### System
-
-- 候補エピソードから現在の会話に関連するものを選別
-- `unit_id` は候補に含まれるもののみ（候補外のIDは出力しない）
-- relevance が high または medium のもののみ出力
-- 最大5件まで
+- Query Expansion: 廃止（固定2クエリに置換）
+- LLM Reranking: 廃止（ヒューリスティック Rerank に置換）
+- Intent 分類: 廃止（常時検索に移行）
 
 ## Reflection（Episode派生）
 

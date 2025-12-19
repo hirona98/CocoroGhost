@@ -54,11 +54,12 @@ data: {"message":"...","code":"..."}
 ### サーバ内部フロー（同期）
 
 1. 画像要約（`images` がある場合）
-2. Schedulerで **MemoryPack** を生成
-3. LLMへ `guard_prompt + memorypack + user_text` を注入（MemoryPack内に persona/contract を含む）
-4. 返答をSSEで配信
-5. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
-6. Worker用ジョブを enqueue（reflection/extraction/embedding等）
+2. Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
+3. Schedulerで **MemoryPack** を生成（検索結果を `[EPISODE_EVIDENCE]` に含む）
+4. LLMへ `guard_prompt + memorypack + user_text` を注入（MemoryPack内に persona/contract を含む）
+5. 返答をSSEで配信
+6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
+7. Worker用ジョブを enqueue（reflection/extraction/embedding等）
 
 ## `/api/v1/notification`
 
@@ -85,14 +86,14 @@ data: {"message":"...","code":"..."}
 ### 例（cURL）
 
 ```bash
-curl -X POST http://127.0.0.1:55604/api/v1/notification \
+curl -X POST http://127.0.0.1:55601/api/v1/notification \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d '{"from":"MyApp","message":"処理完了","images":["data:image/jpeg;base64,..."]}'
 ```
 
 ```bash
-curl -X POST http://127.0.0.1:55604/api/v1/notification \
+curl -X POST http://127.0.0.1:55601/api/v1/notification \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d '{"from":"MyApp","message":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
@@ -102,7 +103,7 @@ curl -X POST http://127.0.0.1:55604/api/v1/notification \
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:55604/api/v1/notification" `
+  -Uri "http://127.0.0.1:55601/api/v1/notification" `
   -ContentType "application/json; charset=utf-8" `
   -Headers @{ Authorization = "Bearer <TOKEN>" } `
   -Body '{"from":"MyApp","message":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
@@ -137,7 +138,7 @@ Invoke-RestMethod -Method Post `
 ### 例（cURL）
 
 ```bash
-curl -X POST http://127.0.0.1:55604/api/v1/meta_request \
+curl -X POST http://127.0.0.1:55601/api/v1/meta_request \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d '{"prompt":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。：～ニュース内容～"}'
@@ -147,7 +148,7 @@ curl -X POST http://127.0.0.1:55604/api/v1/meta_request \
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:55604/api/v1/meta_request" `
+  -Uri "http://127.0.0.1:55601/api/v1/meta_request" `
   -ContentType "application/json; charset=utf-8" `
   -Headers @{ Authorization = "Bearer <TOKEN>" } `
   -Body '{"prompt":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。：～ニュース内容～"}'
@@ -378,7 +379,7 @@ UI向けの「全設定」取得/更新。
 - `image_base64`: 画像のbase64（data URLヘッダ無しの想定）
 - `context_text`: 保存時の `payload_episode.user_text` に入る（省略可）
 
-- `context_text` が `exclude_keywords` のいずれかを含む場合、保存せずに `{"episode_id":-1,"stored":false}` を返す（除外機能）
+- 除外判定: `context_text` が `exclude_keywords` のいずれかにマッチする場合、保存せずに `{"episode_id":-1,"stored":false}` を返す。`exclude_keywords` は正規表現メタ文字（例: `.*`）を含むと正規表現として評価され、それ以外は部分一致で判定する。
 - `capture_type` は現状厳密バリデーションしない（`"desktop"` 以外は `"camera"` 扱い）
 
 #### Response（`CaptureResponse`）
@@ -392,6 +393,7 @@ UI向けの「全設定」取得/更新。
 サーバログの購読（テキストフレームでJSONをpush）。
 
 - URL: `ws(s)://<host>/api/logs/stream`
+- 認証: `Authorization: Bearer <TOKEN>`
 
 ### メッセージ形式
 
@@ -410,6 +412,7 @@ UI向けの「全設定」取得/更新。
 - URL: `ws(s)://<host>/api/events/stream`
 - 認証: `Authorization: Bearer <TOKEN>`
 - 目的: `POST /api/v1/notification` / `POST /api/v1/meta_request` を受信したとき、接続中クライアントへ即時にイベントを配信する
+- 挙動: 接続直後に最大200件のバッファ済みイベントを送信し、その後は新規イベントをリアルタイムでpushする
 
 ### Event payload（JSON text）
 

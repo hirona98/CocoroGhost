@@ -87,8 +87,11 @@ python -X utf8 run_worker.py
 複数 `memory_id` を運用する場合は `memory_<memory_id>.db` ごとに Worker を起動します。
 
 ```bash
-python -X utf8 run_worker.py --memory-id default
+python -X utf8 run_worker.py --memory-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
+
+補足:
+- 通常 `memory_id` は `settings.db` の `embedding_presets.id`（UUID）で、`/api/settings` の `active_embedding_preset_id` が既定で使われます。
 
 ## 設定管理
 

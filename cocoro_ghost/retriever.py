@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import threading
+import math
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import re
 from typing import Any, Literal, Mapping, Sequence
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from cocoro_ghost import prompts
 from cocoro_ghost.db import EPISODE_FTS_TABLE_NAME, search_similar_unit_ids
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.unit_enums import Sensitivity, UnitKind
@@ -25,13 +22,6 @@ from cocoro_ghost.unit_models import PayloadEpisode, Unit
 Message = Mapping[str, str]
 
 _FTS5_SPLIT_RE = re.compile(r"\s+")
-
-
-@dataclass(frozen=True)
-class ExpandedQuery:
-    query: str
-    reference_type: str | None  # anaphora, temporal, ellipsis, topic
-    original_surface: str | None
 
 
 @dataclass(frozen=True)
@@ -50,6 +40,7 @@ class CandidateEpisode:
     user_text: str
     reply_text: str
     occurred_at: int
+    rrf_score: float
 
 
 def _compact_text(text_: str) -> str:
@@ -109,7 +100,7 @@ def _rrf_merge(
     *,
     max_candidates: int,
     rrf_k: int,
-) -> list[int]:
+) -> tuple[list[int], dict[int, float]]:
     scores: dict[int, float] = defaultdict(float)
 
     for result_list in vector_results:
@@ -120,28 +111,63 @@ def _rrf_merge(
         for rank, unit_id in enumerate(result_list):
             scores[int(unit_id)] += 1.0 / (rrf_k + rank + 1)
 
-    sorted_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    return [unit_id for unit_id, _score in sorted_items[: max(0, max_candidates)]]
+    sorted_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)[: max(0, max_candidates)]
+    return [unit_id for unit_id, _score in sorted_items], {unit_id: float(score) for unit_id, score in sorted_items}
+
+
+def _clip_text(text_: str, *, max_chars: int, tail: bool) -> str:
+    t = _compact_text(text_)
+    if max_chars <= 0 or len(t) <= max_chars:
+        return t
+    return t[-max_chars:] if tail else t[:max_chars]
+
+
+def _char_ngrams(text_: str, *, n: int, max_chars: int, tail: bool) -> set[str]:
+    t = _clip_text(text_, max_chars=max_chars, tail=tail)
+    if not t:
+        return set()
+    if len(t) <= n:
+        return {t}
+    return {t[i : i + n] for i in range(len(t) - n + 1)}
+
+
+def _dice(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    if inter <= 0:
+        return 0.0
+    return (2.0 * float(inter)) / float(len(a) + len(b))
+
+
+def _recency_score(*, now_ts: int, occurred_at: int, tau_days: float) -> float:
+    if occurred_at <= 0:
+        return 0.0
+    age_days = max(0.0, float(now_ts - occurred_at) / 86400.0)
+    tau = max(1.0, float(tau_days))
+    return float(math.exp(-age_days / tau))
 
 
 class Retriever:
-    """Query Expansion → Hybrid Search（Vector + BM25）→ LLM Reranking の3段階検索。"""
+    """Hybrid Search（Vector + BM25）→ Heuristic Rerank の2段階検索。"""
 
-    _MAX_EXPANDED_QUERIES = 5
     _RECENT_CONVERSATION_TURNS = 3
-    _KNN_K_PER_QUERY = 10
-    _BM25_K_PER_QUERY = 10
+    _KNN_K_PER_QUERY = 20
+    _BM25_K_PER_QUERY = 20
     _MAX_SENSITIVITY = int(Sensitivity.PRIVATE)
     _OCCURRED_DAY_RANGE = 365
     _RRF_K = 60
-    _EXPAND_MAX_TOKENS_INITIAL = 1024
-    _EXPAND_MAX_TOKENS_STEP = 2048
-    _EXPAND_MAX_TOKENS_MAX = 4096
-    _RERANK_MAX_TOKENS_INITIAL = 2048
-    _RERANK_MAX_TOKENS_MAX = 4096
-    _TOKENS_LOCK = threading.Lock()
-    _expand_max_tokens_current: int = _EXPAND_MAX_TOKENS_INITIAL
-    _rerank_max_tokens_current: int = _RERANK_MAX_TOKENS_INITIAL
+
+    _RERANK_NGRAM_N = 3
+    _RERANK_QUERY_MAX_CHARS = 1200
+    _RERANK_EPISODE_MAX_CHARS = 1200
+    _RERANK_RECENCY_TAU_DAYS = 45.0
+    _RERANK_DUP_THRESHOLD = 0.90
+    _RERANK_HIGH_THRESHOLD = 0.35
+    _RERANK_MEDIUM_THRESHOLD = 0.28
+    _RERANK_W_RRF = 0.55
+    _RERANK_W_LEX = 0.35
+    _RERANK_W_REC = 0.10
 
     def __init__(self, llm_client: LlmClient, db: Session):
         self.llm_client = llm_client
@@ -158,139 +184,17 @@ class Retriever:
         user_text: str,
         recent_conversation: Sequence[Message],
         *,
-        max_candidates: int = 30,
+        max_candidates: int = 60,
         max_results: int = 5,
     ) -> list[RankedEpisode]:
-        expanded = self._expand_queries(user_text, recent_conversation)
-        candidates = self._search_candidates(user_text, recent_conversation, expanded, max_candidates)
+        candidates = self._search_candidates(user_text, recent_conversation, max_candidates)
         ranked = self._rerank(user_text, recent_conversation, candidates, max_results)
         return ranked
-
-    def _expand_queries(self, user_text: str, recent_conversation: Sequence[Message]) -> list[ExpandedQuery]:
-        user_text = (user_text or "").strip()
-        if not user_text:
-            return []
-
-        context = _format_recent_conversation(
-            recent_conversation,
-            max_messages=self._RECENT_CONVERSATION_TURNS * 2,
-        )
-        payload = "\n".join(
-            [
-                f"ユーザー発話: {user_text}",
-                "直近の会話:",
-                context or "(なし)",
-            ]
-        ).strip()
-
-        def _finish_reason(resp: Any) -> str:
-            try:
-                choice = resp.choices[0]
-                finish_reason = getattr(choice, "finish_reason", None) or choice.get("finish_reason")
-                return str(finish_reason or "")
-            except Exception:  # noqa: BLE001
-                return ""
-
-        resp: Any | None = None
-        try:
-            expand_max_tokens = self.__class__._expand_max_tokens_current
-            resp = self.llm_client.generate_json_response(
-                system_prompt=prompts.get_retrieval_query_expansion_prompt(),
-                user_text=payload,
-                temperature=0.2,
-                max_tokens=expand_max_tokens,
-            )
-            data = self.llm_client.response_json(resp)
-        except Exception as exc:  # noqa: BLE001
-            finish_reason = _finish_reason(resp) if resp is not None else ""
-            if (
-                finish_reason == "length"
-                and self.__class__._expand_max_tokens_current < self._EXPAND_MAX_TOKENS_MAX
-                and self._EXPAND_MAX_TOKENS_MAX > 0
-            ):
-                with self.__class__._TOKENS_LOCK:
-                    prev = self.__class__._expand_max_tokens_current
-                    # 1024 -> 2048 -> 4096 の段階引き上げ
-                    if prev < self._EXPAND_MAX_TOKENS_STEP:
-                        self.__class__._expand_max_tokens_current = self._EXPAND_MAX_TOKENS_STEP
-                    else:
-                        self.__class__._expand_max_tokens_current = self._EXPAND_MAX_TOKENS_MAX
-                    next_ = self.__class__._expand_max_tokens_current
-                self.logger.warning(
-                    "query expansion max_tokens increased (%d -> %d) due to truncated JSON output (finish_reason=length)",
-                    prev,
-                    next_,
-                )
-                try:
-                    expand_max_tokens = self.__class__._expand_max_tokens_current
-                    resp = self.llm_client.generate_json_response(
-                        system_prompt=prompts.get_retrieval_query_expansion_prompt(),
-                        user_text=payload,
-                        temperature=0.2,
-                        max_tokens=expand_max_tokens,
-                    )
-                    data = self.llm_client.response_json(resp)
-                except Exception as exc2:  # noqa: BLE001
-                    self.logger.warning(
-                        "query expansion fallback: proceeding without expanded queries (finish_reason=%s, max_tokens=%d)",
-                        _finish_reason(resp) if resp is not None else "",
-                        self.__class__._expand_max_tokens_current,
-                    )
-                    self.logger.debug("query expansion retry failed", exc_info=exc2)
-                    return []
-            else:
-                self.logger.warning(
-                    "query expansion fallback: proceeding without expanded queries (finish_reason=%s, max_tokens=%d)",
-                    finish_reason,
-                    self.__class__._expand_max_tokens_current,
-                )
-                self.logger.debug("query expansion failed", exc_info=exc)
-                return []
-
-        expanded_raw = data.get("expanded_queries") if isinstance(data, dict) else None
-        refs_raw = data.get("detected_references") if isinstance(data, dict) else None
-
-        expanded: list[ExpandedQuery] = []
-        seen: set[str] = set()
-
-        def add_query(q: str, reference_type: str | None, original_surface: str | None) -> None:
-            if len(expanded) >= self._MAX_EXPANDED_QUERIES:
-                return
-            q = (q or "").strip()
-            if not q or q == user_text:
-                return
-            key = q
-            if key in seen:
-                return
-            seen.add(key)
-            expanded.append(
-                ExpandedQuery(
-                    query=q,
-                    reference_type=(reference_type or "").strip() or None,
-                    original_surface=(original_surface or "").strip() or None,
-                )
-            )
-
-        if isinstance(expanded_raw, list):
-            for q in expanded_raw:
-                add_query(str(q), None, None)
-
-        if isinstance(refs_raw, list):
-            for r in refs_raw:
-                if not isinstance(r, dict):
-                    continue
-                resolved = str(r.get("resolved") or "").strip()
-                if not resolved:
-                    continue
-                add_query(resolved, str(r.get("type") or "").strip() or None, str(r.get("surface") or "").strip() or None)
-
-        return expanded
 
     def _search_candidates(
         self,
         user_text: str,
         recent_conversation: Sequence[Message],
-        expanded: Sequence[ExpandedQuery],
         max_candidates: int,
     ) -> list[CandidateEpisode]:
         user_text = (user_text or "").strip()
@@ -306,15 +210,15 @@ class Retriever:
         else:
             original_query = user_text
 
-        all_queries: list[str] = [original_query]
-        for e in expanded:
-            q = (e.query or "").strip()
-            if not q:
-                continue
-            if q not in all_queries:
-                all_queries.append(q)
-
-        all_queries = all_queries[: 1 + self._MAX_EXPANDED_QUERIES]
+        # Fixed multi-query (no LLM query expansion):
+        # - user_text only (avoid recent context dominance)
+        # - context + user_text (follow conversational continuity)
+        all_queries: list[str] = []
+        user_only_query = user_text
+        if user_only_query:
+            all_queries.append(user_only_query)
+        if original_query and original_query not in all_queries:
+            all_queries.append(original_query)
 
         try:
             embeddings = self.llm_client.generate_embedding(all_queries)
@@ -346,7 +250,7 @@ class Retriever:
         for q in all_queries:
             bm25_results.append(self._bm25_search(q, k=self._BM25_K_PER_QUERY, occurred_day_range=(d0, d1)))
 
-        candidate_ids = _rrf_merge(
+        candidate_ids, rrf_scores = _rrf_merge(
             vector_results,
             bm25_results,
             max_candidates=max_candidates,
@@ -374,6 +278,7 @@ class Retriever:
                 user_text=(pe.user_text or "").strip(),
                 reply_text=(pe.reply_text or "").strip(),
                 occurred_at=ts,
+                rrf_score=float(rrf_scores.get(int(u.id), 0.0)),
             )
 
         ordered: list[CandidateEpisode] = []
@@ -441,162 +346,70 @@ class Retriever:
             max_messages=self._RECENT_CONVERSATION_TURNS * 2,
         )
 
-        def _truncate(text_: str, limit: int) -> str:
-            t = _compact_text(text_)
-            if limit <= 0 or len(t) <= limit:
-                return t
-            return t[:limit].rstrip() + "…"
+        now_ts = int(time.time())
+        query_text = f"{context}\n---\n{user_text}" if context else user_text
+        query_ngrams = _char_ngrams(
+            query_text,
+            n=self._RERANK_NGRAM_N,
+            max_chars=self._RERANK_QUERY_MAX_CHARS,
+            tail=True,
+        )
+        strength = min(1.0, float(len(query_ngrams)) / 30.0) if query_ngrams else 0.0
 
-        parts: list[str] = []
+        max_rrf = max((float(c.rrf_score) for c in candidates), default=0.0)
+        if max_rrf <= 0.0:
+            max_rrf = 1.0
+
+        scored: list[tuple[float, float, float, float, CandidateEpisode, set[str]]] = []
         for c in candidates:
-            dt = datetime.fromtimestamp(int(c.occurred_at), tz=timezone.utc).strftime("%Y-%m-%d")
-            ut = _truncate(c.user_text, 220)
-            rt = _truncate(c.reply_text, 260)
-            block = "\n".join(
-                [
-                    f"[unit_id={c.unit_id}] date={dt}",
-                    f"User: {ut}" if ut else "User: (empty)",
-                    f"Partner: {rt}" if rt else "Partner: (empty)",
-                ]
+            episode_text = "\n".join([c.user_text, c.reply_text]).strip()
+            episode_ngrams = _char_ngrams(
+                episode_text,
+                n=self._RERANK_NGRAM_N,
+                max_chars=self._RERANK_EPISODE_MAX_CHARS,
+                tail=False,
             )
-            parts.append(block)
-        candidates_formatted = "\n\n".join(parts)
-
-        payload = "\n\n".join(
-            [
-                f"現在のユーザー発話:\n{user_text}",
-                "直近の会話文脈:",
-                context or "(なし)",
-                "候補エピソード:",
-                candidates_formatted,
-            ]
-        ).strip()
-
-        def _finish_reason(resp: Any) -> str:
-            try:
-                choice = resp.choices[0]
-                finish_reason = getattr(choice, "finish_reason", None) or choice.get("finish_reason")
-                return str(finish_reason or "")
-            except Exception:  # noqa: BLE001
-                return ""
-
-        try:
-            rerank_max_tokens = self.__class__._rerank_max_tokens_current
-            resp = self.llm_client.generate_json_response(
-                system_prompt=prompts.get_retrieval_rerank_prompt(),
-                user_text=payload,
-                temperature=0.0,
-                max_tokens=rerank_max_tokens,
+            lex = _dice(query_ngrams, episode_ngrams) * strength
+            rec = _recency_score(now_ts=now_ts, occurred_at=int(c.occurred_at), tau_days=self._RERANK_RECENCY_TAU_DAYS)
+            rrf_norm = float(c.rrf_score) / float(max_rrf)
+            final = (
+                self._RERANK_W_RRF * rrf_norm
+                + self._RERANK_W_LEX * lex
+                + self._RERANK_W_REC * rec
             )
-            data = self.llm_client.response_json(resp)
-        except Exception as exc:  # noqa: BLE001
-            # トークン不足で途中切れ（finish_reason=length）の場合のみ、アプリ終了まで rerank の上限を引き上げる
-            try:
-                finish_reason = _finish_reason(resp)  # type: ignore[has-type]
-            except Exception:  # noqa: BLE001
-                finish_reason = ""
-            if (
-                finish_reason == "length"
-                and self.__class__._rerank_max_tokens_current < self._RERANK_MAX_TOKENS_MAX
-                and self._RERANK_MAX_TOKENS_MAX > 0
-            ):
-                with self.__class__._TOKENS_LOCK:
-                    prev = self.__class__._rerank_max_tokens_current
-                    self.__class__._rerank_max_tokens_current = self._RERANK_MAX_TOKENS_MAX
-                    next_ = self.__class__._rerank_max_tokens_current
-                self.logger.warning(
-                    "rerank max_tokens increased (%d -> %d) due to truncated JSON output (finish_reason=length)",
-                    prev,
-                    next_,
-                )
-                try:
-                    rerank_max_tokens = self.__class__._rerank_max_tokens_current
-                    resp = self.llm_client.generate_json_response(
-                        system_prompt=prompts.get_retrieval_rerank_prompt(),
-                        user_text=payload,
-                        temperature=0.0,
-                        max_tokens=rerank_max_tokens,
-                    )
-                    data = self.llm_client.response_json(resp)
-                except Exception as exc2:  # noqa: BLE001
-                    self.logger.warning(
-                        "rerank fallback: using retrieval order (finish_reason=%s, max_tokens=%d)",
-                        _finish_reason(resp) if resp is not None else "",
-                        self.__class__._rerank_max_tokens_current,
-                    )
-                    self.logger.debug("rerank retry failed; falling back to candidate order", exc_info=exc2)
-                    data = None
-            else:
-                self.logger.warning(
-                    "rerank fallback: using retrieval order (finish_reason=%s, max_tokens=%d)",
-                    finish_reason,
-                    self.__class__._rerank_max_tokens_current,
-                )
-                self.logger.debug("rerank failed; falling back to candidate order", exc_info=exc)
-                data = None
+            scored.append((final, rrf_norm, lex, rec, c, episode_ngrams))
 
-            if data is None:
-                fallback: list[RankedEpisode] = []
-                for c in list(candidates)[: max(0, max_results)]:
-                    fallback.append(
-                        RankedEpisode(
-                            unit_id=int(c.unit_id),
-                            user_text=c.user_text,
-                            reply_text=c.reply_text,
-                            occurred_at=c.occurred_at,
-                            relevance="medium",
-                            reason="LLM rerank failed; fallback to retrieval order",
-                        )
-                    )
-                return fallback
+        scored.sort(key=lambda x: x[0], reverse=True)
 
-        if not isinstance(data, dict):
+        picked: list[tuple[float, float, float, float, CandidateEpisode]] = []
+        picked_ngrams: list[set[str]] = []
+        for final, rrf_norm, lex, rec, c, episode_ngrams in scored:
+            if len(picked) >= max_results:
+                break
+            if final < self._RERANK_MEDIUM_THRESHOLD:
+                continue
+            if picked_ngrams and episode_ngrams:
+                if any(_dice(episode_ngrams, prev) >= self._RERANK_DUP_THRESHOLD for prev in picked_ngrams):
+                    continue
+            picked.append((final, rrf_norm, lex, rec, c))
+            picked_ngrams.append(episode_ngrams)
+
+        if not picked or picked[0][0] < self._RERANK_HIGH_THRESHOLD:
             return []
 
-        strategy = str(data.get("injection_strategy") or "").strip()
-        if strategy in {"quote_key_parts", "summarize", "full"}:
-            self._last_injection_strategy = strategy
-
-        raw_items = data.get("relevant_episodes") or []
-        if not isinstance(raw_items, list):
-            return []
-
-        cand_by_id: dict[int, CandidateEpisode] = {int(c.unit_id): c for c in candidates}
-        ranked_raw: list[RankedEpisode] = []
-        seen: set[int] = set()
-        for item in raw_items:
-            if not isinstance(item, dict):
-                continue
-            try:
-                unit_id = int(item.get("unit_id"))
-            except Exception:  # noqa: BLE001
-                continue
-            if unit_id in seen:
-                continue
-            cand = cand_by_id.get(unit_id)
-            if cand is None:
-                continue
-
-            relevance = str(item.get("relevance") or "").strip()
-            if relevance not in {"high", "medium"}:
-                continue
-            reason = _truncate(str(item.get("reason") or ""), 240)
-
-            ranked_raw.append(
+        ranked: list[RankedEpisode] = []
+        for idx, (final, rrf_norm, lex, rec, c) in enumerate(picked):
+            relevance: Literal["high", "medium"] = "high" if idx == 0 else "medium"
+            reason = f"heuristic rerank: score={final:.3f} rrf={rrf_norm:.3f} lex={lex:.3f} rec={rec:.3f}"
+            ranked.append(
                 RankedEpisode(
-                    unit_id=unit_id,
-                    user_text=cand.user_text,
-                    reply_text=cand.reply_text,
-                    occurred_at=cand.occurred_at,
-                    relevance=relevance,  # type: ignore[arg-type]
+                    unit_id=int(c.unit_id),
+                    user_text=c.user_text,
+                    reply_text=c.reply_text,
+                    occurred_at=int(c.occurred_at),
+                    relevance=relevance,
                     reason=reason,
                 )
             )
-            seen.add(unit_id)
-            if len(ranked_raw) >= max_results:
-                break
 
-        highs = [e for e in ranked_raw if e.relevance == "high"]
-        mediums = [e for e in ranked_raw if e.relevance == "medium"]
-        ranked = highs + mediums
-        return ranked[:max_results]
+        return ranked

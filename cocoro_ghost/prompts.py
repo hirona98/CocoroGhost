@@ -68,63 +68,6 @@ LOOP_EXTRACT_SYSTEM_PROMPT = """
 }
 """.strip()
 
-RETRIEVAL_QUERY_EXPANSION_SYSTEM_PROMPT = """
-あなたは会話分析の専門家です。
-ユーザーの発話と直近の会話履歴から、記憶検索に必要なクエリを生成してください。
-
-## タスク
-1. 発話に含まれる指示語（あれ、それ、この前、など）を特定し、具体的な内容に解決する
-2. 発話が複数の質問や話題を含む場合は、それぞれを独立したクエリに分解する
-3. 発話が暗黙に前提としている話題を列挙する
-
-## 出力（JSON）
-{
-  "expanded_queries": ["検索クエリ1", "検索クエリ2", "..."],
-  "detected_references": [
-    {"type": "anaphora|temporal|ellipsis|topic", "surface": "表層形", "resolved": "解決後"}
-  ]
-}
-
-## ルール
-- 出力は JSON のみ（前後に説明文を付けない）
-- expanded_queries は最大5件
-- 明確に特定できないものは含めない
-- ユーザー発話そのものは expanded_queries に含めない（別途処理する）
-- 複合クエリの分解例:
-  - 「進捗と締切教えて」→ ["進捗状況", "締切日"]
-  - 「あれどうなった？あと担当者は？」→ ["プロジェクトXの状況", "プロジェクトXの担当者"]
-""".strip()
-
-
-RETRIEVAL_EPISODE_RERANK_SYSTEM_PROMPT = """
-あなたは会話アシスタントの記憶管理システムです。
-過去のエピソード候補から、現在の会話に関連するものを選別してください。
-
-## タスク
-各候補について、現在の会話への関連度を判定してください。
-
-## 判定基準
-- high: 現在の話題に直接関係する。言及すべき情報を含む。
-- medium: 関連はあるが、言及は任意。背景情報として有用。
-- low: 関連が薄い、または現在の文脈では不要。
-- none: 無関係。選択しない。
-
-## 出力（JSON）
-{
-  "relevant_episodes": [
-    {"unit_id": 12345, "relevance": "high|medium", "reason": "選択理由（簡潔に）"}
-  ],
-  "injection_strategy": "quote_key_parts|summarize|full"
-}
-
-## ルール
-- relevance が high または medium のもののみ出力
-- 最大5件まで（high を優先）
-- unit_id は候補エピソードに含まれるもののみ（候補外のIDは出力しない）
-- reason は1文で簡潔に
-- 出力は必ず JSON 形式
-""".strip()
-
 
 ENTITY_EXTRACT_SYSTEM_PROMPT = """
 あなたは cocoro_ghost の「entity抽出」モジュールです。
@@ -260,11 +203,6 @@ def get_fact_extract_prompt() -> str:
 def get_loop_extract_prompt() -> str:
     return LOOP_EXTRACT_SYSTEM_PROMPT
 
-
-def get_retrieval_query_expansion_prompt() -> str:
-    return RETRIEVAL_QUERY_EXPANSION_SYSTEM_PROMPT
-
-
 def get_entity_extract_prompt() -> str:
     return ENTITY_EXTRACT_SYSTEM_PROMPT
 
@@ -275,11 +213,6 @@ def get_external_prompt() -> str:
 
 def get_meta_request_prompt() -> str:
     return META_PROACTIVE_MESSAGE_SYSTEM_PROMPT
-
-
-def get_retrieval_rerank_prompt() -> str:
-    return RETRIEVAL_EPISODE_RERANK_SYSTEM_PROMPT
-
 
 def get_default_persona_anchor() -> str:
     return DEFAULT_PERSONA_ANCHOR

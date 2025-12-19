@@ -1,29 +1,40 @@
-"""cocoro_ghost Worker 起動スクリプト"""
+"""cocoro_ghost Worker 起動スクリプト。"""
+
+from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
 
-# プロジェクトルートをPYTHONPATHに追加
+
+# プロジェクトルートを PYTHONPATH に追加
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="cocoro_ghost worker runner")
-    parser.add_argument("--memory-id", dest="memory_id", default=None, help="override target memory_id")
+    parser.add_argument("--memory-id", dest="memory_id", default=None, help="override target memory_id (UUID recommended)")
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
-    from cocoro_ghost.config import ConfigStore, build_runtime_config, load_config, set_global_config_store
+
+    from cocoro_ghost.config import (
+        ConfigStore,
+        build_runtime_config,
+        load_config,
+        set_global_config_store,
+    )
     from cocoro_ghost.db import (
         ensure_initial_settings,
         init_memory_db,
         init_settings_db,
-        load_active_character_preset,
+        load_active_embedding_preset,
+        load_active_contract_preset,
         load_active_llm_preset,
+        load_active_persona_preset,
         load_global_settings,
         settings_session_scope,
     )
@@ -41,15 +52,37 @@ def main() -> None:
     with settings_session_scope() as session:
         global_settings = load_global_settings(session)
         llm_preset = load_active_llm_preset(session)
-        character_preset = load_active_character_preset(session)
-        runtime_config = build_runtime_config(toml_config, global_settings, llm_preset, character_preset)
+        embedding_preset = load_active_embedding_preset(session)
+        persona_preset = load_active_persona_preset(session)
+        contract_preset = load_active_contract_preset(session)
 
+        runtime_config = build_runtime_config(
+            toml_config,
+            global_settings,
+            llm_preset,
+            embedding_preset,
+            persona_preset,
+            contract_preset,
+        )
+
+        # セッション外でも参照できるようにデタッチして保持する
         session.expunge(global_settings)
         session.expunge(llm_preset)
-        session.expunge(character_preset)
-        config_store = ConfigStore(toml_config, runtime_config, global_settings, llm_preset, character_preset)
+        session.expunge(embedding_preset)
+        session.expunge(persona_preset)
+        session.expunge(contract_preset)
+        config_store = ConfigStore(
+            toml_config,
+            runtime_config,
+            global_settings,
+            llm_preset,
+            embedding_preset,
+            persona_preset,
+            contract_preset,
+        )
 
     set_global_config_store(config_store)
+
     memory_id = str(args.memory_id).strip() if args.memory_id is not None else runtime_config.memory_id
     init_memory_db(memory_id, runtime_config.embedding_dimension)
 
