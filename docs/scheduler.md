@@ -10,10 +10,10 @@
 
 このドキュメントはパートナーAI向けの目標仕様。現状の実装との差分は下記に整理する。
 
-- Current: Entity解決は文字列一致のみ（LLMフォールバック未実装）。
-- Current: SummaryはRELATIONSHIP週次のみ（手動enqueue）。
+- Current: Entity解決は文字列一致 + 一致が無い場合のみLLM抽出で補助。
+- Current: RELATIONSHIP週次は自動enqueue（重複抑制・クールダウンあり）。
 - Current: injection_strategyは `quote_key_parts` 固定。
-- Planned: Entity解決のLLM/Workerフォールバック、person/topic summaryの自動生成、injection_strategyの切替。
+- Planned: Entity解決のWorkerフォールバック強化、person/topic summaryの自動生成、injection_strategyの切替。
 
 ## 入力
 
@@ -71,12 +71,12 @@ Partner: 「...」
 3. **Entity解決**
    - 文字列から alias 参照（`entities` + `entity_aliases`）
    - 足りなければLLM抽出（Workerでも可、同期が重い場合は後回し）
-   - Current: Schedulerは alias/name の文字列一致のみ（LLMフォールバックは未実装）
+   - Current: Schedulerは alias/name の文字列一致 + 一致が無い場合のみLLMフォールバック
 4. **Facts優先取得**
    - 関連entityのfactを信頼度・鮮度・pinでスコアリング
 5. **Summaries取得**
    - 週次（RELATIONSHIP）＋該当topic/person
-   - Current: RELATIONSHIP週次のみ。person/topicは未運用で、週次生成は管理APIでenqueueする
+   - Current: RELATIONSHIP週次のみ。person/topicは未運用で、週次生成は自動enqueue + 管理APIの双方で行う
 6. **OpenLoops取得**
    - openのみ、due順、entity一致を優先
 7. **Episode evidence 注入**

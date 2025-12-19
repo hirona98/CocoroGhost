@@ -28,7 +28,7 @@
 
 ## 実装ステータス（Current/Planned）
 
-- Current: weekly_summary は管理APIからenqueueのみ（定期スケジュールは未実装）。
+- Current: weekly_summary はEpisode保存時に自動enqueue + 管理APIからもenqueue（定期スケジュールは未実装）。
 - Planned: 定期実行で relationship/person/topic の summary を自動生成する。
 
 ## 冪等性ルール

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import time
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
@@ -24,6 +25,7 @@ from cocoro_ghost.unit_models import (
 )
 
 if TYPE_CHECKING:
+    from cocoro_ghost.llm_client import LlmClient
     from cocoro_ghost.retriever import RankedEpisode
 
 
@@ -41,6 +43,10 @@ def _token_budget_to_char_budget(max_inject_tokens: int) -> int:
     # 日本語でも荒く扱えるよう、ここでは固定倍率で近似する（厳密さより安全側）。
     # max_inject_tokens を上限として扱う（厳密なtoken計測は行わない）。
     return max(0, max_inject_tokens * 4)
+
+
+def _normalize_text(text: str) -> str:
+    return unicodedata.normalize("NFKC", text or "").casefold().strip()
 
 
 def _format_topic_tags(topic_tags: Optional[str]) -> List[str]:
@@ -86,21 +92,77 @@ def _fact_score(now: int, unit: Unit) -> float:
     return 0.45 * float(unit.confidence or 0.0) + 0.25 * float(unit.salience or 0.0) + 0.20 * rec + 0.10 * pin_boost
 
 
-def _resolve_entity_ids_from_text(db: Session, text: str) -> set[int]:
+def _extract_entity_names_with_llm(llm_client: "LlmClient", text: str) -> list[str]:
+    from cocoro_ghost import prompts
+
+    # LLM抽出はベストエフォート。失敗してもスケジューリングは継続する。
+    try:
+        resp = llm_client.generate_json_response(system_prompt=prompts.get_entity_extract_prompt(), user_text=text)
+        raw = llm_client.response_content(resp)
+        data = json.loads(raw or "{}")
+    except Exception:  # noqa: BLE001
+        return []
+
+    entities = data.get("entities") or []
+    names: list[str] = []
+    if isinstance(entities, list):
+        for ent in entities:
+            if not isinstance(ent, dict):
+                continue
+            name = str(ent.get("name") or "").strip()
+            if name:
+                names.append(name)
+    return names
+
+
+def _resolve_entity_ids_from_text(
+    db: Session,
+    text: str,
+    *,
+    llm_client: "LlmClient | None" = None,
+    fallback: bool = False,
+) -> set[int]:
     t = (text or "").strip()
     if not t:
         return set()
 
     ids: set[int] = set()
+    normalized_text = _normalize_text(t)
+    alias_rows: list[tuple[int, str]] = []
+
     for entity_id, alias in db.query(EntityAlias.entity_id, EntityAlias.alias).all():
-        a = (alias or "").strip()
-        if a and a in t:
+        a = _normalize_text(alias)
+        if not a:
+            continue
+        alias_rows.append((int(entity_id), a))
+        if a in normalized_text:
             ids.add(int(entity_id))
 
     for entity_id, name in db.query(Entity.id, Entity.name).all():
-        n = (name or "").strip()
-        if n and n in t:
+        n = _normalize_text(name)
+        if not n:
+            continue
+        alias_rows.append((int(entity_id), n))
+        if n in normalized_text:
             ids.add(int(entity_id))
+
+    # 一致が無く、LLMが使えるときだけフォールバックする。
+    if ids or not (fallback and llm_client):
+        return ids
+    # 短文はノイズになりやすいのでLLMフォールバックを避ける。
+    if len(normalized_text) < 8:
+        return ids
+
+    candidate_names = _extract_entity_names_with_llm(llm_client, t)
+    if not candidate_names:
+        return ids
+    for name in candidate_names:
+        nn = _normalize_text(name)
+        if not nn:
+            continue
+        for entity_id, alias in alias_rows:
+            if nn in alias or alias in nn:
+                ids.add(int(entity_id))
 
     return ids
 
@@ -143,6 +205,8 @@ def build_memory_pack(
     max_inject_tokens: int,
     relevant_episodes: Sequence["RankedEpisode"],
     injection_strategy: str | None = None,
+    llm_client: "LlmClient | None" = None,
+    entity_fallback: bool = False,
 ) -> str:
     max_chars = _token_budget_to_char_budget(max_inject_tokens)
     sensitivity_max = int(Sensitivity.PRIVATE)
@@ -168,7 +232,12 @@ def build_memory_pack(
 
     # Facts（intent→entity解決→スコアで上位）
     entity_text = "\n".join(filter(None, [user_text, *(image_summaries or [])]))
-    matched_entity_ids = _resolve_entity_ids_from_text(db, entity_text)
+    matched_entity_ids = _resolve_entity_ids_from_text(
+        db,
+        entity_text,
+        llm_client=llm_client,
+        fallback=entity_fallback,
+    )
     user_entity_id = _get_user_entity_id(db)
     fact_entity_ids = set(matched_entity_ids)
     if user_entity_id is not None:

@@ -8,6 +8,7 @@ import logging
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional, Sequence
 
 from fastapi import BackgroundTasks
@@ -20,8 +21,8 @@ from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
 from cocoro_ghost.retriever import Retriever
 from cocoro_ghost.scheduler import build_memory_pack
-from cocoro_ghost.unit_enums import Sensitivity, UnitKind, UnitState
-from cocoro_ghost.unit_models import Job, PayloadEpisode, Unit
+from cocoro_ghost.unit_enums import JobStatus, Sensitivity, SummaryScopeType, UnitKind, UnitState
+from cocoro_ghost.unit_models import Job, PayloadEpisode, PayloadSummary, Unit
 
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 _memory_locks: dict[str, threading.Lock] = {}
 
 _REGEX_META_CHARS = re.compile(r"[.^$*+?{}\[\]\\|()]")
+_SUMMARY_REFRESH_INTERVAL_SECONDS = 6 * 3600
 
 
 def _matches_exclude_keyword(pattern: str, text: str) -> bool:
@@ -54,6 +56,12 @@ _META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
 
 def _now_utc_ts() -> int:
     return int(time.time())
+
+
+def _utc_week_key(ts: int) -> str:
+    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    iso_year, iso_week, _ = dt.isocalendar()
+    return f"{iso_year}-W{iso_week:02d}"
 
 
 def _get_memory_lock(memory_id: str) -> threading.Lock:
@@ -97,6 +105,87 @@ class MemoryManager:
 
     def _sse(self, event: str, payload: dict) -> str:
         return f"event: {event}\ndata: {_json_dumps(payload)}\n\n"
+
+    def _has_pending_weekly_summary_job(self, db, *, week_key: str) -> bool:
+        rows = (
+            db.query(Job)
+            .filter(
+                Job.kind == "weekly_summary",
+                Job.status.in_([int(JobStatus.QUEUED), int(JobStatus.RUNNING)]),
+            )
+            .all()
+        )
+        for job in rows:
+            try:
+                payload = json.loads(job.payload_json or "{}")
+            except Exception:  # noqa: BLE001
+                continue
+            payload_week = str(payload.get("week_key") or "").strip()
+            if not payload_week or payload_week == week_key:
+                return True
+        return False
+
+    def _enqueue_weekly_summary_job(self, db, *, now_ts: int, week_key: str) -> None:
+        db.add(
+            Job(
+                kind="weekly_summary",
+                payload_json=_json_dumps({"week_key": week_key}),
+                status=int(JobStatus.QUEUED),
+                run_after=now_ts,
+                tries=0,
+                last_error=None,
+                created_at=now_ts,
+                updated_at=now_ts,
+            )
+        )
+
+    def _maybe_enqueue_weekly_summary(self, db, *, now_ts: int) -> None:
+        # 重複実行を避けるため、同週のジョブが待機/実行中ならスキップする。
+        week_key = _utc_week_key(now_ts)
+        if self._has_pending_weekly_summary_job(db, week_key=week_key):
+            return
+
+        # 週次サマリが無い場合は即enqueueする。
+        summary_row = (
+            db.query(Unit, PayloadSummary)
+            .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
+            .filter(
+                Unit.kind == int(UnitKind.SUMMARY),
+                Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+                PayloadSummary.scope_type == int(SummaryScopeType.RELATIONSHIP),
+                PayloadSummary.scope_key == week_key,
+            )
+            .order_by(Unit.updated_at.desc().nulls_last(), Unit.id.desc())
+            .first()
+        )
+
+        if summary_row is None:
+            self._enqueue_weekly_summary_job(db, now_ts=now_ts, week_key=week_key)
+            return
+
+        summary_unit, _ps = summary_row
+        updated_at = int(summary_unit.updated_at or summary_unit.created_at or 0)
+        if updated_at <= 0:
+            self._enqueue_weekly_summary_job(db, now_ts=now_ts, week_key=week_key)
+            return
+        # 頻繁な再生成を避けるためクールダウンを入れる。
+        if now_ts - updated_at < _SUMMARY_REFRESH_INTERVAL_SECONDS:
+            return
+
+        # 最終更新以降に新規エピソードがある場合のみ更新する。
+        new_episode = (
+            db.query(Unit.id)
+            .filter(
+                Unit.kind == int(UnitKind.EPISODE),
+                Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+                Unit.occurred_at.isnot(None),
+                Unit.occurred_at > updated_at,
+            )
+            .limit(1)
+            .scalar()
+        )
+        if new_episode is not None:
+            self._enqueue_weekly_summary_job(db, now_ts=now_ts, week_key=week_key)
 
     def _summarize_images(self, images: Sequence[Dict[str, str]] | None) -> List[str]:
         if not images:
@@ -192,6 +281,8 @@ class MemoryManager:
                     max_inject_tokens=int(cfg.max_inject_tokens),
                     relevant_episodes=relevant_episodes,
                     injection_strategy=retriever.last_injection_strategy,
+                    llm_client=self.llm_client,
+                    entity_fallback=True,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error("MemoryPack生成に失敗しました", exc_info=exc)
@@ -242,6 +333,7 @@ class MemoryManager:
                     sensitivity=int(Sensitivity.NORMAL),
                 )
                 self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=episode_unit_id)
+                self._maybe_enqueue_weekly_summary(db, now_ts=now_ts)
         except Exception as exc:  # noqa: BLE001
             logger.error("episode保存に失敗しました", exc_info=exc)
             yield self._sse("error", {"message": str(exc), "code": "db_write_failed"})
@@ -346,6 +438,8 @@ class MemoryManager:
                     max_inject_tokens=int(cfg.max_inject_tokens),
                     relevant_episodes=relevant_episodes,
                     injection_strategy=retriever.last_injection_strategy,
+                    llm_client=self.llm_client,
+                    entity_fallback=True,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error("MemoryPack生成に失敗しました(notification)", exc_info=exc)
@@ -376,6 +470,7 @@ class MemoryManager:
                 image_summary=image_summary_text,
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
+            self._maybe_enqueue_weekly_summary(db, now_ts=now_ts)
 
         publish_event(
             type="notification",
@@ -474,6 +569,8 @@ class MemoryManager:
                     max_inject_tokens=int(cfg.max_inject_tokens),
                     relevant_episodes=relevant_episodes,
                     injection_strategy=retriever.last_injection_strategy,
+                    llm_client=self.llm_client,
+                    entity_fallback=True,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error("MemoryPack生成に失敗しました(meta_request)", exc_info=exc)
@@ -506,6 +603,7 @@ class MemoryManager:
             )
             # 文書生成は会話ログと同様に検索対象にしたい（埋め込みのみで十分）。
             self._enqueue_embeddings_job(db, now_ts=now_ts, unit_id=unit_id)
+            self._maybe_enqueue_weekly_summary(db, now_ts=now_ts)
 
         publish_event(
             type="meta_request",
@@ -546,6 +644,7 @@ class MemoryManager:
                 sensitivity=int(Sensitivity.PRIVATE),
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
+            self._maybe_enqueue_weekly_summary(db, now_ts=now_ts)
         return schemas.CaptureResponse(episode_id=unit_id, stored=True)
 
     def _create_episode_unit(
