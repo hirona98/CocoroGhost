@@ -25,6 +25,13 @@
   - Reflection / Entities / Facts / Summaries / Loops / Embedding upsert を担当
   - APIプロセスと分離（推奨）
 
+## 実装ステータス（Current/Planned）
+
+- Current: Summary生成は weekly_summary を管理APIでenqueueする運用のみ。
+- Current: SchedulerのEntity解決は alias/name の文字列一致のみ。
+- Planned: 定期Summary生成（relationship/person/topic）とLifecycle統合。
+- Planned: Entity解決のLLM/Workerフォールバック。
+
 ## データフロー
 
 ```mermaid
@@ -54,7 +61,7 @@ flowchart LR
 - （任意）画像要約（Vision）
 - Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 - Schedulerで **MemoryPack** を生成（capsule/facts/summaries/loops + relevant episodes）
-- `guard_prompt + memorypack + user_text` をLLMへ注入（MemoryPack内に persona/contract を含む）
+- LLMへ `guard_prompt + memorypack` を system に注入し、会話履歴（max_turns_window）+ user_text を conversation として渡す（MemoryPack内に persona/contract を含む）
 - 返答をSSEで配信
 - `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 - Worker用ジョブを enqueue（reflection/extraction/embedding等）
@@ -104,7 +111,7 @@ sequenceDiagram
   API->>SCH: build MemoryPack\n(relevant episodes, token budget)
   SCH->>DB: read capsule/facts/summaries/loops
   SCH-->>API: MemoryPack
-  API->>LLM: chat\n(guard + pack + user_text)
+  API->>LLM: chat\n(guard + pack + conversation + user_text)
   LLM-->>API: streamed tokens
   API-->>UI: SSE stream
   API->>DB: save Unit(kind=EPISODE) RAW

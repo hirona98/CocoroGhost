@@ -31,6 +31,7 @@
 ```
 
 - `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `active_embedding_preset_id` を `memory_id` として使用する）
+- `memory_id` は embedding_presets.id（UUID）を想定。埋め込み次元が一致しないDBは初期化に失敗するため、次元一致を前提に指定する
 - `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
 - `client_context` は省略可能（指定時は `payload_episode.context_note` にJSON文字列として保存される）
 
@@ -56,7 +57,7 @@ data: {"message":"...","code":"..."}
 1. 画像要約（`images` がある場合）
 2. Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 3. Schedulerで **MemoryPack** を生成（検索結果を `[EPISODE_EVIDENCE]` に含む）
-4. LLMへ `guard_prompt + memorypack + user_text` を注入（MemoryPack内に persona/contract を含む）
+4. LLMへ `guard_prompt + memorypack` を system に注入し、conversation には直近会話（max_turns_window）+ user_text を渡す（MemoryPack内に persona/contract を含む）
 5. 返答をSSEで配信
 6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 7. Worker用ジョブを enqueue（reflection/extraction/embedding等）

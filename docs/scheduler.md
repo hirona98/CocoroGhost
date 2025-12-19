@@ -6,6 +6,15 @@
 - **“会話の一貫性”を最優先**しつつ、注入トークンを制御する
 - 検索結果をそのまま注入しない。**注入パック（MemoryPack）** を編成して注入する
 
+## 実装ステータス（Current/Planned）
+
+このドキュメントはパートナーAI向けの目標仕様。現状の実装との差分は下記に整理する。
+
+- Current: Entity解決は文字列一致のみ（LLMフォールバック未実装）。
+- Current: SummaryはRELATIONSHIP週次のみ（手動enqueue）。
+- Current: injection_strategyは `quote_key_parts` 固定。
+- Planned: Entity解決のLLM/Workerフォールバック、person/topic summaryの自動生成、injection_strategyの切替。
+
 ## 入力
 
 - `user_text`
@@ -48,7 +57,7 @@ Partner: 「...」
 ```
 
 補足:
-- MemoryPack は `guard_prompt + memorypack + user_text` の形で LLM に渡される（仕様: `docs/api.md`）。
+- MemoryPack は `guard_prompt + memorypack` を system に注入し、conversation に直近会話（max_turns_window）+ user_text を渡す形で LLM に渡される（仕様: `docs/api.md`）。
 - MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（ユーザー設定の prompt に書かせず、コード側でガードするのが推奨。例: `cocoro_ghost/memory.py`）。
 
 ## 取得手順（規定）
@@ -62,15 +71,18 @@ Partner: 「...」
 3. **Entity解決**
    - 文字列から alias 参照（`entities` + `entity_aliases`）
    - 足りなければLLM抽出（Workerでも可、同期が重い場合は後回し）
+   - Current: Schedulerは alias/name の文字列一致のみ（LLMフォールバックは未実装）
 4. **Facts優先取得**
    - 関連entityのfactを信頼度・鮮度・pinでスコアリング
 5. **Summaries取得**
    - 週次（RELATIONSHIP）＋該当topic/person
+   - Current: RELATIONSHIP週次のみ。person/topicは未運用で、週次生成は管理APIでenqueueする
 6. **OpenLoops取得**
    - openのみ、due順、entity一致を優先
 7. **Episode evidence 注入**
    - `should_inject_episodes(relevant_episodes)` が true のときだけ `[EPISODE_EVIDENCE]` を組み込む
    - `injection_strategy`（quote_key_parts/summarize/full）に応じて整形する
+   - Current: Retrieverは `quote_key_parts` 固定
 8. **圧縮**
    - facts: 箇条書き（1件 1〜2行）
    - episodes: 抜粋/要約（最大N件、1件あたり最大M文字）

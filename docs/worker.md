@@ -26,6 +26,11 @@
 - `weekly_summary(week_key)`（定期 / `memory_id` は Worker が扱うDBで暗黙）
 - `capsule_refresh(limit)`（任意 / `limit` は直近件数、デフォルト5）
 
+## 実装ステータス（Current/Planned）
+
+- Current: weekly_summary は管理APIからenqueueのみ（定期スケジュールは未実装）。
+- Planned: 定期実行で relationship/person/topic の summary を自動生成する。
+
 ## 冪等性ルール
 
 - 同じ `unit_id` に対する同種ジョブは **何度実行しても整合が保てる**こと
