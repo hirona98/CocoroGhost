@@ -91,6 +91,37 @@ def _backoff_seconds(tries: int) -> int:
     return min(3600, max(5, 2 ** max(0, tries)))
 
 
+def _has_pending_job_with_payload(session: Session, *, kind: str, payload_key: str, payload_value: Any) -> bool:
+    """同種ジョブの重複enqueueを避けるための簡易判定（queued/runningのみ）。"""
+    rows = (
+        session.query(Job)
+        .filter(Job.kind == kind, Job.status.in_([int(JobStatus.QUEUED), int(JobStatus.RUNNING)]))
+        .order_by(Job.id.desc())
+        .limit(200)
+        .all()
+    )
+    for job in rows:
+        payload = _json_loads(job.payload_json)
+        if payload.get(payload_key) == payload_value:
+            return True
+    return False
+
+
+def _enqueue_job(session: Session, *, kind: str, payload: Dict[str, Any], now_ts: int) -> None:
+    session.add(
+        Job(
+            kind=kind,
+            payload_json=_json_dumps(payload),
+            status=int(JobStatus.QUEUED),
+            run_after=now_ts,
+            tries=0,
+            last_error=None,
+            created_at=now_ts,
+            updated_at=now_ts,
+        )
+    )
+
+
 def claim_next_job(session: Session, *, now_ts: int) -> Optional[int]:
     job = (
         session.query(Job)
@@ -132,6 +163,10 @@ def process_job(
             _handle_extract_entities(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "weekly_summary":
             _handle_weekly_summary(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
+        elif job.kind == "person_summary_refresh":
+            _handle_person_summary_refresh(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
+        elif job.kind == "topic_summary_refresh":
+            _handle_topic_summary_refresh(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "capsule_refresh":
             _handle_capsule_refresh(session=session, payload=payload, now_ts=now_ts)
         else:
@@ -383,6 +418,58 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
                 weight=max(0.1, confidence) if confidence > 0 else 1.0,
             )
         )
+
+    # Entity抽出の結果をもとに、人物/トピックのサマリ更新をenqueueする（ベストエフォート）。
+    # - 会話の一貫性（継続性）に効くが、毎回大量に更新するとコストが高いので上限を設ける。
+    try:
+        ue_rows = (
+            session.query(UnitEntity.entity_id, UnitEntity.weight)
+            .filter(UnitEntity.unit_id == unit_id)
+            .order_by(UnitEntity.weight.desc())
+            .limit(12)
+            .all()
+        )
+        entity_ids = [int(eid) for eid, _w in ue_rows]
+        if entity_ids:
+            ent_rows = session.query(Entity.id, Entity.etype).filter(Entity.id.in_(entity_ids)).all()
+            etype_by_id = {int(eid): int(etype) for eid, etype in ent_rows}
+
+            # 直近の会話に重要そうな上位エンティティのみ更新対象にする。
+            person_ids: list[int] = []
+            topic_ids: list[int] = []
+            for eid, _w in ue_rows:
+                eid_i = int(eid)
+                etype = etype_by_id.get(eid_i)
+                if etype == int(EntityType.PERSON):
+                    person_ids.append(eid_i)
+                elif etype == int(EntityType.TOPIC):
+                    topic_ids.append(eid_i)
+
+            # 上限（過剰enqueue防止）
+            person_ids = person_ids[:3]
+            topic_ids = topic_ids[:3]
+
+            for person_id in person_ids:
+                if _has_pending_job_with_payload(
+                    session,
+                    kind="person_summary_refresh",
+                    payload_key="entity_id",
+                    payload_value=int(person_id),
+                ):
+                    continue
+                _enqueue_job(session, kind="person_summary_refresh", payload={"entity_id": int(person_id)}, now_ts=now_ts)
+
+            for topic_id in topic_ids:
+                if _has_pending_job_with_payload(
+                    session,
+                    kind="topic_summary_refresh",
+                    payload_key="entity_id",
+                    payload_value=int(topic_id),
+                ):
+                    continue
+                _enqueue_job(session, kind="topic_summary_refresh", payload={"entity_id": int(topic_id)}, now_ts=now_ts)
+    except Exception:  # noqa: BLE001
+        logger.debug("failed to enqueue person/topic summary refresh", exc_info=True)
 
     relations = data.get("relations") or []
     if not isinstance(relations, list):
@@ -1122,3 +1209,284 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
                 updated_at=now_ts,
             )
         )
+
+
+def _build_summary_payload_input(*, header_lines: list[str], episode_lines: list[str]) -> str:
+    parts = [*header_lines, "", "[EPISODES]", *episode_lines]
+    return "\n".join([p for p in parts if p is not None]).strip()
+
+
+def _enqueue_embeddings_if_changed(
+    session: Session,
+    *,
+    unit: Unit,
+    before_text: str | None,
+    after_text: str,
+    now_ts: int,
+) -> None:
+    if (before_text or "") == (after_text or ""):
+        return
+    _enqueue_job(session, kind="upsert_embeddings", payload={"unit_id": int(unit.id)}, now_ts=now_ts)
+
+
+def _upsert_summary_unit(
+    session: Session,
+    *,
+    scope_type: int,
+    scope_key: str,
+    range_start: int | None,
+    range_end: int | None,
+    summary_text: str,
+    summary_json: str,
+    now_ts: int,
+    source: str,
+    patch_reason: str,
+) -> Unit | None:
+    existing = (
+        session.query(Unit, PayloadSummary)
+        .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
+        .filter(
+            Unit.kind == int(UnitKind.SUMMARY),
+            PayloadSummary.scope_type == int(scope_type),
+            PayloadSummary.scope_key == str(scope_key),
+        )
+        .order_by(Unit.created_at.desc())
+        .first()
+    )
+
+    if existing is None:
+        unit = Unit(
+            kind=int(UnitKind.SUMMARY),
+            occurred_at=now_ts,
+            created_at=now_ts,
+            updated_at=now_ts,
+            source=source,
+            state=int(UnitState.RAW),
+            confidence=0.5,
+            salience=0.0,
+            sensitivity=0,
+            pin=0,
+        )
+        session.add(unit)
+        session.flush()
+        session.add(
+            PayloadSummary(
+                unit_id=unit.id,
+                scope_type=int(scope_type),
+                scope_key=str(scope_key),
+                range_start=range_start,
+                range_end=range_end,
+                summary_text=summary_text,
+                summary_json=summary_json,
+            )
+        )
+        record_unit_version(
+            session,
+            unit_id=int(unit.id),
+            payload_obj={
+                "scope_type": int(scope_type),
+                "scope_key": str(scope_key),
+                "range_start": range_start,
+                "range_end": range_end,
+                "summary_json": json.loads(summary_json),
+            },
+            patch_reason=patch_reason,
+            now_ts=now_ts,
+        )
+        # 生成したサマリも検索対象にするため、埋め込みを更新する。
+        _enqueue_job(session, kind="upsert_embeddings", payload={"unit_id": int(unit.id)}, now_ts=now_ts)
+        return unit
+
+    unit, ps = existing
+    before_text = ps.summary_text
+    ps.summary_text = summary_text
+    ps.summary_json = summary_json
+    ps.range_start = range_start
+    ps.range_end = range_end
+    unit.updated_at = now_ts
+    unit.state = int(UnitState.VALIDATED)
+    session.add(unit)
+    session.add(ps)
+    record_unit_version(
+        session,
+        unit_id=int(unit.id),
+        payload_obj={
+            "scope_type": int(scope_type),
+            "scope_key": str(scope_key),
+            "range_start": range_start,
+            "range_end": range_end,
+            "summary_json": json.loads(summary_json),
+        },
+        patch_reason=patch_reason,
+        now_ts=now_ts,
+    )
+    sync_unit_vector_metadata(
+        session,
+        unit_id=int(unit.id),
+        occurred_at=unit.occurred_at,
+        state=int(unit.state),
+        sensitivity=int(unit.sensitivity),
+    )
+    _enqueue_embeddings_if_changed(session, unit=unit, before_text=before_text, after_text=summary_text, now_ts=now_ts)
+    return unit
+
+
+def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
+    """人物（EntityType.PERSON）に紐づく直近エピソードから要約を作成/更新する。"""
+    entity_id = int(payload["entity_id"])
+    ent = session.query(Entity).filter(Entity.id == entity_id).one_or_none()
+    if ent is None or int(ent.etype) != int(EntityType.PERSON):
+        return
+
+    # 入力: 対象人物に紐づく直近エピソードを列挙（上限あり）。
+    ep_rows = (
+        session.query(Unit, PayloadEpisode)
+        .join(UnitEntity, UnitEntity.unit_id == Unit.id)
+        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
+        .filter(
+            Unit.kind == int(UnitKind.EPISODE),
+            Unit.state.in_([0, 1, 2]),
+            Unit.sensitivity <= int(Sensitivity.PRIVATE),
+            UnitEntity.entity_id == entity_id,
+        )
+        .order_by(Unit.occurred_at.desc().nulls_last(), Unit.id.desc())
+        .limit(120)
+        .all()
+    )
+    if not ep_rows:
+        return
+
+    lines: list[str] = []
+    for u, pe in ep_rows:
+        ut = (pe.user_text or "").strip().replace("\n", " ")[:220]
+        rt = (pe.reply_text or "").strip().replace("\n", " ")[:240]
+        if not ut and not rt:
+            continue
+        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
+
+    input_text = _build_summary_payload_input(
+        header_lines=[f"scope: person", f"entity_id: {entity_id}", f"entity_name: {ent.name}"],
+        episode_lines=lines,
+    )
+
+    resp = llm_client.generate_json_response(system_prompt=prompts.get_person_summary_prompt(), user_text=input_text)
+    data = json.loads(llm_client.response_content(resp))
+    summary_text = str(data.get("summary_text") or "").strip()
+    if not summary_text:
+        return
+
+    key_events_raw = data.get("key_events") or []
+    key_events: list[dict[str, Any]] = []
+    if isinstance(key_events_raw, list):
+        for item in key_events_raw[:5]:
+            if not isinstance(item, dict):
+                continue
+            why = str(item.get("why") or "").strip()
+            try:
+                unit_id = int(item.get("unit_id"))
+            except Exception:  # noqa: BLE001
+                continue
+            if why:
+                key_events.append({"unit_id": unit_id, "why": why})
+
+    summary_obj = {
+        "summary_text": summary_text,
+        "key_events": key_events,
+        "notes": str(data.get("notes") or "").strip(),
+    }
+    summary_json = canonical_json_dumps(summary_obj)
+
+    _upsert_summary_unit(
+        session,
+        scope_type=int(SummaryScopeType.PERSON),
+        scope_key=f"person:{entity_id}",
+        range_start=None,
+        range_end=None,
+        summary_text=summary_text,
+        summary_json=summary_json,
+        now_ts=now_ts,
+        source="person_summary_refresh",
+        patch_reason="person_summary_refresh",
+    )
+
+
+def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
+    """トピック（EntityType.TOPIC）に紐づく直近エピソードから要約を作成/更新する。"""
+    entity_id = int(payload["entity_id"])
+    ent = session.query(Entity).filter(Entity.id == entity_id).one_or_none()
+    if ent is None or int(ent.etype) != int(EntityType.TOPIC):
+        return
+
+    topic_key = str((ent.normalized or ent.name or "")).strip().lower()
+    if not topic_key:
+        return
+
+    ep_rows = (
+        session.query(Unit, PayloadEpisode)
+        .join(UnitEntity, UnitEntity.unit_id == Unit.id)
+        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
+        .filter(
+            Unit.kind == int(UnitKind.EPISODE),
+            Unit.state.in_([0, 1, 2]),
+            Unit.sensitivity <= int(Sensitivity.PRIVATE),
+            UnitEntity.entity_id == entity_id,
+        )
+        .order_by(Unit.occurred_at.desc().nulls_last(), Unit.id.desc())
+        .limit(120)
+        .all()
+    )
+    if not ep_rows:
+        return
+
+    lines: list[str] = []
+    for u, pe in ep_rows:
+        ut = (pe.user_text or "").strip().replace("\n", " ")[:220]
+        rt = (pe.reply_text or "").strip().replace("\n", " ")[:240]
+        if not ut and not rt:
+            continue
+        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
+
+    input_text = _build_summary_payload_input(
+        header_lines=[f"scope: topic", f"entity_id: {entity_id}", f"topic_key: {topic_key}", f"topic_name: {ent.name}"],
+        episode_lines=lines,
+    )
+
+    resp = llm_client.generate_json_response(system_prompt=prompts.get_topic_summary_prompt(), user_text=input_text)
+    data = json.loads(llm_client.response_content(resp))
+    summary_text = str(data.get("summary_text") or "").strip()
+    if not summary_text:
+        return
+
+    key_events_raw = data.get("key_events") or []
+    key_events: list[dict[str, Any]] = []
+    if isinstance(key_events_raw, list):
+        for item in key_events_raw[:5]:
+            if not isinstance(item, dict):
+                continue
+            why = str(item.get("why") or "").strip()
+            try:
+                unit_id = int(item.get("unit_id"))
+            except Exception:  # noqa: BLE001
+                continue
+            if why:
+                key_events.append({"unit_id": unit_id, "why": why})
+
+    summary_obj = {
+        "summary_text": summary_text,
+        "key_events": key_events,
+        "notes": str(data.get("notes") or "").strip(),
+    }
+    summary_json = canonical_json_dumps(summary_obj)
+
+    _upsert_summary_unit(
+        session,
+        scope_type=int(SummaryScopeType.TOPIC),
+        scope_key=f"topic:{topic_key}",
+        range_start=None,
+        range_end=None,
+        summary_text=summary_text,
+        summary_json=summary_json,
+        now_ts=now_ts,
+        source="topic_summary_refresh",
+        patch_reason="topic_summary_refresh",
+    )

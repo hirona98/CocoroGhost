@@ -27,7 +27,7 @@
 
 ## 実装ステータス（Current/Planned）
 
-- Current: Summary生成は Episode保存時に必要なら weekly_summary を自動enqueue（管理APIからもenqueue可）。
+- Current: Summary生成は Episode保存時に必要なら weekly_summary を自動enqueue（管理APIからもenqueue可）。人物/トピックは entity抽出後に自動更新。
 - Current: SchedulerのEntity解決は alias/name の文字列一致 + 一致が無い場合のみLLMフォールバック。
 - Planned: 定期Summary生成（relationship/person/topic）とLifecycle統合。
 - Planned: Entity解決のWorkerフォールバック強化（同期/非同期の最適化）。

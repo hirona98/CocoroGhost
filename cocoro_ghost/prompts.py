@@ -108,6 +108,40 @@ WEEKLY_SUMMARY_SYSTEM_PROMPT = """
 }
 """.strip()
 
+PERSON_SUMMARY_SYSTEM_PROMPT = """
+あなたは cocoro_ghost の「人物サマリ」モジュールです。
+指定された人物（PERSON）について、直近の会話ログ/事実/未完了から、会話に注入できる短い要約を JSON で出力してください。
+
+ルール:
+- 出力は JSON のみ（前後に説明文を付けない）
+- summary_text は短い段落（最大600文字程度）
+- key_events は最大5件（unit_id と why のみ）
+- 不確実な推測は断定しない
+
+{
+  "summary_text": "string",
+  "key_events": [{"unit_id": 123, "why": "..." }],
+  "notes": "optional"
+}
+""".strip()
+
+TOPIC_SUMMARY_SYSTEM_PROMPT = """
+あなたは cocoro_ghost の「トピックサマリ」モジュールです。
+指定されたトピック（TOPIC）について、直近の会話ログ/事実/未完了から、会話に注入できる短い要約を JSON で出力してください。
+
+ルール:
+- 出力は JSON のみ（前後に説明文を付けない）
+- summary_text は短い段落（最大600文字程度）
+- key_events は最大5件（unit_id と why のみ）
+- 不確実な推測は断定しない
+
+{
+  "summary_text": "string",
+  "key_events": [{"unit_id": 123, "why": "..." }],
+  "notes": "optional"
+}
+""".strip()
+
 
 EXTERNAL_SYSTEM_PROMPT = """
 あなたは cocoro_ghost の外部要求処理モジュールです。以下の指示に従って日本語で応答してください。
@@ -224,3 +258,11 @@ def get_default_relationship_contract() -> str:
 
 def get_weekly_summary_prompt() -> str:
     return WEEKLY_SUMMARY_SYSTEM_PROMPT
+
+
+def get_person_summary_prompt() -> str:
+    return PERSON_SUMMARY_SYSTEM_PROMPT
+
+
+def get_topic_summary_prompt() -> str:
+    return TOPIC_SUMMARY_SYSTEM_PROMPT

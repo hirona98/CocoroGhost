@@ -24,11 +24,14 @@
 - `extract_loops(unit_id)`
 - `upsert_embeddings(unit_id)`（episode/fact/summary/loop…必要種別）
 - `weekly_summary(week_key)`（定期 / `memory_id` は Worker が扱うDBで暗黙）
+- `person_summary_refresh(entity_id)`（人物サマリ更新）
+- `topic_summary_refresh(entity_id)`（トピックサマリ更新）
 - `capsule_refresh(limit)`（任意 / `limit` は直近件数、デフォルト5）
 
 ## 実装ステータス（Current/Planned）
 
 - Current: weekly_summary はEpisode保存時に自動enqueue + 管理APIからもenqueue（定期スケジュールは未実装）。
+- Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）を自動enqueue。
 - Planned: 定期実行で relationship/person/topic の summary を自動生成する。
 
 ## 冪等性ルール

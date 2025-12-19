@@ -101,3 +101,31 @@
 
 - `units(kind=SUMMARY, scope_type=RELATIONSHIP, scope_key=2025-W50)` + `payload_summary`
 - `payload_summary.summary_json` に LLM の出力JSONを丸ごと保存（`summary_text` は注入用のプレーンテキストとして残す）
+
+## Person Summary（人物サマリ）
+
+人物（PERSON）に関する要約を生成する（会話への注入用）。
+
+### 出力JSON（例）
+
+```json
+{
+  "summary_text": "string",
+  "key_events": [{"unit_id": 123, "why": "..."}],
+  "notes": "optional"
+}
+```
+
+## Topic Summary（トピックサマリ）
+
+トピック（TOPIC）に関する要約を生成する（会話への注入用）。
+
+### 出力JSON（例）
+
+```json
+{
+  "summary_text": "string",
+  "key_events": [{"unit_id": 123, "why": "..."}],
+  "notes": "optional"
+}
+```
