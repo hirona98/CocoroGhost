@@ -30,9 +30,10 @@
 
 ## 実装ステータス（Current/Planned）
 
-- Current: weekly_summary はEpisode保存時に自動enqueue + 管理APIからもenqueue（定期スケジュールは未実装）。
-- Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）を自動enqueue。
-- Planned: 定期実行で relationship/person/topic の summary を自動生成する。
+- Current: weekly_summary は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり）+ 管理APIからもenqueue（定期スケジュールは未実装）。
+- Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）を自動enqueue（重複抑制あり）。
+- Current: capsule_refresh は Episode保存後の既定ジョブとして自動enqueue（`limit=5`）。
+- Planned: 定期実行（cron）で relationship/person/topic の summary を refresh（差分更新/対象選定の改善）。
 
 ## 冪等性ルール
 
