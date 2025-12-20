@@ -10,7 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from cocoro_ghost.scheduler import utc_week_key
-from cocoro_ghost.unit_enums import EntityType, JobStatus, Sensitivity, SummaryScopeType, UnitKind, UnitState
+from cocoro_ghost.unit_enums import JobStatus, Sensitivity, UnitKind, UnitState
 from cocoro_ghost.unit_models import Entity, Job, PayloadSummary, Unit, UnitEntity
 
 
@@ -65,7 +65,7 @@ def _enqueue_job(session: Session, *, kind: str, payload: dict[str, Any], now_ts
 def _latest_summary_updated_at(
     session: Session,
     *,
-    scope_type: int,
+    scope_label: str,
     scope_key: str,
     max_sensitivity: int,
 ) -> Optional[int]:
@@ -76,7 +76,7 @@ def _latest_summary_updated_at(
             Unit.kind == int(UnitKind.SUMMARY),
             Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
             Unit.sensitivity <= int(max_sensitivity),
-            PayloadSummary.scope_type == int(scope_type),
+            PayloadSummary.scope_label == str(scope_label),
             PayloadSummary.scope_key == str(scope_key),
         )
         .order_by(Unit.updated_at.desc().nulls_last(), Unit.id.desc())
@@ -108,7 +108,7 @@ def maybe_enqueue_weekly_summary(
 
     updated_at = _latest_summary_updated_at(
         session,
-        scope_type=int(SummaryScopeType.RELATIONSHIP),
+        scope_label="relationship",
         scope_key=week_key,
         max_sensitivity=max_sensitivity,
     )
@@ -204,8 +204,8 @@ def _pick_entities_to_refresh(
     window_days: int,
     max_candidates: int,
     max_sensitivity: int,
-) -> list[tuple[int, int]]:
-    """直近のエピソードで頻出した entity_id と etype を返す（weight合計の降順）。"""
+) -> list[int]:
+    """直近のエピソードで頻出した entity_id を返す（weight合計の降順）。"""
     since_ts = _now_ts_to_since_ts(now_ts, days=window_days)
     rows = (
         session.query(UnitEntity.entity_id, func.sum(UnitEntity.weight).label("w"))
@@ -225,15 +225,9 @@ def _pick_entities_to_refresh(
     if not entity_ids:
         return []
 
-    ent_rows = session.query(Entity.id, Entity.etype).filter(Entity.id.in_(entity_ids)).all()
-    etype_by_id = {int(eid): int(etype) for eid, etype in ent_rows}
-
-    picked: list[tuple[int, int]] = []
+    picked: list[int] = []
     for eid in entity_ids:
-        etype = etype_by_id.get(int(eid))
-        if etype is None:
-            continue
-        picked.append((int(eid), int(etype)))
+        picked.append(int(eid))
     return picked
 
 
@@ -249,22 +243,28 @@ def maybe_enqueue_entity_summaries(
 ) -> dict[str, int]:
     """person/topic の summary refresh を周期的にenqueueする（重複抑制 + クールダウン + 新規Episode判定）。"""
     stats = {"person": 0, "topic": 0}
-    candidates = _pick_entities_to_refresh(
+    candidate_ids = _pick_entities_to_refresh(
         session,
         now_ts=now_ts,
         window_days=window_days,
         max_candidates=max(12, max_person + max_topic),
         max_sensitivity=max_sensitivity,
     )
-    if not candidates:
+    if not candidate_ids:
         return stats
 
     person_ids: list[int] = []
     topic_ids: list[int] = []
-    for entity_id, etype in candidates:
-        if etype == int(EntityType.PERSON) and len(person_ids) < int(max_person):
+    ent_rows = session.query(Entity.id, Entity.roles_json, Entity.normalized, Entity.name).filter(Entity.id.in_(candidate_ids)).all()
+    for entity_id, roles_json, normalized, name in ent_rows:
+        try:
+            roles = json.loads(roles_json or "[]")
+        except Exception:  # noqa: BLE001
+            roles = []
+        roles_s = {str(x).strip().lower() for x in roles} if isinstance(roles, list) else set()
+        if "person" in roles_s and len(person_ids) < int(max_person):
             person_ids.append(int(entity_id))
-        elif etype == int(EntityType.TOPIC) and len(topic_ids) < int(max_topic):
+        elif "topic" in roles_s and len(topic_ids) < int(max_topic):
             topic_ids.append(int(entity_id))
         if len(person_ids) >= int(max_person) and len(topic_ids) >= int(max_topic):
             break
@@ -281,7 +281,7 @@ def maybe_enqueue_entity_summaries(
             scope_key = f"person:{int(entity_id)}"
             updated_at = _latest_summary_updated_at(
                 session,
-                scope_type=int(SummaryScopeType.PERSON),
+                scope_label="person",
                 scope_key=scope_key,
                 max_sensitivity=max_sensitivity,
             )
@@ -300,9 +300,8 @@ def maybe_enqueue_entity_summaries(
 
     if topic_ids:
         # topic summary の scope_key は `topic:{topic_key}` なので、Entityから key を解決する。
-        ent_rows = session.query(Entity.id, Entity.normalized, Entity.name).filter(Entity.id.in_(topic_ids)).all()
         topic_key_by_id: dict[int, str] = {}
-        for eid, normalized, name in ent_rows:
+        for eid, _roles_json, normalized, name in ent_rows:
             key = str((normalized or name or "")).strip().lower()
             if key:
                 topic_key_by_id[int(eid)] = key
@@ -321,7 +320,7 @@ def maybe_enqueue_entity_summaries(
             scope_key = f"topic:{topic_key}"
             updated_at = _latest_summary_updated_at(
                 session,
-                scope_type=int(SummaryScopeType.TOPIC),
+                scope_label="topic",
                 scope_key=scope_key,
                 max_sensitivity=max_sensitivity,
             )

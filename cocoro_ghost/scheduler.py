@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
-from cocoro_ghost.unit_enums import EntityType, LoopStatus, Sensitivity, SummaryScopeType, UnitKind
+from cocoro_ghost.unit_enums import LoopStatus, Sensitivity, UnitKind
 from cocoro_ghost.unit_models import (
     Entity,
     EntityAlias,
@@ -172,12 +172,22 @@ def _resolve_entity_ids_from_text(
 def _get_user_entity_id(db: Session) -> Optional[int]:
     row = (
         db.query(Entity.id)
-        .filter(Entity.etype == int(EntityType.PERSON), Entity.normalized == "user")
+        .filter(Entity.normalized == "user")
         .order_by(Entity.id.asc())
         .limit(1)
         .scalar()
     )
     return int(row) if row is not None else None
+
+
+def _entity_roles(entity: Entity) -> set[str]:
+    try:
+        raw = json.loads(entity.roles_json or "[]")
+        if isinstance(raw, list):
+            return {str(x).strip().lower() for x in raw if str(x).strip()}
+    except Exception:  # noqa: BLE001
+        return set()
+    return set()
 
 
 def should_inject_episodes(relevant_episodes: Sequence["RankedEpisode"]) -> bool:
@@ -213,7 +223,8 @@ def build_memory_pack(
 ) -> str:
     """会話に注入する「内部コンテキスト（MemoryPack）」を予算内で組み立てる。"""
     max_chars = _token_budget_to_char_budget(max_inject_tokens)
-    sensitivity_max = int(Sensitivity.PRIVATE)
+    # 一旦「注入（引き出し）」を無制限にする（SECRETまで許可）。
+    sensitivity_max = int(Sensitivity.SECRET)
     persona_text = (persona_text or "").strip() or None
     contract_text = (contract_text or "").strip() or None
 
@@ -294,7 +305,7 @@ def build_memory_pack(
     summary_texts: List[str] = []
     scopes = ["weekly", "person", "topic"]
 
-    def add_summary(scope_type: int, scope_key: Optional[str], *, fallback_latest: bool = False) -> None:
+    def add_summary(scope_label: str, scope_key: Optional[str], *, fallback_latest: bool = False) -> None:
         """指定スコープのサマリを1つ取り出してsummary_textsへ追加する（無ければ何もしない）。"""
         base_q = (
             db.query(Unit, PayloadSummary)
@@ -303,7 +314,7 @@ def build_memory_pack(
                 Unit.kind == int(UnitKind.SUMMARY),
                 Unit.state.in_([0, 1, 2]),
                 Unit.sensitivity <= sensitivity_max,
-                PayloadSummary.scope_type == int(scope_type),
+                PayloadSummary.scope_label == str(scope_label),
             )
         )
 
@@ -323,23 +334,19 @@ def build_memory_pack(
                 summary_texts.append(text_)
 
     if "weekly" in scopes:
-        # 現週のサマリがまだ無い場合は最新のRELATIONSHIPサマリを注入する
-        add_summary(int(SummaryScopeType.RELATIONSHIP), week_key, fallback_latest=True)
+        # 現週のサマリがまだ無い場合は最新のrelationshipサマリを注入する
+        add_summary("relationship", week_key, fallback_latest=True)
 
     if matched_entity_ids and ("person" in scopes or "topic" in scopes):
         ents = db.query(Entity).filter(Entity.id.in_(sorted(matched_entity_ids))).all()
-        if "person" in scopes:
-            for e in ents:
-                if int(e.etype) != int(EntityType.PERSON):
-                    continue
-                add_summary(int(SummaryScopeType.PERSON), f"person:{int(e.id)}")
-        if "topic" in scopes:
-            for e in ents:
-                if int(e.etype) != int(EntityType.TOPIC):
-                    continue
+        for e in ents:
+            roles = _entity_roles(e)
+            if "person" in scopes and "person" in roles:
+                add_summary("person", f"person:{int(e.id)}")
+            if "topic" in scopes and "topic" in roles:
                 key = (e.normalized or e.name or "").strip().lower()
                 if key:
-                    add_summary(int(SummaryScopeType.TOPIC), f"topic:{key}")
+                    add_summary("topic", f"topic:{key}")
 
     loop_lines: List[str] = []
     loop_base = (
@@ -452,7 +459,7 @@ def build_memory_pack(
         for s in image_summaries:
             s = (s or "").strip()
             if s:
-                capsule_parts.append(f"image: {s}")
+                capsule_parts.append(f"[ユーザーが今送った画像の内容] {s}")
 
     def section(title: str, body_lines: Sequence[str]) -> str:
         """MemoryPackの1セクション（[TITLE] ...）を組み立てる。"""

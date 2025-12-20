@@ -29,40 +29,9 @@ class Sensitivity(IntEnum):
     SECRET = 2
 
 
-class EntityType(IntEnum):
-    """エンティティの型（人/場所/話題など）。"""
-    PERSON = 1
-    PLACE = 2
-    PROJECT = 3
-    WORK = 4
-    TOPIC = 5
-    ORG = 6
-
-
 class EntityRole(IntEnum):
     """UnitとEntityの関係（現状は言及のみ）。"""
     MENTIONED = 1
-
-
-class RelationType(IntEnum):
-    """エンティティ間の関係タイプ。"""
-    OTHER = 0
-    FRIEND = 1
-    FAMILY = 2
-    COLLEAGUE = 3
-    PARTNER = 4
-    LIKES = 5
-    DISLIKES = 6
-    RELATED = 7
-
-
-class SummaryScopeType(IntEnum):
-    """サマリのスコープ（週次/人物/話題など）。"""
-    DAILY = 1
-    WEEKLY = 2
-    PERSON = 3
-    TOPIC = 4
-    RELATIONSHIP = 5
 
 
 class LoopStatus(IntEnum):

@@ -47,3 +47,8 @@
 - **Preset（settings）**: `settings.db` に永続化する切替単位。
   - LLM/Embeddingの接続情報・検索予算に加え、Persona/Contract をプリセットとして保持し、`active_*_preset_id` でアクティブを選ぶ（`docs/settings_db.md`）。
 - **memory_id**: 記憶DBファイル名を選ぶための識別子。`EmbeddingPreset.id`（UUID）を `memory_id` として扱い、`memory_<memory_id>.db` を開く（`docs/settings_db.md` / `docs/api.md`）。
+
+## DBドキュメントの見どころ
+
+- `docs/settings_db.md`: settings.db の **実際のカラム** と、プリセット切替（active preset）による運用方法
+- `docs/db_schema.md`: memory DB の **全テーブルとカラムの意味**（誰が書くか、検索/注入でどう使うか）

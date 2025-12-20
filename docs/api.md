@@ -179,6 +179,9 @@ Invoke-RestMethod -Method Post `
 - `jobs` は `memory_<memory_id>.db` に保存されるため、Worker は **アクティブな `memory_id`（= `active_embedding_preset_id`）** を対象に処理する（内蔵Worker）。
 - persona/contract は **settings 側のプロンプトプリセット**として管理し、`memory_id`（記憶DB）とは独立する（切替は `/api/settings`）
 
+補足:
+- `jobs` は内部用のキューであり、外部から任意のジョブを投入する汎用APIは提供しない（例外: 週次サマリの手動enqueue）。
+
 - **ジョブ投入**
   - `POST /api/memories/{memory_id}/jobs/weekly_summary`（週次サマリ生成のenqueue）
 

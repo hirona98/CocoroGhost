@@ -17,12 +17,9 @@ from cocoro_ghost.db import get_memory_session, sync_unit_vector_metadata, upser
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.unit_enums import (
     EntityRole,
-    EntityType,
     JobStatus,
     LoopStatus,
-    RelationType,
     Sensitivity,
-    SummaryScopeType,
     UnitKind,
     UnitState,
 )
@@ -344,61 +341,129 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
 def _normalize_entity_name(name: str) -> str:
     return (name or "").strip().lower()
 
+def _normalize_type_label(type_label: str) -> str:
+    return (type_label or "").strip().upper()
 
-def _etype_to_int(etype_raw: str) -> Optional[int]:
-    key = (etype_raw or "").strip().upper()
+
+def _normalize_roles(raw: Any, *, type_label: str | None = None) -> list[str]:
+    roles: list[str] = []
+    if isinstance(raw, list):
+        for r in raw:
+            s = str(r).strip().lower()
+            if s:
+                roles.append(s)
+
+    # 互換: rolesが無い/空のときは type_label から最低限推定する
+    tl = _normalize_type_label(type_label or "")
+    if not roles:
+        if tl == "PERSON":
+            roles = ["person"]
+        elif tl == "TOPIC":
+            roles = ["topic"]
+
+    # 正規化（重複除去）
+    out: list[str] = []
+    seen: set[str] = set()
+    for r in roles:
+        if r in seen:
+            continue
+        seen.add(r)
+        out.append(r)
+    return out
+
+
+def _entity_has_role(ent: Entity, role: str) -> bool:
     try:
-        return int(EntityType[key])
+        data = json.loads(ent.roles_json or "[]")
     except Exception:  # noqa: BLE001
-        return None
+        return False
+    if not isinstance(data, list):
+        return False
+    want = str(role).strip().lower()
+    return any(str(x).strip().lower() == want for x in data)
 
 
-def _parse_entity_ref(ref: str) -> Optional[tuple[int, str]]:
+def _parse_entity_ref(ref: str) -> Optional[tuple[str, str]]:
     s = (ref or "").strip()
     if ":" not in s:
         return None
-    etype_raw, name = s.split(":", 1)
-    etype = _etype_to_int(etype_raw)
-    if etype is None:
-        return None
+    type_label, name = s.split(":", 1)
     name = name.strip()
     if not name:
         return None
-    return etype, name
+    return str(type_label).strip(), name
 
 
-def _relation_to_int(rel_raw: str) -> int:
+def _normalize_relation_label(rel_raw: str) -> str:
+    """
+    LLM出力の relation をDB用に正規化する。
+
+    固定Enumにせず、将来のラベル増加（mentor, manager, rival...）に耐える。
+    """
     key = (rel_raw or "").strip().lower()
-    mapping = {
-        "friend": RelationType.FRIEND,
-        "family": RelationType.FAMILY,
-        "colleague": RelationType.COLLEAGUE,
-        "partner": RelationType.PARTNER,
-        "likes": RelationType.LIKES,
-        "like": RelationType.LIKES,
-        "dislikes": RelationType.DISLIKES,
-        "dislike": RelationType.DISLIKES,
-        "related": RelationType.RELATED,
-        "other": RelationType.OTHER,
-    }
-    return int(mapping.get(key, RelationType.OTHER))
+    if not key:
+        return "other"
+    canonical = {
+        "like": "likes",
+        "likes": "likes",
+        "dislike": "dislikes",
+        "dislikes": "dislikes",
+    }.get(key, key)
+    return canonical
 
 
-def _get_or_create_entity(session: Session, *, etype: int, name: str, aliases: list[str], now_ts: int) -> Entity:
+def _get_or_create_entity(
+    session: Session,
+    *,
+    name: str,
+    type_label: str | None,
+    roles: list[str],
+    aliases: list[str],
+    now_ts: int,
+) -> Entity:
     normalized = _normalize_entity_name(name)
     ent = (
         session.query(Entity)
-        .filter(Entity.etype == etype, Entity.normalized == normalized)
+        .filter(Entity.normalized == normalized)
         .order_by(Entity.id.asc())
         .first()
     )
     if ent is None:
-        ent = Entity(etype=etype, name=name, normalized=normalized, created_at=now_ts, updated_at=now_ts)
+        ent = Entity(
+            type_label=(str(type_label).strip() or None) if type_label else None,
+            name=name,
+            normalized=normalized,
+            roles_json=_json_dumps(roles),
+            created_at=now_ts,
+            updated_at=now_ts,
+        )
         session.add(ent)
         session.flush()
     else:
         if ent.name != name:
             ent.name = name
+        if (ent.type_label is None or not str(ent.type_label).strip()) and type_label and str(type_label).strip():
+            ent.type_label = str(type_label).strip()
+        # roles は加算（縮めない）
+        try:
+            existing = json.loads(ent.roles_json or "[]")
+        except Exception:  # noqa: BLE001
+            existing = []
+        merged: list[str] = []
+        seen: set[str] = set()
+        for r in (existing if isinstance(existing, list) else []):
+            s = str(r).strip().lower()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            merged.append(s)
+        for r in roles:
+            s = str(r).strip().lower()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            merged.append(s)
+        ent.roles_json = _json_dumps(merged)
         ent.updated_at = now_ts
         session.add(ent)
 
@@ -435,10 +500,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
     for e in entities:
         if not isinstance(e, dict):
             continue
-        etype_raw = str(e.get("etype") or "")
-        etype = _etype_to_int(etype_raw)
-        if etype is None:
-            continue
+        type_label = str(e.get("type_label") or "").strip() or None
         name = str(e.get("name") or "").strip()
         if not name:
             continue
@@ -446,8 +508,16 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
         if not isinstance(aliases_raw, list):
             aliases_raw = []
         aliases = [str(a) for a in aliases_raw if str(a).strip()]
+        roles = _normalize_roles(e.get("roles"), type_label=type_label)
         confidence = float(e.get("confidence") or 0.0)
-        ent = _get_or_create_entity(session, etype=etype, name=name, aliases=aliases, now_ts=now_ts)
+        ent = _get_or_create_entity(
+            session,
+            name=name,
+            type_label=type_label,
+            roles=roles,
+            aliases=aliases,
+            now_ts=now_ts,
+        )
         session.merge(
             UnitEntity(
                 unit_id=unit_id,
@@ -469,18 +539,17 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
         )
         entity_ids = [int(eid) for eid, _w in ue_rows]
         if entity_ids:
-            ent_rows = session.query(Entity.id, Entity.etype).filter(Entity.id.in_(entity_ids)).all()
-            etype_by_id = {int(eid): int(etype) for eid, etype in ent_rows}
-
             # 直近の会話に重要そうな上位エンティティのみ更新対象にする。
             person_ids: list[int] = []
             topic_ids: list[int] = []
             for eid, _w in ue_rows:
                 eid_i = int(eid)
-                etype = etype_by_id.get(eid_i)
-                if etype == int(EntityType.PERSON):
+                ent = session.query(Entity).filter(Entity.id == eid_i).one_or_none()
+                if ent is None:
+                    continue
+                if _entity_has_role(ent, "person"):
                     person_ids.append(eid_i)
-                elif etype == int(EntityType.TOPIC):
+                elif _entity_has_role(ent, "topic"):
                     topic_ids.append(eid_i)
 
             # 上限（過剰enqueue防止）
@@ -525,21 +594,35 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
         dst_parsed = _parse_entity_ref(dst_raw)
         if src_parsed is None or dst_parsed is None:
             continue
-        src_type, src_name = src_parsed
-        dst_type, dst_name = dst_parsed
-        rel_type = _relation_to_int(rel_raw)
+        src_type_label, src_name = src_parsed
+        dst_type_label, dst_name = dst_parsed
+        rel_label = _normalize_relation_label(rel_raw)
 
         confidence = float(r.get("confidence") or 0.0)
         weight = max(0.1, confidence) if confidence > 0 else 1.0
 
-        src_ent = _get_or_create_entity(session, etype=src_type, name=src_name, aliases=[], now_ts=now_ts)
-        dst_ent = _get_or_create_entity(session, etype=dst_type, name=dst_name, aliases=[], now_ts=now_ts)
+        src_ent = _get_or_create_entity(
+            session,
+            name=src_name,
+            type_label=src_type_label or None,
+            roles=_normalize_roles([], type_label=src_type_label),
+            aliases=[],
+            now_ts=now_ts,
+        )
+        dst_ent = _get_or_create_entity(
+            session,
+            name=dst_name,
+            type_label=dst_type_label or None,
+            roles=_normalize_roles([], type_label=dst_type_label),
+            aliases=[],
+            now_ts=now_ts,
+        )
 
         edge = (
             session.query(Edge)
             .filter(
                 Edge.src_entity_id == int(src_ent.id),
-                Edge.rel_type == int(rel_type),
+                Edge.rel_label == str(rel_label),
                 Edge.dst_entity_id == int(dst_ent.id),
             )
             .one_or_none()
@@ -548,7 +631,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
             session.add(
                 Edge(
                     src_entity_id=int(src_ent.id),
-                    rel_type=int(rel_type),
+                    rel_label=str(rel_label),
                     dst_entity_id=int(dst_ent.id),
                     weight=weight,
                     first_seen_at=now_ts,
@@ -688,14 +771,27 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
         subj_etype_raw = "PERSON"
         if isinstance(subj, dict):
             subj_name = str(subj.get("name") or "").strip() or "USER"
-            subj_etype_raw = str(subj.get("etype") or "").strip() or "PERSON"
+            subj_etype_raw = str(subj.get("type_label") or "").strip() or "PERSON"
 
         if subj_name.strip().upper() == "USER":
-            user_ent = _get_or_create_entity(session, etype=int(EntityType.PERSON), name="USER", aliases=["USER"], now_ts=now_ts)
+            user_ent = _get_or_create_entity(
+                session,
+                name="USER",
+                type_label="PERSON",
+                roles=["person"],
+                aliases=["USER"],
+                now_ts=now_ts,
+            )
             subject_entity_id = int(user_ent.id)
         else:
-            subj_etype = _etype_to_int(subj_etype_raw) or int(EntityType.PERSON)
-            ent = _get_or_create_entity(session, etype=subj_etype, name=subj_name, aliases=[], now_ts=now_ts)
+            ent = _get_or_create_entity(
+                session,
+                name=subj_name,
+                type_label=subj_etype_raw,
+                roles=_normalize_roles([], type_label=subj_etype_raw),
+                aliases=[],
+                now_ts=now_ts,
+            )
             subject_entity_id = int(ent.id)
 
         existing_fact_unit_id = _find_existing_fact_unit_id(
@@ -978,7 +1074,7 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
     rows = (
         session.query(Unit, PayloadEpisode)
         .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(Unit.kind == int(UnitKind.EPISODE), Unit.state.in_([0, 1, 2]), Unit.sensitivity <= int(Sensitivity.PRIVATE))
+        .filter(Unit.kind == int(UnitKind.EPISODE), Unit.state.in_([0, 1, 2]), Unit.sensitivity <= int(Sensitivity.SECRET))
         .order_by(Unit.created_at.desc(), Unit.id.desc())
         .limit(limit)
         .all()
@@ -1012,7 +1108,7 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
         .filter(
             Unit.kind == int(UnitKind.CAPSULE),
             Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= int(Sensitivity.PRIVATE),
+            Unit.sensitivity <= int(Sensitivity.SECRET),
             PayloadCapsule.expires_at.isnot(None),
             PayloadCapsule.expires_at > now_ts,
         )
@@ -1095,7 +1191,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
             Unit.occurred_at >= range_start,
             Unit.occurred_at < range_end,
             Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= 1,
+            Unit.sensitivity <= int(Sensitivity.SECRET),
         )
         .order_by(Unit.occurred_at.asc(), Unit.id.asc())
         .limit(200)
@@ -1148,7 +1244,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
         .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
         .filter(
             Unit.kind == int(UnitKind.SUMMARY),
-            PayloadSummary.scope_type == int(SummaryScopeType.RELATIONSHIP),
+            PayloadSummary.scope_label == "relationship",
             PayloadSummary.scope_key == week_key,
         )
         .order_by(Unit.created_at.desc())
@@ -1156,7 +1252,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
     )
 
     payload_obj = {
-        "scope_type": int(SummaryScopeType.RELATIONSHIP),
+        "scope_label": "relationship",
         "scope_key": week_key,
         "range_start": range_start,
         "range_end": range_end,
@@ -1181,7 +1277,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
         session.add(
             PayloadSummary(
                 unit_id=unit.id,
-                scope_type=int(SummaryScopeType.RELATIONSHIP),
+                scope_label="relationship",
                 scope_key=week_key,
                 range_start=range_start,
                 range_end=range_end,
@@ -1270,7 +1366,7 @@ def _enqueue_embeddings_if_changed(
 def _upsert_summary_unit(
     session: Session,
     *,
-    scope_type: int,
+    scope_label: str,
     scope_key: str,
     range_start: int | None,
     range_end: int | None,
@@ -1285,7 +1381,7 @@ def _upsert_summary_unit(
         .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
         .filter(
             Unit.kind == int(UnitKind.SUMMARY),
-            PayloadSummary.scope_type == int(scope_type),
+            PayloadSummary.scope_label == str(scope_label),
             PayloadSummary.scope_key == str(scope_key),
         )
         .order_by(Unit.created_at.desc())
@@ -1310,7 +1406,7 @@ def _upsert_summary_unit(
         session.add(
             PayloadSummary(
                 unit_id=unit.id,
-                scope_type=int(scope_type),
+                scope_label=str(scope_label),
                 scope_key=str(scope_key),
                 range_start=range_start,
                 range_end=range_end,
@@ -1322,7 +1418,7 @@ def _upsert_summary_unit(
             session,
             unit_id=int(unit.id),
             payload_obj={
-                "scope_type": int(scope_type),
+                "scope_label": str(scope_label),
                 "scope_key": str(scope_key),
                 "range_start": range_start,
                 "range_end": range_end,
@@ -1349,7 +1445,7 @@ def _upsert_summary_unit(
         session,
         unit_id=int(unit.id),
         payload_obj={
-            "scope_type": int(scope_type),
+            "scope_label": str(scope_label),
             "scope_key": str(scope_key),
             "range_start": range_start,
             "range_end": range_end,
@@ -1370,10 +1466,10 @@ def _upsert_summary_unit(
 
 
 def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    """人物（EntityType.PERSON）に紐づく直近エピソードから要約を作成/更新する。"""
+    """人物（roles_json に 'person' を含むEntity）に紐づく直近エピソードから要約を作成/更新する。"""
     entity_id = int(payload["entity_id"])
     ent = session.query(Entity).filter(Entity.id == entity_id).one_or_none()
-    if ent is None or int(ent.etype) != int(EntityType.PERSON):
+    if ent is None or not _entity_has_role(ent, "person"):
         return
 
     # 入力: 対象人物に紐づく直近エピソードを列挙（上限あり）。
@@ -1384,7 +1480,7 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
         .filter(
             Unit.kind == int(UnitKind.EPISODE),
             Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= int(Sensitivity.PRIVATE),
+            Unit.sensitivity <= int(Sensitivity.SECRET),
             UnitEntity.entity_id == entity_id,
         )
         .order_by(Unit.occurred_at.desc().nulls_last(), Unit.id.desc())
@@ -1436,7 +1532,7 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
 
     _upsert_summary_unit(
         session,
-        scope_type=int(SummaryScopeType.PERSON),
+        scope_label="person",
         scope_key=f"person:{entity_id}",
         range_start=None,
         range_end=None,
@@ -1449,10 +1545,10 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
 
 
 def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    """トピック（EntityType.TOPIC）に紐づく直近エピソードから要約を作成/更新する。"""
+    """トピック（roles_json に 'topic' を含むEntity）に紐づく直近エピソードから要約を作成/更新する。"""
     entity_id = int(payload["entity_id"])
     ent = session.query(Entity).filter(Entity.id == entity_id).one_or_none()
-    if ent is None or int(ent.etype) != int(EntityType.TOPIC):
+    if ent is None or not _entity_has_role(ent, "topic"):
         return
 
     topic_key = str((ent.normalized or ent.name or "")).strip().lower()
@@ -1466,7 +1562,7 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
         .filter(
             Unit.kind == int(UnitKind.EPISODE),
             Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= int(Sensitivity.PRIVATE),
+            Unit.sensitivity <= int(Sensitivity.SECRET),
             UnitEntity.entity_id == entity_id,
         )
         .order_by(Unit.occurred_at.desc().nulls_last(), Unit.id.desc())
@@ -1518,7 +1614,7 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
 
     _upsert_summary_unit(
         session,
-        scope_type=int(SummaryScopeType.TOPIC),
+        scope_label="topic",
         scope_key=f"topic:{topic_key}",
         range_start=None,
         range_end=None,

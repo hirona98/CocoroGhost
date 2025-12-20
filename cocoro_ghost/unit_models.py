@@ -63,7 +63,8 @@ class PayloadSummary(UnitBase):
     __tablename__ = "payload_summary"
 
     unit_id: Mapped[int] = mapped_column(ForeignKey("units.id", ondelete="CASCADE"), primary_key=True)
-    scope_type: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 固定Enumではなく自由ラベル（将来のスコープ追加に耐える）
+    scope_label: Mapped[str] = mapped_column(Text, nullable=False)
     scope_key: Mapped[str] = mapped_column(Text, nullable=False)
     range_start: Mapped[Optional[int]] = mapped_column(Integer)
     range_end: Mapped[Optional[int]] = mapped_column(Integer)
@@ -94,9 +95,11 @@ class Entity(UnitBase):
     __tablename__ = "entities"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    etype: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 固定Enumをやめ、自由なラベル + rolesで扱う（パートナーAI用途）。
+    type_label: Mapped[Optional[str]] = mapped_column(Text)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     normalized: Mapped[Optional[str]] = mapped_column(Text)
+    roles_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     created_at: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
 
@@ -136,7 +139,8 @@ class Edge(UnitBase):
         ForeignKey("entities.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    rel_type: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # 固定Enumではなく自由ラベル（"friend"/"likes"/"mentor" など）
+    rel_label: Mapped[str] = mapped_column(Text, primary_key=True)
     dst_entity_id: Mapped[int] = mapped_column(
         ForeignKey("entities.id", ondelete="CASCADE"),
         primary_key=True,

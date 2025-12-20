@@ -215,13 +215,14 @@ def _create_memory_indexes(engine) -> None:
         "CREATE INDEX IF NOT EXISTS idx_units_kind_created ON units(kind, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_units_occurred ON units(occurred_at)",
         "CREATE INDEX IF NOT EXISTS idx_units_state ON units(state)",
-        "CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities(etype, name)",
+        "CREATE INDEX IF NOT EXISTS idx_entities_label_name ON entities(type_label, name)",
+        "CREATE INDEX IF NOT EXISTS idx_entities_normalized ON entities(normalized)",
         "CREATE INDEX IF NOT EXISTS idx_entity_aliases_alias ON entity_aliases(alias)",
         "CREATE INDEX IF NOT EXISTS idx_unit_entities_entity ON unit_entities(entity_id)",
         "CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_entity_id)",
         "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_entity_id)",
         "CREATE INDEX IF NOT EXISTS idx_fact_subject_pred ON payload_fact(subject_entity_id, predicate)",
-        "CREATE INDEX IF NOT EXISTS idx_summary_scope ON payload_summary(scope_type, scope_key)",
+        "CREATE INDEX IF NOT EXISTS idx_summary_scope ON payload_summary(scope_label, scope_key)",
         "CREATE INDEX IF NOT EXISTS idx_loop_status_due ON payload_loop(status, due_at)",
         "CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after)",
     ]
@@ -229,6 +230,7 @@ def _create_memory_indexes(engine) -> None:
         for stmt in stmts:
             conn.execute(text(stmt))
         conn.commit()
+
 
 
 # --- 設定DB ---

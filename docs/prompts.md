@@ -39,8 +39,8 @@
 ```json
 {
   "entities": [
-    {"etype": "PERSON", "name": "string", "aliases": ["..."], "role": "mentioned", "confidence": 0.0},
-    {"etype": "PLACE", "name": "string", "aliases": [], "role": "mentioned", "confidence": 0.0}
+    {"type_label": "PERSON", "roles": ["person"], "name": "string", "aliases": ["..."], "role": "mentioned", "confidence": 0.0},
+    {"type_label": "PLACE", "roles": [], "name": "string", "aliases": [], "role": "mentioned", "confidence": 0.0}
   ],
   "relations": [
     {"src": "PERSON:太郎", "rel": "friend", "dst": "PERSON:次郎", "confidence": 0.0, "evidence": "short quote"}
@@ -49,7 +49,7 @@
 ```
 
 - `entities` / `entity_aliases` / `unit_entities` / `edges` を upsert
-- `relations.rel` は `friend|family|colleague|partner|likes|dislikes|related|other` を推奨（実装側で `RelationType` にマップする）
+- `relations.rel` は自由ラベル（推奨: `friend|family|colleague|partner|likes|dislikes|related|other`）
 
 ## Fact抽出（安定知識）
 
@@ -59,7 +59,7 @@
 {
   "facts": [
     {
-      "subject": {"etype": "PERSON", "name": "USER"},
+      "subject": {"type_label": "PERSON", "name": "USER"},
       "predicate": "prefers",
       "object_text": "静かなカフェ",
       "confidence": 0.0,
@@ -99,7 +99,7 @@
 }
 ```
 
-- `units(kind=SUMMARY, scope_type=RELATIONSHIP, scope_key=2025-W50)` + `payload_summary`
+- `units(kind=SUMMARY, scope_label=relationship, scope_key=2025-W50)` + `payload_summary`
 - `payload_summary.summary_json` に LLM の出力JSONを丸ごと保存（`summary_text` は注入用のプレーンテキストとして残す）
 
 ## Person Summary（人物サマリ）

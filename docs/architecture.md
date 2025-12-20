@@ -6,7 +6,6 @@
   - `/api/chat`（SSE）
   - `/api/v1/notification`
   - `/api/v1/meta_request`
-  - 管理API（メモリ閲覧・編集・ピン留め等）
 - **Memory Store（SQLite: `memory_<memory_id>.db`）**
   - `units` + `payload_*` による Unit化
   - 版管理（`unit_versions`）と来歴/信頼度を保持
@@ -25,19 +24,6 @@
   - Reflection / Entities / Facts / Summaries / Loops / Embedding upsert を担当
   - APIプロセスと分離（推奨）
 
-## 実装ステータス（Current/Planned）
-
-- Current: Episode保存後に既定ジョブ（reflect/entities/facts/loops/embeddings/capsule_refresh）をenqueue。
-- Current: weekly_summary は「現週サマリが無い」または「最終更新からクールダウン経過（6h）かつ新規Episodeあり」のとき自動enqueue（重複抑制あり、管理APIからもenqueue可）。
-- Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）をベストエフォートでenqueue（重複抑制あり）。
-- Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic/capsule）も実施できる（固定値: 30秒ごとに判定）。
-- Current: 起動コマンドは `run.py` のみ（FastAPI起動時に内蔵Workerがバックグラウンド開始）。
-- Current: SchedulerのEntity解決は alias/name の文字列一致 + 一致が無い場合のみ（短文除外あり）LLMフォールバック。
-- Current: Episode注入は Scheduler が `quote_key_parts` / `summarize` / `full` に対応（現状 Retriever は `quote_key_parts` 固定）。
-- Current: `/api/settings` 変更時は内蔵Workerを自動で再起動し、LLM/Embedding preset と memory_id 切替に追従する（再起動の手動運用も可能）。
-- Non-goal: uvicorn multi-worker 等の多重起動は未対応（内蔵Workerが重複実行されうるため）。`workers=1` 前提で運用する。
-- Planned: Lifecycle統合（矛盾管理/統合・整理）。
-- Planned: Entity解決の非同期フォールバック強化（同期/非同期の最適化）。
 
 ## データフロー
 
@@ -137,7 +123,7 @@ sequenceDiagram
 - Summary生成（週次/人物/トピック/関係性）
 - Embedding生成と `vec_units` upsert（種別ごとに方針を決める）
 
-#### Workerの責務（もう少し詳しく）
+#### Workerの責務
 
 - **入力は「episode（RAW）」と jobs キュー**：APIが `units(kind=EPISODE)` をRAW保存し、必要な派生ジョブ（reflection/entity/fact/loop/summary/embedding等）を `jobs` にenqueueする
 - **派生物はすべてUnitとして永続化**：facts/summaries/loops/entities/edges/vec_units など、後段のSchedulerが参照する「注入材料」を増やす

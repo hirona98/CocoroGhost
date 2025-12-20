@@ -21,7 +21,7 @@ from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
 from cocoro_ghost.retriever import Retriever
 from cocoro_ghost.scheduler import build_memory_pack
-from cocoro_ghost.unit_enums import JobStatus, Sensitivity, SummaryScopeType, UnitKind, UnitState
+from cocoro_ghost.unit_enums import JobStatus, Sensitivity, UnitKind, UnitState
 from cocoro_ghost.unit_models import Job, PayloadEpisode, PayloadSummary, Unit
 
 
@@ -161,7 +161,7 @@ class MemoryManager:
             .filter(
                 Unit.kind == int(UnitKind.SUMMARY),
                 Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
-                PayloadSummary.scope_type == int(SummaryScopeType.RELATIONSHIP),
+                PayloadSummary.scope_label == "relationship",
                 PayloadSummary.scope_key == week_key,
             )
             .order_by(Unit.updated_at.desc().nulls_last(), Unit.id.desc())
@@ -232,7 +232,7 @@ class MemoryManager:
             .filter(
                 Unit.kind == int(UnitKind.EPISODE),
                 Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
-                Unit.sensitivity <= int(Sensitivity.PRIVATE),
+                Unit.sensitivity <= int(Sensitivity.SECRET),
                 PayloadEpisode.reply_text.isnot(None),
             )
         )

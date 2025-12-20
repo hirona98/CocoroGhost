@@ -42,7 +42,7 @@ FACT_EXTRACT_SYSTEM_PROMPT = """
 {
   "facts": [
     {
-      "subject": {"etype":"PERSON","name":"USER"},
+      "subject": {"type_label":"PERSON","name":"USER"},
       "predicate": "prefers",
       "object_text": "静かなカフェ",
       "confidence": 0.0,
@@ -78,12 +78,16 @@ ENTITY_EXTRACT_SYSTEM_PROMPT = """
 - 不確実なら confidence を低くする
 - 個数は多すぎない（最大10件）
 - relations は必要なときだけ出す（最大10件）
-- rel は次のいずれか: friend|family|colleague|partner|likes|dislikes|related|other
-- src/dst は "ETYPE:NAME" 形式（例: "PERSON:太郎"）
+- rel は自由ラベル（推奨: friend|family|colleague|partner|likes|dislikes|related|other）
+- type_label は自由（例: PERSON/TOPIC/ORG/PROJECT/...）。固定Enumに縛られない。
+- roles は用途のための“役割”で、基本は次のどれか（必要なときだけ付与）:
+  - "person": 人物として扱いたい（person_summary_refreshの対象）
+  - "topic": トピックとして扱いたい（topic_summary_refreshの対象）
+- src/dst は "TYPE:NAME" 形式（例: "PERSON:太郎"）。TYPEは自由でよい。
 
 {
   "entities": [
-    {"etype":"PERSON","name":"string","aliases":["..."],"role":"mentioned","confidence":0.0}
+    {"type_label":"PERSON","roles":["person"],"name":"string","aliases":["..."],"role":"mentioned","confidence":0.0}
   ],
   "relations": [
     {"src":"PERSON:太郎","rel":"friend","dst":"PERSON:次郎","confidence":0.0,"evidence":"short quote"}

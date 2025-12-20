@@ -190,7 +190,8 @@ class Retriever:
     _RECENT_CONVERSATION_TURNS = 3
     _KNN_K_PER_QUERY = 20
     _BM25_K_PER_QUERY = 20
-    _MAX_SENSITIVITY = int(Sensitivity.PRIVATE)
+    # 一旦「引き出し」を無制限にする（SECRETまで許可）。
+    _MAX_SENSITIVITY = int(Sensitivity.SECRET)
     _OCCURRED_DAY_RANGE = 365
     _RRF_K = 60
 

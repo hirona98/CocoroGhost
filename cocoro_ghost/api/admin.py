@@ -114,7 +114,7 @@ def get_unit(
             ps = db.query(PayloadSummary).filter(PayloadSummary.unit_id == unit_id).one_or_none()
             if ps:
                 payload = {
-                    "scope_type": ps.scope_type,
+                    "scope_label": ps.scope_label,
                     "scope_key": ps.scope_key,
                     "range_start": ps.range_start,
                     "range_end": ps.range_end,
