@@ -666,7 +666,26 @@ def _handle_upsert_embeddings(
         pf = session.query(PayloadFact).filter(PayloadFact.unit_id == unit_id).one_or_none()
         if pf is None:
             return
-        text_to_embed = "\n".join(filter(None, [str(pf.subject_entity_id), pf.predicate, pf.object_text]))
+        subject_name = None
+        object_name = None
+        if pf.subject_entity_id is not None:
+            ent = session.query(Entity).filter(Entity.id == int(pf.subject_entity_id)).one_or_none()
+            if ent is not None:
+                subject_name = (ent.name or "").strip() or None
+        if pf.object_entity_id is not None:
+            ent = session.query(Entity).filter(Entity.id == int(pf.object_entity_id)).one_or_none()
+            if ent is not None:
+                object_name = (ent.name or "").strip() or None
+        text_to_embed = "\n".join(
+            filter(
+                None,
+                [
+                    subject_name or (str(pf.subject_entity_id) if pf.subject_entity_id is not None else None),
+                    pf.predicate,
+                    object_name or (pf.object_text or "").strip() or None,
+                ],
+            )
+        )
     elif unit.kind == int(UnitKind.LOOP):
         pl = session.query(PayloadLoop).filter(PayloadLoop.unit_id == unit_id).one_or_none()
         if pl is None:
@@ -698,8 +717,39 @@ def _find_existing_fact_unit_id(
     subject_entity_id: Optional[int],
     predicate: str,
     object_text: Optional[str],
+    object_entity_id: Optional[int],
     evidence_unit_id: int,
 ) -> Optional[int]:
+    # まず object_entity_id で一致するものを探す（Entity化できたFactを優先的に集約する）
+    if object_entity_id is not None:
+        row = session.execute(
+            text(
+                """
+                SELECT pf.unit_id
+                FROM payload_fact pf
+                JOIN units u ON u.id = pf.unit_id
+                WHERE u.kind = :kind
+                  AND pf.subject_entity_id IS :subject_entity_id
+                  AND pf.predicate = :predicate
+                  AND pf.object_entity_id = :object_entity_id
+                  AND EXISTS (
+                    SELECT 1 FROM json_each(pf.evidence_unit_ids_json) WHERE value = :evidence_unit_id
+                  )
+                LIMIT 1
+                """
+            ),
+            {
+                "kind": int(UnitKind.FACT),
+                "subject_entity_id": subject_entity_id,
+                "predicate": predicate,
+                "object_entity_id": int(object_entity_id),
+                "evidence_unit_id": evidence_unit_id,
+            },
+        ).fetchone()
+        if row is not None:
+            return int(row[0])
+
+    # フォールバック: object_text で一致（既存データ互換）
     row = session.execute(
         text(
             """
@@ -709,6 +759,7 @@ def _find_existing_fact_unit_id(
             WHERE u.kind = :kind
               AND pf.subject_entity_id IS :subject_entity_id
               AND pf.predicate = :predicate
+              AND pf.object_entity_id IS NULL
               AND pf.object_text IS :object_text
               AND EXISTS (
                 SELECT 1 FROM json_each(pf.evidence_unit_ids_json) WHERE value = :evidence_unit_id
@@ -752,8 +803,8 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
         if not isinstance(f, dict):
             continue
         predicate = str(f.get("predicate") or "").strip()
-        obj_text = f.get("object_text")
-        obj_text = str(obj_text).strip() if obj_text is not None else None
+        obj_text_raw = f.get("object_text")
+        obj_text = str(obj_text_raw).strip() if obj_text_raw is not None else None
         confidence = float(f.get("confidence") or 0.0)
         if not predicate:
             continue
@@ -794,11 +845,31 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
             )
             subject_entity_id = int(ent.id)
 
+        # 目的語が固有名として扱える場合は Entity化して object_entity_id を埋める（ベストエフォート）
+        object_entity_id: Optional[int] = None
+        obj = f.get("object")
+        if isinstance(obj, dict):
+            obj_name = str(obj.get("name") or "").strip()
+            obj_type_label = str(obj.get("type_label") or "").strip() or "OTHER"
+            if obj_name:
+                obj_ent = _get_or_create_entity(
+                    session,
+                    name=obj_name,
+                    type_label=obj_type_label,
+                    roles=_normalize_roles([], type_label=obj_type_label),
+                    aliases=[],
+                    now_ts=now_ts,
+                )
+                object_entity_id = int(obj_ent.id)
+                if not obj_text:
+                    obj_text = obj_name
+
         existing_fact_unit_id = _find_existing_fact_unit_id(
             session,
             subject_entity_id=subject_entity_id,
             predicate=predicate,
             object_text=obj_text,
+            object_entity_id=object_entity_id,
             evidence_unit_id=unit_id,
         )
         if existing_fact_unit_id is not None:
@@ -817,6 +888,9 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
                 changed = True
             if valid_to is not None and pf.valid_to != valid_to:
                 pf.valid_to = valid_to
+                changed = True
+            if object_entity_id is not None and pf.object_entity_id != object_entity_id:
+                pf.object_entity_id = int(object_entity_id)
                 changed = True
             if confidence and float(fact_unit.confidence or 0.0) != float(confidence):
                 fact_unit.confidence = float(confidence)
@@ -863,7 +937,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
             "subject_entity_id": subject_entity_id,
             "predicate": predicate,
             "object_text": obj_text,
-            "object_entity_id": None,
+            "object_entity_id": object_entity_id,
             "valid_from": valid_from,
             "valid_to": valid_to,
             "evidence_unit_ids": [unit_id],
@@ -874,7 +948,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
                 subject_entity_id=subject_entity_id,
                 predicate=predicate,
                 object_text=obj_text,
-                object_entity_id=None,
+                object_entity_id=object_entity_id,
                 valid_from=valid_from,
                 valid_to=valid_to,
                 evidence_unit_ids_json=_json_dumps([unit_id]),

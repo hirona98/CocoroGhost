@@ -38,6 +38,8 @@ FACT_EXTRACT_SYSTEM_PROMPT = """
 - 出力は JSON のみ（前後に説明文を付けない）
 - 不確実なら confidence を低くする
 - 個数は多すぎない（最大5件）
+- 目的語（object）が「固有名（人物/組織/作品/プロジェクト等）」として扱える場合は、可能なら object を {type_label,name} で出す
+  - object_text は「文章としての表現」を残したいときに使う（どちらか片方でもよい）
 
 {
   "facts": [
@@ -45,6 +47,7 @@ FACT_EXTRACT_SYSTEM_PROMPT = """
       "subject": {"type_label":"PERSON","name":"USER"},
       "predicate": "prefers",
       "object_text": "静かなカフェ",
+      "object": {"type_label":"PLACE","name":"静かなカフェ"},
       "confidence": 0.0,
       "validity": {"from": null, "to": null}
     }
