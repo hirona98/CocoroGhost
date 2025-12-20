@@ -339,10 +339,6 @@ class MemoryManager:
             yield self._sse("error", {"message": str(exc), "code": "db_write_failed"})
             return
 
-        if background_tasks is not None:
-            # Workerが別プロセスで動いている想定だが、開発時に手動で処理したい場合のフックとして残す
-            pass
-
         yield self._sse("done", {"episode_unit_id": episode_unit_id, "reply_text": reply_text, "usage": {}})
 
     def handle_notification(

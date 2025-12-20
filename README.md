@@ -79,20 +79,7 @@ python -X utf8 run.py
 
 `/chat` などで保存された `jobs` を処理する Worker は、既定で **APIプロセス内（バックグラウンド）** で動作します（起動コマンドは `run.py` のみ）。
 
-別プロセスでWorkerを動かしたい場合は、API側の内蔵Workerを無効化してから起動します。
-
-```bash
-.venv\Scripts\activate
-set COCORO_GHOST_INTERNAL_WORKER=0
-python -X utf8 run.py
-python -X utf8 run_worker.py
-```
-
-複数 `memory_id` を運用する場合は `memory_<memory_id>.db` ごとに Worker を起動します。
-
-```bash
-python -X utf8 run_worker.py --memory-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-```
+`/api/settings` でプリセットを更新した場合、内蔵Workerは自動で再起動して設定変更に追従します（接続が一時的に不安定になる可能性があるため、UI側はリトライ推奨）。
 
 補足:
 - 通常 `memory_id` は `settings.db` の `embedding_presets.id`（UUID）で、`/api/settings` の `active_embedding_preset_id` が既定で使われます。

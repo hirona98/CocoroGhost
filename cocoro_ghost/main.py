@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import threading
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -19,9 +17,6 @@ from cocoro_ghost.logging_config import setup_logging, suppress_uvicorn_access_l
 
 security = HTTPBearer()
 logger = __import__("logging").getLogger(__name__)
-
-_internal_worker_thread: threading.Thread | None = None
-_internal_worker_stop_event: threading.Event | None = None
 
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
@@ -143,40 +138,9 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def start_internal_worker() -> None:
-        # 既定は「同一プロセス内でWorkerも動かす」。別プロセス運用したい場合は無効化する。
-        enabled = str(os.getenv("COCORO_GHOST_INTERNAL_WORKER", "1")).strip().lower()
-        if enabled in {"0", "false", "off", "no"}:
-            logger.info("internal worker disabled by env", extra={"env": "COCORO_GHOST_INTERNAL_WORKER"})
-            return
+        from cocoro_ghost import internal_worker
 
-        global _internal_worker_thread, _internal_worker_stop_event
-        if _internal_worker_thread is not None and _internal_worker_thread.is_alive():
-            return
-
-        from cocoro_ghost.deps import get_llm_client
-        from cocoro_ghost.worker import run_forever
-
-        stop_event = threading.Event()
-        llm_client = get_llm_client()
-
-        t = threading.Thread(
-            target=run_forever,
-            kwargs={
-                "memory_id": runtime_config.memory_id,
-                "embedding_dimension": runtime_config.embedding_dimension,
-                "llm_client": llm_client,
-                # 固定値（cron無し定期enqueue込み）
-                "poll_interval_seconds": 1.0,
-                "max_jobs_per_tick": 10,
-                "periodic_interval_seconds": 30.0,
-                "stop_event": stop_event,
-            },
-            name="cocoro_ghost_internal_worker",
-            daemon=True,
-        )
-        _internal_worker_stop_event = stop_event
-        _internal_worker_thread = t
-        t.start()
+        internal_worker.start(memory_id=runtime_config.memory_id, embedding_dimension=runtime_config.embedding_dimension)
         logger.info("internal worker started", extra={"memory_id": runtime_config.memory_id})
 
     @app.on_event("shutdown")
@@ -189,13 +153,9 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def stop_internal_worker() -> None:
-        global _internal_worker_thread, _internal_worker_stop_event
-        if _internal_worker_stop_event is not None:
-            _internal_worker_stop_event.set()
-        if _internal_worker_thread is not None:
-            await asyncio.to_thread(_internal_worker_thread.join, 5.0)
-        _internal_worker_thread = None
-        _internal_worker_stop_event = None
+        from cocoro_ghost import internal_worker
+
+        await asyncio.to_thread(internal_worker.stop, 5.0)
 
     return app
 

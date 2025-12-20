@@ -30,10 +30,13 @@
 
 ## 実装ステータス（Current/Planned）
 
-- Current: weekly_summary は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり）+ 管理APIからもenqueue（定期スケジュールは未実装）。
+- Current: weekly_summary は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり）+ 管理APIからもenqueue。
 - Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）を自動enqueue（重複抑制あり）。
 - Current: capsule_refresh は Episode保存後の既定ジョブとして自動enqueue（`limit=5`）。
-- Planned: 定期実行（cron）で relationship/person/topic の summary を refresh（差分更新/対象選定の改善）。
+- Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic/capsule）も実施できる（固定値: 30秒ごとに判定）。
+- Current: 起動コマンドは `run.py` のみ（内蔵Workerがバックグラウンドで動作）。
+- Current: `/api/settings` で active preset / memory_id を切り替えると、内蔵Workerは自動で再起動して追従する。
+- Non-goal: uvicorn multi-worker 等の多重起動は未対応（内蔵Workerが重複実行されうるため）。`workers=1` 前提で運用する。
 
 ## 冪等性ルール
 
@@ -57,10 +60,8 @@
 
 ## 複数 memory_id の運用
 
-- Worker は **`memory_<memory_id>.db` ごとに 1プロセス**で動かす（1DB=1ジョブキュー）
-- 複数 `memory_id` を運用する場合は、`memory_id` ごとに Worker を起動する
-  - 通常 `memory_id` は `settings.db` の `embedding_presets.id`（UUID）で、`active_embedding_preset_id` が既定で使われる
-  - 例: `python -X utf8 run_worker.py --memory-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+- 内蔵Workerは **アクティブな `memory_id`（= `active_embedding_preset_id`）1つ**を処理対象にする
+- 別 `memory_id` を扱いたい場合は `/api/settings` で切り替える（切替後、内蔵Workerが自動再起動して追従する）
 
 ## 定期実行（cron無し）
 
@@ -78,7 +79,6 @@ python -X utf8 run.py
 
 補足:
 - 既定では `run.py` の起動時に **内蔵Worker（バックグラウンド）** が開始される（起動コマンド1本）。
-- 別プロセスでWorkerを動かしたい場合は `COCORO_GHOST_INTERNAL_WORKER=0` で内蔵Workerを無効化してから `run_worker.py` を起動する。
 
 ## topic_tags の保存（推奨）
 
