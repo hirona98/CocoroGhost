@@ -295,6 +295,8 @@ def commit_settings(
         if str(preset.id) not in contract_id_set:
             preset.archived = True
 
+    db.flush()
+
     # アクティブIDの更新
     global_settings.active_llm_preset_id = request.active_llm_preset_id
     global_settings.active_embedding_preset_id = request.active_embedding_preset_id
