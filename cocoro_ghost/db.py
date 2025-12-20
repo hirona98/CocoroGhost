@@ -75,6 +75,7 @@ def _create_engine_with_vec_support(db_url: str):
 
         @event.listens_for(engine, "connect")
         def load_sqlite_vec_extension(dbapi_conn, connection_record):
+            """SQLite接続ごとにsqlite-vec拡張をロードし、必要PRAGMAを適用する。"""
             dbapi_conn.enable_load_extension(True)
             try:
                 dbapi_conn.load_extension(vec_path)

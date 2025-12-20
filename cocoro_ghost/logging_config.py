@@ -6,11 +6,14 @@ import logging
 
 
 class _UvicornAccessPathFilter(logging.Filter):
+    """uvicorn.accessログから特定パスを除外するためのFilter。"""
+
     def __init__(self, suppressed_paths: set[str]) -> None:
         super().__init__()
         self._suppressed_paths = suppressed_paths
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        """Trueなら通す。suppressed_pathsに一致するアクセスログだけ落とす。"""
         try:
             msg = record.getMessage()
         except Exception:
@@ -27,6 +30,7 @@ def suppress_uvicorn_access_log_paths(*paths: str) -> None:
 
 
 def setup_logging(level: str = "INFO") -> None:
+    """標準loggingの初期化と、外部ライブラリのログレベル調整を行う。"""
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",

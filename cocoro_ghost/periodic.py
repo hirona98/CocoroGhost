@@ -343,6 +343,7 @@ def maybe_enqueue_entity_summaries(
 
 @dataclass(frozen=True)
 class PeriodicEnqueueConfig:
+    """定期enqueueのチューニングパラメータ（クールダウン/上限/秘匿度など）。"""
     weekly_cooldown_seconds: int = 6 * 3600
     entity_cooldown_seconds: int = 12 * 3600
     entity_window_days: int = 14
@@ -388,4 +389,3 @@ def enqueue_periodic_jobs(session: Session, *, now_ts: int, config: PeriodicEnqu
         stats["capsule_refresh"] += 1
 
     return stats
-

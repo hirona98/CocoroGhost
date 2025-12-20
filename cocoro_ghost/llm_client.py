@@ -442,9 +442,11 @@ class LlmClient:
         return summaries
 
     def response_to_dict(self, resp: Any) -> Dict[str, Any]:
+        """Responseオブジェクトをログ/デバッグ用のdictに変換する。"""
         return _response_to_dict(resp)
 
     def response_content(self, resp: Any) -> str:
+        """Responseから本文（choices[0].message.content）を取り出す。"""
         return _first_choice_content(resp)
 
     def response_json(self, resp: Any) -> Any:
@@ -495,5 +497,6 @@ class LlmClient:
         context_text: str,
         image_descriptions: Optional[List[str]] = None,
     ) -> str:
+        """reflection用のJSON応答を生成し、本文文字列だけ返す（互換API）。"""
         resp = self.generate_reflection_response(system_prompt, context_text, image_descriptions)
         return self.response_content(resp)

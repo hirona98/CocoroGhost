@@ -227,42 +227,53 @@ DEFAULT_RELATIONSHIP_CONTRACT = """
 
 
 def get_reflection_prompt() -> str:
+    """reflection用のsystem promptを返す。"""
     return REFLECTION_SYSTEM_PROMPT
 
 
 def get_fact_extract_prompt() -> str:
+    """fact抽出用のsystem promptを返す。"""
     return FACT_EXTRACT_SYSTEM_PROMPT
 
 
 def get_loop_extract_prompt() -> str:
+    """open loop抽出用のsystem promptを返す。"""
     return LOOP_EXTRACT_SYSTEM_PROMPT
 
 def get_entity_extract_prompt() -> str:
+    """entity抽出用のsystem promptを返す。"""
     return ENTITY_EXTRACT_SYSTEM_PROMPT
 
 
 def get_external_prompt() -> str:
+    """notification等の外部入力に対する応答用system promptを返す。"""
     return EXTERNAL_SYSTEM_PROMPT
 
 
 def get_meta_request_prompt() -> str:
+    """meta_request（文書生成/能動メッセージ）用system promptを返す。"""
     return META_PROACTIVE_MESSAGE_SYSTEM_PROMPT
 
 def get_default_persona_anchor() -> str:
+    """デフォルトのpersonaアンカー（ユーザー未設定時の雛形）を返す。"""
     return DEFAULT_PERSONA_ANCHOR
 
 
 def get_default_relationship_contract() -> str:
+    """デフォルトの関係契約（安全/プライバシー方針）を返す。"""
     return DEFAULT_RELATIONSHIP_CONTRACT
 
 
 def get_weekly_summary_prompt() -> str:
+    """週次サマリ生成用system promptを返す。"""
     return WEEKLY_SUMMARY_SYSTEM_PROMPT
 
 
 def get_person_summary_prompt() -> str:
+    """人物サマリ生成用system promptを返す。"""
     return PERSON_SUMMARY_SYSTEM_PROMPT
 
 
 def get_topic_summary_prompt() -> str:
+    """トピックサマリ生成用system promptを返す。"""
     return TOPIC_SUMMARY_SYSTEM_PROMPT

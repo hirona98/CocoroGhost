@@ -64,6 +64,7 @@ class _QueueHandler(logging.Handler):
         self.loop = loop
 
     def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - simple passthrough
+        """LogRecordをLogEventへ変換してキューへ投入する（例外は握り潰してログへ）。"""
         try:
             # /api/logs/stream に関するアクセスログは配信しない
             msg = record.getMessage()
@@ -127,10 +128,12 @@ def get_buffer_snapshot() -> List[LogEvent]:
 
 
 async def add_client(ws: "WebSocket") -> None:
+    """購読クライアントを登録する。"""
     _clients.add(ws)
 
 
 async def remove_client(ws: "WebSocket") -> None:
+    """購読クライアントを解除する。"""
     _clients.discard(ws)
 
 

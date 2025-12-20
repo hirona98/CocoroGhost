@@ -1,4 +1,16 @@
-"""Contextual Memory Retrieval（文脈考慮型の記憶検索）。"""
+"""
+文脈考慮型の記憶検索（Contextual Memory Retrieval）。
+
+本モジュールは「直近の会話 + ユーザー入力」を手掛かりに、過去のエピソード（対話ログ）を検索して
+“参照すべき記憶”として返すためのロジックを提供する。
+
+流れ（概略）:
+1) ハイブリッド検索（Vector 近傍探索 + FTS5/BM25）で候補IDを集める
+2) RRF（Reciprocal Rank Fusion）でランキングを統合する
+3) 文字N-gramの類似度 + 新しさ（減衰）を用いた簡易リランキングで最終結果を選ぶ
+
+※ LLM によるクエリ拡張は行わず、固定の複数クエリ（user_text / context+user_text）だけで検索する。
+"""
 
 from __future__ import annotations
 
@@ -19,13 +31,16 @@ from cocoro_ghost.unit_enums import Sensitivity, UnitKind
 from cocoro_ghost.unit_models import PayloadEpisode, Unit
 
 
-Message = Mapping[str, str]
+Message = Mapping[str, str]  # chat.completions互換の {role, content} 形式を想定
 
+# FTS5のMATCHクエリを作る際の簡易トークナイズ（空白で分割）
 _FTS5_SPLIT_RE = re.compile(r"\s+")
 
 
 @dataclass(frozen=True)
 class RankedEpisode:
+    """最終的に返す「採用済み」エピソード。"""
+
     unit_id: int
     user_text: str
     reply_text: str
@@ -36,6 +51,8 @@ class RankedEpisode:
 
 @dataclass(frozen=True)
 class CandidateEpisode:
+    """検索で拾った候補エピソード（リランキング前）。"""
+
     unit_id: int
     user_text: str
     reply_text: str
@@ -44,6 +61,7 @@ class CandidateEpisode:
 
 
 def _compact_text(text_: str) -> str:
+    """改行や連続空白を潰し、比較・検索しやすい形に正規化する。"""
     return " ".join((text_ or "").replace("\r", "").replace("\n", " ").split()).strip()
 
 
@@ -75,6 +93,7 @@ def _escape_fts5_query(raw: str, *, max_terms: int = 12) -> str:
 
 
 def _format_recent_conversation(recent_conversation: Sequence[Message], *, max_messages: int) -> str:
+    """直近会話を検索クエリ用のテキストに整形する（roleに応じてラベル付け）。"""
     if not recent_conversation:
         return ""
     messages = list(recent_conversation)[-max_messages:]
@@ -101,6 +120,12 @@ def _rrf_merge(
     max_candidates: int,
     rrf_k: int,
 ) -> tuple[list[int], dict[int, float]]:
+    """
+    RRF（Reciprocal Rank Fusion）で複数ランキングを統合する。
+
+    - 異なる検索器（Vector/BM25）を足し合わせて「どちらでも上位に出るもの」を優先する
+    - rrf_k を大きくすると、順位差の影響が緩くなる（上位偏重が弱まる）
+    """
     scores: dict[int, float] = defaultdict(float)
 
     for result_list in vector_results:
@@ -116,6 +141,7 @@ def _rrf_merge(
 
 
 def _clip_text(text_: str, *, max_chars: int, tail: bool) -> str:
+    """長すぎるテキストを切り詰める（tail=Trueなら末尾側を残す）。"""
     t = _compact_text(text_)
     if max_chars <= 0 or len(t) <= max_chars:
         return t
@@ -123,6 +149,7 @@ def _clip_text(text_: str, *, max_chars: int, tail: bool) -> str:
 
 
 def _char_ngrams(text_: str, *, n: int, max_chars: int, tail: bool) -> set[str]:
+    """文字N-gram集合を作る（検索クエリと候補の字面類似度計算に使用）。"""
     t = _clip_text(text_, max_chars=max_chars, tail=tail)
     if not t:
         return set()
@@ -132,6 +159,7 @@ def _char_ngrams(text_: str, *, n: int, max_chars: int, tail: bool) -> set[str]:
 
 
 def _dice(a: set[str], b: set[str]) -> float:
+    """Dice係数（2|A∩B|/(|A|+|B|)）。N-gram集合の重なりを0..1で表す。"""
     if not a or not b:
         return 0.0
     inter = len(a & b)
@@ -141,6 +169,7 @@ def _dice(a: set[str], b: set[str]) -> float:
 
 
 def _recency_score(*, now_ts: int, occurred_at: int, tau_days: float) -> float:
+    """新しさスコア。経過日数に対して指数減衰させる（0..1）。"""
     if occurred_at <= 0:
         return 0.0
     age_days = max(0.0, float(now_ts - occurred_at) / 86400.0)
@@ -149,7 +178,14 @@ def _recency_score(*, now_ts: int, occurred_at: int, tau_days: float) -> float:
 
 
 class Retriever:
-    """Hybrid Search（Vector + BM25）→ Heuristic Rerank の2段階検索。"""
+    """
+    記憶検索のエントリポイント。
+
+    - 第1段: Vector + BM25 のハイブリッド検索で候補を集める
+    - 第2段: 文字N-gram類似 + 新しさを使って簡易リランキングする
+
+    返却値は「高関連（先頭1件）/中関連（それ以外）」の2段階でラベル付けする。
+    """
 
     _RECENT_CONVERSATION_TURNS = 3
     _KNN_K_PER_QUERY = 20
@@ -177,6 +213,7 @@ class Retriever:
 
     @property
     def last_injection_strategy(self) -> str:
+        """直近の検索で採用した「注入戦略」の名前（デバッグ用途）。"""
         return self._last_injection_strategy
 
     def retrieve(
@@ -187,6 +224,7 @@ class Retriever:
         max_candidates: int = 60,
         max_results: int = 5,
     ) -> list[RankedEpisode]:
+        """ユーザー入力から関連する過去エピソードを検索して返す。"""
         candidates = self._search_candidates(user_text, recent_conversation, max_candidates)
         ranked = self._rerank(user_text, recent_conversation, candidates, max_results)
         return ranked
@@ -197,6 +235,7 @@ class Retriever:
         recent_conversation: Sequence[Message],
         max_candidates: int,
     ) -> list[CandidateEpisode]:
+        """検索器（Vector/BM25）で候補エピソードを集め、RRFで統合した順で返す。"""
         user_text = (user_text or "").strip()
         if not user_text or max_candidates <= 0:
             return []
@@ -210,9 +249,9 @@ class Retriever:
         else:
             original_query = user_text
 
-        # Fixed multi-query (no LLM query expansion):
-        # - user_text only (avoid recent context dominance)
-        # - context + user_text (follow conversational continuity)
+        # 固定の複数クエリ（LLM拡張なし）:
+        # - user_textのみ: 直近文脈に引っ張られすぎないようにする
+        # - context + user_text: 会話の流れ（共参照/省略）を拾いやすくする
         all_queries: list[str] = []
         user_only_query = user_text
         if user_only_query:
@@ -221,6 +260,7 @@ class Retriever:
             all_queries.append(original_query)
 
         try:
+            # ベクトル検索用の埋め込みを一括生成する（クエリ数ぶん）。
             embeddings = self.llm_client.generate_embedding(all_queries)
         except Exception as exc:  # noqa: BLE001
             self.logger.debug("embedding failed", exc_info=exc)
@@ -233,6 +273,7 @@ class Retriever:
         vector_results: list[list[int]] = []
         for emb in embeddings:
             try:
+                # DB内のエピソードembeddingに対して近傍探索し、unit_idのリストにする。
                 rows = search_similar_unit_ids(
                     self.db,
                     query_embedding=emb,
@@ -248,8 +289,10 @@ class Retriever:
 
         bm25_results: list[list[int]] = []
         for q in all_queries:
+            # FTS5/BM25検索（字面検索）。vectorとは別の観点で拾う。
             bm25_results.append(self._bm25_search(q, k=self._BM25_K_PER_QUERY, occurred_day_range=(d0, d1)))
 
+        # RRFで統合して、取り回しの良い候補IDとスコアに変換する。
         candidate_ids, rrf_scores = _rrf_merge(
             vector_results,
             bm25_results,
@@ -259,6 +302,7 @@ class Retriever:
         if not candidate_ids:
             return []
 
+        # 候補IDの本文（ユーザー/返信）をまとめて取得する。
         rows = (
             self.db.query(Unit, PayloadEpisode)
             .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
@@ -272,6 +316,7 @@ class Retriever:
         )
         by_id: dict[int, CandidateEpisode] = {}
         for u, pe in rows:
+            # occurred_atが無いレコードもあり得るため、created_atでフォールバックする。
             ts = int(u.occurred_at or u.created_at or now_ts)
             by_id[int(u.id)] = CandidateEpisode(
                 unit_id=int(u.id),
@@ -281,6 +326,7 @@ class Retriever:
                 rrf_score=float(rrf_scores.get(int(u.id), 0.0)),
             )
 
+        # RRFの順序を保って返す（DB取得順とは一致しない）。
         ordered: list[CandidateEpisode] = []
         for uid in candidate_ids:
             c = by_id.get(int(uid))
@@ -289,13 +335,15 @@ class Retriever:
         return ordered
 
     def _bm25_search(self, query: str, *, k: int, occurred_day_range: tuple[int, int]) -> list[int]:
+        """FTS5のBM25でエピソードを検索し、unit_idのリストを返す（score順）。"""
         raw = _compact_text(str(query or ""))
         if not raw or k <= 0:
             return []
 
-        # FTS5の構文と衝突しやすい文字を含むケースがあるため、MATCH用にエスケープする。
+        # FTS5の構文と衝突しやすい入力があり得るため、MATCH用にエスケープする。
         q = _escape_fts5_query(raw[:256])
 
+        # occurred_at（またはcreated_at）を日単位に丸めて期間フィルタする。
         day_filter = ""
         params: dict[str, Any] = {
             "query": q,
@@ -335,6 +383,15 @@ class Retriever:
         candidates: Sequence[CandidateEpisode],
         max_results: int,
     ) -> list[RankedEpisode]:
+        """
+        候補を簡易スコアリングして上位だけ返す。
+
+        - RRF（検索器の統合順位）を基礎点として使う
+        - 文字N-gramのDice係数で「字面の近さ」を足す（クエリ側の情報量に応じて強さを調整）
+        - 新しさ（指数減衰）で直近の記憶を少しだけ優先する
+
+        さらに、N-gramの重なりが大きい候補は重複とみなして間引く。
+        """
         self._last_injection_strategy = "quote_key_parts"
 
         user_text = (user_text or "").strip()
@@ -348,20 +405,24 @@ class Retriever:
 
         now_ts = int(time.time())
         query_text = f"{context}\n---\n{user_text}" if context else user_text
+        # クエリは末尾側（直近の発話）を重視するため、tail=Trueで切り詰める。
         query_ngrams = _char_ngrams(
             query_text,
             n=self._RERANK_NGRAM_N,
             max_chars=self._RERANK_QUERY_MAX_CHARS,
             tail=True,
         )
+        # クエリが短いほどN-gram集合が小さくなりやすいので、類似度の寄与を弱める。
         strength = min(1.0, float(len(query_ngrams)) / 30.0) if query_ngrams else 0.0
 
+        # rrf_scoreは検索回によってスケールが変わるので、最大値で正規化する。
         max_rrf = max((float(c.rrf_score) for c in candidates), default=0.0)
         if max_rrf <= 0.0:
             max_rrf = 1.0
 
         scored: list[tuple[float, float, float, float, CandidateEpisode, set[str]]] = []
         for c in candidates:
+            # 候補本文は user_text + reply_text をまとめたものを比較対象にする。
             episode_text = "\n".join([c.user_text, c.reply_text]).strip()
             episode_ngrams = _char_ngrams(
                 episode_text,
@@ -369,9 +430,13 @@ class Retriever:
                 max_chars=self._RERANK_EPISODE_MAX_CHARS,
                 tail=False,
             )
+            # lex: 字面類似（N-gramの重なり）
             lex = _dice(query_ngrams, episode_ngrams) * strength
+            # rec: 新しさ（古いほど小さくなる）
             rec = _recency_score(now_ts=now_ts, occurred_at=int(c.occurred_at), tau_days=self._RERANK_RECENCY_TAU_DAYS)
+            # rrf_norm: 統合順位の正規化スコア
             rrf_norm = float(c.rrf_score) / float(max_rrf)
+            # final: 3要素の重み付き和（学習ではなく手動チューニング）
             final = (
                 self._RERANK_W_RRF * rrf_norm
                 + self._RERANK_W_LEX * lex
@@ -389,16 +454,19 @@ class Retriever:
             if final < self._RERANK_MEDIUM_THRESHOLD:
                 continue
             if picked_ngrams and episode_ngrams:
+                # ほぼ同じ内容の候補が並ぶと注入が冗長になるため、類似が高いものは落とす。
                 if any(_dice(episode_ngrams, prev) >= self._RERANK_DUP_THRESHOLD for prev in picked_ngrams):
                     continue
             picked.append((final, rrf_norm, lex, rec, c))
             picked_ngrams.append(episode_ngrams)
 
+        # 先頭が十分強くない場合は、誤注入を避けるため「何も返さない」。
         if not picked or picked[0][0] < self._RERANK_HIGH_THRESHOLD:
             return []
 
         ranked: list[RankedEpisode] = []
         for idx, (final, rrf_norm, lex, rec, c) in enumerate(picked):
+            # relevanceは2値で十分という前提（プロンプト側で使いやすい）。
             relevance: Literal["high", "medium"] = "high" if idx == 0 else "medium"
             reason = f"heuristic rerank: score={final:.3f} rrf={rrf_norm:.3f} lex={lex:.3f} rec={rec:.3f}"
             ranked.append(

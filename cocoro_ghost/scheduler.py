@@ -30,10 +30,12 @@ if TYPE_CHECKING:
 
 
 def now_utc_ts() -> int:
+    """現在時刻（UTC）をUNIX秒で返す。"""
     return int(time.time())
 
 
 def utc_week_key(ts: int) -> str:
+    """UNIX秒からISO週キー（YYYY-Www）を作る。"""
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     iso_year, iso_week, _ = dt.isocalendar()
     return f"{iso_year}-W{iso_week:02d}"
@@ -179,6 +181,7 @@ def _get_user_entity_id(db: Session) -> Optional[int]:
 
 
 def should_inject_episodes(relevant_episodes: Sequence["RankedEpisode"]) -> bool:
+    """検索結果を会話に注入するべきか（high>=1 または medium>=2）を判定する。"""
     if not relevant_episodes:
         return False
 
@@ -208,6 +211,7 @@ def build_memory_pack(
     llm_client: "LlmClient | None" = None,
     entity_fallback: bool = False,
 ) -> str:
+    """会話に注入する「内部コンテキスト（MemoryPack）」を予算内で組み立てる。"""
     max_chars = _token_budget_to_char_budget(max_inject_tokens)
     sensitivity_max = int(Sensitivity.PRIVATE)
     persona_text = (persona_text or "").strip() or None
@@ -291,6 +295,7 @@ def build_memory_pack(
     scopes = ["weekly", "person", "topic"]
 
     def add_summary(scope_type: int, scope_key: Optional[str], *, fallback_latest: bool = False) -> None:
+        """指定スコープのサマリを1つ取り出してsummary_textsへ追加する（無ければ何もしない）。"""
         base_q = (
             db.query(Unit, PayloadSummary)
             .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
@@ -450,6 +455,7 @@ def build_memory_pack(
                 capsule_parts.append(f"image: {s}")
 
     def section(title: str, body_lines: Sequence[str]) -> str:
+        """MemoryPackの1セクション（[TITLE] ...）を組み立てる。"""
         if not body_lines:
             return f"[{title}]\n\n"
         return f"[{title}]\n" + "\n".join(body_lines) + "\n\n"
@@ -462,6 +468,7 @@ def build_memory_pack(
         loops: Sequence[str],
         evidence: Sequence[str],
     ) -> str:
+        """各セクションを結合してMemoryPack全体を生成する。"""
         parts: List[str] = []
         parts.append(section("PERSONA_ANCHOR", [persona_text.strip()] if persona_text else []))
         parts.append(section("RELATIONSHIP_CONTRACT", [contract_text.strip()] if contract_text else []))

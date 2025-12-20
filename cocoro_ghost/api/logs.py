@@ -29,6 +29,7 @@ async def _authenticate(websocket: WebSocket) -> bool:
 
 @router.websocket("/stream")
 async def stream_logs(websocket: WebSocket) -> None:
+    """アプリログをWebSocketでストリーミング配信する。"""
     if not await _authenticate(websocket):
         return
 

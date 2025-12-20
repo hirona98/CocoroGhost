@@ -12,6 +12,7 @@ from cocoro_ghost import prompts
 
 @dataclass
 class EpisodeReflection:
+    """reflectionの正規化済み結果（DB保存用）。"""
     reflection_text: str
     emotion_label: str
     emotion_intensity: float
@@ -27,6 +28,7 @@ def generate_reflection(
     context_text: str,
     image_descriptions: Optional[List[str]] = None,
 ) -> EpisodeReflection:
+    """LLMでreflection JSONを生成し、型を検証してEpisodeReflectionに落とす。"""
     ctx = context_text
     if image_descriptions:
         ctx = "\n".join([ctx, *image_descriptions])
@@ -51,4 +53,3 @@ def generate_reflection(
         )
     except Exception as exc:  # noqa: BLE001
         raise ValueError("invalid reflection fields") from exc
-

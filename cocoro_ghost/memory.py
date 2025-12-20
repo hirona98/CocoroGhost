@@ -34,6 +34,7 @@ _SUMMARY_REFRESH_INTERVAL_SECONDS = 6 * 3600
 
 
 def _matches_exclude_keyword(pattern: str, text: str) -> bool:
+    """除外キーワード（部分一致 or 正規表現）にマッチするか判定する。"""
     if not pattern:
         return False
     if _REGEX_META_CHARS.search(pattern):
@@ -55,16 +56,19 @@ _META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
 
 
 def _now_utc_ts() -> int:
+    """現在時刻（UTC）をUNIX秒で返す。"""
     return int(time.time())
 
 
 def _utc_week_key(ts: int) -> str:
+    """UNIX秒からISO週キー（YYYY-Www）を作る。"""
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     iso_year, iso_week, _ = dt.isocalendar()
     return f"{iso_year}-W{iso_week:02d}"
 
 
 def _get_memory_lock(memory_id: str) -> threading.Lock:
+    """memory_idごとの排他ロックを取得（同一DBへの同時書き込みを抑制）。"""
     lock = _memory_locks.get(memory_id)
     if lock is None:
         lock = threading.Lock()
@@ -73,14 +77,18 @@ def _get_memory_lock(memory_id: str) -> threading.Lock:
 
 
 def _decode_base64_image(base64_str: str) -> bytes:
+    """base64文字列をバイト列へ復号する。"""
     return base64.b64decode(base64_str)
 
 
 def _json_dumps(payload: Any) -> str:
+    """DB保存向けにJSONを安定した形式でダンプする（日本語保持）。"""
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 class MemoryManager:
+    """会話/通知/メタ要求/キャプチャをEpisodeとして扱い、DB保存と後処理を統括する。"""
+
     def __init__(self, llm_client: LlmClient, config_store: ConfigStore):
         self.llm_client = llm_client
         self.config_store = config_store
@@ -104,6 +112,7 @@ class MemoryManager:
         payload.image_summary = image_summary
 
     def _sse(self, event: str, payload: dict) -> str:
+        """SSE（Server-Sent Events）形式の1メッセージを構築する。"""
         return f"event: {event}\ndata: {_json_dumps(payload)}\n\n"
 
     def _has_pending_weekly_summary_job(self, db, *, week_key: str) -> bool:
@@ -250,6 +259,12 @@ class MemoryManager:
         request: schemas.ChatRequest,
         background_tasks: Optional[BackgroundTasks] = None,
     ) -> Generator[str, None, None]:
+        """
+        /chat の本体処理。
+
+        - MemoryPack（persona/contract + 関連記憶）を組み立ててLLMへ送る
+        - 返信をSSEでストリームし、最後にEpisodeとして保存する
+        """
         cfg = self.config_store.config
         memory_id = request.memory_id or self.config_store.memory_id
         lock = _get_memory_lock(memory_id)
@@ -347,6 +362,7 @@ class MemoryManager:
         *,
         background_tasks: Optional[BackgroundTasks] = None,
     ) -> schemas.NotificationResponse:
+        """外部システムからの通知をEpisodeとして保存し、必要なジョブをenqueueする。"""
         memory_id = self.config_store.memory_id
         lock = _get_memory_lock(memory_id)
         now_ts = _now_utc_ts()
@@ -481,6 +497,11 @@ class MemoryManager:
         *,
         background_tasks: Optional[BackgroundTasks] = None,
     ) -> schemas.MetaRequestResponse:
+        """
+        文書生成（meta_request）をEpisodeとして扱い、生成結果をreply_textに保存する。
+
+        background_tasks があれば非同期実行し、結果はevent_streamで通知する。
+        """
         memory_id = request.memory_id or self.config_store.memory_id
         lock = _get_memory_lock(memory_id)
         now_ts = _now_utc_ts()
@@ -609,6 +630,7 @@ class MemoryManager:
         )
 
     def handle_capture(self, request: schemas.CaptureRequest) -> schemas.CaptureResponse:
+        """スクリーンショット/カメラ画像を要約してEpisodeとして保存する。"""
         cfg = self.config_store.config
         memory_id = self.config_store.memory_id
         lock = _get_memory_lock(memory_id)

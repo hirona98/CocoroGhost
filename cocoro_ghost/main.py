@@ -20,6 +20,7 @@ logger = __import__("logging").getLogger(__name__)
 
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+    """Bearerトークンを検証し、OKならトークン文字列を返す。"""
     token = get_config_store().config.token
     if credentials.credentials != token:
         logger.warning("Authentication failed: invalid token")
@@ -28,6 +29,7 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) 
 
 
 def create_app() -> FastAPI:
+    """アプリ生成と初期化（設定DB→プリセット→記憶DB→ルータ登録）をまとめて行う。"""
     from cocoro_ghost.config import (
         ConfigStore,
         build_runtime_config,
@@ -113,31 +115,37 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     async def health():
+        """稼働確認用のヘルスチェック。"""
         return {"status": "healthy"}
 
     @app.get("/")
     async def root():
+        """ルートの簡易応答（動作確認用）。"""
         return {"message": "CocoroGhost API is running"}
 
     @app.on_event("startup")
     @repeat_every(seconds=600, wait_first=True)
     async def periodic_cleanup() -> None:
+        """定期的な不要ファイル掃除（画像など）。"""
         cleanup_old_images()
 
     @app.on_event("startup")
     async def start_log_stream_dispatcher() -> None:
+        """ログSSE配信のdispatcherを起動。"""
         loop = asyncio.get_running_loop()
         log_stream.install_log_handler(loop)
         await log_stream.start_dispatcher()
 
     @app.on_event("startup")
     async def start_event_stream_dispatcher() -> None:
+        """イベントSSE配信のdispatcherを起動。"""
         loop = asyncio.get_running_loop()
         event_stream.install(loop)
         await event_stream.start_dispatcher()
 
     @app.on_event("startup")
     async def start_internal_worker() -> None:
+        """同一プロセス内のWorkerスレッドを起動（jobsテーブルを処理）。"""
         from cocoro_ghost import internal_worker
 
         internal_worker.start(memory_id=runtime_config.memory_id, embedding_dimension=runtime_config.embedding_dimension)
@@ -145,14 +153,17 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def stop_log_stream_dispatcher() -> None:
+        """ログSSE配信のdispatcherを停止。"""
         await log_stream.stop_dispatcher()
 
     @app.on_event("shutdown")
     async def stop_event_stream_dispatcher() -> None:
+        """イベントSSE配信のdispatcherを停止。"""
         await event_stream.stop_dispatcher()
 
     @app.on_event("shutdown")
     async def stop_internal_worker() -> None:
+        """同一プロセス内Workerスレッドを停止。"""
         from cocoro_ghost import internal_worker
 
         await asyncio.to_thread(internal_worker.stop, 5.0)

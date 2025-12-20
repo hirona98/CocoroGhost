@@ -13,11 +13,13 @@ _stop_event: threading.Event | None = None
 
 
 def is_alive() -> bool:
+    """内蔵Workerスレッドが稼働中か返す。"""
     t = _thread
     return t is not None and t.is_alive()
 
 
 def start(*, memory_id: str, embedding_dimension: int) -> None:
+    """内蔵Workerスレッドを起動する（起動済みなら何もしない）。"""
     from cocoro_ghost.deps import get_llm_client
 
     with _lock:
@@ -49,6 +51,7 @@ def start(*, memory_id: str, embedding_dimension: int) -> None:
 
 
 def stop(*, timeout_seconds: float = 5.0) -> None:
+    """内蔵Workerスレッドに停止を通知し、指定秒数までjoinする。"""
     with _lock:
         global _thread, _stop_event
         if _stop_event is not None:

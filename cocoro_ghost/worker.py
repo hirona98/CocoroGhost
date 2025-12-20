@@ -47,14 +47,17 @@ logger = logging.getLogger(__name__)
 
 
 def _now_utc_ts() -> int:
+    """現在時刻（UTC）をUNIX秒で返す。"""
     return int(time.time())
 
 
 def _json_dumps(payload: Any) -> str:
+    """DB保存用にJSONへダンプする（日本語保持）。"""
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def _json_loads(payload_json: str) -> Dict[str, Any]:
+    """jobs.payload_json を dict として安全に読み込む（壊れていたら空dict）。"""
     try:
         obj = json.loads(payload_json)
         return obj if isinstance(obj, dict) else {}
@@ -63,6 +66,7 @@ def _json_loads(payload_json: str) -> Dict[str, Any]:
 
 
 def _parse_optional_epoch_seconds(value: Any) -> Optional[int]:
+    """任意の値を「UNIX秒（int）」として解釈できるなら変換する。"""
     if value is None:
         return None
     if isinstance(value, bool):
@@ -89,6 +93,7 @@ def _parse_optional_epoch_seconds(value: Any) -> Optional[int]:
 
 
 def _backoff_seconds(tries: int) -> int:
+    """失敗回数に応じた簡易バックオフ秒を返す（最大1時間）。"""
     return min(3600, max(5, 2 ** max(0, tries)))
 
 
@@ -109,6 +114,7 @@ def _has_pending_job_with_payload(session: Session, *, kind: str, payload_key: s
 
 
 def _enqueue_job(session: Session, *, kind: str, payload: Dict[str, Any], now_ts: int) -> None:
+    """jobsテーブルへ1件追加する（commitは呼び出し側）。"""
     session.add(
         Job(
             kind=kind,
@@ -124,6 +130,7 @@ def _enqueue_job(session: Session, *, kind: str, payload: Dict[str, Any], now_ts
 
 
 def claim_next_job(session: Session, *, now_ts: int) -> Optional[int]:
+    """実行可能な次ジョブを1件RUNNINGにしてclaimし、そのjob_idを返す。"""
     job = (
         session.query(Job)
         .filter(Job.status == int(JobStatus.QUEUED), Job.run_after <= now_ts)
@@ -147,6 +154,7 @@ def process_job(
     now_ts: int,
     max_tries: int,
 ) -> bool:
+    """job_idの処理を実行し、成功/失敗を返す（失敗時はtries/run_after/statusを更新）。"""
     job = session.query(Job).filter(Job.id == job_id).one_or_none()
     if job is None:
         return False
@@ -202,6 +210,7 @@ def process_due_jobs(
     max_tries: int = 5,
     sleep_when_empty: float = 0.0,
 ) -> int:
+    """claim→processを繰り返して、最大max_jobs件まで処理する。"""
     processed = 0
     for _ in range(max_jobs):
         now_ts = _now_utc_ts()
@@ -236,6 +245,7 @@ def run_forever(
     periodic_interval_seconds: float = 30.0,
     stop_event: threading.Event | None = None,
 ) -> None:
+    """Workerのメインループ。ジョブ処理と定期enqueueを同一プロセス内で回す。"""
     logger.info("worker start", extra={"memory_id": memory_id})
     last_periodic_at: float = 0.0
     while True:

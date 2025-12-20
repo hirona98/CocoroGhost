@@ -14,6 +14,7 @@ _DATA_URI_IMAGE_RE = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.*)$", r
 
 
 def data_uri_image_to_base64(data_uri: str) -> str:
+    """data URI（data:image/*;base64,...）からbase64部分だけを取り出して検証する。"""
     m = _DATA_URI_IMAGE_RE.match((data_uri or "").strip())
     if not m:
         raise ValueError("invalid data URI (expected data:image/*;base64,...)")
@@ -28,6 +29,7 @@ def data_uri_image_to_base64(data_uri: str) -> str:
 
 
 class ChatRequest(BaseModel):
+    """/chat 用リクエスト。"""
     memory_id: Optional[str] = None
     user_text: str
     images: List[Dict[str, str]] = Field(default_factory=list)
@@ -35,12 +37,14 @@ class ChatRequest(BaseModel):
 
 
 class NotificationRequest(BaseModel):
+    """/notification 用リクエスト（内部形式）。"""
     source_system: str
     text: str
     images: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class NotificationV1Request(BaseModel):
+    """/notification/v1 用リクエスト（互換API）。"""
     from_: str = Field(validation_alias="from")
     message: str = Field(validation_alias="message")
     images: List[str] = Field(default_factory=list, max_length=5)
@@ -56,10 +60,12 @@ class NotificationV1Request(BaseModel):
 
 
 class NotificationResponse(BaseModel):
+    """通知の保存結果（作成したepisode unit_id）。"""
     unit_id: int
 
 
 class MetaRequestRequest(BaseModel):
+    """/meta_request 用リクエスト（内部形式）。"""
     memory_id: Optional[str] = None
     instruction: str
     payload_text: str
@@ -67,6 +73,7 @@ class MetaRequestRequest(BaseModel):
 
 
 class MetaRequestV1Request(BaseModel):
+    """/meta_request/v1 用リクエスト（互換API）。"""
     prompt: str
     images: List[str] = Field(default_factory=list, max_length=5)
 
@@ -81,21 +88,25 @@ class MetaRequestV1Request(BaseModel):
 
 
 class MetaRequestResponse(BaseModel):
+    """メタリクエストの保存結果（作成したepisode unit_id）。"""
     unit_id: int
 
 
 class CaptureRequest(BaseModel):
+    """/capture 用リクエスト（スクショ/カメラ画像をepisodeとして保存）。"""
     capture_type: str  # "desktop" or "camera"
     image_base64: str  # BASE64エンコードされた画像データ
     context_text: Optional[str] = None
 
 
 class CaptureResponse(BaseModel):
+    """captureの保存結果。"""
     episode_id: int
     stored: bool
 
 
 class UnitMeta(BaseModel):
+    """Unitのメタ情報（一覧/詳細共通）。"""
     id: int
     kind: int
     occurred_at: Optional[int] = None
@@ -113,15 +124,18 @@ class UnitMeta(BaseModel):
 
 
 class UnitListResponse(BaseModel):
+    """Unit一覧レスポンス。"""
     items: List[UnitMeta]
 
 
 class UnitDetailResponse(BaseModel):
+    """Unit詳細レスポンス（payloadはkindに応じて可変）。"""
     unit: UnitMeta
     payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 class UnitUpdateRequest(BaseModel):
+    """管理APIでのUnitメタ更新リクエスト。"""
     pin: Optional[int] = None
     sensitivity: Optional[int] = None
     state: Optional[int] = None
@@ -131,6 +145,7 @@ class UnitUpdateRequest(BaseModel):
 
 
 class WeeklySummaryEnqueueRequest(BaseModel):
+    """週次サマリ生成ジョブ投入リクエスト。"""
     week_key: Optional[str] = None
 
 

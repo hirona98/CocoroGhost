@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def cleanup_old_images(hours: int = 72, raw_dir_name: str = "raw_images") -> None:
+    """データディレクトリ配下の生画像を、指定時間より古いものから削除する。"""
     raw_dir = Path(get_data_dir()) / raw_dir_name
     if not raw_dir.exists():
         return
@@ -30,4 +31,3 @@ def cleanup_old_images(hours: int = 72, raw_dir_name: str = "raw_images") -> Non
                 path.unlink(missing_ok=True)
         except Exception as exc:  # noqa: BLE001
             logger.warning("画像削除に失敗", exc_info=exc, extra={"path": str(path)})
-
