@@ -30,6 +30,7 @@
 - Current: Episode保存後に既定ジョブ（reflect/entities/facts/loops/embeddings/capsule_refresh）をenqueue。
 - Current: weekly_summary は「現週サマリが無い」または「最終更新からクールダウン経過（6h）かつ新規Episodeあり」のとき自動enqueue（重複抑制あり、管理APIからもenqueue可）。
 - Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）をベストエフォートでenqueue（重複抑制あり）。
+- Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic/capsule）も実施できる。
 - Current: SchedulerのEntity解決は alias/name の文字列一致 + 一致が無い場合のみ（短文除外あり）LLMフォールバック。
 - Current: Episode注入は Scheduler が `quote_key_parts` / `summarize` / `full` に対応（現状 Retriever は `quote_key_parts` 固定）。
 - Planned: 定期実行（cron）による summary refresh（relationship/person/topic）と Lifecycle 統合。

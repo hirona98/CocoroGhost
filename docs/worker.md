@@ -62,6 +62,24 @@
   - 通常 `memory_id` は `settings.db` の `embedding_presets.id`（UUID）で、`active_embedding_preset_id` が既定で使われる
   - 例: `python -X utf8 run_worker.py --memory-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 
+## 定期実行（cron無し）
+
+cron が無い環境向けに、Worker（jobs処理ループ）内で定期的に jobs を enqueue する。
+
+- enqueue 対象: `weekly_summary` / `person_summary_refresh` / `topic_summary_refresh` / `capsule_refresh`
+- 重複抑制: queued/running の同種ジョブがあれば enqueue しない
+- クールダウン: summary/capsule の更新頻度を抑制（デフォルト: 30秒ごとに判定）
+
+起動例:
+
+```bash
+python -X utf8 run.py
+```
+
+補足:
+- 既定では `run.py` の起動時に **内蔵Worker（バックグラウンド）** が開始される（起動コマンド1本）。
+- 別プロセスでWorkerを動かしたい場合は `COCORO_GHOST_INTERNAL_WORKER=0` で内蔵Workerを無効化してから `run_worker.py` を起動する。
+
 ## topic_tags の保存（推奨）
 
 - `units.topic_tags` は **JSON array文字列**で保存する（CSVは使わない）

@@ -1,0 +1,391 @@
+"""cron無しの定期実行（jobs enqueue）ユーティリティ。"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any, Optional
+
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from cocoro_ghost.scheduler import utc_week_key
+from cocoro_ghost.unit_enums import EntityType, JobStatus, Sensitivity, SummaryScopeType, UnitKind, UnitState
+from cocoro_ghost.unit_models import Entity, Job, PayloadSummary, Unit, UnitEntity
+
+
+def _now_ts_to_since_ts(now_ts: int, *, days: int) -> int:
+    return int(now_ts) - max(0, int(days)) * 86400
+
+
+def _json_dumps(obj: Any) -> str:
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def _json_loads(payload_json: str) -> dict[str, Any]:
+    try:
+        data = json.loads(payload_json or "{}")
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _has_pending_job(session: Session, *, kind: str, predicate) -> bool:
+    rows = (
+        session.query(Job.payload_json)
+        .filter(
+            Job.kind == kind,
+            Job.status.in_([int(JobStatus.QUEUED), int(JobStatus.RUNNING)]),
+        )
+        .order_by(Job.id.desc())
+        .limit(200)
+        .all()
+    )
+    for (payload_json,) in rows:
+        if predicate(_json_loads(payload_json)):
+            return True
+    return False
+
+
+def _enqueue_job(session: Session, *, kind: str, payload: dict[str, Any], now_ts: int) -> None:
+    session.add(
+        Job(
+            kind=kind,
+            payload_json=_json_dumps(payload),
+            status=int(JobStatus.QUEUED),
+            run_after=int(now_ts),
+            tries=0,
+            last_error=None,
+            created_at=int(now_ts),
+            updated_at=int(now_ts),
+        )
+    )
+
+
+def _latest_summary_updated_at(
+    session: Session,
+    *,
+    scope_type: int,
+    scope_key: str,
+    max_sensitivity: int,
+) -> Optional[int]:
+    row = (
+        session.query(Unit.updated_at, Unit.created_at)
+        .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
+        .filter(
+            Unit.kind == int(UnitKind.SUMMARY),
+            Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+            Unit.sensitivity <= int(max_sensitivity),
+            PayloadSummary.scope_type == int(scope_type),
+            PayloadSummary.scope_key == str(scope_key),
+        )
+        .order_by(Unit.updated_at.desc().nulls_last(), Unit.id.desc())
+        .first()
+    )
+    if row is None:
+        return None
+    updated_at, created_at = row
+    ts = int(updated_at or created_at or 0)
+    return ts if ts > 0 else None
+
+
+def maybe_enqueue_weekly_summary(
+    session: Session,
+    *,
+    now_ts: int,
+    cooldown_seconds: int = 6 * 3600,
+    max_sensitivity: int = int(Sensitivity.PRIVATE),
+) -> bool:
+    """現週の relationship weekly_summary を必要ならenqueueする（重複抑制 + クールダウン）。"""
+    week_key = utc_week_key(int(now_ts))
+
+    if _has_pending_job(
+        session,
+        kind="weekly_summary",
+        predicate=lambda p: (str(p.get("week_key") or "").strip() in {"", week_key}),
+    ):
+        return False
+
+    updated_at = _latest_summary_updated_at(
+        session,
+        scope_type=int(SummaryScopeType.RELATIONSHIP),
+        scope_key=week_key,
+        max_sensitivity=max_sensitivity,
+    )
+    if updated_at is None:
+        _enqueue_job(session, kind="weekly_summary", payload={"week_key": week_key}, now_ts=now_ts)
+        return True
+
+    if int(now_ts) - int(updated_at) < int(cooldown_seconds):
+        return False
+
+    new_episode = (
+        session.query(Unit.id)
+        .filter(
+            Unit.kind == int(UnitKind.EPISODE),
+            Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+            Unit.sensitivity <= int(max_sensitivity),
+            Unit.occurred_at.isnot(None),
+            Unit.occurred_at > int(updated_at),
+        )
+        .limit(1)
+        .scalar()
+    )
+    if new_episode is None:
+        return False
+
+    _enqueue_job(session, kind="weekly_summary", payload={"week_key": week_key}, now_ts=now_ts)
+    return True
+
+
+def maybe_enqueue_capsule_refresh(
+    session: Session,
+    *,
+    now_ts: int,
+    interval_seconds: int = 30 * 60,
+    limit: int = 5,
+    max_sensitivity: int = int(Sensitivity.PRIVATE),
+) -> bool:
+    """capsule_refresh を一定間隔でenqueueする（重複抑制）。"""
+    if _has_pending_job(
+        session,
+        kind="capsule_refresh",
+        predicate=lambda p: int(p.get("limit") or 0) == int(limit),
+    ):
+        return False
+
+    last_capsule_ts = (
+        session.query(Unit.updated_at, Unit.created_at)
+        .filter(
+            Unit.kind == int(UnitKind.CAPSULE),
+            Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+            Unit.sensitivity <= int(max_sensitivity),
+        )
+        .order_by(Unit.updated_at.desc().nulls_last(), Unit.id.desc())
+        .first()
+    )
+    if last_capsule_ts is not None:
+        updated_at, created_at = last_capsule_ts
+        ts = int(updated_at or created_at or 0)
+        if ts > 0 and int(now_ts) - ts < int(interval_seconds):
+            return False
+
+    _enqueue_job(session, kind="capsule_refresh", payload={"limit": int(limit)}, now_ts=now_ts)
+    return True
+
+
+def _entity_has_new_episode_since(
+    session: Session,
+    *,
+    entity_id: int,
+    since_ts: int,
+    max_sensitivity: int,
+) -> bool:
+    row = (
+        session.query(Unit.id)
+        .join(UnitEntity, UnitEntity.unit_id == Unit.id)
+        .filter(
+            UnitEntity.entity_id == int(entity_id),
+            Unit.kind == int(UnitKind.EPISODE),
+            Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+            Unit.sensitivity <= int(max_sensitivity),
+            func.coalesce(Unit.occurred_at, Unit.created_at) > int(since_ts),
+        )
+        .limit(1)
+        .scalar()
+    )
+    return row is not None
+
+
+def _pick_entities_to_refresh(
+    session: Session,
+    *,
+    now_ts: int,
+    window_days: int,
+    max_candidates: int,
+    max_sensitivity: int,
+) -> list[tuple[int, int]]:
+    """直近のエピソードで頻出した entity_id と etype を返す（weight合計の降順）。"""
+    since_ts = _now_ts_to_since_ts(now_ts, days=window_days)
+    rows = (
+        session.query(UnitEntity.entity_id, func.sum(UnitEntity.weight).label("w"))
+        .join(Unit, Unit.id == UnitEntity.unit_id)
+        .filter(
+            Unit.kind == int(UnitKind.EPISODE),
+            Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+            Unit.sensitivity <= int(max_sensitivity),
+            func.coalesce(Unit.occurred_at, Unit.created_at) >= int(since_ts),
+        )
+        .group_by(UnitEntity.entity_id)
+        .order_by(func.sum(UnitEntity.weight).desc(), UnitEntity.entity_id.asc())
+        .limit(int(max_candidates))
+        .all()
+    )
+    entity_ids = [int(eid) for eid, _w in rows]
+    if not entity_ids:
+        return []
+
+    ent_rows = session.query(Entity.id, Entity.etype).filter(Entity.id.in_(entity_ids)).all()
+    etype_by_id = {int(eid): int(etype) for eid, etype in ent_rows}
+
+    picked: list[tuple[int, int]] = []
+    for eid in entity_ids:
+        etype = etype_by_id.get(int(eid))
+        if etype is None:
+            continue
+        picked.append((int(eid), int(etype)))
+    return picked
+
+
+def maybe_enqueue_entity_summaries(
+    session: Session,
+    *,
+    now_ts: int,
+    cooldown_seconds: int = 12 * 3600,
+    window_days: int = 14,
+    max_person: int = 3,
+    max_topic: int = 3,
+    max_sensitivity: int = int(Sensitivity.PRIVATE),
+) -> dict[str, int]:
+    """person/topic の summary refresh を周期的にenqueueする（重複抑制 + クールダウン + 新規Episode判定）。"""
+    stats = {"person": 0, "topic": 0}
+    candidates = _pick_entities_to_refresh(
+        session,
+        now_ts=now_ts,
+        window_days=window_days,
+        max_candidates=max(12, max_person + max_topic),
+        max_sensitivity=max_sensitivity,
+    )
+    if not candidates:
+        return stats
+
+    person_ids: list[int] = []
+    topic_ids: list[int] = []
+    for entity_id, etype in candidates:
+        if etype == int(EntityType.PERSON) and len(person_ids) < int(max_person):
+            person_ids.append(int(entity_id))
+        elif etype == int(EntityType.TOPIC) and len(topic_ids) < int(max_topic):
+            topic_ids.append(int(entity_id))
+        if len(person_ids) >= int(max_person) and len(topic_ids) >= int(max_topic):
+            break
+
+    if person_ids:
+        for entity_id in person_ids:
+            if _has_pending_job(
+                session,
+                kind="person_summary_refresh",
+                predicate=lambda p, _id=entity_id: int(p.get("entity_id") or 0) == int(_id),
+            ):
+                continue
+
+            scope_key = f"person:{int(entity_id)}"
+            updated_at = _latest_summary_updated_at(
+                session,
+                scope_type=int(SummaryScopeType.PERSON),
+                scope_key=scope_key,
+                max_sensitivity=max_sensitivity,
+            )
+            if updated_at is not None and int(now_ts) - int(updated_at) < int(cooldown_seconds):
+                continue
+            if updated_at is not None and not _entity_has_new_episode_since(
+                session,
+                entity_id=int(entity_id),
+                since_ts=int(updated_at),
+                max_sensitivity=max_sensitivity,
+            ):
+                continue
+
+            _enqueue_job(session, kind="person_summary_refresh", payload={"entity_id": int(entity_id)}, now_ts=now_ts)
+            stats["person"] += 1
+
+    if topic_ids:
+        # topic summary の scope_key は `topic:{topic_key}` なので、Entityから key を解決する。
+        ent_rows = session.query(Entity.id, Entity.normalized, Entity.name).filter(Entity.id.in_(topic_ids)).all()
+        topic_key_by_id: dict[int, str] = {}
+        for eid, normalized, name in ent_rows:
+            key = str((normalized or name or "")).strip().lower()
+            if key:
+                topic_key_by_id[int(eid)] = key
+
+        for entity_id in topic_ids:
+            if entity_id not in topic_key_by_id:
+                continue
+            if _has_pending_job(
+                session,
+                kind="topic_summary_refresh",
+                predicate=lambda p, _id=entity_id: int(p.get("entity_id") or 0) == int(_id),
+            ):
+                continue
+
+            topic_key = topic_key_by_id[int(entity_id)]
+            scope_key = f"topic:{topic_key}"
+            updated_at = _latest_summary_updated_at(
+                session,
+                scope_type=int(SummaryScopeType.TOPIC),
+                scope_key=scope_key,
+                max_sensitivity=max_sensitivity,
+            )
+            if updated_at is not None and int(now_ts) - int(updated_at) < int(cooldown_seconds):
+                continue
+            if updated_at is not None and not _entity_has_new_episode_since(
+                session,
+                entity_id=int(entity_id),
+                since_ts=int(updated_at),
+                max_sensitivity=max_sensitivity,
+            ):
+                continue
+
+            _enqueue_job(session, kind="topic_summary_refresh", payload={"entity_id": int(entity_id)}, now_ts=now_ts)
+            stats["topic"] += 1
+
+    return stats
+
+
+@dataclass(frozen=True)
+class PeriodicEnqueueConfig:
+    weekly_cooldown_seconds: int = 6 * 3600
+    entity_cooldown_seconds: int = 12 * 3600
+    entity_window_days: int = 14
+    max_person: int = 3
+    max_topic: int = 3
+    capsule_interval_seconds: int = 30 * 60
+    capsule_limit: int = 5
+    max_sensitivity: int = int(Sensitivity.PRIVATE)
+
+
+def enqueue_periodic_jobs(session: Session, *, now_ts: int, config: PeriodicEnqueueConfig | None = None) -> dict[str, Any]:
+    """定期実行tick: 必要なjobsをenqueueして統計を返す（commitは呼び出し側）。"""
+    cfg = config or PeriodicEnqueueConfig()
+    stats: dict[str, Any] = {"weekly_summary": 0, "capsule_refresh": 0, "person_summary_refresh": 0, "topic_summary_refresh": 0}
+
+    if maybe_enqueue_weekly_summary(
+        session,
+        now_ts=now_ts,
+        cooldown_seconds=cfg.weekly_cooldown_seconds,
+        max_sensitivity=cfg.max_sensitivity,
+    ):
+        stats["weekly_summary"] += 1
+
+    entity_stats = maybe_enqueue_entity_summaries(
+        session,
+        now_ts=now_ts,
+        cooldown_seconds=cfg.entity_cooldown_seconds,
+        window_days=cfg.entity_window_days,
+        max_person=cfg.max_person,
+        max_topic=cfg.max_topic,
+        max_sensitivity=cfg.max_sensitivity,
+    )
+    stats["person_summary_refresh"] += int(entity_stats.get("person") or 0)
+    stats["topic_summary_refresh"] += int(entity_stats.get("topic") or 0)
+
+    if maybe_enqueue_capsule_refresh(
+        session,
+        now_ts=now_ts,
+        interval_seconds=cfg.capsule_interval_seconds,
+        limit=cfg.capsule_limit,
+        max_sensitivity=cfg.max_sensitivity,
+    ):
+        stats["capsule_refresh"] += 1
+
+    return stats
+

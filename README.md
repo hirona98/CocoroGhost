@@ -77,10 +77,14 @@ python -X utf8 run.py
 
 ## Worker（jobs処理）
 
-`/chat` などで保存された `jobs` を処理する Worker は別プロセスで起動できます。
+`/chat` などで保存された `jobs` を処理する Worker は、既定で **APIプロセス内（バックグラウンド）** で動作します（起動コマンドは `run.py` のみ）。
+
+別プロセスでWorkerを動かしたい場合は、API側の内蔵Workerを無効化してから起動します。
 
 ```bash
 .venv\Scripts\activate
+set COCORO_GHOST_INTERNAL_WORKER=0
+python -X utf8 run.py
 python -X utf8 run_worker.py
 ```
 

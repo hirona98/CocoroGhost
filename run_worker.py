@@ -15,6 +15,13 @@ sys.path.insert(0, str(project_root))
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="cocoro_ghost worker runner")
     parser.add_argument("--memory-id", dest="memory_id", default=None, help="override target memory_id (UUID recommended)")
+    parser.add_argument(
+        "--periodic-interval-seconds",
+        dest="periodic_interval_seconds",
+        type=float,
+        default=30.0,
+        help="cron無し定期enqueueの判定間隔（0以下で無効）",
+    )
     return parser.parse_args()
 
 
@@ -106,6 +113,7 @@ def main() -> None:
         memory_id=memory_id,
         embedding_dimension=runtime_config.embedding_dimension,
         llm_client=llm_client,
+        periodic_interval_seconds=float(args.periodic_interval_seconds),
     )
 
 

@@ -15,6 +15,7 @@
 - Current: injection_strategy は `quote_key_parts` / `summarize` / `full` に対応（現状 Retriever は `quote_key_parts` 固定）。
 - Current: weekly_summary は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり、管理APIからもenqueue可）。
 - Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）を自動enqueue（重複抑制あり）。
+- Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic/capsule）も実施できる。
 - Planned: Entity解決のWorkerフォールバック強化（同期/非同期の最適化）と injection_strategy の自動切替。
 
 ## 入力

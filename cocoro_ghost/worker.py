@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -232,9 +233,33 @@ def run_forever(
     llm_client: LlmClient,
     poll_interval_seconds: float = 1.0,
     max_jobs_per_tick: int = 10,
+    periodic_interval_seconds: float = 30.0,
+    stop_event: threading.Event | None = None,
 ) -> None:
     logger.info("worker start", extra={"memory_id": memory_id})
+    last_periodic_at: float = 0.0
     while True:
+        if stop_event is not None and stop_event.is_set():
+            break
+        # cron無し運用: Workerプロセス内で定期enqueueを行う（軽量）。
+        if periodic_interval_seconds > 0:
+            now_s = time.time()
+            if (now_s - last_periodic_at) >= float(periodic_interval_seconds):
+                last_periodic_at = now_s
+                session = get_memory_session(memory_id, embedding_dimension)
+                try:
+                    from cocoro_ghost.periodic import enqueue_periodic_jobs
+
+                    stats = enqueue_periodic_jobs(session, now_ts=int(now_s))
+                    session.commit()
+                    if any(int(v) > 0 for v in stats.values()):
+                        logger.info("periodic enqueued", extra={"memory_id": memory_id, **stats})
+                except Exception:  # noqa: BLE001
+                    session.rollback()
+                    logger.exception("periodic enqueue failed", extra={"memory_id": memory_id})
+                finally:
+                    session.close()
+
         processed = process_due_jobs(
             memory_id=memory_id,
             embedding_dimension=embedding_dimension,
@@ -243,7 +268,10 @@ def run_forever(
             sleep_when_empty=0.0,
         )
         if processed <= 0:
-            time.sleep(poll_interval_seconds)
+            if stop_event is not None:
+                stop_event.wait(poll_interval_seconds)
+            else:
+                time.sleep(poll_interval_seconds)
 
 
 def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
