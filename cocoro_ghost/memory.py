@@ -335,14 +335,14 @@ class MemoryManager:
         self,
         *,
         persona_text: str | None,
-        contract_text: str | None,
+        addon_text: str | None,
         client_context: Dict[str, Any] | None,
         image_summaries: Sequence[str] | None,
         now_ts: int,
     ) -> str:
-        """記憶機能を使わない簡易MemoryPack（persona/contract + 文脈）。"""
+        """記憶機能を使わない簡易MemoryPack（persona/addon + 文脈）。"""
         persona_text = (persona_text or "").strip() or None
-        contract_text = (contract_text or "").strip() or None
+        addon_text = (addon_text or "").strip() or None
 
         capsule_lines: List[str] = []
         now_local = datetime.fromtimestamp(now_ts).astimezone().isoformat()
@@ -369,8 +369,15 @@ class MemoryManager:
             return f"[{title}]\n" + "\n".join(body_lines) + "\n\n"
 
         parts: List[str] = []
-        parts.append(section("PERSONA_ANCHOR", [persona_text] if persona_text else []))
-        parts.append(section("RELATIONSHIP_CONTRACT", [contract_text] if contract_text else []))
+        persona_lines: List[str] = []
+        if persona_text:
+            persona_lines.append(persona_text)
+        if addon_text:
+            if persona_lines:
+                persona_lines.append("")
+            persona_lines.append("# 追加オプション（任意）")
+            persona_lines.append(addon_text)
+        parts.append(section("PERSONA_ANCHOR", persona_lines))
         parts.append(section("CONTEXT_CAPSULE", capsule_lines))
         return "".join(parts)
 
@@ -420,7 +427,7 @@ class MemoryManager:
         """
         /chat の本体処理。
 
-        - MemoryPack（persona/contract + 関連記憶）を組み立ててLLMへ送る
+        - MemoryPack（persona/addon + 関連記憶）を組み立ててLLMへ送る
         - 返信をSSEでストリームし、最後にEpisodeとして保存する
         """
         cfg = self.config_store.config
@@ -449,7 +456,7 @@ class MemoryManager:
                     memory_pack = build_memory_pack(
                         db=db,
                         persona_text=cfg.persona_text,
-                        contract_text=cfg.contract_text,
+                        addon_text=cfg.addon_text,
                         user_text=request.user_text,
                         image_summaries=image_summaries,
                         client_context=request.client_context,
@@ -467,7 +474,7 @@ class MemoryManager:
         else:
             memory_pack = self._build_simple_memory_pack(
                 persona_text=cfg.persona_text,
-                contract_text=cfg.contract_text,
+                addon_text=cfg.addon_text,
                 client_context=request.client_context,
                 image_summaries=image_summaries,
                 now_ts=now_ts,
@@ -666,7 +673,7 @@ class MemoryManager:
                     memory_pack = build_memory_pack(
                         db=db,
                         persona_text=cfg.persona_text,
-                        contract_text=cfg.contract_text,
+                        addon_text=cfg.addon_text,
                         user_text=notification_user_text,
                         image_summaries=image_summaries,
                         client_context=None,
@@ -683,7 +690,7 @@ class MemoryManager:
         else:
             memory_pack = self._build_simple_memory_pack(
                 persona_text=cfg.persona_text,
-                contract_text=cfg.contract_text,
+                addon_text=cfg.addon_text,
                 client_context=None,
                 image_summaries=image_summaries,
                 now_ts=now_ts,
@@ -812,7 +819,7 @@ class MemoryManager:
                     memory_pack = build_memory_pack(
                         db=db,
                         persona_text=cfg.persona_text,
-                        contract_text=cfg.contract_text,
+                        addon_text=cfg.addon_text,
                         user_text=meta_user_text,
                         image_summaries=image_summaries,
                         client_context=None,
@@ -829,7 +836,7 @@ class MemoryManager:
         else:
             memory_pack = self._build_simple_memory_pack(
                 persona_text=cfg.persona_text,
-                contract_text=cfg.contract_text,
+                addon_text=cfg.addon_text,
                 client_context=None,
                 image_summaries=image_summaries,
                 now_ts=now_ts,

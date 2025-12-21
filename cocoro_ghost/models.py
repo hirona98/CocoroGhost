@@ -40,8 +40,10 @@ class GlobalSettings(Base):
     active_persona_preset_id: Mapped[Optional[str]] = mapped_column(
         String(_UUID_STR_LEN), ForeignKey("persona_presets.id")
     )
-    active_contract_preset_id: Mapped[Optional[str]] = mapped_column(
-        String(_UUID_STR_LEN), ForeignKey("contract_presets.id")
+    active_addon_preset_id: Mapped[Optional[str]] = mapped_column(
+        "active_contract_preset_id",
+        String(_UUID_STR_LEN),
+        ForeignKey("contract_presets.id"),
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -53,8 +55,8 @@ class GlobalSettings(Base):
     active_persona_preset: Mapped[Optional["PersonaPreset"]] = relationship(
         "PersonaPreset", foreign_keys=[active_persona_preset_id]
     )
-    active_contract_preset: Mapped[Optional["ContractPreset"]] = relationship(
-        "ContractPreset", foreign_keys=[active_contract_preset_id]
+    active_addon_preset: Mapped[Optional["AddonPreset"]] = relationship(
+        "AddonPreset", foreign_keys=[active_addon_preset_id]
     )
 
 
@@ -100,15 +102,15 @@ class PersonaPreset(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class ContractPreset(Base):
-    """contract プロンプトプリセット。"""
+class AddonPreset(Base):
+    """persona の任意追加オプション（addon）プリセット。"""
 
     __tablename__ = "contract_presets"
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    contract_text: Mapped[str] = mapped_column(Text, nullable=False)
+    addon_text: Mapped[str] = mapped_column("contract_text", Text, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

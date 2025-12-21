@@ -5,7 +5,7 @@
 ## 目的
 
 - 人格の一貫性（PersonaAnchor）
-- 関係性の連続性（RelationshipContract / SharedNarrative）
+- 関係性の連続性（SharedNarrative）
 - 会話テンポ（同期は軽く、重い処理はWorkerへ）
 - 長期運用での継続的な統合・更新（Lifecycle: 統合・整理・矛盾管理）
 
@@ -46,11 +46,10 @@
   - Derived: Workerで抽出/統合された「解釈・要約・構造化」（例: `FACT` / `SUMMARY` / `LOOP` / `CAPSULE`）。
 - **MemoryPack**: `/api/chat` の同期処理中に、Schedulerが「LLMへ注入するため」に組み立てるテキストパック。見出し順（`[PERSONA_ANCHOR]` 等）に沿って、検索結果をそのまま貼らずに圧縮・整形する（仕様: `docs/scheduler.md`、実装: `cocoro_ghost/scheduler.py`）。
 - **Retriever**: 記憶検索システム。固定クエリ → Hybrid Search (Vector + BM25) → ヒューリスティック Rerank の3段階で、会話に関連する過去のエピソードを高速に選別する（仕様: `docs/retrieval.md`）。LLMレスで高速に動作。
-- **Persona / Contract**: LLM注入プロンプトを「人格」と「関係契約」に分けたもの。
+- **Persona / Addon**: LLM注入プロンプトを「人格」と「任意追加オプション」に分けたもの。
   - Persona: 人格・口調・価値観の中核（崩れると会話の一貫性が壊れる）。
-  - Contract: 踏み込み/介入の許可、NG、距離感、取り扱い注意などの「関係契約」。
-  - 注入上は、Persona/Contract は MemoryPack の先頭セクションに含める（`docs/scheduler.md` / `docs/api.md`）。
-  - 内部注入コンテキストの取り扱い（秘匿/ガード）はコード側の固定プロンプトで行う（実装: `cocoro_ghost/memory.py`）。
+  - Addon: 必要なときだけ足す補助指示（例: 表情タグの追加ルール、呼称の追加、距離感の微調整）。
+  - 注入上は、Persona/Addon は MemoryPack の先頭セクション（`[PERSONA_ANCHOR]`）に含める（`docs/scheduler.md` / `docs/api.md`）。
 - **Preset（settings）**: `settings.db` に永続化する切替単位。
-  - LLM/Embeddingの接続情報・検索予算に加え、Persona/Contract をプリセットとして保持し、`active_*_preset_id` でアクティブを選ぶ（`docs/settings_db.md`）。
+  - LLM/Embeddingの接続情報・検索予算に加え、Persona/Addon をプリセットとして保持し、`active_*_preset_id` でアクティブを選ぶ（`docs/settings_db.md`）。
 - **memory_id**: 記憶DBファイル名を選ぶための識別子。`EmbeddingPreset.id`（UUID）を `memory_id` として扱い、`memory_<memory_id>.db` を開く（`docs/settings_db.md` / `docs/api.md`）。

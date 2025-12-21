@@ -65,23 +65,23 @@ def _json_loads(payload_json: str) -> Dict[str, Any]:
 
 
 def _get_persona_context() -> tuple[str | None, str | None]:
-    """現在のpersona/contract設定を取得する（未初期化ならNone）。"""
+    """現在のpersona/addon設定を取得する（未初期化ならNone）。"""
     try:
         cfg = get_config_store().config
     except Exception:  # noqa: BLE001
         return None, None
     persona_text = (getattr(cfg, "persona_text", "") or "").strip() or None
-    contract_text = (getattr(cfg, "contract_text", "") or "").strip() or None
-    return persona_text, contract_text
+    addon_text = (getattr(cfg, "addon_text", "") or "").strip() or None
+    return persona_text, addon_text
 
 
 def _wrap_prompt_with_persona(base_prompt: str) -> str:
-    """persona/contractがあればsystem promptへ挿入する。"""
-    persona_text, contract_text = _get_persona_context()
+    """persona/addonがあればsystem promptへ挿入する。"""
+    persona_text, addon_text = _get_persona_context()
     return prompts.wrap_prompt_with_persona(
         base_prompt,
         persona_text=persona_text,
-        contract_text=contract_text,
+        addon_text=addon_text,
     )
 
 

@@ -40,7 +40,7 @@ def create_app() -> FastAPI:
         init_memory_db,
         init_settings_db,
         load_active_embedding_preset,
-        load_active_contract_preset,
+        load_active_addon_preset,
         load_active_llm_preset,
         load_active_persona_preset,
         load_global_settings,
@@ -66,7 +66,7 @@ def create_app() -> FastAPI:
         llm_preset = load_active_llm_preset(session)
         embedding_preset = load_active_embedding_preset(session)
         persona_preset = load_active_persona_preset(session)
-        contract_preset = load_active_contract_preset(session)
+        addon_preset = load_active_addon_preset(session)
 
         # RuntimeConfig構築
         runtime_config = build_runtime_config(
@@ -75,7 +75,7 @@ def create_app() -> FastAPI:
             llm_preset,
             embedding_preset,
             persona_preset,
-            contract_preset,
+            addon_preset,
         )
 
         # ConfigStore作成（プリセットオブジェクトをデタッチ状態で保持するためコピー）
@@ -84,7 +84,7 @@ def create_app() -> FastAPI:
         session.expunge(llm_preset)
         session.expunge(embedding_preset)
         session.expunge(persona_preset)
-        session.expunge(contract_preset)
+        session.expunge(addon_preset)
 
         config_store = ConfigStore(
             toml_config,
@@ -93,7 +93,7 @@ def create_app() -> FastAPI:
             llm_preset,
             embedding_preset,
             persona_preset,
-            contract_preset,
+            addon_preset,
         )
 
     set_global_config_store(config_store)

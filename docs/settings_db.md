@@ -9,7 +9,7 @@
 
 - 起動時に `settings.db` が無ければ自動作成され、`global_settings` と各種 `*_presets` の初期値が投入される（`docs/bootstrap.md` も参照）。
 - UIは原則 `/api/settings`（GET/PUT）を通して読み書きする。
-- `active_*_preset_id` を切り替えることで、LLM/Embedding/Persona/Contract を運用中に切替できる。
+- `active_*_preset_id` を切り替えることで、LLM/Embedding/Persona/Addon（任意追加オプション）を運用中に切替できる。
 - **EmbeddingPreset.id はそのまま `memory_id` として使う**ため、`active_embedding_preset_id` の切替は「参照する記憶DBファイルが変わる」ことを意味する。
 - 内蔵Worker運用のため、`/api/settings` 更新後は内蔵Workerが自動再起動して設定変更に追従する（LLM接続・memory_id など）。
 
@@ -29,7 +29,7 @@
 - `active_llm_preset_id`（TEXT: UUID）
 - `active_embedding_preset_id`（TEXT: UUID / `memory_id`）
 - `active_persona_preset_id`（TEXT: UUID）
-- `active_contract_preset_id`（TEXT: UUID）
+- `active_contract_preset_id`（TEXT: UUID）: addon用（アプリ/コード上の呼称は `active_addon_preset_id`）
 - `created_at`（DATETIME）
 - `updated_at`（DATETIME）
 
@@ -100,14 +100,14 @@ persona（人格コア）プロンプトの切替単位。
 
 ### `contract_presets`
 
-contract（関係契約）プロンプトの切替単位。
+addon（personaへの任意追加オプション）プロンプトの切替単位（テーブル名は `contract_presets`）。
 
 #### カラム（実装準拠）
 
 - `id`（TEXT: UUID）
 - `name`（TEXT）
 - `archived`（INTEGER: 0/1）
-- `contract_text`（TEXT）
+- `contract_text`（TEXT）: addon本文（アプリ側の呼称は `addon_text`）
 - `created_at` / `updated_at`（DATETIME）
 
 ### `reminders`（任意）

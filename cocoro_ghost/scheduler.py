@@ -204,7 +204,7 @@ def build_memory_pack(
     *,
     db: Session,
     persona_text: str | None,
-    contract_text: str | None,
+    addon_text: str | None,
     user_text: str,
     image_summaries: Sequence[str] | None,
     client_context: Dict[str, Any] | None,
@@ -220,7 +220,7 @@ def build_memory_pack(
     # 一旦「注入（引き出し）」を無制限にする（SECRETまで許可）。
     sensitivity_max = int(Sensitivity.SECRET)
     persona_text = (persona_text or "").strip() or None
-    contract_text = (contract_text or "").strip() or None
+    addon_text = (addon_text or "").strip() or None
 
     capsule_json: Optional[str] = None
     cap_row = (
@@ -519,8 +519,15 @@ def build_memory_pack(
     ) -> str:
         """各セクションを結合してMemoryPack全体を生成する。"""
         parts: List[str] = []
-        parts.append(section("PERSONA_ANCHOR", [persona_text.strip()] if persona_text else []))
-        parts.append(section("RELATIONSHIP_CONTRACT", [contract_text.strip()] if contract_text else []))
+        persona_lines: List[str] = []
+        if persona_text:
+            persona_lines.append(persona_text.strip())
+        if addon_text:
+            if persona_lines:
+                persona_lines.append("")
+            persona_lines.append("# 追加オプション（任意）")
+            persona_lines.append(addon_text.strip())
+        parts.append(section("PERSONA_ANCHOR", persona_lines))
         parts.append(section("CONTEXT_CAPSULE", capsule_lines))
         parts.append(section("STABLE_FACTS", facts))
         parts.append(section("SHARED_NARRATIVE", summaries))

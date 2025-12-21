@@ -12,7 +12,7 @@ import tomli
 
 if TYPE_CHECKING:
     from cocoro_ghost.models import (
-        ContractPreset,
+        AddonPreset,
         EmbeddingPreset,
         GlobalSettings,
         LlmPreset,
@@ -67,8 +67,8 @@ class RuntimeConfig:
     # PromptPresets由来（ユーザー編集対象）
     persona_preset_name: str
     persona_text: str
-    contract_preset_name: str
-    contract_text: str
+    addon_preset_name: str
+    addon_text: str
 
 
 class ConfigStore:
@@ -82,7 +82,7 @@ class ConfigStore:
         llm_preset: "LlmPreset",
         embedding_preset: "EmbeddingPreset",
         persona_preset: "PersonaPreset",
-        contract_preset: "ContractPreset",
+        addon_preset: "AddonPreset",
     ) -> None:
         self._toml = toml_config
         self._runtime = runtime_config
@@ -90,7 +90,7 @@ class ConfigStore:
         self._llm_preset = llm_preset
         self._embedding_preset = embedding_preset
         self._persona_preset = persona_preset
-        self._contract_preset = contract_preset
+        self._addon_preset = addon_preset
         self._lock = threading.Lock()
 
     @property
@@ -153,7 +153,7 @@ def build_runtime_config(
     llm_preset: "LlmPreset",
     embedding_preset: "EmbeddingPreset",
     persona_preset: "PersonaPreset",
-    contract_preset: "ContractPreset",
+    addon_preset: "AddonPreset",
 ) -> RuntimeConfig:
     """TOML、GlobalSettings、各種プリセットをマージしてRuntimeConfigを構築。"""
     try:
@@ -195,8 +195,8 @@ def build_runtime_config(
         # PromptPresets由来
         persona_preset_name=persona_preset.name,
         persona_text=persona_preset.persona_text,
-        contract_preset_name=contract_preset.name,
-        contract_text=contract_preset.contract_text,
+        addon_preset_name=addon_preset.name,
+        addon_text=addon_preset.addon_text,
     )
 
 

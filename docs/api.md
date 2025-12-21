@@ -57,7 +57,7 @@ data: {"message":"...","code":"..."}
 1. 画像要約（`images` がある場合）
 2. Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 3. Schedulerで **MemoryPack** を生成（検索結果を `[EPISODE_EVIDENCE]` に含む）
-4. LLMへ `guard_prompt + memorypack + mood_trailer_prompt` を system に注入し、conversation には直近会話（max_turns_window）+ user_text を渡す（MemoryPack内に persona/contract を含む）
+4. LLMへ `memorypack + mood_trailer_prompt` を system に注入し、conversation には直近会話（max_turns_window）+ user_text を渡す（MemoryPack内に persona/addon を含む）
 5. 返答をSSEで配信（返答末尾の内部JSON＝mood trailer はサーバ側で回収し、SSEには流さない）
 6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 7. Worker用ジョブを enqueue（reflection/extraction/embedding等）
@@ -177,7 +177,7 @@ Invoke-RestMethod -Method Post `
 ### Worker と `memory_id`
 
 - `jobs` は `memory_<memory_id>.db` に保存されるため、Worker は **アクティブな `memory_id`（= `active_embedding_preset_id`）** を対象に処理する（内蔵Worker）。
-- persona/contract は **settings 側のプロンプトプリセット**として管理し、`memory_id`（記憶DB）とは独立する（切替は `/api/settings`）
+- persona/addon は **settings 側のプロンプトプリセット**として管理し、`memory_id`（記憶DB）とは独立する（切替は `/api/settings`）
 
 補足:
 - `jobs` は内部用のキューであり、外部から任意のジョブを投入する汎用APIは提供しない。
@@ -210,7 +210,7 @@ UI向けの「全設定」取得/更新。
   "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "active_contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "active_addon_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "llm_preset": [
     {
       "llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
@@ -246,11 +246,11 @@ UI向けの「全設定」取得/更新。
       "persona_text": "string"
     }
   ],
-  "contract_preset": [
+  "addon_preset": [
     {
-      "contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-      "contract_preset_name": "default",
-      "contract_text": "string"
+      "addon_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "addon_preset_name": "default",
+      "addon_text": "string"
     }
   ]
 }
@@ -283,7 +283,7 @@ UI向けの「全設定」取得/更新。
   "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "active_contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "active_addon_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "llm_preset": [
     {
       "llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
@@ -319,11 +319,11 @@ UI向けの「全設定」取得/更新。
       "persona_text": "string"
     }
   ],
-  "contract_preset": [
+  "addon_preset": [
     {
-      "contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-      "contract_preset_name": "default",
-      "contract_text": "string"
+      "addon_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "addon_preset_name": "default",
+      "addon_text": "string"
     }
   ]
 }
@@ -335,7 +335,7 @@ UI向けの「全設定」取得/更新。
 
 #### 注意点（実装仕様）
 
-- `llm_preset` / `embedding_preset` / `persona_preset` / `contract_preset` は「配列」で、**複数件を一括確定**する（全置換コミット）
+- `llm_preset` / `embedding_preset` / `persona_preset` / `addon_preset` は「配列」で、**複数件を一括確定**する（全置換コミット）
 - `reminders` は **全置き換え**（既存は削除されIDは作り直される）
 - 各配列内で `*_preset_id` が重複している場合は `400`
 - `active_*_preset_id` は **対応する配列に含まれるID**である必要がある（未存在/アーカイブは `400`）
