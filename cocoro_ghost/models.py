@@ -31,6 +31,7 @@ class GlobalSettings(Base):
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     token: Mapped[str] = mapped_column(Text, nullable=False, default="")
     exclude_keywords: Mapped[str] = mapped_column(Text, nullable=False, default=DEFAULT_EXCLUDE_KEYWORDS_JSON)
+    memory_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     reminders_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     active_llm_preset_id: Mapped[Optional[str]] = mapped_column(String(_UUID_STR_LEN), ForeignKey("llm_presets.id"))
     active_embedding_preset_id: Mapped[Optional[str]] = mapped_column(

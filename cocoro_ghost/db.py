@@ -476,6 +476,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         global_settings = models.GlobalSettings(
             token=toml_config.token,
             exclude_keywords=DEFAULT_EXCLUDE_KEYWORDS_JSON,
+            memory_enabled=True,
         )
         session.add(global_settings)
         session.flush()

@@ -155,6 +155,9 @@ class FullSettingsResponse(BaseModel):
     # 共通設定
     exclude_keywords: List[str]
 
+    # 記憶機能の有効/無効（UI用）
+    memory_enabled: bool
+
     # リマインダー
     reminders_enabled: bool
     reminders: List["ReminderSettings"] = Field(default_factory=list)
@@ -247,6 +250,7 @@ class FullSettingsUpdateRequest(BaseModel):
     """全設定更新リクエスト。"""
 
     exclude_keywords: List[str]
+    memory_enabled: bool
     reminders_enabled: bool
     reminders: List[ReminderUpsertRequest]
     active_llm_preset_id: str

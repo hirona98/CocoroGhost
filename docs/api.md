@@ -226,6 +226,7 @@ UI向けの「全設定」取得/更新。
 ```json
 {
   "exclude_keywords": ["例:除外したい単語"],
+  "memory_enabled": true,
   "reminders_enabled": true,
   "reminders": [
     {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
@@ -280,6 +281,7 @@ UI向けの「全設定」取得/更新。
 ```
 
 - `scheduled_at` はISO 8601のdatetime（Pydanticがパース可能な形式）で返す
+- `memory_enabled` は「記憶機能を使うか」を示す設定値
 
 ### `PUT /api/settings`
 
@@ -297,6 +299,7 @@ UI向けの「全設定」取得/更新。
 ```json
 {
   "exclude_keywords": ["string"],
+  "memory_enabled": true,
   "reminders_enabled": true,
   "reminders": [
     {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}

@@ -24,6 +24,7 @@
 
 - `token`（TEXT）
 - `exclude_keywords`（TEXT: JSON array）
+- `memory_enabled`（INTEGER: 0/1）
 - `reminders_enabled`（INTEGER: 0/1）
 - `active_llm_preset_id`（TEXT: UUID）
 - `active_embedding_preset_id`（TEXT: UUID / `memory_id`）

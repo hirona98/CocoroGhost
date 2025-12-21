@@ -109,6 +109,7 @@ def get_settings(
 
     return schemas.FullSettingsResponse(
         exclude_keywords=json.loads(global_settings.exclude_keywords),
+        memory_enabled=global_settings.memory_enabled,
         reminders_enabled=global_settings.reminders_enabled,
         reminders=reminders,
         active_llm_preset_id=global_settings.active_llm_preset_id,
@@ -156,6 +157,7 @@ def commit_settings(
 
     # 共通設定更新
     global_settings.exclude_keywords = json.dumps(request.exclude_keywords)
+    global_settings.memory_enabled = request.memory_enabled
     global_settings.reminders_enabled = request.reminders_enabled
 
     # リマインダー更新：常に「全置き換え」（IDは作り直される）
