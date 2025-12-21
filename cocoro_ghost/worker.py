@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from cocoro_ghost import prompts
+from cocoro_ghost.config import get_config_store
 from cocoro_ghost.db import get_memory_session, sync_unit_vector_metadata, upsert_unit_vector
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.unit_enums import (
@@ -61,6 +62,27 @@ def _json_loads(payload_json: str) -> Dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _get_persona_context() -> tuple[str | None, str | None]:
+    """現在のpersona/contract設定を取得する（未初期化ならNone）。"""
+    try:
+        cfg = get_config_store().config
+    except Exception:  # noqa: BLE001
+        return None, None
+    persona_text = (getattr(cfg, "persona_text", "") or "").strip() or None
+    contract_text = (getattr(cfg, "contract_text", "") or "").strip() or None
+    return persona_text, contract_text
+
+
+def _wrap_prompt_with_persona(base_prompt: str) -> str:
+    """persona/contractがあればsystem promptへ挿入する。"""
+    persona_text, contract_text = _get_persona_context()
+    return prompts.wrap_prompt_with_persona(
+        base_prompt,
+        persona_text=persona_text,
+        contract_text=contract_text,
+    )
 
 
 def _parse_optional_epoch_seconds(value: Any) -> Optional[int]:
@@ -308,7 +330,8 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
         ctx_parts.append(f"context_note: {pe.context_note}")
     context_text = "\n".join(ctx_parts)
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_reflection_prompt(), user_text=context_text)
+    system_prompt = _wrap_prompt_with_persona(prompts.get_reflection_prompt())
+    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=context_text)
     raw_text = llm_client.response_content(resp)
     raw_json = raw_text
     data = json.loads(raw_text)
@@ -1015,7 +1038,8 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
     if not text_in.strip():
         return
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_loop_extract_prompt(), user_text=text_in)
+    system_prompt = _wrap_prompt_with_persona(prompts.get_loop_extract_prompt())
+    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=text_in)
     data = json.loads(llm_client.response_content(resp))
     loops = data.get("loops") or []
     if not isinstance(loops, list):
@@ -1326,7 +1350,8 @@ def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, pay
 
     input_text = f"scope_key: {scope_key}\nrange_start: {range_start}\nrange_end: {range_end}\n\n[EPISODES]\n" + "\n".join(lines)
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_relationship_summary_prompt(), user_text=input_text)
+    system_prompt = _wrap_prompt_with_persona(prompts.get_relationship_summary_prompt())
+    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
@@ -1619,7 +1644,8 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
         episode_lines=lines,
     )
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_person_summary_prompt(), user_text=input_text)
+    system_prompt = _wrap_prompt_with_persona(prompts.get_person_summary_prompt())
+    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
@@ -1733,7 +1759,8 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
         episode_lines=lines,
     )
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_topic_summary_prompt(), user_text=input_text)
+    system_prompt = _wrap_prompt_with_persona(prompts.get_topic_summary_prompt())
+    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:

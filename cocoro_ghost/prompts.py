@@ -230,6 +230,35 @@ DEFAULT_RELATIONSHIP_CONTRACT = """
 """.strip()
 
 
+_PERSONA_CONTEXT_GUIDANCE = """
+以下は「あなた（パートナーAI）の内的メモ」としての前提です。
+- 口調だけでなく、注目点/優先度/解釈の癖（何を大事と感じるか、どう関係を捉えるか）も persona/contract に従う。
+- 出力JSONの自然文フィールド（summary_text/loop_text/reflection_text 等）は、この前提で書く（1人称・呼称も含む）。
+- ただしスキーマ（キー/型/上限）と数値の範囲、構造化部分はタスク指示を厳守する（キャラ優先で壊さない）。
+""".strip()
+
+
+def wrap_prompt_with_persona(
+    base_prompt: str,
+    *,
+    persona_text: str | None,
+    contract_text: str | None,
+) -> str:
+    """Worker用のsystem promptにpersona/contractを挿入する。"""
+    persona_text = (persona_text or "").strip()
+    contract_text = (contract_text or "").strip()
+    if not persona_text and not contract_text:
+        return base_prompt
+
+    parts: list[str] = [_PERSONA_CONTEXT_GUIDANCE]
+    if persona_text:
+        parts.append(f"[PERSONA_ANCHOR]\n{persona_text}")
+    if contract_text:
+        parts.append(f"[RELATIONSHIP_CONTRACT]\n{contract_text}")
+    parts.append(base_prompt)
+    return "\n\n".join(parts)
+
+
 def get_reflection_prompt() -> str:
     """reflection用のsystem promptを返す。"""
     return REFLECTION_SYSTEM_PROMPT
