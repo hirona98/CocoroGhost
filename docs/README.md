@@ -7,14 +7,19 @@
 - 人格の一貫性（PersonaAnchor）
 - 関係性の連続性（RelationshipContract / SharedNarrative）
 - 会話テンポ（同期は軽く、重い処理はWorkerへ）
-- 長期運用での“育ち”（Lifecycle: 統合・整理・矛盾管理）
+- 長期運用での継続的な統合・更新（Lifecycle: 統合・整理・矛盾管理）
 
 ## 前提
 
 - LLM/Embedding は **API経由**（LiteLLMで切替可能）
 - ベクター検索は **sqlite-vec（vec0）** を使用する
 - ストレージは SQLite（`settings.db` + `memory_<memory_id>.db`）
-- MemOSの要点として **Scheduling（予測・プリロード）** と **Lifecycle（統合・整理）** を中核に取り入れる
+- **Scheduling（予測・プリロード）** と **Lifecycle（統合・整理）** を中核に取り入れる
+
+## 制約 / Non-goals（現状の割り切り）
+
+- **uvicorn の multi-worker（複数プロセス）は前提にしない**: 内蔵Workerが同一DBの jobs を重複実行しうるため、`workers=1` 前提で運用する（`docs/worker.md` / `docs/scheduler.md` / `cocoro_ghost/internal_worker.py`）。
+- **RetrievalにLLMを使わない**: Query Expansion / LLM Rerank は採用せず、速度を優先する（`docs/retrieval.md`）。
 
 ## ドキュメント一覧（読む順番）
 
@@ -48,8 +53,3 @@
 - **Preset（settings）**: `settings.db` に永続化する切替単位。
   - LLM/Embeddingの接続情報・検索予算に加え、Persona/Contract をプリセットとして保持し、`active_*_preset_id` でアクティブを選ぶ（`docs/settings_db.md`）。
 - **memory_id**: 記憶DBファイル名を選ぶための識別子。`EmbeddingPreset.id`（UUID）を `memory_id` として扱い、`memory_<memory_id>.db` を開く（`docs/settings_db.md` / `docs/api.md`）。
-
-## DBドキュメントの見どころ
-
-- `docs/settings_db.md`: settings.db の **実際のカラム** と、プリセット切替（active preset）による運用方法
-- `docs/db_schema.md`: memory DB の **全テーブルとカラムの意味**（誰が書くか、検索/注入でどう使うか）

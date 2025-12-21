@@ -1,6 +1,7 @@
 # cocoro_ghost
 
-CocoroAIのLLMと記憶処理を担当するPython/FastAPIバックエンドサーバー
+CocoroAI Ver5（パートナーAIシステム）のLLMと記憶処理を担当するPython/FastAPIバックエンドサーバー
+CocoroConsoleやCocoroShell無しでの単独動作も可能とする
 
 ## 機能
 
@@ -9,15 +10,19 @@ CocoroAIのLLMと記憶処理を担当するPython/FastAPIバックエンドサ�
 - SQLiteベースのUnit記憶管理（Episode/Fact/Summary/Capsule/Loop）
 - sqlite-vecによるベクトル検索
 - プリセット機能によるLLM/Embedding/プロンプト設定の動的切り替え
-- 画像クリーンアップなどの定期実行タスク
+
+## 特徴
+
+- パートナーAI専用の会話/記憶システム
+- AI視点での記憶整理
 
 ## ドキュメント
 
-- 仕様（パートナー最適 / sqlite-vec固定）: `docs/README.md`
+- 仕様: `docs/README.md`
 
 ## セットアップ
 
-### 自動セットアップ（推奨）
+### 自動セットアップ
 
 ```bash
 setup.bat
@@ -65,24 +70,6 @@ setup.bat
 ```bash
 start.bat
 ```
-
-### 手動起動
-
-```bash
-.venv\Scripts\activate
-python -X utf8 run.py
-```
-
-サーバーは `http://0.0.0.0:55601` で起動します。
-
-## Worker（jobs処理）
-
-`/chat` などで保存された `jobs` を処理する Worker は、既定で **APIプロセス内（バックグラウンド）** で動作します（起動コマンドは `run.py` のみ）。
-
-`/api/settings` でプリセットを更新した場合、内蔵Workerは自動で再起動して設定変更に追従します（接続が一時的に不安定になる可能性があるため、UI側はリトライ推奨）。
-
-補足:
-- 通常 `memory_id` は `settings.db` の `embedding_presets.id`（UUID）で、`/api/settings` の `active_embedding_preset_id` が既定で使われます。
 
 ## 設定管理
 

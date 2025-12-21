@@ -9,7 +9,6 @@
 | Prompt ID | 定義元 | 主な用途 | 呼び出し元（代表） | 同期/非同期 |
 |---|---|---|---|---|
 | `REFLECTION_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | エピソードから内的メモ（感情/話題/重要度）をJSON抽出 | `cocoro_ghost/worker.py::_handle_reflect_episode`（+ `cocoro_ghost/reflection.py::generate_reflection`） | 非同期（Worker Job） |
-| `MOOD_STATE_UPDATE_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 直近の流れを踏まえた “機嫌/印象” Capsule をJSON更新 | `cocoro_ghost/worker.py::_update_mood_state_from_episode` | 非同期（Worker Job） |
 | `ENTITY_EXTRACT_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 固有名と関係（任意）をJSON抽出 | `cocoro_ghost/worker.py::_handle_extract_entities` / `cocoro_ghost/scheduler.py::_extract_entity_names_with_llm` | 非同期（Worker Job）/ 同期（MemoryPack補助） |
 | `FACT_EXTRACT_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 長期保持すべき安定知識（facts）をJSON抽出 | `cocoro_ghost/worker.py::_handle_extract_facts` | 非同期（Worker Job） |
 | `LOOP_EXTRACT_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 未完了事項（open loops）をJSON抽出 | `cocoro_ghost/worker.py::_handle_extract_loops` | 非同期（Worker Job） |
@@ -20,6 +19,9 @@
 | `DEFAULT_PERSONA_ANCHOR` | `cocoro_ghost/prompts.py` | PersonaPreset の初期値（未設定時の雛形） | `cocoro_ghost/db.py`（settings初期化） | 起動時/初期化 |
 | `DEFAULT_RELATIONSHIP_CONTRACT` | `cocoro_ghost/prompts.py` | ContractPreset の初期値（安全/距離感） | `cocoro_ghost/db.py`（settings初期化） | 起動時/初期化 |
 | `_INTERNAL_CONTEXT_GUARD_PROMPT` | `cocoro_ghost/memory.py` | “内部注入（MemoryPack）をユーザーに漏らさない”固定ガード | `cocoro_ghost/memory.py::MemoryManager`（chat/notification/meta_request） | 同期（system prompt先頭に常に付与） |
+
+補足:
+- Capsule（短期状態）は **プロンプトではなく**、Workerジョブ `capsule_refresh`（LLM不要）で更新されます（`cocoro_ghost/worker.py::_handle_capsule_refresh`）。
 
 ## 2) 全体フロー：どの入口でどのプロンプトが使われるか
 
@@ -50,10 +52,10 @@ flowchart TD
     ENQ --> ENT["extract_entities → ENTITY_EXTRACT_SYSTEM_PROMPT"]
     ENQ --> FACT["extract_facts → FACT_EXTRACT_SYSTEM_PROMPT"]
     ENQ --> LOOP["extract_loops → LOOP_EXTRACT_SYSTEM_PROMPT"]
+    ENQ --> CAPR["capsule_refresh (prompt無し)"]
     ENQ --> EMB["upsert_embeddings (prompt無し)"]
     ENT --> PERS["person_summary_refresh → PERSON_SUMMARY_SYSTEM_PROMPT"]
     ENT --> TOP["topic_summary_refresh → TOPIC_SUMMARY_SYSTEM_PROMPT"]
-    REFLECT --> MOOD["mood_state update → MOOD_STATE_UPDATE_SYSTEM_PROMPT"]
   end
 ```
 
@@ -82,7 +84,7 @@ sequenceDiagram
   LLM-->>API: streamed tokens
   API-->>UI: SSE stream
   API->>DB: save Unit(kind=EPISODE)\n(user_text, reply_text, image_summary...)
-  API->>Q: enqueue default jobs\n(reflect/extract/embed...)
+  API->>Q: enqueue default jobs\n(reflect/extract/embed/capsule_refresh...)
 ```
 
 ## 4) 非同期フロー（Worker jobs）：派生物ごとに使うプロンプト
@@ -94,9 +96,8 @@ flowchart LR
   J --> REFL["reflect_episode"]
   REFL -->|LLM JSON| P1["REFLECTION_SYSTEM_PROMPT"]
   P1 -->|update| U1["units.emotion_* / salience / confidence / topic_tags\npayload_episode.reflection_json"]
-  U1 --> MOOD["mood_state update"]
-  MOOD -->|LLM JSON| P2["MOOD_STATE_UPDATE_SYSTEM_PROMPT"]
-  P2 -->|upsert| CAP["Unit(kind=CAPSULE, source=mood_state)\npayload_capsule.capsule_json"]
+  J --> CAPR["capsule_refresh (LLM不要)"]
+  CAPR -->|upsert| CAP["Unit(kind=CAPSULE, source=capsule_refresh)\npayload_capsule.capsule_json"]
 
   J --> ENT["extract_entities"]
   ENT -->|LLM JSON| P3["ENTITY_EXTRACT_SYSTEM_PROMPT"]
@@ -123,7 +124,7 @@ flowchart LR
 ## 5) “どの入力で” 各プロンプトが呼ばれるか（要点）
 
 - Reflection / Entities / Facts / Loops: `payload_episode` の `user_text/reply_text/image_summary` を連結して入力にする（`cocoro_ghost/worker.py`）。
-- Mood state update: `previous_mood_state_json`（既存Capsule）と、episode+reflection を束ねたJSONを入力にする（`cocoro_ghost/worker.py::_update_mood_state_from_episode`）。
+- Capsule refresh: 直近の `Unit(kind=EPISODE)`（既定 `limit=5`）の抜粋と、Unit側の `emotion_label/topic_tags` などをまとめて `payload_capsule.capsule_json` を更新する（`cocoro_ghost/worker.py::_handle_capsule_refresh`）。
 - Notification: `# notification ...` 形式に整形したテキスト（+ 画像要約）を `conversation=[{"role":"user","content":...}]` として渡す（`cocoro_ghost/memory.py`）。
 - Meta request: `# meta_request ...` 形式に整形したテキスト（instruction + payload + 画像要約）を渡す（`cocoro_ghost/memory.py`）。
 - Persona/Contract: settings の active preset から読み込まれ、Schedulerが `[PERSONA_ANCHOR]` / `[RELATIONSHIP_CONTRACT]` として MemoryPack に注入する（`cocoro_ghost/config.py` / `cocoro_ghost/scheduler.py`）。
