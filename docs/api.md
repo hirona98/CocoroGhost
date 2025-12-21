@@ -180,31 +180,7 @@ Invoke-RestMethod -Method Post `
 - persona/contract は **settings 側のプロンプトプリセット**として管理し、`memory_id`（記憶DB）とは独立する（切替は `/api/settings`）
 
 補足:
-- `jobs` は内部用のキューであり、外部から任意のジョブを投入する汎用APIは提供しない（例外: 週次サマリの手動enqueue）。
-
-- **ジョブ投入**
-  - `POST /api/memories/{memory_id}/jobs/weekly_summary`（週次サマリ生成のenqueue）
-
-### `POST /api/memories/{memory_id}/jobs/weekly_summary`
-
-週次サマリ生成ジョブを enqueue する。
-
-#### Request（JSON）
-
-```json
-{
-  "week_key": "optional"
-}
-```
-
-- リクエストボディは `{}` でも送る
-- `week_key` は省略可能。省略時はWorker側で「現在のUTC週（`YYYY-Www`）」が採用される
-
-#### Response（JSON）
-
-```json
-{ "job_id": 123 }
-```
+- `jobs` は内部用のキューであり、外部から任意のジョブを投入する汎用APIは提供しない。
 
 ## 付加API
 

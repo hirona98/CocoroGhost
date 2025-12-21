@@ -366,7 +366,6 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 - enqueue経路:
   - Episode保存時に「現週サマリが無い」または「クールダウン後に新規Episodeがある」場合に自動enqueue（重複抑制あり）
   - 内蔵Workerの定期enqueue（cron無し、固定値で定期判定）
-  - 管理API `POST /api/memories/{memory_id}/jobs/weekly_summary`（手動投入）
 
 **C. meta_request（文書生成）**
 

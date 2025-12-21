@@ -144,11 +144,6 @@ class UnitUpdateRequest(BaseModel):
     salience: Optional[float] = None
 
 
-class WeeklySummaryEnqueueRequest(BaseModel):
-    """週次サマリ生成ジョブ投入リクエスト。"""
-    week_key: Optional[str] = None
-
-
 class FullSettingsResponse(BaseModel):
     """全設定統合レスポンス。"""
 

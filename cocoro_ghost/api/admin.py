@@ -1,8 +1,7 @@
-"""管理API（Unit閲覧・編集、ジョブ投入）。"""
+"""管理API（Unit閲覧・編集）。"""
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Any, Dict, Optional
 
@@ -18,11 +17,9 @@ from cocoro_ghost.schemas import (
     UnitListResponse,
     UnitMeta,
     UnitUpdateRequest,
-    WeeklySummaryEnqueueRequest,
 )
-from cocoro_ghost.unit_enums import JobStatus, UnitKind
+from cocoro_ghost.unit_enums import UnitKind
 from cocoro_ghost.unit_models import (
-    Job,
     PayloadCapsule,
     PayloadEpisode,
     PayloadFact,
@@ -199,31 +196,3 @@ def update_unit(
                 sensitivity=int(unit.sensitivity),
             )
         return _to_unit_meta(unit)
-
-
-@router.post("/memories/{memory_id}/jobs/weekly_summary")
-def enqueue_weekly_summary(
-    memory_id: str,
-    request: WeeklySummaryEnqueueRequest,
-    config_store: ConfigStore = Depends(get_config_store_dep),
-):
-    """週次サマリ生成ジョブ（weekly_summary）をjobsへ投入する。"""
-    now_ts = int(time.time())
-    payload: Dict[str, Any] = {}
-    if request.week_key:
-        payload["week_key"] = request.week_key
-
-    with memory_session_scope(memory_id, config_store.embedding_dimension) as db:
-        job = Job(
-            kind="weekly_summary",
-            payload_json=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            status=int(JobStatus.QUEUED),
-            run_after=now_ts,
-            tries=0,
-            last_error=None,
-            created_at=now_ts,
-            updated_at=now_ts,
-        )
-        db.add(job)
-        db.flush()
-        return {"job_id": int(job.id)}
