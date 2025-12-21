@@ -144,10 +144,15 @@
 ```json
 {
   "summary_text": "string",
+  "liking_score": 0.0,
+  "liking_reasons": [{"unit_id": 123, "why": "..."}],
   "key_events": [{"unit_id": 123, "why": "..."}],
   "notes": "optional"
 }
 ```
+
+- `liking_score` は **パートナーAI→人物** の好感度（0..1）。`0.5` を中立として運用する。
+- `liking_reasons` は根拠となる出来事の `unit_id` と短い理由（最大5件）。
 
 ## Topic Summary（トピックサマリ）
 

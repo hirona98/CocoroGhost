@@ -126,11 +126,14 @@ PERSON_SUMMARY_SYSTEM_PROMPT = """
 ルール:
 - 出力は JSON のみ（前後に説明文を付けない）
 - summary_text は短い段落（最大600文字程度）
+  - 可能なら先頭に「AI好感度: x.xx（0..1）」を1行で含める
 - key_events は最大5件（unit_id と why のみ）
 - 不確実な推測は断定しない
 
 {
   "summary_text": "string",
+  "liking_score": 0.0,
+  "liking_reasons": [{"unit_id": 123, "why": "..."}],
   "key_events": [{"unit_id": 123, "why": "..." }],
   "notes": "optional"
 }

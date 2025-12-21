@@ -38,7 +38,7 @@ from cocoro_ghost.unit_models import (
 )
 from cocoro_ghost.versioning import canonical_json_dumps, record_unit_version
 from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
-from cocoro_ghost.mood import compute_partner_mood_from_episodes
+from cocoro_ghost.mood import clamp01, compute_partner_mood_from_episodes
 
 
 logger = logging.getLogger(__name__)
@@ -1625,6 +1625,36 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
     if not summary_text:
         return
 
+    # パートナーAI→人物の好感度（0..1）
+    # - 0.5: 中立（デフォルト）
+    # - 1.0: とても好意的
+    # - 0.0: 強い嫌悪/不信
+    liking_score_raw = data.get("liking_score")
+    liking_score = 0.5
+    if liking_score_raw is not None:
+        try:
+            liking_score = clamp01(float(liking_score_raw))
+        except Exception:  # noqa: BLE001
+            liking_score = 0.5
+
+    liking_reasons_raw = data.get("liking_reasons") or []
+    liking_reasons: list[dict[str, Any]] = []
+    if isinstance(liking_reasons_raw, list):
+        for item in liking_reasons_raw[:5]:
+            if not isinstance(item, dict):
+                continue
+            why = str(item.get("why") or "").strip()
+            try:
+                unit_id = int(item.get("unit_id"))
+            except Exception:  # noqa: BLE001
+                continue
+            if why:
+                liking_reasons.append({"unit_id": unit_id, "why": why})
+
+    # 注入テキストは Scheduler が summary_text しか使わないため、好感度も summary_text 先頭に出す。
+    if "AI好感度:" not in summary_text:
+        summary_text = f"AI好感度: {liking_score:.2f}（0..1。0.5=中立）\n{summary_text}"
+
     key_events_raw = data.get("key_events") or []
     key_events: list[dict[str, Any]] = []
     if isinstance(key_events_raw, list):
@@ -1641,6 +1671,8 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
 
     summary_obj = {
         "summary_text": summary_text,
+        "liking_score": liking_score,
+        "liking_reasons": liking_reasons,
         "key_events": key_events,
         "notes": str(data.get("notes") or "").strip(),
     }

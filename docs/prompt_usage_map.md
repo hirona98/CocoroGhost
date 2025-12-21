@@ -233,6 +233,7 @@ flowchart LR
 - Persona/Contract: settings の active preset から読み込まれ、Schedulerが `[PERSONA_ANCHOR]` / `[RELATIONSHIP_CONTRACT]` として MemoryPack に注入する（`cocoro_ghost/config.py` / `cocoro_ghost/scheduler.py`）。
 - 内部ガード: chat/notification/meta_request の system 先頭に固定で付与される（`cocoro_ghost/memory.py::_INTERNAL_CONTEXT_GUARD_PROMPT`）。
 - Mood trailer（chatのみ）: 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_INTERNAL_JSON_v1>>>` + 内部JSON（Reflection互換 + `partner_policy`）を付加する。サーバ側は区切り以降をSSEに流さず回収し、`units.emotion_* / salience / confidence / topic_tags` と `payload_episode.reflection_json` に即時反映する（`cocoro_ghost/memory.py`）。これにより「その発言で怒る」を同ターンで実現しつつ、Workerの `reflect_episode` は冪等にスキップ可能になる。
+- Person summary: `person_summary_refresh` は注入用の `summary_text` に加えて、`liking_score`（パートナーAI→人物の好感度 0..1）を `summary_json` に保存する。Schedulerは現状 `summary_text` を注入するため、好感度は `summary_text` 先頭に1行で含める運用（`cocoro_ghost/worker.py::_handle_person_summary_refresh`）。
 - 画像要約（vision）: `images[].base64` を画像として渡し、「短い日本語で要約」したテキストを得る（`cocoro_ghost/llm_client.py::LlmClient.generate_image_summary`）。chat/notification/meta_request/capture の `payload_episode.image_summary` に保存される。
 
 ## 6) 例外：Scheduler内での Entity 抽出（LLMフォールバック）
