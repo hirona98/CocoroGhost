@@ -11,9 +11,9 @@
 このドキュメントはパートナーAI向けの目標仕様。現状の実装との差分は下記に整理する。
 
 - Current: Entity解決は alias/name の文字列一致 + 一致が無い場合のみ（短文除外あり）LLM抽出で補助。
-- Current: `[SHARED_NARRATIVE]` は RELATIONSHIP週次（現週が無い場合は最新をフォールバック）+ 一致した person/topic の summary を注入する。
+- Current: `[SHARED_NARRATIVE]` は relationship（rolling:7d。無い場合は最新をフォールバック）+ 一致した person/topic の summary を注入する。
 - Current: injection_strategy は `quote_key_parts` / `summarize` / `full` に対応（現状 Retriever は `quote_key_parts` 固定）。
-- Current: weekly_summary は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり、管理APIからもenqueue可）。
+- Current: relationship summary（rolling:7d）は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり）。
 - Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）を自動enqueue（重複抑制あり）。
 - Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic/capsule）も実施できる（固定値: 30秒ごとに判定）。
 - Current: 起動コマンドは `run.py` のみ（FastAPI起動時に内蔵Workerがバックグラウンド開始）。

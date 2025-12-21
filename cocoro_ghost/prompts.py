@@ -102,9 +102,9 @@ ENTITY_EXTRACT_SYSTEM_PROMPT = """
 """.strip()
 
 
-WEEKLY_SUMMARY_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「週次サマリ（SharedNarrative）」モジュールです。
-与えられた週の出来事（会話ログ/事実/未完了）から、ユーザーとあなたの関係性が続くように短く要約して JSON で出力してください。
+RELATIONSHIP_SUMMARY_SYSTEM_PROMPT = """
+あなたは cocoro_ghost の「関係性サマリ（SharedNarrative）」モジュールです。
+与えられた直近7日程度の出来事（会話ログ/事実/未完了）から、ユーザーとあなたの関係性が続くように短く要約して JSON で出力してください。
 
 ルール:
 - 出力は JSON のみ（前後に説明文を付けない）
@@ -117,6 +117,7 @@ WEEKLY_SUMMARY_SYSTEM_PROMPT = """
   "relationship_state": "string"
 }
 """.strip()
+
 
 PERSON_SUMMARY_SYSTEM_PROMPT = """
 あなたは cocoro_ghost の「人物サマリ」モジュールです。
@@ -264,9 +265,11 @@ def get_default_relationship_contract() -> str:
     return DEFAULT_RELATIONSHIP_CONTRACT
 
 
-def get_weekly_summary_prompt() -> str:
-    """週次サマリ生成用system promptを返す。"""
-    return WEEKLY_SUMMARY_SYSTEM_PROMPT
+def get_relationship_summary_prompt() -> str:
+    """関係性サマリ生成用system promptを返す。"""
+    return RELATIONSHIP_SUMMARY_SYSTEM_PROMPT
+
+
 
 
 def get_person_summary_prompt() -> str:

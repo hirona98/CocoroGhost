@@ -23,14 +23,14 @@
 - `extract_facts(unit_id)`
 - `extract_loops(unit_id)`
 - `upsert_embeddings(unit_id)`（episode/fact/summary/loop…必要種別）
-- `weekly_summary(week_key)`（定期 / `memory_id` は Worker が扱うDBで暗黙）
+- `relationship_summary(scope_key=rolling:7d)`（定期 / `memory_id` は Worker が扱うDBで暗黙）
 - `person_summary_refresh(entity_id)`（人物サマリ更新）
 - `topic_summary_refresh(entity_id)`（トピックサマリ更新）
 - `capsule_refresh(limit)`（任意 / `limit` は直近件数、デフォルト5）
 
 ## 実装ステータス（Current/Planned）
 
-- Current: weekly_summary は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり）+ 管理APIからもenqueue。
+- Current: relationship summary（rolling:7d）は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり）。
 - Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）を自動enqueue（重複抑制あり）。
 - Current: capsule_refresh は Episode保存後の既定ジョブとして自動enqueue（`limit=5`）。
 - Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic/capsule）も実施できる（固定値: 30秒ごとに判定）。
@@ -67,7 +67,7 @@
 
 cron が無い環境向けに、Worker（jobs処理ループ）内で定期的に jobs を enqueue する。
 
-- enqueue 対象: `weekly_summary` / `person_summary_refresh` / `topic_summary_refresh` / `capsule_refresh`
+- enqueue 対象: `relationship_summary` / `person_summary_refresh` / `topic_summary_refresh` / `capsule_refresh`
 - 重複抑制: queued/running の同種ジョブがあれば enqueue しない
 - クールダウン: summary/capsule の更新頻度を抑制（デフォルト: 30秒ごとに判定）
 

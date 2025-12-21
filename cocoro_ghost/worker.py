@@ -167,8 +167,8 @@ def process_job(
             _handle_extract_loops(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "extract_entities":
             _handle_extract_entities(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "weekly_summary":
-            _handle_weekly_summary(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
+        elif job.kind == "relationship_summary":
+            _handle_relationship_summary(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "person_summary_refresh":
             _handle_person_summary_refresh(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "topic_summary_refresh":
@@ -1242,28 +1242,13 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
     )
 
 
-def _parse_week_key(week_key: str) -> tuple[int, int]:
-    # "YYYY-Www"
-    s = (week_key or "").strip()
-    if "-W" not in s:
-        raise ValueError("invalid week_key")
-    year_s, week_s = s.split("-W", 1)
-    year = int(year_s)
-    week = int(week_s)
-    start = datetime.fromisocalendar(year, week, 1).replace(tzinfo=timezone.utc, hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=7)
-    return int(start.timestamp()), int(end.timestamp())
-
-
-def _utc_week_key(ts: int) -> str:
-    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-    iso_year, iso_week, _ = dt.isocalendar()
-    return f"{iso_year}-W{iso_week:02d}"
-
-
-def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    week_key = str(payload.get("week_key") or "").strip() or _utc_week_key(now_ts)
-    range_start, range_end = _parse_week_key(week_key)
+def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
+    # 現行: rolling 7 days relationship summary（scope_key固定）
+    rolling_scope_key = "rolling:7d"
+    scope_key = str(payload.get("scope_key") or "").strip() or rolling_scope_key
+    window_days = 7
+    range_end = int(now_ts)
+    range_start = range_end - window_days * 86400
 
     ep_rows = (
         session.query(Unit, PayloadEpisode)
@@ -1291,9 +1276,9 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
         rt = rt[:220]
         lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
 
-    input_text = f"week_key: {week_key}\n\n[EPISODES]\n" + "\n".join(lines)
+    input_text = f"scope_key: {scope_key}\nrange_start: {range_start}\nrange_end: {range_end}\n\n[EPISODES]\n" + "\n".join(lines)
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_weekly_summary_prompt(), user_text=input_text)
+    resp = llm_client.generate_json_response(system_prompt=prompts.get_relationship_summary_prompt(), user_text=input_text)
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
@@ -1328,7 +1313,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
         .filter(
             Unit.kind == int(UnitKind.SUMMARY),
             PayloadSummary.scope_label == "relationship",
-            PayloadSummary.scope_key == week_key,
+            PayloadSummary.scope_key == scope_key,
         )
         .order_by(Unit.created_at.desc())
         .first()
@@ -1336,7 +1321,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
 
     payload_obj = {
         "scope_label": "relationship",
-        "scope_key": week_key,
+        "scope_key": scope_key,
         "range_start": range_start,
         "range_end": range_end,
         "summary": summary_obj,
@@ -1348,7 +1333,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
             occurred_at=range_end - 1,
             created_at=now_ts,
             updated_at=now_ts,
-            source="weekly_summary",
+            source="relationship_summary",
             state=int(UnitState.RAW),
             confidence=0.5,
             salience=0.0,
@@ -1361,7 +1346,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
             PayloadSummary(
                 unit_id=unit.id,
                 scope_label="relationship",
-                scope_key=week_key,
+                scope_key=scope_key,
                 range_start=range_start,
                 range_end=range_end,
                 summary_text=summary_text,
@@ -1372,7 +1357,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
             session,
             unit_id=int(unit.id),
             payload_obj=payload_obj,
-            patch_reason="weekly_summary",
+            patch_reason="relationship_summary",
             now_ts=now_ts,
         )
         session.add(
@@ -1403,7 +1388,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
         session,
         unit_id=int(unit.id),
         payload_obj=payload_obj,
-        patch_reason="weekly_summary",
+        patch_reason="relationship_summary",
         now_ts=now_ts,
     )
     sync_unit_vector_metadata(

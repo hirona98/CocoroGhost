@@ -31,6 +31,7 @@ _memory_locks: dict[str, threading.Lock] = {}
 
 _REGEX_META_CHARS = re.compile(r"[.^$*+?{}\[\]\\|()]")
 _SUMMARY_REFRESH_INTERVAL_SECONDS = 6 * 3600
+_RELATIONSHIP_SUMMARY_SCOPE_KEY = "rolling:7d"
 
 
 def _matches_exclude_keyword(pattern: str, text: str) -> bool:
@@ -58,13 +59,6 @@ _META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
 def _now_utc_ts() -> int:
     """現在時刻（UTC）をUNIX秒で返す。"""
     return int(time.time())
-
-
-def _utc_week_key(ts: int) -> str:
-    """UNIX秒からISO週キー（YYYY-Www）を作る。"""
-    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-    iso_year, iso_week, _ = dt.isocalendar()
-    return f"{iso_year}-W{iso_week:02d}"
 
 
 def _get_memory_lock(memory_id: str) -> threading.Lock:
@@ -115,30 +109,23 @@ class MemoryManager:
         """SSE（Server-Sent Events）形式の1メッセージを構築する。"""
         return f"event: {event}\ndata: {_json_dumps(payload)}\n\n"
 
-    def _has_pending_weekly_summary_job(self, db, *, week_key: str) -> bool:
+    def _has_pending_relationship_summary_job(self, db) -> bool:
         rows = (
             db.query(Job)
             .filter(
-                Job.kind == "weekly_summary",
+                Job.kind == "relationship_summary",
                 Job.status.in_([int(JobStatus.QUEUED), int(JobStatus.RUNNING)]),
             )
             .all()
         )
-        for job in rows:
-            try:
-                payload = json.loads(job.payload_json or "{}")
-            except Exception:  # noqa: BLE001
-                continue
-            payload_week = str(payload.get("week_key") or "").strip()
-            if not payload_week or payload_week == week_key:
-                return True
-        return False
+        # rolling:7d は scope_key 固定のため、重複抑制は「同種ジョブが1件でもあれば」とする。
+        return bool(rows)
 
-    def _enqueue_weekly_summary_job(self, db, *, now_ts: int, week_key: str) -> None:
+    def _enqueue_relationship_summary_job(self, db, *, now_ts: int) -> None:
         db.add(
             Job(
-                kind="weekly_summary",
-                payload_json=_json_dumps({"week_key": week_key}),
+                kind="relationship_summary",
+                payload_json=_json_dumps({"scope_key": _RELATIONSHIP_SUMMARY_SCOPE_KEY}),
                 status=int(JobStatus.QUEUED),
                 run_after=now_ts,
                 tries=0,
@@ -148,15 +135,14 @@ class MemoryManager:
             )
         )
 
-    def _maybe_enqueue_weekly_summary(self, db, *, now_ts: int) -> None:
+    def _maybe_enqueue_relationship_summary(self, db, *, now_ts: int) -> None:
         if not self.config_store.memory_enabled:
             return
-        # 重複実行を避けるため、同週のジョブが待機/実行中ならスキップする。
-        week_key = _utc_week_key(now_ts)
-        if self._has_pending_weekly_summary_job(db, week_key=week_key):
+        # 重複実行を避けるため、同種ジョブが待機/実行中ならスキップする。
+        if self._has_pending_relationship_summary_job(db):
             return
 
-        # 週次サマリが無い場合は即enqueueする。
+        # relationshipサマリ（rolling:7d）が無い場合は即enqueueする。
         summary_row = (
             db.query(Unit, PayloadSummary)
             .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
@@ -164,20 +150,20 @@ class MemoryManager:
                 Unit.kind == int(UnitKind.SUMMARY),
                 Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
                 PayloadSummary.scope_label == "relationship",
-                PayloadSummary.scope_key == week_key,
+                PayloadSummary.scope_key == _RELATIONSHIP_SUMMARY_SCOPE_KEY,
             )
             .order_by(Unit.updated_at.desc().nulls_last(), Unit.id.desc())
             .first()
         )
 
         if summary_row is None:
-            self._enqueue_weekly_summary_job(db, now_ts=now_ts, week_key=week_key)
+            self._enqueue_relationship_summary_job(db, now_ts=now_ts)
             return
 
         summary_unit, _ps = summary_row
         updated_at = int(summary_unit.updated_at or summary_unit.created_at or 0)
         if updated_at <= 0:
-            self._enqueue_weekly_summary_job(db, now_ts=now_ts, week_key=week_key)
+            self._enqueue_relationship_summary_job(db, now_ts=now_ts)
             return
         # 頻繁な再生成を避けるためクールダウンを入れる。
         if now_ts - updated_at < _SUMMARY_REFRESH_INTERVAL_SECONDS:
@@ -196,7 +182,8 @@ class MemoryManager:
             .scalar()
         )
         if new_episode is not None:
-            self._enqueue_weekly_summary_job(db, now_ts=now_ts, week_key=week_key)
+            self._enqueue_relationship_summary_job(db, now_ts=now_ts)
+
 
     def _summarize_images(self, images: Sequence[Dict[str, str]] | None) -> List[str]:
         if not images:
@@ -404,7 +391,7 @@ class MemoryManager:
                     sensitivity=int(Sensitivity.NORMAL),
                 )
                 self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=episode_unit_id)
-                self._maybe_enqueue_weekly_summary(db, now_ts=now_ts)
+                self._maybe_enqueue_relationship_summary(db, now_ts=now_ts)
         except Exception as exc:  # noqa: BLE001
             logger.error("episode保存に失敗しました", exc_info=exc)
             yield self._sse("error", {"message": str(exc), "code": "db_write_failed"})
@@ -548,7 +535,7 @@ class MemoryManager:
                 image_summary=image_summary_text,
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
-            self._maybe_enqueue_weekly_summary(db, now_ts=now_ts)
+            self._maybe_enqueue_relationship_summary(db, now_ts=now_ts)
 
         publish_event(
             type="notification",
@@ -696,7 +683,7 @@ class MemoryManager:
             )
             # 文書生成は会話ログと同様に検索対象にしたい（埋め込みのみで十分）。
             self._enqueue_embeddings_job(db, now_ts=now_ts, unit_id=unit_id)
-            self._maybe_enqueue_weekly_summary(db, now_ts=now_ts)
+            self._maybe_enqueue_relationship_summary(db, now_ts=now_ts)
 
         publish_event(
             type="meta_request",
@@ -738,7 +725,7 @@ class MemoryManager:
                 sensitivity=int(Sensitivity.PRIVATE),
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
-            self._maybe_enqueue_weekly_summary(db, now_ts=now_ts)
+            self._maybe_enqueue_relationship_summary(db, now_ts=now_ts)
         return schemas.CaptureResponse(episode_id=unit_id, stored=True)
 
     def _create_episode_unit(

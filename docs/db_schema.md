@@ -273,10 +273,10 @@ create index if not exists idx_summary_scope on payload_summary(scope_label, sco
 
 #### 使い方（Summary）
 
-- `scope_label` と `scope_key` で「どの範囲の要約か」を表す。
-  - relationship: `YYYY-Www`（週次）
-  - person: `person:<entity_id>`
-  - topic: `topic:<normalized>`
+  - `scope_label` と `scope_key` で「どの範囲の要約か」を表す。
+    - relationship: `rolling:7d`（直近7日ローリング）
+    - person: `person:<entity_id>`
+    - topic: `topic:<normalized>`
 - `summary_text` は注入用のプレーンテキスト（Schedulerが `[SHARED_NARRATIVE]` に入れる）。
 - `summary_json` はLLM出力を丸ごと保存（key_events等の構造化）。
 
@@ -336,8 +336,8 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 | column | 意味/使い方 |
 |---|---|
-| `kind` | ジョブ種別（例: `reflect_episode`, `extract_entities`, `upsert_embeddings`, `weekly_summary` など）。 |
-| `payload_json` | 入力（例: `{"unit_id":123}` / `{"week_key":"2025-W50"}`）。 |
+| `kind` | ジョブ種別（例: `reflect_episode`, `extract_entities`, `upsert_embeddings`, `relationship_summary` など）。 |
+| `payload_json` | 入力（例: `{"unit_id":123}` / `{"scope_key":"rolling:7d"}`）。 |
 | `status` | 0 queued / 1 running / 2 done / 3 failed。 |
 | `run_after` | 実行可能時刻（UTC epoch sec）。バックオフに使う。 |
 | `tries` | 失敗回数。上限超過で failed に落とす。 |
@@ -362,7 +362,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 **B. 週次サマリ（RELATIONSHIP）の更新**
 
-- 対象: `weekly_summary(week_key)`
+- 対象: `relationship_summary(scope_key=rolling:7d)`
 - enqueue経路:
   - Episode保存時に「現週サマリが無い」または「クールダウン後に新規Episodeがある」場合に自動enqueue（重複抑制あり）
   - 内蔵Workerの定期enqueue（cron無し、固定値で定期判定）

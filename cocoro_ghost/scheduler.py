@@ -34,13 +34,6 @@ def now_utc_ts() -> int:
     return int(time.time())
 
 
-def utc_week_key(ts: int) -> str:
-    """UNIX秒からISO週キー（YYYY-Www）を作る。"""
-    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-    iso_year, iso_week, _ = dt.isocalendar()
-    return f"{iso_year}-W{iso_week:02d}"
-
-
 def _token_budget_to_char_budget(max_inject_tokens: int) -> int:
     # 日本語でも荒く扱えるよう、ここでは固定倍率で近似する（厳密さより安全側）。
     # max_inject_tokens を上限として扱う（厳密なtoken計測は行わない）。
@@ -301,9 +294,9 @@ def build_memory_pack(
         obj = entity_by_id.get(int(f.object_entity_id)) if f.object_entity_id else f.object_text
         fact_lines.append(_format_fact_line(subject=subject, predicate=f.predicate, obj_text=obj))
 
-    week_key = utc_week_key(now_ts)
+    rolling_scope_key = "rolling:7d"
     summary_texts: List[str] = []
-    scopes = ["weekly", "person", "topic"]
+    scopes = ["relationship", "person", "topic"]
 
     def add_summary(scope_label: str, scope_key: Optional[str], *, fallback_latest: bool = False) -> None:
         """指定スコープのサマリを1つ取り出してsummary_textsへ追加する（無ければ何もしない）。"""
@@ -333,9 +326,9 @@ def build_memory_pack(
             if text_:
                 summary_texts.append(text_)
 
-    if "weekly" in scopes:
-        # 現週のサマリがまだ無い場合は最新のrelationshipサマリを注入する
-        add_summary("relationship", week_key, fallback_latest=True)
+    if "relationship" in scopes:
+        # rolling（直近7日）のrelationshipサマリが無い場合は最新のrelationshipサマリを注入する
+        add_summary("relationship", rolling_scope_key, fallback_latest=True)
 
     if matched_entity_ids and ("person" in scopes or "topic" in scopes):
         ents = db.query(Entity).filter(Entity.id.in_(sorted(matched_entity_ids))).all()

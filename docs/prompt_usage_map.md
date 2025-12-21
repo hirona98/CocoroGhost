@@ -14,7 +14,7 @@
 | `LOOP_EXTRACT_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 未完了事項（open loops）をJSON抽出 | `cocoro_ghost/worker.py::_handle_extract_loops` | 非同期（Worker Job） |
 | `PERSON_SUMMARY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 人物の会話注入用サマリをJSON生成 | `cocoro_ghost/worker.py::_handle_person_summary_refresh` | 非同期（Worker Job） |
 | `TOPIC_SUMMARY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | トピックの会話注入用サマリをJSON生成 | `cocoro_ghost/worker.py::_handle_topic_summary_refresh` | 非同期（Worker Job） |
-| `WEEKLY_SUMMARY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 現週の関係性サマリ（SharedNarrative/relationship）をJSON生成 | `cocoro_ghost/worker.py::_handle_weekly_summary`（enqueue: `cocoro_ghost/memory.py::MemoryManager::_maybe_enqueue_weekly_summary` / `cocoro_ghost/periodic.py::maybe_enqueue_weekly_summary`） | 非同期（Worker Job） |
+| `RELATIONSHIP_SUMMARY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 関係性サマリ（SharedNarrative/relationship, rolling:7d）をJSON生成 | `cocoro_ghost/worker.py::_handle_relationship_summary`（enqueue: `cocoro_ghost/memory.py::MemoryManager::_maybe_enqueue_relationship_summary` / `cocoro_ghost/periodic.py::maybe_enqueue_relationship_summary`） | 非同期（Worker Job） |
 | `EXTERNAL_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 通知（notification）から“自然な返答文”を生成 | `cocoro_ghost/memory.py::MemoryManager::_process_notification_async` | 同期風（API応答後のBackgroundTasks） |
 | `META_PROACTIVE_MESSAGE_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | meta_request（指示+材料）から能動メッセージ生成 | `cocoro_ghost/memory.py::MemoryManager::_process_meta_request_async` | 同期風（API応答後のBackgroundTasks） |
 | `DEFAULT_PERSONA_ANCHOR` | `cocoro_ghost/prompts.py` | PersonaPreset の初期値（未設定時の雛形） | `cocoro_ghost/db.py`（settings初期化） | 起動時/初期化 |
@@ -51,7 +51,7 @@ flowchart TD
     LLM_META --> SAVE_EP
 
     SAVE_EP --> ENQ["DB: enqueue default jobs"]
-    SAVE_EP --> ENQW_MAYBE["DB: maybe enqueue weekly_summary"]
+    SAVE_EP --> ENQW_MAYBE["DB: maybe enqueue relationship_summary"]
   end
 
   subgraph WORKER["Worker（jobs）"]
@@ -63,11 +63,11 @@ flowchart TD
     ENQ --> EMB["upsert_embeddings (prompt無し)"]
     ENT --> PERS["person_summary_refresh → PERSON_SUMMARY_SYSTEM_PROMPT"]
     ENT --> TOP["topic_summary_refresh → TOPIC_SUMMARY_SYSTEM_PROMPT"]
-    ENQW_MAYBE --> WEEK["weekly_summary → WEEKLY_SUMMARY_SYSTEM_PROMPT"]
+    ENQW_MAYBE --> WEEK["relationship_summary → RELATIONSHIP_SUMMARY_SYSTEM_PROMPT"]
   end
 
   subgraph OTHER["その他の入口（enqueueのみ）"]
-    PERIODIC["periodic: maybe_enqueue_weekly_summary()"] --> ENQW_MAYBE
+    PERIODIC["periodic: maybe_enqueue_relationship_summary()"] --> ENQW_MAYBE
   end
 ```
 
@@ -125,7 +125,7 @@ flowchart TD
   - スコア: `confidence/salience/recency/pin` を合成して降順
   - 形式: `- SUBJECT predicate OBJECT`（entity_idが引けると名前に置換、subject未指定は `USER`）
 - `[SHARED_NARRATIVE]`:
-  - 現週キー `YYYY-Www` の relationship weekly summary（無ければ latest をfallback）
+  - `scope_key=rolling:7d` の relationship summary（無ければ latest をfallback）
   - 今回マッチした entity に応じて追加:
     - roles に `person` を含む: `scope_label=person, scope_key=person:<entity_id>`
     - roles に `topic` を含む: `scope_label=topic, scope_key=topic:<normalized-or-name-lower>`
@@ -180,7 +180,7 @@ sequenceDiagram
   API-->>UI: SSE stream
   API->>DB: save Unit(kind=EPISODE)\n(user_text, reply_text, image_summary...)
   API->>Q: enqueue default jobs\n(reflect/extract/embed/capsule_refresh...)
-  API->>Q: maybe enqueue weekly_summary\n(relationship summary refresh)
+  API->>Q: maybe enqueue relationship_summary\n(relationship summary refresh)
 ```
 
 ## 4) 非同期フロー（Worker jobs）：派生物ごとに使うプロンプト
@@ -216,16 +216,16 @@ flowchart LR
   TOP -->|LLM JSON| P7["TOPIC_SUMMARY_SYSTEM_PROMPT"]
   P7 --> S2["Unit(kind=SUMMARY, scope=topic) + payload_summary"]
 
-  J --> WS["weekly_summary"]
-  WS -->|LLM JSON| P8["WEEKLY_SUMMARY_SYSTEM_PROMPT"]
-  P8 --> S3["Unit(kind=SUMMARY, scope=relationship, scope_key=YYYY-Www) + payload_summary"]
+  J --> WS["relationship_summary"]
+  WS -->|LLM JSON| P8["RELATIONSHIP_SUMMARY_SYSTEM_PROMPT"]
+  P8 --> S3["Unit(kind=SUMMARY, scope=relationship, scope_key=rolling:7d) + payload_summary"]
   S3 --> EMB2["enqueue upsert_embeddings (if changed)"]
 ```
 
 ## 5) “どの入力で” 各プロンプトが呼ばれるか（要点）
 
 - Reflection / Entities / Facts / Loops: `payload_episode` の `user_text/reply_text/image_summary` を連結して入力にする（`cocoro_ghost/worker.py`）。
-- Weekly summary: 現週（`week_key=YYYY-Www`）の `Unit(kind=EPISODE)` を時系列で最大200件抜粋し、`week_key` + 箇条書き（unit_id + user/reply抜粋）として入力にする（`cocoro_ghost/worker.py::_handle_weekly_summary`）。
+- Relationship summary（rolling:7d）: 直近7日程度の `Unit(kind=EPISODE)` を時系列で最大200件抜粋し、`range_start/range_end` + 箇条書き（unit_id + user/reply抜粋）として入力にする（`cocoro_ghost/worker.py::_handle_relationship_summary`）。
 - Capsule refresh: 直近の `Unit(kind=EPISODE)`（既定 `limit=5`）の抜粋と、Unit側の `emotion_label/topic_tags` などをまとめて `payload_capsule.capsule_json` を更新する（`cocoro_ghost/worker.py::_handle_capsule_refresh`）。
 - Notification: `# notification ...` 形式に整形したテキスト（+ 画像要約）を `conversation=[{"role":"user","content":...}]` として渡す（`cocoro_ghost/memory.py`）。
 - Meta request: `# meta_request ...` 形式に整形したテキスト（instruction + payload + 画像要約）を渡す（`cocoro_ghost/memory.py`）。
