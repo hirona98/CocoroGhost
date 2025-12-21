@@ -2,9 +2,24 @@
 
 ## 目的
 
-- MemOSの Scheduling の発想（予測・プリロード・注意機構）を、API運用に合わせて実装する
+- Scheduling の発想（予測・プリロード・注意機構）を、API運用に合わせて実装する
 - **“会話の一貫性”を最優先**しつつ、注入トークンを制御する
 - 検索結果をそのまま注入しない。**注入パック（MemoryPack）** を編成して注入する
+
+## 実装ステータス（Current/Planned）
+
+このドキュメントはパートナーAI向けの目標仕様。現状の実装との差分は下記に整理する。
+
+- Current: Entity解決は alias/name の文字列一致 + 一致が無い場合のみ（短文除外あり）LLM抽出で補助。
+- Current: `[SHARED_NARRATIVE]` は RELATIONSHIP週次（現週が無い場合は最新をフォールバック）+ 一致した person/topic の summary を注入する。
+- Current: injection_strategy は `quote_key_parts` / `summarize` / `full` に対応（現状 Retriever は `quote_key_parts` 固定）。
+- Current: weekly_summary は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり、管理APIからもenqueue可）。
+- Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）を自動enqueue（重複抑制あり）。
+- Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic/capsule）も実施できる（固定値: 30秒ごとに判定）。
+- Current: 起動コマンドは `run.py` のみ（FastAPI起動時に内蔵Workerがバックグラウンド開始）。
+- Current: `/api/settings` 変更時は内蔵Workerを自動で再起動し、LLM/Embedding preset と memory_id 切替に追従する（再起動の手動運用も可能）。
+- Non-goal: uvicorn multi-worker 等の多重起動は未対応（内蔵Workerが重複実行されうるため）。`workers=1` 前提で運用する。
+- Planned: Entity解決のWorkerフォールバック強化（同期/非同期の最適化）と injection_strategy の自動切替。
 
 ## 入力
 
@@ -39,11 +54,16 @@
 - ...
 
 [EPISODE_EVIDENCE]
-- ...
+以下は現在の会話に関連する過去のやりとりです。
+
+[YYYY-MM-DD] タイトル（任意）
+User: 「...」
+Partner: 「...」
+→ 関連: （短い理由）
 ```
 
 補足:
-- MemoryPack は `guard_prompt + memorypack + user_text` の形で LLM に渡される（仕様: `docs/api.md`）。
+- MemoryPack は `guard_prompt + memorypack` を system に注入し、conversation に直近会話（max_turns_window）+ user_text を渡す形で LLM に渡される（仕様: `docs/api.md`）。
 - MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（ユーザー設定の prompt に書かせず、コード側でガードするのが推奨。例: `cocoro_ghost/memory.py`）。
 
 ## 取得手順（規定）
@@ -51,23 +71,27 @@
 1. **常時注入（検索しない）**
    - active persona（`settings.db` の `active_persona_preset_id`）
    - active contract（`settings.db` の `active_contract_preset_id`）
-2. **Intent分類（軽量）**
-   - small modelで JSON 1発（`docs/prompts.md` 参照）
+2. **Contextual Memory Retrieval（Retriever・LLMレス）**
+   - 固定クエリ → Hybrid Search（Vector + BM25）→ ヒューリスティック Rerank（`docs/retrieval.md`）
+   - relevant episodes（最大5件）を高速に取得する
 3. **Entity解決**
    - 文字列から alias 参照（`entities` + `entity_aliases`）
    - 足りなければLLM抽出（Workerでも可、同期が重い場合は後回し）
+   - Current: Schedulerは alias/name の文字列一致 + 一致が無い場合のみLLMフォールバック
 4. **Facts優先取得**
    - 関連entityのfactを信頼度・鮮度・pinでスコアリング
 5. **Summaries取得**
    - 週次（RELATIONSHIP）＋該当topic/person
+   - Current: RELATIONSHIP週次 + person/topic を注入対象として運用（生成は自動enqueue）
 6. **OpenLoops取得**
    - openのみ、due順、entity一致を優先
-7. **必要時だけ Episode KNN**
-   - intentが「回想/確認/過去参照」寄り
-   - または facts/summaries で不足と判断したとき
+7. **Episode evidence 注入**
+   - `should_inject_episodes(relevant_episodes)` が true のときだけ `[EPISODE_EVIDENCE]` を組み込む
+   - `injection_strategy`（quote_key_parts/summarize/full）に応じて整形する
+   - Current: Retrieverは `quote_key_parts` 固定
 8. **圧縮**
    - facts: 箇条書き（1件 1〜2行）
-   - episodes: 抜粋（最大N件、1件あたり最大M文字）
+   - episodes: 抜粋/要約（最大N件、1件あたり最大M文字）
 
 ## スコア（例：facts）
 

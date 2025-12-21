@@ -28,6 +28,7 @@ async def _authenticate(websocket: WebSocket) -> bool:
 
 @router.websocket("/stream")
 async def stream_events(websocket: WebSocket) -> None:
+    """アプリイベント（通知/メタ等）をWebSocketでストリーミング配信する。"""
     if not await _authenticate(websocket):
         return
 
@@ -42,4 +43,3 @@ async def stream_events(websocket: WebSocket) -> None:
         pass
     finally:
         await event_stream.remove_client(websocket)
-

@@ -95,18 +95,22 @@ class ConfigStore:
 
     @property
     def config(self) -> RuntimeConfig:
+        """現在のRuntimeConfig（LLM/Embedding/Prompt等の統合設定）を返す。"""
         return self._runtime
 
     @property
     def toml_config(self) -> Config:
+        """起動時に読み込んだTOML設定（token/log_level）を返す。"""
         return self._toml
 
     @property
     def memory_id(self) -> str:
+        """アクティブな記憶DBのID（embedding preset由来）。"""
         return self._runtime.memory_id
 
     @property
     def embedding_dimension(self) -> int:
+        """ベクトルDBの埋め込み次元数（embedding preset由来）。"""
         return self._runtime.embedding_dimension
 
 
@@ -209,4 +213,5 @@ def get_config_store() -> ConfigStore:
 
 
 def get_token() -> str:
+    """API認証用トークンを返す。"""
     return get_config_store().config.token

@@ -1,29 +1,20 @@
 # LLM呼び出し仕様（プロンプト・JSONスキーマ）
 
+プロンプトが「どの処理のどこで」使われるか（フロー図）は `docs/prompt_usage_map.md` を参照。
+
 ## 共通ルール
 
 - 出力は **必ずJSON**（前後に説明文を付けない）
-- 推測が不確実なら conservative（例: `need_evidence=true` / `confidence`低め）
+- 推測が不確実なら conservative（例: 不確実な項目は出力しない / `confidence`低め）
 - JSONは決められた key を使い、型を守る（`null` は許可）
 
-## Intent分類（small model推奨）
+## 記憶検索（Retriever）
 
-### 出力JSON
+記憶検索（Retriever）は **LLMを使用しない**。詳細は `docs/retrieval.md` を参照。
 
-```json
-{
-  "intent": "smalltalk|counsel|task|settings|recall|confirm|meta",
-  "need_evidence": true,
-  "need_loops": true,
-  "suggest_summary_scope": ["weekly", "person", "topic"],
-  "sensitivity_max": 1
-}
-```
-
-### System
-
-- 出力は必ずJSON
-- 推測が不確実なら conservative（need_evidence=true）
+- Query Expansion: 廃止（固定2クエリに置換）
+- LLM Reranking: 廃止（ヒューリスティック Rerank に置換）
+- Intent 分類: 廃止（常時検索に移行）
 
 ## Reflection（Episode派生）
 
@@ -50,8 +41,8 @@
 ```json
 {
   "entities": [
-    {"etype": "PERSON", "name": "string", "aliases": ["..."], "role": "mentioned", "confidence": 0.0},
-    {"etype": "PLACE", "name": "string", "aliases": [], "role": "mentioned", "confidence": 0.0}
+    {"type_label": "PERSON", "roles": ["person"], "name": "string", "aliases": ["..."], "role": "mentioned", "confidence": 0.0},
+    {"type_label": "PLACE", "roles": [], "name": "string", "aliases": [], "role": "mentioned", "confidence": 0.0}
   ],
   "relations": [
     {"src": "PERSON:太郎", "rel": "friend", "dst": "PERSON:次郎", "confidence": 0.0, "evidence": "short quote"}
@@ -60,7 +51,9 @@
 ```
 
 - `entities` / `entity_aliases` / `unit_entities` / `edges` を upsert
-- `relations.rel` は `friend|family|colleague|partner|likes|dislikes|related|other` を推奨（実装側で `RelationType` にマップする）
+- `relations.rel` は自由ラベル（推奨: `friend|family|colleague|partner|likes|dislikes|related|other`）
+- `type_label` / `src` / `dst` の TYPE は大文字推奨（内部でも大文字に正規化して保存する）
+- `roles` は小文字推奨（内部でも小文字に正規化して保存する）
 
 ## Fact抽出（安定知識）
 
@@ -70,7 +63,7 @@
 {
   "facts": [
     {
-      "subject": {"etype": "PERSON", "name": "USER"},
+      "subject": {"type_label": "PERSON", "name": "USER"},
       "predicate": "prefers",
       "object_text": "静かなカフェ",
       "confidence": 0.0,
@@ -110,5 +103,33 @@
 }
 ```
 
-- `units(kind=SUMMARY, scope_type=RELATIONSHIP, scope_key=2025-W50)` + `payload_summary`
+- `units(kind=SUMMARY, scope_label=relationship, scope_key=2025-W50)` + `payload_summary`
 - `payload_summary.summary_json` に LLM の出力JSONを丸ごと保存（`summary_text` は注入用のプレーンテキストとして残す）
+
+## Person Summary（人物サマリ）
+
+人物（PERSON）に関する要約を生成する（会話への注入用）。
+
+### 出力JSON（例）
+
+```json
+{
+  "summary_text": "string",
+  "key_events": [{"unit_id": 123, "why": "..."}],
+  "notes": "optional"
+}
+```
+
+## Topic Summary（トピックサマリ）
+
+トピック（TOPIC）に関する要約を生成する（会話への注入用）。
+
+### 出力JSON（例）
+
+```json
+{
+  "summary_text": "string",
+  "key_events": [{"unit_id": 123, "why": "..."}],
+  "notes": "optional"
+}
+```

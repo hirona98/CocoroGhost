@@ -64,6 +64,7 @@ def list_units(
     offset: int = Query(default=0, ge=0),
     config_store: ConfigStore = Depends(get_config_store_dep),
 ):
+    """Unit一覧を返す（kind/stateで絞り込み可）。"""
     with memory_session_scope(memory_id, config_store.embedding_dimension) as db:
         q = db.query(Unit)
         if kind is not None:
@@ -80,6 +81,7 @@ def get_unit(
     unit_id: int,
     config_store: ConfigStore = Depends(get_config_store_dep),
 ):
+    """Unit詳細（メタ + kindに応じたpayload）を返す。"""
     with memory_session_scope(memory_id, config_store.embedding_dimension) as db:
         unit = db.query(Unit).filter(Unit.id == unit_id).one_or_none()
         if unit is None:
@@ -112,7 +114,7 @@ def get_unit(
             ps = db.query(PayloadSummary).filter(PayloadSummary.unit_id == unit_id).one_or_none()
             if ps:
                 payload = {
-                    "scope_type": ps.scope_type,
+                    "scope_label": ps.scope_label,
                     "scope_key": ps.scope_key,
                     "range_start": ps.range_start,
                     "range_end": ps.range_end,
@@ -138,6 +140,7 @@ def update_unit(
     request: UnitUpdateRequest,
     config_store: ConfigStore = Depends(get_config_store_dep),
 ):
+    """Unitのメタ情報（pin/sensitivity/state/topic_tags等）を更新する。"""
     now_ts = int(time.time())
     with memory_session_scope(memory_id, config_store.embedding_dimension) as db:
         unit = db.query(Unit).filter(Unit.id == unit_id).one_or_none()
@@ -204,6 +207,7 @@ def enqueue_weekly_summary(
     request: WeeklySummaryEnqueueRequest,
     config_store: ConfigStore = Depends(get_config_store_dep),
 ):
+    """週次サマリ生成ジョブ（weekly_summary）をjobsへ投入する。"""
     now_ts = int(time.time())
     payload: Dict[str, Any] = {}
     if request.week_key:

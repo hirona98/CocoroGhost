@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 # vec_units は本文を置かず unit_id で JOIN して取得する。
 VEC_UNITS_TABLE_NAME = "vec_units"
 
+# FTS5 仮想テーブル名（BM25インデックス）
+EPISODE_FTS_TABLE_NAME = "episode_fts"
+
 # 設定DB用 Base（GlobalSettings, LlmPreset, EmbeddingPreset）
 Base = declarative_base()
 
@@ -72,6 +75,7 @@ def _create_engine_with_vec_support(db_url: str):
 
         @event.listens_for(engine, "connect")
         def load_sqlite_vec_extension(dbapi_conn, connection_record):
+            """SQLite接続ごとにsqlite-vec拡張をロードし、必要PRAGMAを適用する。"""
             dbapi_conn.enable_load_extension(True)
             try:
                 dbapi_conn.load_extension(vec_path)
@@ -125,6 +129,78 @@ def _enable_sqlite_vec(engine, dimension: int) -> None:
         conn.commit()
 
 
+def _enable_episode_fts(engine) -> None:
+    """Episode の BM25 検索用に FTS5 仮想テーブルと同期トリガーを用意する。"""
+    with engine.connect() as conn:
+        existed = (
+            conn.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:name"),
+                {"name": EPISODE_FTS_TABLE_NAME},
+            ).fetchone()
+            is not None
+        )
+
+        conn.execute(
+            text(
+                f"""
+                CREATE VIRTUAL TABLE IF NOT EXISTS {EPISODE_FTS_TABLE_NAME} USING fts5(
+                    user_text,
+                    reply_text,
+                    content='payload_episode',
+                    content_rowid='unit_id',
+                    tokenize='unicode61'
+                )
+                """
+            )
+        )
+
+        # external content FTS はトリガーで追従させる
+        conn.execute(
+            text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_ai
+                AFTER INSERT ON payload_episode
+                BEGIN
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, user_text, reply_text)
+                    VALUES (new.unit_id, new.user_text, new.reply_text);
+                END;
+                """
+            )
+        )
+        conn.execute(
+            text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_ad
+                AFTER DELETE ON payload_episode
+                BEGIN
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, user_text, reply_text)
+                    VALUES ('delete', old.unit_id, old.user_text, old.reply_text);
+                END;
+                """
+            )
+        )
+        conn.execute(
+            text(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_au
+                AFTER UPDATE ON payload_episode
+                BEGIN
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, user_text, reply_text)
+                    VALUES ('delete', old.unit_id, old.user_text, old.reply_text);
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, user_text, reply_text)
+                    VALUES (new.unit_id, new.user_text, new.reply_text);
+                END;
+                """
+            )
+        )
+
+        if not existed:
+            # 初回作成時のみ rebuild（既存の payload_episode を索引化）
+            conn.execute(text(f"INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}) VALUES ('rebuild')"))
+
+        conn.commit()
+
+
 def _apply_memory_pragmas(engine) -> None:
     with engine.connect() as conn:
         conn.execute(text("PRAGMA journal_mode=WAL"))
@@ -139,13 +215,14 @@ def _create_memory_indexes(engine) -> None:
         "CREATE INDEX IF NOT EXISTS idx_units_kind_created ON units(kind, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_units_occurred ON units(occurred_at)",
         "CREATE INDEX IF NOT EXISTS idx_units_state ON units(state)",
-        "CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities(etype, name)",
+        "CREATE INDEX IF NOT EXISTS idx_entities_label_name ON entities(type_label, name)",
+        "CREATE INDEX IF NOT EXISTS idx_entities_normalized ON entities(normalized)",
         "CREATE INDEX IF NOT EXISTS idx_entity_aliases_alias ON entity_aliases(alias)",
         "CREATE INDEX IF NOT EXISTS idx_unit_entities_entity ON unit_entities(entity_id)",
         "CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_entity_id)",
         "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_entity_id)",
         "CREATE INDEX IF NOT EXISTS idx_fact_subject_pred ON payload_fact(subject_entity_id, predicate)",
-        "CREATE INDEX IF NOT EXISTS idx_summary_scope ON payload_summary(scope_type, scope_key)",
+        "CREATE INDEX IF NOT EXISTS idx_summary_scope ON payload_summary(scope_label, scope_key)",
         "CREATE INDEX IF NOT EXISTS idx_loop_status_due ON payload_loop(status, due_at)",
         "CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after)",
     ]
@@ -153,6 +230,7 @@ def _create_memory_indexes(engine) -> None:
         for stmt in stmts:
             conn.execute(text(stmt))
         conn.commit()
+
 
 
 # --- 設定DB ---
@@ -222,6 +300,7 @@ def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
 
     UnitBase.metadata.create_all(bind=engine)
     _create_memory_indexes(engine)
+    _enable_episode_fts(engine)
 
     # sqlite-vec拡張を有効化
     if db_url.startswith("sqlite"):

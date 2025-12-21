@@ -6,36 +6,45 @@
   - `/api/chat`（SSE）
   - `/api/v1/notification`
   - `/api/v1/meta_request`
-  - 管理API（メモリ閲覧・編集・ピン留め等）
 - **Memory Store（SQLite: `memory_<memory_id>.db`）**
   - `units` + `payload_*` による Unit化
   - 版管理（`unit_versions`）と来歴/信頼度を保持
 - **Vector Index（sqlite-vec / vec0）**
   - `vec_units` は「索引」（`unit_id` と `embedding`）のみ保持
   - kind partition と metadata filtering を活用（sqlite-vec v0.1.6+）
+- **Retriever（文脈考慮型記憶検索）**
+  - 固定クエリ → Hybrid Search（Vector + BM25）→ ヒューリスティック Rerank の3段階で、関連する過去エピソードを高速に選別する
+  - **LLMレス**: Query Expansion / LLM Reranking は廃止し、軽量・高速に動作
+  - 仕様: `docs/retrieval.md`
 - **Scheduler（取得計画器）**
   - 検索結果の生注入ではなく、**MemoryPack** を編成して注入
-  - 意図（intent）と注入予算（token budget）で階層的に収集・圧縮
+  - 注入予算（token budget）で階層的に収集・圧縮
+  - Retriever の結果（relevant episodes）を `[EPISODE_EVIDENCE]` に整形して注入する
 - **Worker（非同期ジョブ）**
   - Reflection / Entities / Facts / Summaries / Loops / Embedding upsert を担当
   - APIプロセスと分離（推奨）
+
 
 ## データフロー
 
 ```mermaid
 flowchart LR
   U[User/UI] -->|/api/chat SSE| API[FastAPI]
-  API -->|Intent classify| SCH[Scheduler]
+  API -->|Contextual retrieval| RET[Retriever]
+  RET -->|relevant episodes| SCH[Scheduler]
   SCH -->|MemoryPack| API
-	  API -->|LLM chat| LLM[LLM API via LiteLLM]
-	  API -->|Save episode (raw)| DB[(SQLite memory_XXX.db)]
-	  API -->|Enqueue jobs| Q[(Jobs table)]
-	  W[Worker] -->|Dequeue| Q
-	  W -->|Reflection/Entities/Facts/Summaries/Loops| DB
-	  W -->|Embeddings| EMB[Embedding API via LiteLLM]
-	  W -->|Upsert vectors| VEC[(sqlite-vec vec0)]
-  SCH -->|KNN candidates| VEC
-  SCH -->|JOIN payload| DB
+  API -->|LLM chat| LLM[LLM API via LiteLLM]
+  API -->|Save episode RAW| DB[(SQLite memory_XXX.db)]
+  API -->|Enqueue jobs| Q[(Jobs table)]
+  W[Worker] -->|Dequeue| Q
+  W -->|Reflection/Entities/Facts/Summaries/Loops| DB
+  W -->|Embeddings| EMB[Embedding API via LiteLLM]
+  W -->|Upsert vectors| VEC[(sqlite-vec vec0)]
+  RET -->|Embed queries| EMB
+  RET -->|Hybrid: Vector| VEC
+  RET -->|Hybrid: BM25| FTS[(FTS5 episode_fts)]
+  RET -->|JOIN payload| DB
+  RET -->|Heuristic Rerank| RET
 ```
 
 ## 同期/非同期の責務分離
@@ -43,11 +52,67 @@ flowchart LR
 ### 同期（/api/chat のSSE中にやること）
 
 - （任意）画像要約（Vision）
-- Schedulerで **MemoryPack** を生成（主に既存DBの参照）
-- `guard_prompt + memorypack + user_text` をLLMへ注入（MemoryPack内に persona/contract を含む）
+- Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
+- Schedulerで **MemoryPack** を生成（capsule/facts/summaries/loops + relevant episodes）
+- LLMへ `guard_prompt + memorypack` を system に注入し、会話履歴（max_turns_window）+ user_text を conversation として渡す（MemoryPack内に persona/contract を含む）
 - 返答をSSEで配信
 - `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 - Worker用ジョブを enqueue（reflection/extraction/embedding等）
+
+#### Contextual Memory Retrieval（同期・LLMレス）
+
+Retriever は「暗黙参照」や「会話の流れ」を取り込み、現在の会話に関連する過去エピソードを高速に選別する。
+
+- Phase 1: 固定クエリ生成（LLMレス。user_text / context+user_text の2本）
+- Phase 2: Hybrid Search（vec0 + FTS5）→ RRFマージ
+- Phase 3: ヒューリスティック Rerank（LLMレス。RRF + 文字n-gram類似度 + recency で軽量スコアリング）
+- Scheduler は relevant episodes を受け取り、ルール（例: high>=1 or medium>=2）と予算で `[EPISODE_EVIDENCE]` を注入する（満たさない場合は省略）
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant UI as Client
+  participant API as FastAPI
+  participant RET as Retriever
+  participant SCH as Scheduler
+  participant DB as Memory DB (SQLite)
+  participant FTS as FTS5 (episode_fts)
+  participant EMB as Embedding API
+  participant VEC as Vector Index (vec0)
+  participant LLM as LLM (chat)
+  participant Q as Jobs (DB)
+  participant W as Worker
+
+  UI->>API: POST /api/chat (SSE)\n{user_text, images?, client_context?}
+  API->>RET: retrieve(user_text)\n(+ recent conversation)
+  Note over RET: Phase 1: 固定クエリ生成\n(user_text, context+user_text)
+  RET->>EMB: embed queries
+  EMB-->>RET: embeddings
+  Note over RET,FTS: Phase 2: Hybrid Search
+  par 並列検索
+    RET->>VEC: KNN search (episodes)
+    VEC-->>RET: candidate unit_ids
+  and
+    RET->>FTS: BM25 search (episodes)
+    FTS-->>RET: candidate unit_ids
+  end
+  RET->>RET: RRF merge
+  RET->>DB: join payloads (episode candidates)
+  DB-->>RET: candidates
+  Note over RET: Phase 3: ヒューリスティック Rerank\n(RRF + lex + recency)
+  RET-->>API: relevant_episodes[]
+  API->>SCH: build MemoryPack\n(relevant episodes, token budget)
+  SCH->>DB: read capsule/facts/summaries/loops
+  SCH-->>API: MemoryPack
+  API->>LLM: chat\n(guard + pack + conversation + user_text)
+  LLM-->>API: streamed tokens
+  API-->>UI: SSE stream
+  API->>DB: save Unit(kind=EPISODE) RAW
+  API->>Q: enqueue jobs\n(reflect/extract/embed...)
+  Note over W,Q: async (after response)
+  W->>Q: dequeue
+  W->>DB: write derived units\n(facts/loops/summaries/embeddings)
+```
 
 ### 非同期（Workerがやること）
 
@@ -57,6 +122,49 @@ flowchart LR
 - OpenLoop抽出（`units(kind=LOOP)` + `payload_loop`）
 - Summary生成（週次/人物/トピック/関係性）
 - Embedding生成と `vec_units` upsert（種別ごとに方針を決める）
+
+#### Workerの責務
+
+- **入力は「episode（RAW）」と jobs キュー**：APIが `units(kind=EPISODE)` をRAW保存し、必要な派生ジョブ（reflection/entity/fact/loop/summary/embedding等）を `jobs` にenqueueする
+- **派生物はすべてUnitとして永続化**：facts/summaries/loops/entities/edges/vec_units など、後段のSchedulerが参照する「注入材料」を増やす
+- **冪等（再実行可能）を前提に設計**：同じ `unit_id` に対する同種ジョブは何度走っても整合が崩れないよう upsert + 版管理で扱う
+- **失敗はリトライ**：一時的なLLM失敗や拡張ロード失敗でも、`tries` と `run_after` を使ってバックオフし、上限回数で `failed` に落とす
+- **DB境界**：Workerは `memory_<memory_id>.db` を対象に動作し、原則「1DB=1 Workerプロセス」でジョブキューを直列に捌く
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant API as FastAPI
+  participant DB as Memory DB (SQLite)
+  participant Q as jobs table
+  participant W as Worker (per memory_id)
+  participant LLM as LLM (JSON tasks)
+  participant EMB as Embedding API
+  participant VEC as vec_units (vec0)
+
+  API->>DB: save Unit(kind=EPISODE) RAW
+  API->>Q: enqueue jobs\nreflect/extract_entities/extract_facts/extract_loops/upsert_embeddings/...
+  loop polling
+    W->>Q: select queued jobs (run_after<=now)\nORDER BY run_after,id
+    W->>Q: claim job (status=running)
+    alt reflection/entities/facts/loops/summary
+      W->>LLM: generate JSON
+      LLM-->>W: JSON
+      W->>DB: upsert derived units\n+ unit_versions (history)
+    else embeddings
+      W->>EMB: embed texts
+      EMB-->>W: embeddings
+      W->>VEC: upsert vec_units (unit_id, embedding,\nkind/state/sensitivity/occurred_day)
+    end
+    alt success
+      W->>Q: status=done
+    else transient failure
+      W->>Q: tries+=1, last_error,\nstatus=queued, run_after=backoff
+    else permanent failure
+      W->>Q: status=failed
+    end
+  end
+```
 
 ## ストレージ境界
 
@@ -75,6 +183,7 @@ sequenceDiagram
   participant UI as Client
   participant API as FastAPI
   participant MM as MemoryManager
+  participant RET as Retriever
   participant SCH as Scheduler
   participant DB as Memory DB (SQLite)
   participant LLM as LLM API
@@ -87,7 +196,9 @@ sequenceDiagram
   API-->>UI: 204 No Content
   Note over API,MM: BackgroundTasks (after response)
   MM->>LLM: (optional) summarize images
-  MM->>SCH: build MemoryPack
+  MM->>RET: retrieve(system_text)
+  RET-->>MM: relevant_episodes[]
+  MM->>SCH: build MemoryPack\n(relevant episodes)
   SCH->>DB: read units/entities/summaries
   SCH-->>MM: MemoryPack
   MM->>LLM: generate partner message\n(external prompt)
@@ -104,6 +215,7 @@ sequenceDiagram
   participant UI as Client
   participant API as FastAPI
   participant MM as MemoryManager
+  participant RET as Retriever
   participant SCH as Scheduler
   participant DB as Memory DB (SQLite)
   participant LLM as LLM API
@@ -116,7 +228,9 @@ sequenceDiagram
   API-->>UI: 204 No Content
   Note over API,MM: BackgroundTasks (after response)
   MM->>LLM: (optional) summarize images
-  MM->>SCH: build MemoryPack
+  MM->>RET: retrieve(prompt)\n(+ payload)
+  RET-->>MM: relevant_episodes[]
+  MM->>SCH: build MemoryPack\n(relevant episodes)
   SCH->>DB: read units/entities/summaries
   SCH-->>MM: MemoryPack
   MM->>LLM: generate partner message\n(meta_request prompt)

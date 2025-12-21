@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -125,6 +125,7 @@ def get_settings(
 @router.put("/settings", response_model=schemas.FullSettingsResponse)
 def commit_settings(
     request: schemas.FullSettingsUpdateRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_settings_db_dep),
 ):
     """全設定をまとめて確定（全置換 + アーカイブ + active IDs）。"""
@@ -295,6 +296,8 @@ def commit_settings(
         if str(preset.id) not in contract_id_set:
             preset.archived = True
 
+    db.flush()
+
     # アクティブIDの更新
     global_settings.active_llm_preset_id = request.active_llm_preset_id
     global_settings.active_embedding_preset_id = request.active_embedding_preset_id
@@ -357,6 +360,19 @@ def commit_settings(
         )
     )
     reset_memory_manager()
+
+    # 内蔵Workerが有効なら、設定変更に追従させる（LLMプリセット/memory_id切替など）。
+    # 重い処理（join等）になる可能性があるため、レスポンス後に実行する。
+    try:
+        from cocoro_ghost.internal_worker import request_restart_async
+
+        background_tasks.add_task(
+            request_restart_async,
+            memory_id=runtime_config.memory_id,
+            embedding_dimension=runtime_config.embedding_dimension,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
     # 最新状態を返す
     return get_settings(db=db)

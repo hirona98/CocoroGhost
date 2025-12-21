@@ -7,14 +7,19 @@
 - 人格の一貫性（PersonaAnchor）
 - 関係性の連続性（RelationshipContract / SharedNarrative）
 - 会話テンポ（同期は軽く、重い処理はWorkerへ）
-- 長期運用での“育ち”（Lifecycle: 統合・整理・矛盾管理）
+- 長期運用での継続的な統合・更新（Lifecycle: 統合・整理・矛盾管理）
 
 ## 前提
 
 - LLM/Embedding は **API経由**（LiteLLMで切替可能）
 - ベクター検索は **sqlite-vec（vec0）** を使用する
 - ストレージは SQLite（`settings.db` + `memory_<memory_id>.db`）
-- MemOSの要点として **Scheduling（予測・プリロード）** と **Lifecycle（統合・整理）** を中核に取り入れる
+- **Scheduling（予測・プリロード）** と **Lifecycle（統合・整理）** を中核に取り入れる
+
+## 制約 / Non-goals（現状の割り切り）
+
+- **uvicorn の multi-worker（複数プロセス）は前提にしない**: 内蔵Workerが同一DBの jobs を重複実行しうるため、`workers=1` 前提で運用する（`docs/worker.md` / `docs/scheduler.md` / `cocoro_ghost/internal_worker.py`）。
+- **RetrievalにLLMを使わない**: Query Expansion / LLM Rerank は採用せず、速度を優先する（`docs/retrieval.md`）。
 
 ## ドキュメント一覧（読む順番）
 
@@ -23,10 +28,12 @@
 3. `docs/db_schema.md`（DDL / Enum / 永続化ルール）
 4. `docs/sqlite_vec.md`（vec0設計・KNN→JOIN）
 5. `docs/scheduler.md`（MemoryPack編成・スコア・圧縮）
-6. `docs/worker.md`（ジョブ・冪等性・版管理）
-7. `docs/prompts.md`（LLM JSONスキーマ）
-8. `docs/api.md`（API仕様 / SSE）
-9. `docs/bootstrap.md`（初期DB作成）
+6. `docs/retrieval.md`（記憶検索: LLMレス高速化版）
+7. `docs/worker.md`（ジョブ・冪等性・版管理）
+8. `docs/prompts.md`（LLM JSONスキーマ）
+9. `docs/prompt_usage_map.md`（プロンプト使用箇所マップ）
+10. `docs/api.md`（API仕様 / SSE）
+11. `docs/bootstrap.md`（初期DB作成）
 
 ## 用語
 
@@ -37,6 +44,7 @@
   - Canonical: ユーザー発話や通知本文など「改変しないログ」（例: `EPISODE`）。
   - Derived: Workerで抽出/統合された「解釈・要約・構造化」（例: `FACT` / `SUMMARY` / `LOOP` / `CAPSULE`）。
 - **MemoryPack**: `/api/chat` の同期処理中に、Schedulerが「LLMへ注入するため」に組み立てるテキストパック。見出し順（`[PERSONA_ANCHOR]` 等）に沿って、検索結果をそのまま貼らずに圧縮・整形する（仕様: `docs/scheduler.md`、実装: `cocoro_ghost/scheduler.py`）。
+- **Retriever**: 記憶検索システム。固定クエリ → Hybrid Search (Vector + BM25) → ヒューリスティック Rerank の3段階で、会話に関連する過去のエピソードを高速に選別する（仕様: `docs/retrieval.md`）。LLMレスで高速に動作。
 - **Persona / Contract**: LLM注入プロンプトを「人格」と「関係契約」に分けたもの。
   - Persona: 人格・口調・価値観の中核（崩れると会話の一貫性が壊れる）。
   - Contract: 踏み込み/介入の許可、NG、距離感、取り扱い注意などの「関係契約」。

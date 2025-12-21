@@ -8,6 +8,7 @@ import logging
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional, Sequence
 
 from fastapi import BackgroundTasks
@@ -18,9 +19,10 @@ from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.event_stream import publish as publish_event
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
-from cocoro_ghost.scheduler import build_memory_pack, classify_intent, classify_intent_rule_based
-from cocoro_ghost.unit_enums import Sensitivity, UnitKind, UnitState
-from cocoro_ghost.unit_models import Job, PayloadEpisode, Unit
+from cocoro_ghost.retriever import Retriever
+from cocoro_ghost.scheduler import build_memory_pack
+from cocoro_ghost.unit_enums import JobStatus, Sensitivity, UnitKind, UnitState
+from cocoro_ghost.unit_models import Job, PayloadEpisode, PayloadSummary, Unit
 
 
 logger = logging.getLogger(__name__)
@@ -28,9 +30,11 @@ logger = logging.getLogger(__name__)
 _memory_locks: dict[str, threading.Lock] = {}
 
 _REGEX_META_CHARS = re.compile(r"[.^$*+?{}\[\]\\|()]")
+_SUMMARY_REFRESH_INTERVAL_SECONDS = 6 * 3600
 
 
 def _matches_exclude_keyword(pattern: str, text: str) -> bool:
+    """除外キーワード（部分一致 or 正規表現）にマッチするか判定する。"""
     if not pattern:
         return False
     if _REGEX_META_CHARS.search(pattern):
@@ -52,10 +56,19 @@ _META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
 
 
 def _now_utc_ts() -> int:
+    """現在時刻（UTC）をUNIX秒で返す。"""
     return int(time.time())
 
 
+def _utc_week_key(ts: int) -> str:
+    """UNIX秒からISO週キー（YYYY-Www）を作る。"""
+    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    iso_year, iso_week, _ = dt.isocalendar()
+    return f"{iso_year}-W{iso_week:02d}"
+
+
 def _get_memory_lock(memory_id: str) -> threading.Lock:
+    """memory_idごとの排他ロックを取得（同一DBへの同時書き込みを抑制）。"""
     lock = _memory_locks.get(memory_id)
     if lock is None:
         lock = threading.Lock()
@@ -64,14 +77,18 @@ def _get_memory_lock(memory_id: str) -> threading.Lock:
 
 
 def _decode_base64_image(base64_str: str) -> bytes:
+    """base64文字列をバイト列へ復号する。"""
     return base64.b64decode(base64_str)
 
 
 def _json_dumps(payload: Any) -> str:
+    """DB保存向けにJSONを安定した形式でダンプする（日本語保持）。"""
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 class MemoryManager:
+    """会話/通知/メタ要求/キャプチャをEpisodeとして扱い、DB保存と後処理を統括する。"""
+
     def __init__(self, llm_client: LlmClient, config_store: ConfigStore):
         self.llm_client = llm_client
         self.config_store = config_store
@@ -95,7 +112,89 @@ class MemoryManager:
         payload.image_summary = image_summary
 
     def _sse(self, event: str, payload: dict) -> str:
+        """SSE（Server-Sent Events）形式の1メッセージを構築する。"""
         return f"event: {event}\ndata: {_json_dumps(payload)}\n\n"
+
+    def _has_pending_weekly_summary_job(self, db, *, week_key: str) -> bool:
+        rows = (
+            db.query(Job)
+            .filter(
+                Job.kind == "weekly_summary",
+                Job.status.in_([int(JobStatus.QUEUED), int(JobStatus.RUNNING)]),
+            )
+            .all()
+        )
+        for job in rows:
+            try:
+                payload = json.loads(job.payload_json or "{}")
+            except Exception:  # noqa: BLE001
+                continue
+            payload_week = str(payload.get("week_key") or "").strip()
+            if not payload_week or payload_week == week_key:
+                return True
+        return False
+
+    def _enqueue_weekly_summary_job(self, db, *, now_ts: int, week_key: str) -> None:
+        db.add(
+            Job(
+                kind="weekly_summary",
+                payload_json=_json_dumps({"week_key": week_key}),
+                status=int(JobStatus.QUEUED),
+                run_after=now_ts,
+                tries=0,
+                last_error=None,
+                created_at=now_ts,
+                updated_at=now_ts,
+            )
+        )
+
+    def _maybe_enqueue_weekly_summary(self, db, *, now_ts: int) -> None:
+        # 重複実行を避けるため、同週のジョブが待機/実行中ならスキップする。
+        week_key = _utc_week_key(now_ts)
+        if self._has_pending_weekly_summary_job(db, week_key=week_key):
+            return
+
+        # 週次サマリが無い場合は即enqueueする。
+        summary_row = (
+            db.query(Unit, PayloadSummary)
+            .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
+            .filter(
+                Unit.kind == int(UnitKind.SUMMARY),
+                Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+                PayloadSummary.scope_label == "relationship",
+                PayloadSummary.scope_key == week_key,
+            )
+            .order_by(Unit.updated_at.desc().nulls_last(), Unit.id.desc())
+            .first()
+        )
+
+        if summary_row is None:
+            self._enqueue_weekly_summary_job(db, now_ts=now_ts, week_key=week_key)
+            return
+
+        summary_unit, _ps = summary_row
+        updated_at = int(summary_unit.updated_at or summary_unit.created_at or 0)
+        if updated_at <= 0:
+            self._enqueue_weekly_summary_job(db, now_ts=now_ts, week_key=week_key)
+            return
+        # 頻繁な再生成を避けるためクールダウンを入れる。
+        if now_ts - updated_at < _SUMMARY_REFRESH_INTERVAL_SECONDS:
+            return
+
+        # 最終更新以降に新規エピソードがある場合のみ更新する。
+        new_episode = (
+            db.query(Unit.id)
+            .filter(
+                Unit.kind == int(UnitKind.EPISODE),
+                Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+                Unit.occurred_at.isnot(None),
+                Unit.occurred_at > updated_at,
+            )
+            .limit(1)
+            .scalar()
+        )
+        if new_episode is not None:
+            self._enqueue_weekly_summary_job(db, now_ts=now_ts, week_key=week_key)
 
     def _summarize_images(self, images: Sequence[Dict[str, str]] | None) -> List[str]:
         if not images:
@@ -117,27 +216,77 @@ class MemoryManager:
             logger.warning("画像要約に失敗しました", exc_info=exc)
             return ["画像要約に失敗しました"]
 
+    def _load_recent_conversation(
+        self,
+        db,
+        *,
+        turns: int,
+        exclude_unit_id: int | None = None,
+    ) -> List[Dict[str, str]]:
+        if turns <= 0:
+            return []
+
+        q = (
+            db.query(Unit, PayloadEpisode)
+            .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
+            .filter(
+                Unit.kind == int(UnitKind.EPISODE),
+                Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+                Unit.sensitivity <= int(Sensitivity.SECRET),
+                PayloadEpisode.reply_text.isnot(None),
+            )
+        )
+        if exclude_unit_id is not None:
+            q = q.filter(Unit.id != int(exclude_unit_id))
+
+        rows: List[tuple[Unit, PayloadEpisode]] = (
+            q.order_by(Unit.occurred_at.desc().nulls_last(), Unit.created_at.desc(), Unit.id.desc()).limit(int(turns)).all()
+        )
+        rows.reverse()
+
+        messages: List[Dict[str, str]] = []
+        for _u, pe in rows:
+            ut = (pe.user_text or "").strip()
+            rt = (pe.reply_text or "").strip()
+            if ut:
+                messages.append({"role": "user", "content": ut})
+            if rt:
+                messages.append({"role": "assistant", "content": rt})
+        return messages
+
     def stream_chat(
         self,
         request: schemas.ChatRequest,
         background_tasks: Optional[BackgroundTasks] = None,
     ) -> Generator[str, None, None]:
+        """
+        /chat の本体処理。
+
+        - MemoryPack（persona/contract + 関連記憶）を組み立ててLLMへ送る
+        - 返信をSSEでストリームし、最後にEpisodeとして保存する
+        """
         cfg = self.config_store.config
         memory_id = request.memory_id or self.config_store.memory_id
         lock = _get_memory_lock(memory_id)
         now_ts = _now_utc_ts()
 
         image_summaries = self._summarize_images(request.images)
-        intent = classify_intent(llm_client=self.llm_client, user_text=request.user_text)
 
+        conversation: List[Dict[str, str]] = []
         try:
             with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
-                similar_k = int(cfg.similar_limit_by_kind.get("episode") or 0) if cfg.similar_limit_by_kind else 0
-                if similar_k <= 0:
-                    similar_k = int(cfg.similar_episodes_limit)
+                recent_conversation = self._load_recent_conversation(db, turns=3)
+                llm_turns_window = int(getattr(cfg, "max_turns_window", 0) or 0)
+                if llm_turns_window > 0:
+                    conversation = self._load_recent_conversation(db, turns=llm_turns_window)
+                retriever = Retriever(llm_client=self.llm_client, db=db)
+                relevant_episodes = retriever.retrieve(
+                    request.user_text,
+                    recent_conversation,
+                    max_results=int(cfg.similar_episodes_limit or 5),
+                )
                 memory_pack = build_memory_pack(
                     db=db,
-                    llm_client=self.llm_client,
                     persona_text=cfg.persona_text,
                     contract_text=cfg.contract_text,
                     user_text=request.user_text,
@@ -145,8 +294,10 @@ class MemoryManager:
                     client_context=request.client_context,
                     now_ts=now_ts,
                     max_inject_tokens=int(cfg.max_inject_tokens),
-                    similar_episode_k=similar_k,
-                    intent=intent,
+                    relevant_episodes=relevant_episodes,
+                    injection_strategy=retriever.last_injection_strategy,
+                    llm_client=self.llm_client,
+                    entity_fallback=True,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error("MemoryPack生成に失敗しました", exc_info=exc)
@@ -156,7 +307,7 @@ class MemoryManager:
         # ユーザーが設定する persona/contract とは独立に、最小のガードをコード側で付与する。
         parts: List[str] = [_INTERNAL_CONTEXT_GUARD_PROMPT, (memory_pack or "").strip()]
         system_prompt = "\n\n".join([p for p in parts if p])
-        conversation = [{"role": "user", "content": request.user_text}]
+        conversation = [*conversation, {"role": "user", "content": request.user_text}]
 
         try:
             resp_stream = self.llm_client.generate_reply_response(
@@ -197,14 +348,11 @@ class MemoryManager:
                     sensitivity=int(Sensitivity.NORMAL),
                 )
                 self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=episode_unit_id)
+                self._maybe_enqueue_weekly_summary(db, now_ts=now_ts)
         except Exception as exc:  # noqa: BLE001
             logger.error("episode保存に失敗しました", exc_info=exc)
             yield self._sse("error", {"message": str(exc), "code": "db_write_failed"})
             return
-
-        if background_tasks is not None:
-            # Workerが別プロセスで動いている想定だが、開発時に手動で処理したい場合のフックとして残す
-            pass
 
         yield self._sse("done", {"episode_unit_id": episode_unit_id, "reply_text": reply_text, "usage": {}})
 
@@ -214,6 +362,7 @@ class MemoryManager:
         *,
         background_tasks: Optional[BackgroundTasks] = None,
     ) -> schemas.NotificationResponse:
+        """外部システムからの通知をEpisodeとして保存し、必要なジョブをenqueueする。"""
         memory_id = self.config_store.memory_id
         lock = _get_memory_lock(memory_id)
         now_ts = _now_utc_ts()
@@ -279,17 +428,19 @@ class MemoryManager:
         ).strip()
 
         cfg = self.config_store.config
-        intent = classify_intent_rule_based(notification_user_text)
 
         memory_pack = ""
         try:
             with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
-                similar_k = int(cfg.similar_limit_by_kind.get("episode") or 0) if cfg.similar_limit_by_kind else 0
-                if similar_k <= 0:
-                    similar_k = int(cfg.similar_episodes_limit)
+                recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
+                retriever = Retriever(llm_client=self.llm_client, db=db)
+                relevant_episodes = retriever.retrieve(
+                    notification_user_text,
+                    recent_conversation,
+                    max_results=int(cfg.similar_episodes_limit or 5),
+                )
                 memory_pack = build_memory_pack(
                     db=db,
-                    llm_client=self.llm_client,
                     persona_text=cfg.persona_text,
                     contract_text=cfg.contract_text,
                     user_text=notification_user_text,
@@ -297,8 +448,10 @@ class MemoryManager:
                     client_context=None,
                     now_ts=now_ts,
                     max_inject_tokens=int(cfg.max_inject_tokens),
-                    similar_episode_k=similar_k,
-                    intent=intent,
+                    relevant_episodes=relevant_episodes,
+                    injection_strategy=retriever.last_injection_strategy,
+                    llm_client=self.llm_client,
+                    entity_fallback=True,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error("MemoryPack生成に失敗しました(notification)", exc_info=exc)
@@ -329,6 +482,7 @@ class MemoryManager:
                 image_summary=image_summary_text,
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
+            self._maybe_enqueue_weekly_summary(db, now_ts=now_ts)
 
         publish_event(
             type="notification",
@@ -343,6 +497,11 @@ class MemoryManager:
         *,
         background_tasks: Optional[BackgroundTasks] = None,
     ) -> schemas.MetaRequestResponse:
+        """
+        文書生成（meta_request）をEpisodeとして扱い、生成結果をreply_textに保存する。
+
+        background_tasks があれば非同期実行し、結果はevent_streamで通知する。
+        """
         memory_id = request.memory_id or self.config_store.memory_id
         lock = _get_memory_lock(memory_id)
         now_ts = _now_utc_ts()
@@ -405,17 +564,19 @@ class MemoryManager:
         ).strip()
 
         cfg = self.config_store.config
-        intent = classify_intent(llm_client=self.llm_client, user_text=meta_user_text)
 
         memory_pack = ""
         try:
             with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
-                similar_k = int(cfg.similar_limit_by_kind.get("episode") or 0) if cfg.similar_limit_by_kind else 0
-                if similar_k <= 0:
-                    similar_k = int(cfg.similar_episodes_limit)
+                recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
+                retriever = Retriever(llm_client=self.llm_client, db=db)
+                relevant_episodes = retriever.retrieve(
+                    meta_user_text,
+                    recent_conversation,
+                    max_results=int(cfg.similar_episodes_limit or 5),
+                )
                 memory_pack = build_memory_pack(
                     db=db,
-                    llm_client=self.llm_client,
                     persona_text=cfg.persona_text,
                     contract_text=cfg.contract_text,
                     user_text=meta_user_text,
@@ -423,8 +584,10 @@ class MemoryManager:
                     client_context=None,
                     now_ts=now_ts,
                     max_inject_tokens=int(cfg.max_inject_tokens),
-                    similar_episode_k=similar_k,
-                    intent=intent,
+                    relevant_episodes=relevant_episodes,
+                    injection_strategy=retriever.last_injection_strategy,
+                    llm_client=self.llm_client,
+                    entity_fallback=True,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error("MemoryPack生成に失敗しました(meta_request)", exc_info=exc)
@@ -457,6 +620,7 @@ class MemoryManager:
             )
             # 文書生成は会話ログと同様に検索対象にしたい（埋め込みのみで十分）。
             self._enqueue_embeddings_job(db, now_ts=now_ts, unit_id=unit_id)
+            self._maybe_enqueue_weekly_summary(db, now_ts=now_ts)
 
         publish_event(
             type="meta_request",
@@ -466,6 +630,7 @@ class MemoryManager:
         )
 
     def handle_capture(self, request: schemas.CaptureRequest) -> schemas.CaptureResponse:
+        """スクリーンショット/カメラ画像を要約してEpisodeとして保存する。"""
         cfg = self.config_store.config
         memory_id = self.config_store.memory_id
         lock = _get_memory_lock(memory_id)
@@ -497,6 +662,7 @@ class MemoryManager:
                 sensitivity=int(Sensitivity.PRIVATE),
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
+            self._maybe_enqueue_weekly_summary(db, now_ts=now_ts)
         return schemas.CaptureResponse(episode_id=unit_id, stored=True)
 
     def _create_episode_unit(
