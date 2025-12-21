@@ -41,6 +41,8 @@ def setup_logging(level: str = "INFO") -> None:
         ("asyncio", logging.INFO),
         ("LiteLLM", logging.INFO),
         ("litellm", logging.INFO),
+        ("openai", logging.INFO),
+        ("cocoro_ghost.llm_client", logging.DEBUG),
         ("httpcore", logging.WARNING),
         ("httpx", logging.WARNING),
     ]:
