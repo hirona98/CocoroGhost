@@ -37,6 +37,8 @@ def setup_logging(level: str = "INFO") -> None:
     )
     # 外部ライブラリの冗長なログを抑制
     for name, lib_level in [
+        # Windows環境で asyncio が出す "Using proactor: IocpProactor" などのDEBUGを抑制する
+        ("asyncio", logging.INFO),
         ("LiteLLM", logging.INFO),
         ("litellm", logging.INFO),
         ("httpcore", logging.WARNING),

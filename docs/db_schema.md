@@ -295,6 +295,7 @@ create table if not exists payload_capsule (
 - 直近状態（現在日時/直近の文脈）を軽量に保つ「短期メモ」用途。
 - `expires_at` がある場合、Schedulerは期限切れを注入しない。
 - `capsule_json` はJSON文字列（構造は運用で決める）。
+  - 現行の `capsule_refresh` では `recent`（直近の抜粋）に加えて、`partner_mood`（パートナーの機嫌: 重要度×時間減衰の集約）を含める。
 
 ### OpenLoop（未完了：次に話す理由）
 
@@ -355,6 +356,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 - 対象: `units(kind=EPISODE)` を保存した直後
 - enqueue: `reflect_episode` / `extract_entities` / `extract_facts` / `extract_loops` / `upsert_embeddings` / `capsule_refresh(limit=5)`
+- `capsule_refresh` の payload は `{"limit":5, "mood_scan_limit":500}` のように拡張可能（`mood_scan_limit` は機嫌集約の走査件数）。
 - 入口の例:
   - `/api/chat` の完了時（SSE done直前の保存）
   - `/api/v1/notification` の処理完了時（reply生成後の保存更新）

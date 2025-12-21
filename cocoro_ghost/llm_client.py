@@ -239,11 +239,23 @@ class LlmClient:
         stream: bool = False,
     ) -> Dict:
         """completion API呼び出し用のkwargsを構築。"""
+        # gpt-5 系は temperature の制約が厳しい（LiteLLM側で弾かれる）。
+        # - gpt-5 / gpt-5-mini 等: temperature は 1 のみ
+        # - gpt-5.1: reasoning_effort が none（未指定）なら temperature 可（それ以外は 1 に寄せる）
+        model_l = (model or "").lower()
+        temp = float(temperature)
+        if "gpt-5" in model_l:
+            if "gpt-5.1" in model_l:
+                eff = (self.reasoning_effort or "").strip().lower()
+                if eff and eff != "none":
+                    temp = 1.0
+            else:
+                temp = 1.0
+
         kwargs = {
             "model": model,
             "messages": messages,
-            "temperature": temperature,
-            "return_response_object": True,
+            "temperature": temp,
             "stream": stream,
         }
 

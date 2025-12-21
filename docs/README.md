@@ -29,11 +29,12 @@
 4. `docs/sqlite_vec.md`（vec0設計・KNN→JOIN）
 5. `docs/scheduler.md`（MemoryPack編成・スコア・圧縮）
 6. `docs/retrieval.md`（記憶検索: LLMレス高速化版）
-7. `docs/worker.md`（ジョブ・冪等性・版管理）
-8. `docs/prompts.md`（LLM JSONスキーマ）
-9. `docs/prompt_usage_map.md`（プロンプト使用箇所マップ）
-10. `docs/api.md`（API仕様 / SSE）
-11. `docs/bootstrap.md`（初期DB作成）
+7. `docs/mood.md`（パートナーの機嫌: 即時反応 + 持続）
+8. `docs/worker.md`（ジョブ・冪等性・版管理）
+9. `docs/prompts.md`（LLM JSONスキーマ）
+10. `docs/prompt_usage_map.md`（プロンプト使用箇所マップ）
+11. `docs/api.md`（API仕様 / SSE）
+12. `docs/bootstrap.md`（初期DB作成）
 
 ## 用語
 

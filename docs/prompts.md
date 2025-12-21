@@ -34,6 +34,35 @@
 - `units` の `emotion_* / salience / confidence` に反映
 - `payload_episode.reflection_json` に保存
 
+## chat（SSE）: 返答末尾の内部JSON（mood trailer）
+
+`/api/chat` は、**同一のLLM呼び出し**で「ユーザー表示本文」と「内部用の反射JSON」を同時に生成する。
+
+- 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_INTERNAL_JSON_v1>>>` を出力し、その次行にJSONを1つだけ出力する
+- サーバ側は区切り以降をSSEに流さず回収し、Episodeへ即時反映する（`cocoro_ghost/memory.py`）
+
+### 出力JSON（mood trailer）
+
+```json
+{
+  "reflection_text": "string",
+  "emotion_label": "joy|sadness|anger|fear|neutral",
+  "emotion_intensity": 0.0,
+  "topic_tags": ["仕事", "読書"],
+  "salience_score": 0.0,
+  "confidence": 0.0,
+  "partner_policy": {
+    "cooperation": 0.0,
+    "refusal_bias": 0.0,
+    "refusal_allowed": true
+  }
+}
+```
+
+- `emotion_label/emotion_intensity` は **パートナーAI側の気分**（ユーザーの感情推定ではない）
+- `salience_score` は「重要度×時間減衰」集約の係数（重要な出来事ほど長く残す）
+- `partner_policy` は口調だけでなく「協力/拒否」などの行動方針に効かせるための内部ノブ
+
 ## Entity抽出
 
 ### 出力JSON

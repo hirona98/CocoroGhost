@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
+from cocoro_ghost.mood import compute_partner_mood_from_episodes
 from cocoro_ghost.unit_enums import LoopStatus, Sensitivity, UnitKind
 from cocoro_ghost.unit_models import (
     Entity,
@@ -453,6 +454,54 @@ def build_memory_pack(
             s = (s or "").strip()
             if s:
                 capsule_parts.append(f"[ユーザーが今送った画像の内容] {s}")
+
+    # パートナーの機嫌（重要度×時間減衰）を同期計算して注入する。
+    #
+    # 目的:
+    # - /api/chat は「返信生成の前」に MemoryPack を組むため、capsule_refresh（Worker）がまだ走っていないと
+    #   "partner_mood" が注入されず、機嫌の反映が1ターン遅れやすい。
+    # - ここで同期計算して `CONTEXT_CAPSULE` に入れることで、「直前の出来事」まで含めた機嫌を次ターンから使える。
+    #
+    # 計算式（詳細は cocoro_ghost/mood.py）:
+    #   impact = emotion_intensity × salience × confidence × exp(-Δt/τ(salience))
+    # - salience が高いほど τ が長い → 大事件が残る
+    # - salience が低いほど τ が短い → 雑談はすぐ消える
+    try:
+        mood_units = (
+            db.query(Unit)
+            .filter(
+                Unit.kind == int(UnitKind.EPISODE),
+                Unit.state.in_([0, 1, 2]),
+                Unit.sensitivity <= sensitivity_max,
+                Unit.emotion_label.isnot(None),
+            )
+            .order_by(Unit.created_at.desc(), Unit.id.desc())
+            .limit(500)
+            .all()
+        )
+        mood_episodes = []
+        for u in mood_units:
+            mood_episodes.append(
+                {
+                    "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
+                    "created_at": int(u.created_at),
+                    "emotion_label": u.emotion_label,
+                    "emotion_intensity": u.emotion_intensity,
+                    "salience": u.salience,
+                    "confidence": u.confidence,
+                }
+            )
+        partner_mood = compute_partner_mood_from_episodes(mood_episodes, now_ts=now_ts)
+        compact = {
+            "label": partner_mood.get("label"),
+            "intensity": partner_mood.get("intensity"),
+            "components": partner_mood.get("components"),
+            "policy": partner_mood.get("policy"),
+            "now_ts": partner_mood.get("now_ts"),
+        }
+        capsule_parts.append(f"partner_mood: {json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}")
+    except Exception:  # noqa: BLE001
+        pass
 
     def section(title: str, body_lines: Sequence[str]) -> str:
         """MemoryPackの1セクション（[TITLE] ...）を組み立てる。"""

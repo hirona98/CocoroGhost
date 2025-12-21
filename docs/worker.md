@@ -26,7 +26,10 @@
 - `relationship_summary(scope_key=rolling:7d)`（定期 / `memory_id` は Worker が扱うDBで暗黙）
 - `person_summary_refresh(entity_id)`（人物サマリ更新）
 - `topic_summary_refresh(entity_id)`（トピックサマリ更新）
-- `capsule_refresh(limit)`（任意 / `limit` は直近件数、デフォルト5）
+- `capsule_refresh(limit, mood_scan_limit)`（任意 / `limit` は直近件数、既定5。`mood_scan_limit` は機嫌集約用の走査件数、既定500）
+
+補足:
+- `/api/chat` は「返答本文 + 内部JSON（反射）」を同一LLM呼び出しで得て、Episodeへ即時反映するため、`reflect_episode` は既に反射が入っている場合は冪等にスキップされます（フォールバック用として残す）。
 
 ## 実装ステータス（Current/Planned）
 

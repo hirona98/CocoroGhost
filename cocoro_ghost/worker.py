@@ -38,6 +38,7 @@ from cocoro_ghost.unit_models import (
 )
 from cocoro_ghost.versioning import canonical_json_dumps, record_unit_version
 from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
+from cocoro_ghost.mood import compute_partner_mood_from_episodes
 
 
 logger = logging.getLogger(__name__)
@@ -292,6 +293,10 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     if row is None:
         return
     unit, pe = row
+    # /api/chat では「本文 + 内部JSON（反射）」を同一LLM呼び出しで得られるため、
+    # すでに反射が保存されている場合は冪等にスキップする。
+    if (pe.reflection_json or "").strip() and (unit.emotion_label or "").strip() and int(unit.state) == int(UnitState.VALIDATED):
+        return
     ctx_parts = []
     if pe.user_text:
         ctx_parts.append(f"user: {pe.user_text}")
@@ -1153,6 +1158,8 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
     """短期状態（Capsule）を更新する（LLM不要・軽量）。"""
     limit = int(payload.get("limit") or 5)
     limit = max(1, min(20, limit))
+    mood_scan_limit = int(payload.get("mood_scan_limit") or 500)
+    mood_scan_limit = max(50, min(2000, mood_scan_limit))
 
     rows = (
         session.query(Unit, PayloadEpisode)
@@ -1169,18 +1176,59 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
             {
                 "unit_id": int(u.id),
                 "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
+                "created_at": int(u.created_at),
                 "source": u.source,
                 "user_text": (pe.user_text or "")[:200],
                 "reply_text": (pe.reply_text or "")[:200],
                 "topic_tags": u.topic_tags,
                 "emotion_label": u.emotion_label,
+                "emotion_intensity": u.emotion_intensity,
+                "salience": u.salience,
+                "confidence": u.confidence,
             }
         )
+
+    # パートナーの機嫌（重要度×時間減衰）:
+    #
+    # 直近N件（recent）だけで機嫌を作ると、「大事件が短時間で埋もれて消える」問題が出る。
+    # そこで、別枠で「直近mood_scan_limit件のエピソード」を走査し、各エピソードの影響度を
+    #     impact = emotion_intensity × salience × confidence × exp(-Δt/τ(salience))
+    # の形で減衰させて積分し、現在の機嫌を推定する（詳細は cocoro_ghost/mood.py を参照）。
+    #
+    # - salience が高いほど τ が長くなるため、「印象的な出来事」は長く残る
+    # - salience が低い雑談は τ が短く、数分で影響が薄れる
+    # - anger 成分が十分高いときは refusal_allowed=True となり、プロンプト側で拒否が選びやすくなる
+    mood_units = (
+        session.query(Unit)
+        .filter(
+            Unit.kind == int(UnitKind.EPISODE),
+            Unit.state.in_([0, 1, 2]),
+            Unit.sensitivity <= int(Sensitivity.SECRET),
+            Unit.emotion_label.isnot(None),
+        )
+        .order_by(Unit.created_at.desc(), Unit.id.desc())
+        .limit(mood_scan_limit)
+        .all()
+    )
+    mood_episodes = []
+    for u in mood_units:
+        mood_episodes.append(
+            {
+                "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
+                "created_at": int(u.created_at),
+                "emotion_label": u.emotion_label,
+                "emotion_intensity": u.emotion_intensity,
+                "salience": u.salience,
+                "confidence": u.confidence,
+            }
+        )
+    partner_mood = compute_partner_mood_from_episodes(mood_episodes, now_ts=now_ts)
 
     capsule_obj = {
         "generated_at": now_ts,
         "window": limit,
         "recent": recent,
+        "partner_mood": partner_mood,
     }
     capsule_json = _json_dumps(capsule_obj)
     expires_at = now_ts + 3600

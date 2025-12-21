@@ -65,6 +65,7 @@ Partner: 「...」
 補足:
 - MemoryPack は `guard_prompt + memorypack` を system に注入し、conversation に直近会話（max_turns_window）+ user_text を渡す形で LLM に渡される（仕様: `docs/api.md`）。
 - MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（ユーザー設定の prompt に書かせず、コード側でガードするのが推奨。例: `cocoro_ghost/memory.py`）。
+- `[CONTEXT_CAPSULE]` には `now_local` / `client_context` 等に加え、`partner_mood: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/scheduler.py` / 計算: `cocoro_ghost/mood.py`）。
 
 ## 取得手順（規定）
 

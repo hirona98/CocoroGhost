@@ -15,14 +15,17 @@ from fastapi import BackgroundTasks
 
 from cocoro_ghost import schemas
 from cocoro_ghost.config import ConfigStore
-from cocoro_ghost.db import memory_session_scope
+from cocoro_ghost.db import memory_session_scope, sync_unit_vector_metadata
 from cocoro_ghost.event_stream import publish as publish_event
 from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost.mood import INTERNAL_TRAILER_MARKER, clamp01
 from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
 from cocoro_ghost.retriever import Retriever
 from cocoro_ghost.scheduler import build_memory_pack
 from cocoro_ghost.unit_enums import JobStatus, Sensitivity, UnitKind, UnitState
 from cocoro_ghost.unit_models import Job, PayloadEpisode, PayloadSummary, Unit
+from cocoro_ghost.versioning import record_unit_version
+from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,67 @@ _INTERNAL_CONTEXT_GUARD_PROMPT = """
 """.strip()
 
 _META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
+
+# /api/chat（SSE）では、同一LLM呼び出しで「ユーザー表示本文 + 内部JSON（機嫌/反射）」を生成し、
+# 内部JSONはストリームから除外して保存・注入に使う。
+_STREAM_TRAILER_MARKER = INTERNAL_TRAILER_MARKER
+
+
+def _mood_trailer_system_prompt() -> str:
+    marker = _STREAM_TRAILER_MARKER
+    # ここは「返答」ではなく「出力フォーマット規約」。ユーザーには見えない想定（SSEで除外）。
+    return (
+        "出力フォーマット（必須）:\n"
+        "1) まずユーザーに見せる返答本文だけを出力する。\n"
+        "2) 返答本文の直後に改行し、次の区切り文字を1行で出力する（完全一致）:\n"
+        f"{marker}\n"
+        "3) 区切り文字の次の行に、厳密な JSON オブジェクトを1つだけ出力する（前後に説明文やコードフェンスは禁止）。\n"
+        "\n"
+        "内部JSONの目的:\n"
+        "- あなた（パートナーAI）の『その瞬間の感情（喜怒哀楽）/重要度』と『行動方針（協力度/拒否のしやすさ）』を更新する。\n"
+        "- 内部JSONはシステムが回収して保存し、次回以降の会話にも影響させる。\n"
+        "- CONTEXT_CAPSULE 内に `partner_mood` があれば前回までの状態として参照し、今回の内部JSONで更新する。\n"
+        "- あなたは内部JSONを先に決めたうえで、それに沿って返答本文を作る（ただし出力順は本文→区切り→JSON）。\n"
+        "\n"
+        "内部JSONスキーマ（必須キー）:\n"
+        "- emotion_label/emotion_intensity は「あなた（パートナーAI）の気分」。ユーザーの感情推定ではない。\n"
+        "- salience_score は “この出来事がどれだけ重要か” のスカラー（0..1）。後段の機嫌の持続（時間減衰）の係数に使う。\n"
+        "- confidence は推定の確からしさ（0..1）。不確実なら低くし、機嫌への影響も弱める。\n"
+        "- partner_policy は行動方針ノブ（0..1）。怒りが強い場合は refusal_allowed=true にして「拒否/渋る」を選びやすくしてよい。\n"
+        "{\n"
+        '  "reflection_text": "string",\n'
+        '  "emotion_label": "joy|sadness|anger|fear|neutral",\n'
+        '  "emotion_intensity": 0.0,\n'
+        '  "topic_tags": ["仕事","読書"],\n'
+        '  "salience_score": 0.0,\n'
+        '  "confidence": 0.0,\n'
+        '  "partner_policy": {\n'
+        '    "cooperation": 0.0,\n'
+        '    "refusal_bias": 0.0,\n'
+        '    "refusal_allowed": true\n'
+        "  }\n"
+        "}\n"
+    ).strip()
+
+
+def _parse_internal_json_text(text: str) -> Optional[dict]:
+    s = (text or "").strip()
+    if not s:
+        return None
+    # llm_client.py のユーティリティを流用（JSON抽出/修復）。
+    from cocoro_ghost.llm_client import _extract_first_json_value, _repair_json_like_text  # noqa: PLC0415
+
+    candidate = _extract_first_json_value(s)
+    if not candidate:
+        return None
+    try:
+        obj = json.loads(candidate)
+    except json.JSONDecodeError:
+        try:
+            obj = json.loads(_repair_json_like_text(candidate))
+        except Exception:  # noqa: BLE001
+            return None
+    return obj if isinstance(obj, dict) else None
 
 
 def _now_utc_ts() -> int:
@@ -104,6 +168,76 @@ class MemoryManager:
             return
         payload.reply_text = reply_text
         payload.image_summary = image_summary
+
+    def _apply_inline_reflection_if_present(
+        self,
+        db,
+        *,
+        now_ts: int,
+        unit_id: int,
+        reflection_obj: dict,
+    ) -> None:
+        """stream出力の内部JSON（反射）を、Episode Unitへ即時反映する。"""
+        unit = db.query(Unit).filter(Unit.id == int(unit_id)).one_or_none()
+        pe = db.query(PayloadEpisode).filter(PayloadEpisode.unit_id == int(unit_id)).one_or_none()
+        if unit is None or pe is None:
+            return
+
+        label = str(reflection_obj.get("emotion_label") or "").strip()
+        intensity = reflection_obj.get("emotion_intensity")
+        salience = reflection_obj.get("salience_score")
+        confidence = reflection_obj.get("confidence")
+
+        if label:
+            unit.emotion_label = label
+        if intensity is not None:
+            try:
+                unit.emotion_intensity = clamp01(float(intensity))
+            except Exception:  # noqa: BLE001
+                pass
+        if salience is not None:
+            try:
+                unit.salience = clamp01(float(salience))
+            except Exception:  # noqa: BLE001
+                pass
+        if confidence is not None:
+            try:
+                unit.confidence = clamp01(float(confidence))
+            except Exception:  # noqa: BLE001
+                pass
+
+        # topic_tags は正規化して保存する（hash安定のため）
+        tags_raw = reflection_obj.get("topic_tags")
+        tags: list[str] = tags_raw if isinstance(tags_raw, list) else []
+        canonical = canonicalize_topic_tags(tags)
+        reflection_obj["topic_tags"] = canonical
+        unit.topic_tags = dumps_topic_tags_json(canonical) if canonical else None
+
+        # 反射が得られた場合はVALIDATED扱いにしておく（Workerのreflectをスキップ可能にするため）
+        unit.state = int(UnitState.VALIDATED)
+        unit.updated_at = int(now_ts)
+
+        # JSONは解析用にそのまま保存
+        pe.reflection_json = _json_dumps(reflection_obj)
+
+        db.add(unit)
+        db.add(pe)
+
+        # vec_units が無い場合はUPDATEが0件になるだけ（安全）
+        sync_unit_vector_metadata(
+            db,
+            unit_id=int(unit_id),
+            occurred_at=unit.occurred_at,
+            state=int(unit.state),
+            sensitivity=int(unit.sensitivity),
+        )
+        record_unit_version(
+            db,
+            unit_id=int(unit_id),
+            payload_obj=reflection_obj,
+            patch_reason="reflect_episode_inline",
+            now_ts=int(now_ts),
+        )
 
     def _sse(self, event: str, payload: dict) -> str:
         """SSE（Server-Sent Events）形式の1メッセージを構築する。"""
@@ -348,7 +482,7 @@ class MemoryManager:
             )
 
         # ユーザーが設定する persona/contract とは独立に、最小のガードをコード側で付与する。
-        parts: List[str] = [_INTERNAL_CONTEXT_GUARD_PROMPT, (memory_pack or "").strip()]
+        parts: List[str] = [_INTERNAL_CONTEXT_GUARD_PROMPT, (memory_pack or "").strip(), _mood_trailer_system_prompt()]
         system_prompt = "\n\n".join([p for p in parts if p])
         conversation = [*conversation, {"role": "user", "content": request.user_text}]
 
@@ -363,17 +497,64 @@ class MemoryManager:
             yield self._sse("error", {"message": str(exc), "code": "llm_start_failed"})
             return
 
-        collected: List[str] = []
+        reply_text = ""
+        internal_trailer = ""
         try:
+            marker = _STREAM_TRAILER_MARKER
+            keep = max(8, len(marker) - 1)
+            buf = ""
+            in_trailer = False
+            visible_parts: list[str] = []
+            trailer_parts: list[str] = []
+
+            def flush_visible(text_: str) -> None:
+                if not text_:
+                    return
+                visible_parts.append(text_)
+
             for delta in self.llm_client.stream_delta_chunks(resp_stream):
-                collected.append(delta)
-                yield self._sse("token", {"text": delta})
+                buf += delta
+                while True:
+                    if not in_trailer:
+                        idx = buf.find(marker)
+                        if idx != -1:
+                            chunk = buf[:idx]
+                            if chunk:
+                                flush_visible(chunk)
+                                yield self._sse("token", {"text": chunk})
+                            buf = buf[idx + len(marker) :]
+                            in_trailer = True
+                            continue
+                        if len(buf) > keep:
+                            chunk = buf[:-keep]
+                            buf = buf[-keep:]
+                            if chunk:
+                                flush_visible(chunk)
+                                yield self._sse("token", {"text": chunk})
+                        break
+
+                    # 以後はすべて内部トレーラーへ
+                    if buf:
+                        trailer_parts.append(buf)
+                        buf = ""
+                    break
+
+            if not in_trailer:
+                if buf:
+                    flush_visible(buf)
+                    yield self._sse("token", {"text": buf})
+            else:
+                if buf:
+                    trailer_parts.append(buf)
+
+            reply_text = "".join(visible_parts)
+            internal_trailer = "".join(trailer_parts)
         except Exception as exc:  # noqa: BLE001
             logger.error("stream chat failed", exc_info=exc)
             yield self._sse("error", {"message": str(exc), "code": "llm_stream_failed"})
             return
 
-        reply_text = "".join(collected)
+        reflection_obj = _parse_internal_json_text(internal_trailer)
 
         image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
         context_note = _json_dumps(request.client_context) if request.client_context else None
@@ -390,6 +571,13 @@ class MemoryManager:
                     context_note=context_note,
                     sensitivity=int(Sensitivity.NORMAL),
                 )
+                if reflection_obj:
+                    self._apply_inline_reflection_if_present(
+                        db,
+                        now_ts=now_ts,
+                        unit_id=int(episode_unit_id),
+                        reflection_obj=reflection_obj,
+                    )
                 self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=episode_unit_id)
                 self._maybe_enqueue_relationship_summary(db, now_ts=now_ts)
         except Exception as exc:  # noqa: BLE001
