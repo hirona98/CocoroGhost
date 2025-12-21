@@ -26,8 +26,9 @@
 6. `docs/retrieval.md`（記憶検索: LLMレス高速化版）
 7. `docs/worker.md`（ジョブ・冪等性・版管理）
 8. `docs/prompts.md`（LLM JSONスキーマ）
-9. `docs/api.md`（API仕様 / SSE）
-10. `docs/bootstrap.md`（初期DB作成）
+9. `docs/prompt_usage_map.md`（プロンプト使用箇所マップ）
+10. `docs/api.md`（API仕様 / SSE）
+11. `docs/bootstrap.md`（初期DB作成）
 
 ## 用語
 

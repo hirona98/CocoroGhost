@@ -118,10 +118,10 @@ create index if not exists idx_units_state on units(state);
 ```sql
 	create table if not exists entities (
 	  id           integer primary key,
-	  type_label   text,             -- 自由ラベル（例: PERSON/TOPIC/ORG/...）
+	  type_label   text,             -- 自由ラベル（例: PERSON/TOPIC/ORG/...）。保存時は大文字に正規化。
 	  name         text not null,
 	  normalized   text,
-	  roles_json   text not null,    -- JSON array（例: ["person"] / ["topic"]）
+	  roles_json   text not null,    -- JSON array（例: ["person"] / ["topic"]）。保存時は小文字に正規化。
 	  created_at   integer not null,
 	  updated_at   integer not null
 	);
@@ -429,8 +429,8 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 固定の EntityType（enum値）は運用で破綻しやすいため廃止し、下記で表現する。
 
-- `entities.type_label`（TEXT）: 自由ラベル（例: `PERSON` / `TOPIC` / `APP` / `CHARACTER` / `GAME` ...）
-- `entities.roles_json`（TEXT: JSON array）: 用途の役割（例: `["person"]` / `["topic"]`）
+- `entities.type_label`（TEXT）: 自由ラベル（例: `PERSON` / `TOPIC` / `APP` / `CHARACTER` / `GAME` ...）。保存時は大文字に正規化。
+- `entities.roles_json`（TEXT: JSON array）: 用途の役割（例: `["person"]` / `["topic"]`）。保存時は小文字に正規化。
   - `person`: person_summary_refresh の対象
   - `topic`: topic_summary_refresh の対象
 

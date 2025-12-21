@@ -338,11 +338,9 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     )
 
 
-def _normalize_entity_name(name: str) -> str:
-    return (name or "").strip().lower()
-
-def _normalize_type_label(type_label: str) -> str:
-    return (type_label or "").strip().upper()
+def _normalize_type_label(type_label: str | None) -> str | None:
+    tl = (type_label or "").strip().upper()
+    return tl or None
 
 
 def _normalize_roles(raw: Any, *, type_label: str | None = None) -> list[str]:
@@ -354,7 +352,7 @@ def _normalize_roles(raw: Any, *, type_label: str | None = None) -> list[str]:
                 roles.append(s)
 
     # 互換: rolesが無い/空のときは type_label から最低限推定する
-    tl = _normalize_type_label(type_label or "")
+    tl = _normalize_type_label(type_label)
     if not roles:
         if tl == "PERSON":
             roles = ["person"]
@@ -391,7 +389,10 @@ def _parse_entity_ref(ref: str) -> Optional[tuple[str, str]]:
     name = name.strip()
     if not name:
         return None
-    return str(type_label).strip(), name
+    tl = _normalize_type_label(str(type_label).strip() or None)
+    if tl is None:
+        return None
+    return tl, name
 
 
 def _normalize_relation_label(rel_raw: str) -> str:
@@ -421,7 +422,10 @@ def _get_or_create_entity(
     aliases: list[str],
     now_ts: int,
 ) -> Entity:
-    normalized = _normalize_entity_name(name)
+    type_label_norm = _normalize_type_label(type_label)
+    roles_norm = _normalize_roles(roles, type_label=type_label_norm)
+
+    normalized = (name or "").strip().lower()
     ent = (
         session.query(Entity)
         .filter(Entity.normalized == normalized)
@@ -430,20 +434,25 @@ def _get_or_create_entity(
     )
     if ent is None:
         ent = Entity(
-            type_label=(str(type_label).strip() or None) if type_label else None,
+            type_label=type_label_norm,
             name=name,
             normalized=normalized,
-            roles_json=_json_dumps(roles),
+            roles_json=_json_dumps(roles_norm),
             created_at=now_ts,
             updated_at=now_ts,
         )
         session.add(ent)
         session.flush()
     else:
+        # 既存データも表記揺れを吸収する（互換不要の前提で正規化を強制）。
+        current_tl = _normalize_type_label(ent.type_label)
+        if current_tl is not None and ent.type_label != current_tl:
+            ent.type_label = current_tl
+
         if ent.name != name:
             ent.name = name
-        if (ent.type_label is None or not str(ent.type_label).strip()) and type_label and str(type_label).strip():
-            ent.type_label = str(type_label).strip()
+        if (ent.type_label is None or not str(ent.type_label).strip()) and type_label_norm:
+            ent.type_label = type_label_norm
         # roles は加算（縮めない）
         try:
             existing = json.loads(ent.roles_json or "[]")
@@ -457,7 +466,7 @@ def _get_or_create_entity(
                 continue
             seen.add(s)
             merged.append(s)
-        for r in roles:
+        for r in roles_norm:
             s = str(r).strip().lower()
             if not s or s in seen:
                 continue
@@ -500,7 +509,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
     for e in entities:
         if not isinstance(e, dict):
             continue
-        type_label = str(e.get("type_label") or "").strip() or None
+        type_label = _normalize_type_label(str(e.get("type_label") or "").strip() or None)
         name = str(e.get("name") or "").strip()
         if not name:
             continue
@@ -822,7 +831,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
         subj_etype_raw = "PERSON"
         if isinstance(subj, dict):
             subj_name = str(subj.get("name") or "").strip() or "USER"
-            subj_etype_raw = str(subj.get("type_label") or "").strip() or "PERSON"
+            subj_etype_raw = _normalize_type_label(str(subj.get("type_label") or "").strip() or None) or "PERSON"
 
         if subj_name.strip().upper() == "USER":
             user_ent = _get_or_create_entity(
@@ -850,7 +859,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
         obj = f.get("object")
         if isinstance(obj, dict):
             obj_name = str(obj.get("name") or "").strip()
-            obj_type_label = str(obj.get("type_label") or "").strip() or "OTHER"
+            obj_type_label = _normalize_type_label(str(obj.get("type_label") or "").strip() or None) or "OTHER"
             if obj_name:
                 obj_ent = _get_or_create_entity(
                     session,

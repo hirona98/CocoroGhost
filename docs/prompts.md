@@ -1,5 +1,7 @@
 # LLM呼び出し仕様（プロンプト・JSONスキーマ）
 
+プロンプトが「どの処理のどこで」使われるか（フロー図）は `docs/prompt_usage_map.md` を参照。
+
 ## 共通ルール
 
 - 出力は **必ずJSON**（前後に説明文を付けない）
@@ -50,6 +52,8 @@
 
 - `entities` / `entity_aliases` / `unit_entities` / `edges` を upsert
 - `relations.rel` は自由ラベル（推奨: `friend|family|colleague|partner|likes|dislikes|related|other`）
+- `type_label` / `src` / `dst` の TYPE は大文字推奨（内部でも大文字に正規化して保存する）
+- `roles` は小文字推奨（内部でも小文字に正規化して保存する）
 
 ## Fact抽出（安定知識）
 
