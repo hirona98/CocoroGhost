@@ -45,7 +45,7 @@
 
 補足（重要）:
 - `jobs` は **外部クライアント向けの汎用「ジョブ投入API」ではない**。
-- 現状、ジョブは「APIプロセスが内部でenqueueする」か「管理APIで週次サマリのみ手動enqueueできる」だけ。
+- 現状、ジョブは「APIプロセスが内部でenqueueする」か「管理APIで relationship サマリ（`rolling:7d`）のみ手動enqueueできる」だけ。
 - つまりこの“契約”は **API（同期）⇄ 内蔵Worker（非同期）** の内部契約を指す。
 
 ### 6) state / sensitivity で「運用上のガード」を表現する
@@ -227,6 +227,25 @@ CREATE VIRTUAL TABLE IF NOT EXISTS episode_fts USING fts5(
 - FTSは “索引” のみで、本文の正は `payload_episode`（external content）。
 - payload更新に追従するトリガーをDB初期化で作成している（実装: `cocoro_ghost/db.py`）。
 
+### Vector Index（sqlite-vec: vec0）
+
+Vector索引は本文を持たず `unit_id` で `units` / `payload_*` にJOINして本文を取得する。
+
+```sql
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_units USING vec0(
+  unit_id integer primary key,
+  embedding float[<dimension>] distance_metric=cosine,
+  kind integer partition key,
+  occurred_day integer,
+  state integer,
+  sensitivity integer
+);
+```
+
+補足:
+- `occurred_day` は `occurred_at // 86400` を保存（検索時の期間フィルタ用）。
+- `state` / `sensitivity` は `units` と同期される（検索フィルタ用）。
+
 ### Fact（安定知識：証拠リンク）
 
 ```sql
@@ -261,7 +280,7 @@ create index if not exists idx_fact_subject_pred on payload_fact(subject_entity_
 create table if not exists payload_summary (
   unit_id      integer primary key references units(id) on delete cascade,
   scope_label  text not null,       -- 自由ラベル（例: relationship/person/topic/...）
-  scope_key    text not null,       -- "2025-W50", "person:123", "topic:unity" ...
+  scope_key    text not null,       -- "rolling:7d", "person:123", "topic:unity" ...
   range_start  integer,
   range_end    integer,
   summary_text text not null,
@@ -362,12 +381,21 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
   - `/api/v1/notification` の処理完了時（reply生成後の保存更新）
   - `/api/capture`（desktop/camera）
 
-**B. 週次サマリ（RELATIONSHIP）の更新**
+**B. relationship サマリ（現行: `rolling:7d`）の更新**
 
-- 対象: `relationship_summary(scope_key=rolling:7d)`
+- 対象: `payload_summary(scope_label=relationship, scope_key=rolling:7d)` を作成/更新する `relationship_summary` job
+- Workerの生成内容（現行）:
+  - 対象Episode: 直近7日（`occurred_at`）のEPISODEを最大200件（`sensitivity <= SECRET`）
+  - 出力: `payload_summary.summary_text`（注入用） + `payload_summary.summary_json`（例: `{summary_text,key_events,relationship_state}`）
+  - メタ: `units.source=relationship_summary`、更新時は `units.state=VALIDATED`、`range_start/range_end` を保存
 - enqueue経路:
-  - Episode保存時に「現週サマリが無い」または「クールダウン後に新規Episodeがある」場合に自動enqueue（重複抑制あり）
-  - 内蔵Workerの定期enqueue（cron無し、固定値で定期判定）
+  - Episode保存時に必要なら自動enqueue（重複抑制あり / クールダウンあり）
+  - 定期実行ユーティリティ（cron無し）から必要ならenqueue（重複抑制あり / クールダウンあり）
+  - 判定ロジック（共通の意図）:
+    - `relationship_summary` が `queued/running` なら enqueue しない
+    - サマリが無い場合は enqueue
+    - サマリ最終更新から一定時間（現行: 6h）未満なら enqueue しない
+    - 最終更新以降の新規Episode（`occurred_at` があり、`occurred_at > summary.updated_at`）がある場合のみ enqueue
 
 **C. meta_request（文書生成）**
 
@@ -447,6 +475,28 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 固定の SummaryScopeType（enum値）は運用で破綻しやすいため廃止し、`payload_summary.scope_label`（TEXT）で表現する。
 
 - 推奨ラベル: `relationship` / `person` / `topic`（必要なら `daily` / `monthly` などを追加）
+
+### EntityRole
+
+| name | value | 意味 |
+|---|---:|---|
+| MENTIONED | 1 | Unit内で言及された |
+
+### LoopStatus
+
+| name | value | 意味 |
+|---|---:|---|
+| OPEN | 0 | 未完了 |
+| CLOSED | 1 | 完了 |
+
+### JobStatus
+
+| name | value | 意味 |
+|---|---:|---|
+| QUEUED | 0 | 待機 |
+| RUNNING | 1 | 実行中 |
+| DONE | 2 | 完了 |
+| FAILED | 3 | 失敗 |
 
 ## SQLite 推奨PRAGMA（起動時）
 
