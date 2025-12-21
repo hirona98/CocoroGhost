@@ -113,6 +113,11 @@ class ConfigStore:
         """ベクトルDBの埋め込み次元数（embedding preset由来）。"""
         return self._runtime.embedding_dimension
 
+    @property
+    def memory_enabled(self) -> bool:
+        """記憶機能の有効/無効を返す。"""
+        return bool(getattr(self._global_settings, "memory_enabled", True))
+
 
 def _require(config_dict: dict, key: str) -> str:
     if key not in config_dict or config_dict[key] in (None, ""):

@@ -149,6 +149,8 @@ class MemoryManager:
         )
 
     def _maybe_enqueue_weekly_summary(self, db, *, now_ts: int) -> None:
+        if not self.config_store.memory_enabled:
+            return
         # 重複実行を避けるため、同週のジョブが待機/実行中ならスキップする。
         week_key = _utc_week_key(now_ts)
         if self._has_pending_weekly_summary_job(db, week_key=week_key):
@@ -216,6 +218,49 @@ class MemoryManager:
             logger.warning("画像要約に失敗しました", exc_info=exc)
             return ["画像要約に失敗しました"]
 
+    def _build_simple_memory_pack(
+        self,
+        *,
+        persona_text: str | None,
+        contract_text: str | None,
+        client_context: Dict[str, Any] | None,
+        image_summaries: Sequence[str] | None,
+        now_ts: int,
+    ) -> str:
+        """記憶機能を使わない簡易MemoryPack（persona/contract + 文脈）。"""
+        persona_text = (persona_text or "").strip() or None
+        contract_text = (contract_text or "").strip() or None
+
+        capsule_lines: List[str] = []
+        now_local = datetime.fromtimestamp(now_ts).astimezone().isoformat()
+        capsule_lines.append(f"now_local: {now_local}")
+        if client_context:
+            active_app = str(client_context.get("active_app") or "").strip()
+            window_title = str(client_context.get("window_title") or "").strip()
+            locale = str(client_context.get("locale") or "").strip()
+            if active_app:
+                capsule_lines.append(f"active_app: {active_app}")
+            if window_title:
+                capsule_lines.append(f"window_title: {window_title}")
+            if locale:
+                capsule_lines.append(f"locale: {locale}")
+        if image_summaries:
+            for summary in image_summaries:
+                s = (summary or "").strip()
+                if s:
+                    capsule_lines.append(f"[ユーザーが今送った画像の内容] {s}")
+
+        def section(title: str, body_lines: Sequence[str]) -> str:
+            if not body_lines:
+                return f"[{title}]\n\n"
+            return f"[{title}]\n" + "\n".join(body_lines) + "\n\n"
+
+        parts: List[str] = []
+        parts.append(section("PERSONA_ANCHOR", [persona_text] if persona_text else []))
+        parts.append(section("RELATIONSHIP_CONTRACT", [contract_text] if contract_text else []))
+        parts.append(section("CONTEXT_CAPSULE", capsule_lines))
+        return "".join(parts)
+
     def _load_recent_conversation(
         self,
         db,
@@ -269,40 +314,51 @@ class MemoryManager:
         memory_id = request.memory_id or self.config_store.memory_id
         lock = _get_memory_lock(memory_id)
         now_ts = _now_utc_ts()
+        memory_enabled = self.config_store.memory_enabled
 
         image_summaries = self._summarize_images(request.images)
 
         conversation: List[Dict[str, str]] = []
-        try:
-            with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
-                recent_conversation = self._load_recent_conversation(db, turns=3)
-                llm_turns_window = int(getattr(cfg, "max_turns_window", 0) or 0)
-                if llm_turns_window > 0:
-                    conversation = self._load_recent_conversation(db, turns=llm_turns_window)
-                retriever = Retriever(llm_client=self.llm_client, db=db)
-                relevant_episodes = retriever.retrieve(
-                    request.user_text,
-                    recent_conversation,
-                    max_results=int(cfg.similar_episodes_limit or 5),
-                )
-                memory_pack = build_memory_pack(
-                    db=db,
-                    persona_text=cfg.persona_text,
-                    contract_text=cfg.contract_text,
-                    user_text=request.user_text,
-                    image_summaries=image_summaries,
-                    client_context=request.client_context,
-                    now_ts=now_ts,
-                    max_inject_tokens=int(cfg.max_inject_tokens),
-                    relevant_episodes=relevant_episodes,
-                    injection_strategy=retriever.last_injection_strategy,
-                    llm_client=self.llm_client,
-                    entity_fallback=True,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("MemoryPack生成に失敗しました", exc_info=exc)
-            yield self._sse("error", {"message": str(exc), "code": "memory_pack_failed"})
-            return
+        memory_pack = ""
+        if memory_enabled:
+            try:
+                with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+                    recent_conversation = self._load_recent_conversation(db, turns=3)
+                    llm_turns_window = int(getattr(cfg, "max_turns_window", 0) or 0)
+                    if llm_turns_window > 0:
+                        conversation = self._load_recent_conversation(db, turns=llm_turns_window)
+                    retriever = Retriever(llm_client=self.llm_client, db=db)
+                    relevant_episodes = retriever.retrieve(
+                        request.user_text,
+                        recent_conversation,
+                        max_results=int(cfg.similar_episodes_limit or 5),
+                    )
+                    memory_pack = build_memory_pack(
+                        db=db,
+                        persona_text=cfg.persona_text,
+                        contract_text=cfg.contract_text,
+                        user_text=request.user_text,
+                        image_summaries=image_summaries,
+                        client_context=request.client_context,
+                        now_ts=now_ts,
+                        max_inject_tokens=int(cfg.max_inject_tokens),
+                        relevant_episodes=relevant_episodes,
+                        injection_strategy=retriever.last_injection_strategy,
+                        llm_client=self.llm_client,
+                        entity_fallback=True,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("MemoryPack生成に失敗しました", exc_info=exc)
+                yield self._sse("error", {"message": str(exc), "code": "memory_pack_failed"})
+                return
+        else:
+            memory_pack = self._build_simple_memory_pack(
+                persona_text=cfg.persona_text,
+                contract_text=cfg.contract_text,
+                client_context=request.client_context,
+                image_summaries=image_summaries,
+                now_ts=now_ts,
+            )
 
         # ユーザーが設定する persona/contract とは独立に、最小のガードをコード側で付与する。
         parts: List[str] = [_INTERNAL_CONTEXT_GUARD_PROMPT, (memory_pack or "").strip()]
@@ -428,34 +484,44 @@ class MemoryManager:
         ).strip()
 
         cfg = self.config_store.config
+        memory_enabled = self.config_store.memory_enabled
 
         memory_pack = ""
-        try:
-            with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
-                recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
-                retriever = Retriever(llm_client=self.llm_client, db=db)
-                relevant_episodes = retriever.retrieve(
-                    notification_user_text,
-                    recent_conversation,
-                    max_results=int(cfg.similar_episodes_limit or 5),
-                )
-                memory_pack = build_memory_pack(
-                    db=db,
-                    persona_text=cfg.persona_text,
-                    contract_text=cfg.contract_text,
-                    user_text=notification_user_text,
-                    image_summaries=image_summaries,
-                    client_context=None,
-                    now_ts=now_ts,
-                    max_inject_tokens=int(cfg.max_inject_tokens),
-                    relevant_episodes=relevant_episodes,
-                    injection_strategy=retriever.last_injection_strategy,
-                    llm_client=self.llm_client,
-                    entity_fallback=True,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("MemoryPack生成に失敗しました(notification)", exc_info=exc)
-            memory_pack = ""
+        if memory_enabled:
+            try:
+                with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+                    recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
+                    retriever = Retriever(llm_client=self.llm_client, db=db)
+                    relevant_episodes = retriever.retrieve(
+                        notification_user_text,
+                        recent_conversation,
+                        max_results=int(cfg.similar_episodes_limit or 5),
+                    )
+                    memory_pack = build_memory_pack(
+                        db=db,
+                        persona_text=cfg.persona_text,
+                        contract_text=cfg.contract_text,
+                        user_text=notification_user_text,
+                        image_summaries=image_summaries,
+                        client_context=None,
+                        now_ts=now_ts,
+                        max_inject_tokens=int(cfg.max_inject_tokens),
+                        relevant_episodes=relevant_episodes,
+                        injection_strategy=retriever.last_injection_strategy,
+                        llm_client=self.llm_client,
+                        entity_fallback=True,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("MemoryPack生成に失敗しました(notification)", exc_info=exc)
+                memory_pack = ""
+        else:
+            memory_pack = self._build_simple_memory_pack(
+                persona_text=cfg.persona_text,
+                contract_text=cfg.contract_text,
+                client_context=None,
+                image_summaries=image_summaries,
+                now_ts=now_ts,
+            )
 
         parts: List[str] = [_INTERNAL_CONTEXT_GUARD_PROMPT, (memory_pack or "").strip(), get_external_prompt()]
         system_prompt = "\n\n".join([p for p in parts if p])
@@ -564,34 +630,44 @@ class MemoryManager:
         ).strip()
 
         cfg = self.config_store.config
+        memory_enabled = self.config_store.memory_enabled
 
         memory_pack = ""
-        try:
-            with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
-                recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
-                retriever = Retriever(llm_client=self.llm_client, db=db)
-                relevant_episodes = retriever.retrieve(
-                    meta_user_text,
-                    recent_conversation,
-                    max_results=int(cfg.similar_episodes_limit or 5),
-                )
-                memory_pack = build_memory_pack(
-                    db=db,
-                    persona_text=cfg.persona_text,
-                    contract_text=cfg.contract_text,
-                    user_text=meta_user_text,
-                    image_summaries=image_summaries,
-                    client_context=None,
-                    now_ts=now_ts,
-                    max_inject_tokens=int(cfg.max_inject_tokens),
-                    relevant_episodes=relevant_episodes,
-                    injection_strategy=retriever.last_injection_strategy,
-                    llm_client=self.llm_client,
-                    entity_fallback=True,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("MemoryPack生成に失敗しました(meta_request)", exc_info=exc)
-            memory_pack = ""
+        if memory_enabled:
+            try:
+                with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+                    recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
+                    retriever = Retriever(llm_client=self.llm_client, db=db)
+                    relevant_episodes = retriever.retrieve(
+                        meta_user_text,
+                        recent_conversation,
+                        max_results=int(cfg.similar_episodes_limit or 5),
+                    )
+                    memory_pack = build_memory_pack(
+                        db=db,
+                        persona_text=cfg.persona_text,
+                        contract_text=cfg.contract_text,
+                        user_text=meta_user_text,
+                        image_summaries=image_summaries,
+                        client_context=None,
+                        now_ts=now_ts,
+                        max_inject_tokens=int(cfg.max_inject_tokens),
+                        relevant_episodes=relevant_episodes,
+                        injection_strategy=retriever.last_injection_strategy,
+                        llm_client=self.llm_client,
+                        entity_fallback=True,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("MemoryPack生成に失敗しました(meta_request)", exc_info=exc)
+                memory_pack = ""
+        else:
+            memory_pack = self._build_simple_memory_pack(
+                persona_text=cfg.persona_text,
+                contract_text=cfg.contract_text,
+                client_context=None,
+                image_summaries=image_summaries,
+                now_ts=now_ts,
+            )
 
         # Chat と同じく最小ガード + MemoryPack に加えて、meta_request のシステム指示を付与する。
         parts: List[str] = [_INTERNAL_CONTEXT_GUARD_PROMPT, (memory_pack or "").strip(), get_meta_request_prompt()]
@@ -707,6 +783,8 @@ class MemoryManager:
         return int(unit.id)
 
     def _enqueue_default_jobs(self, db, *, now_ts: int, unit_id: int) -> None:
+        if not self.config_store.memory_enabled:
+            return
         kinds = [
             "reflect_episode",
             "extract_entities",
@@ -733,6 +811,8 @@ class MemoryManager:
             )
 
     def _enqueue_embeddings_job(self, db, *, now_ts: int, unit_id: int) -> None:
+        if not self.config_store.memory_enabled:
+            return
         db.add(
             Job(
                 kind="upsert_embeddings",

@@ -20,7 +20,11 @@ def is_alive() -> bool:
 
 def start(*, memory_id: str, embedding_dimension: int) -> None:
     """内蔵Workerスレッドを起動する（起動済みなら何もしない）。"""
+    from cocoro_ghost.config import get_config_store
     from cocoro_ghost.deps import get_llm_client
+
+    if not get_config_store().memory_enabled:
+        return
 
     with _lock:
         global _thread, _stop_event
