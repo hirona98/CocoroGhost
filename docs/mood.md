@@ -73,7 +73,7 @@ JSONスキーマは `docs/prompts.md` の「chat（SSE）: 返答末尾の内部
   - `/api/chat` は mood trailer で即時更新（`payload_episode.reflection_json` にも保存）
   - その他入口（notification/capture 等）は Worker `reflect_episode` が補完（反射済みならスキップ）
 - 注入:
-  - 同期: `cocoro_ghost/scheduler.py::build_memory_pack()` が `CONTEXT_CAPSULE` に `partner_mood: {...}` を追加
+  - 同期: `cocoro_ghost/memory_pack_builder.py::build_memory_pack()` が `CONTEXT_CAPSULE` に `partner_mood: {...}` を追加
   - 非同期: `cocoro_ghost/worker.py::_handle_capsule_refresh()` が `payload_capsule.capsule_json.partner_mood` を更新
 
 ## 失敗時の挙動（フォールバック）

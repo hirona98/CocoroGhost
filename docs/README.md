@@ -1,6 +1,6 @@
 # cocoro_ghost 仕様
 
-このディレクトリは、`cocoro_ghost` の設計/仕様（units/payload + Scheduler + Worker + sqlite-vec(vec0)）を、実装ハンドオフ可能な粒度で分割ドキュメント化したものです。
+このディレクトリは、`cocoro_ghost` の設計/仕様（units/payload + MemoryPack Builder + Worker + sqlite-vec(vec0)）を、実装ハンドオフ可能な粒度で分割ドキュメント化したものです。
 
 ## 目的
 
@@ -18,7 +18,7 @@
 
 ## 制約 / Non-goals（現状の割り切り）
 
-- **uvicorn の multi-worker（複数プロセス）は前提にしない**: 内蔵Workerが同一DBの jobs を重複実行しうるため、`workers=1` 前提で運用する（`docs/worker.md` / `docs/scheduler.md` / `cocoro_ghost/internal_worker.py`）。
+- **uvicorn の multi-worker（複数プロセス）は前提にしない**: 内蔵Workerが同一DBの jobs を重複実行しうるため、`workers=1` 前提で運用する（`docs/worker.md` / `docs/memory_pack_builder.md` / `cocoro_ghost/internal_worker.py`）。
 - **RetrievalにLLMを使わない**: Query Expansion / LLM Rerank は採用せず、速度を優先する（`docs/retrieval.md`）。
 
 ## ドキュメント一覧（読む順番）
@@ -27,7 +27,7 @@
 2. `docs/settings_db.md`（settings.db / token / presets）
 3. `docs/db_schema.md`（DDL / Enum / 永続化ルール）
 4. `docs/sqlite_vec.md`（vec0設計・KNN→JOIN）
-5. `docs/scheduler.md`（MemoryPack編成・スコア・圧縮）
+5. `docs/memory_pack_builder.md`（MemoryPack編成・スコア・圧縮）
 6. `docs/retrieval.md`（記憶検索: LLMレス高速化版）
 7. `docs/mood.md`（パートナーの機嫌: 即時反応 + 持続）
 8. `docs/worker.md`（ジョブ・冪等性・版管理）
@@ -44,12 +44,12 @@
 - **Canonical / Derived**: “原文（証跡）” と “派生物” を分ける考え方。
   - Canonical: ユーザー発話や通知本文など「改変しないログ」（例: `EPISODE`）。
   - Derived: Workerで抽出/統合された「解釈・要約・構造化」（例: `FACT` / `SUMMARY` / `LOOP` / `CAPSULE`）。
-- **MemoryPack**: `/api/chat` の同期処理中に、Schedulerが「LLMへ注入するため」に組み立てるテキストパック。見出し順（`[PERSONA_ANCHOR]` 等）に沿って、検索結果をそのまま貼らずに圧縮・整形する（仕様: `docs/scheduler.md`、実装: `cocoro_ghost/scheduler.py`）。
+- **MemoryPack**: `/api/chat` の同期処理中に、MemoryPack Builderが「LLMへ注入するため」に組み立てるテキストパック。見出し順（`[PERSONA_ANCHOR]` 等）に沿って、検索結果をそのまま貼らずに圧縮・整形する（仕様: `docs/memory_pack_builder.md`、実装: `cocoro_ghost/memory_pack_builder.py`）。
 - **Retriever**: 記憶検索システム。固定クエリ → Hybrid Search (Vector + BM25) → ヒューリスティック Rerank の3段階で、会話に関連する過去のエピソードを高速に選別する（仕様: `docs/retrieval.md`）。LLMレスで高速に動作。
 - **Persona / Addon**: LLM注入プロンプトを「人格」と「任意追加オプション」に分けたもの。
   - Persona: 人格・口調・価値観の中核（崩れると会話の一貫性が壊れる）。
   - Addon: 必要なときだけ足す補助指示（例: 表情タグの追加ルール、呼称の追加、距離感の微調整）。
-  - 注入上は、Persona/Addon は MemoryPack の先頭セクション（`[PERSONA_ANCHOR]`）に含める（`docs/scheduler.md` / `docs/api.md`）。
+  - 注入上は、Persona/Addon は MemoryPack の先頭セクション（`[PERSONA_ANCHOR]`）に含める（`docs/memory_pack_builder.md` / `docs/api.md`）。
 - **Preset（settings）**: `settings.db` に永続化する切替単位。
   - LLM/Embeddingの接続情報・検索予算に加え、Persona/Addon をプリセットとして保持し、`active_*_preset_id` でアクティブを選ぶ（`docs/settings_db.md`）。
 - **memory_id**: 記憶DBファイル名を選ぶための識別子。`EmbeddingPreset.id`（UUID）を `memory_id` として扱い、`memory_<memory_id>.db` を開く（`docs/settings_db.md` / `docs/api.md`）。

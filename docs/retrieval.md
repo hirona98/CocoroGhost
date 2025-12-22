@@ -283,7 +283,7 @@ Partner: 「締切は金曜日でしたね。サポートしますよ」
 → 関連: heuristic rerank: score=0.42 ...
 ```
 
-### 注入判断（Scheduler 側）
+### 注入判断（MemoryPack Builder 側）
 
 ```python
 def should_inject_episodes(relevant_episodes: list[RankedEpisode]) -> bool:

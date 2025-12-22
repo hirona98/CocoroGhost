@@ -1,10 +1,13 @@
-# Scheduler（取得計画器）仕様
+# MemoryPack Builder（取得計画器）仕様
 
 ## 目的
 
 - Scheduling の発想（予測・プリロード・注意機構）を、API運用に合わせて実装する
 - **“会話の一貫性”を最優先**しつつ、注入トークンを制御する
 - 検索結果をそのまま注入しない。**注入パック（MemoryPack）** を編成して注入する
+
+補足:
+- ここでの「取得計画器」は cron 的なジョブスケジューラではなく、/api/chat の同期処理中に「何を注入するか」を組み立てる役。
 
 ## 実装ステータス（Current/Planned）
 
@@ -62,7 +65,7 @@ Partner: 「...」
 補足:
 - MemoryPack は `memorypack` を system に注入し、conversation に直近会話（max_turns_window）+ user_text を渡す形で LLM に渡される（仕様: `docs/api.md`）。
 - MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（ユーザー設定の prompt に書かせず、コード側でガードするのが推奨。例: `cocoro_ghost/memory.py`）。
-- `[CONTEXT_CAPSULE]` には `now_local` / `client_context` 等に加え、`partner_mood: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/scheduler.py` / 計算: `cocoro_ghost/mood.py`）。
+- `[CONTEXT_CAPSULE]` には `now_local` / `client_context` 等に加え、`partner_mood: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/mood.py`）。
 
 ## 取得手順（規定）
 
@@ -75,7 +78,7 @@ Partner: 「...」
 3. **Entity解決**
    - 文字列から alias 参照（`entities` + `entity_aliases`）
    - 足りなければLLM抽出（Workerでも可、同期が重い場合は後回し）
-   - Current: Schedulerは alias/name の文字列一致 + 一致が無い場合のみLLMフォールバック
+   - Current: MemoryPack Builderは alias/name の文字列一致 + 一致が無い場合のみLLMフォールバック
 4. **Facts優先取得**
    - 関連entityのfactを信頼度・鮮度・pinでスコアリング
 5. **Summaries取得**

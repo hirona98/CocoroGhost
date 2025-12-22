@@ -549,7 +549,7 @@ def build_memory_pack(
     if len(pack) <= max_chars:
         return pack
 
-    # budget超過時は優先順に落とす（仕様: scheduler.md）
+    # budget超過時は優先順に落とす（仕様: docs/memory_pack_builder.md）
     evidence = []
     pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
     if len(pack) <= max_chars:

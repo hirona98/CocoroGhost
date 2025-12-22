@@ -21,7 +21,7 @@ from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.mood import INTERNAL_TRAILER_MARKER, clamp01
 from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
 from cocoro_ghost.retriever import Retriever
-from cocoro_ghost.scheduler import build_memory_pack
+from cocoro_ghost.memory_pack_builder import build_memory_pack
 from cocoro_ghost.unit_enums import JobStatus, Sensitivity, UnitKind, UnitState
 from cocoro_ghost.unit_models import Job, PayloadEpisode, PayloadSummary, Unit
 from cocoro_ghost.versioning import record_unit_version
