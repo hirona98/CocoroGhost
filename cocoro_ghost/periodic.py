@@ -66,18 +66,21 @@ def _latest_summary_updated_at(
     *,
     scope_label: str,
     scope_key: str,
-    max_sensitivity: int,
+    max_sensitivity: Optional[int],
 ) -> Optional[int]:
+    filters = [
+        Unit.kind == int(UnitKind.SUMMARY),
+        Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+        PayloadSummary.scope_label == str(scope_label),
+        PayloadSummary.scope_key == str(scope_key),
+    ]
+    if max_sensitivity is not None:
+        filters.append(Unit.sensitivity <= int(max_sensitivity))
+
     row = (
         session.query(Unit.updated_at, Unit.created_at)
         .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.SUMMARY),
-            Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
-            Unit.sensitivity <= int(max_sensitivity),
-            PayloadSummary.scope_label == str(scope_label),
-            PayloadSummary.scope_key == str(scope_key),
-        )
+        .filter(*filters)
         .order_by(Unit.updated_at.desc().nulls_last(), Unit.id.desc())
         .first()
     )
@@ -92,11 +95,14 @@ def maybe_enqueue_relationship_summary(
     session: Session,
     *,
     now_ts: int,
+    scope_key: str = "rolling:7d",
     cooldown_seconds: int = 6 * 3600,
-    max_sensitivity: int = int(Sensitivity.PRIVATE),
+    max_sensitivity: Optional[int] = int(Sensitivity.PRIVATE),
 ) -> bool:
-    """relationship summary（rolling:7d）を必要ならenqueueする（重複抑制 + クールダウン）。"""
-    scope_key = "rolling:7d"
+    """relationship summary を必要ならenqueueする（重複抑制 + クールダウン）。
+
+    max_sensitivity が None の場合は sensitivity フィルタを行わない（呼び出し側互換用）。
+    """
 
     if _has_pending_job(
         session,
@@ -118,18 +124,16 @@ def maybe_enqueue_relationship_summary(
     if int(now_ts) - int(updated_at) < int(cooldown_seconds):
         return False
 
-    new_episode = (
-        session.query(Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.EPISODE),
-            Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
-            Unit.sensitivity <= int(max_sensitivity),
-            Unit.occurred_at.isnot(None),
-            Unit.occurred_at > int(updated_at),
-        )
-        .limit(1)
-        .scalar()
-    )
+    filters = [
+        Unit.kind == int(UnitKind.EPISODE),
+        Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+        Unit.occurred_at.isnot(None),
+        Unit.occurred_at > int(updated_at),
+    ]
+    if max_sensitivity is not None:
+        filters.append(Unit.sensitivity <= int(max_sensitivity))
+
+    new_episode = session.query(Unit.id).filter(*filters).limit(1).scalar()
     if new_episode is None:
         return False
 

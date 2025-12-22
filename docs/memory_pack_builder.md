@@ -1,28 +1,10 @@
-# MemoryPack Builder（取得計画器）仕様
+# MemoryPack Builder仕様
 
 ## 目的
 
 - Scheduling の発想（予測・プリロード・注意機構）を、API運用に合わせて実装する
 - **“会話の一貫性”を最優先**しつつ、注入トークンを制御する
 - 検索結果をそのまま注入しない。**注入パック（MemoryPack）** を編成して注入する
-
-補足:
-- ここでの「取得計画器」は cron 的なジョブスケジューラではなく、/api/chat の同期処理中に「何を注入するか」を組み立てる役。
-
-## 実装ステータス（Current/Planned）
-
-このドキュメントはパートナーAI向けの目標仕様。現状の実装との差分は下記に整理する。
-
-- Current: Entity解決は alias/name の文字列一致 + 一致が無い場合のみ（短文除外あり）LLM抽出で補助。
-- Current: `[SHARED_NARRATIVE]` は relationship（rolling:7d。無い場合は最新をフォールバック）+ 一致した person/topic の summary を注入する。
-- Current: injection_strategy は `quote_key_parts` / `summarize` / `full` に対応（現状 Retriever は `quote_key_parts` 固定）。
-- Current: relationship summary（rolling:7d）は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり）。
-- Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）を自動enqueue（重複抑制あり）。
-- Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic/capsule）も実施できる（固定値: 30秒ごとに判定）。
-- Current: 起動コマンドは `run.py` のみ（FastAPI起動時に内蔵Workerがバックグラウンド開始）。
-- Current: `/api/settings` 変更時は内蔵Workerを自動で再起動し、LLM/Embedding preset と memory_id 切替に追従する（再起動の手動運用も可能）。
-- Non-goal: uvicorn multi-worker 等の多重起動は未対応（内蔵Workerが重複実行されうるため）。`workers=1` 前提で運用する。
-- Planned: Entity解決のWorkerフォールバック強化（同期/非同期の最適化）と injection_strategy の自動切替。
 
 ## 入力
 

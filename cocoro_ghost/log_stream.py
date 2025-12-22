@@ -32,6 +32,7 @@ _buffer: Deque[LogEvent] = deque(maxlen=MAX_BUFFER)
 _clients: Set["WebSocket"] = set()
 _dispatch_task: Optional[asyncio.Task[None]] = None
 _handler_installed = False
+_installed_handler: Optional[logging.Handler] = None
 logger = logging.getLogger(__name__)
 
 
@@ -66,6 +67,12 @@ class _QueueHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - simple passthrough
         """LogRecordをLogEventへ変換してキューへ投入する（例外は握り潰してログへ）。"""
         try:
+            # shutdown レース対策:
+            # サーバ停止時にイベントループが先に閉じられると call_soon_threadsafe が例外になる。
+            # ここで logger.exception すると同じハンドラを経由して再帰するので、黙ってドロップする。
+            if self.loop.is_closed():
+                return
+
             # /api/logs/stream に関するアクセスログは配信しない
             msg = record.getMessage()
             if "logs/stream" in msg:
@@ -73,12 +80,13 @@ class _QueueHandler(logging.Handler):
             event = _record_to_event(record)
             self.loop.call_soon_threadsafe(self.queue.put_nowait, event)
         except Exception:  # pragma: no cover - logging safety net
-            logger.exception("failed to enqueue log record")
+            # ここで例外ログを出すと、同じハンドラ経由で再帰する可能性があるため抑止する。
+            return
 
 
 def install_log_handler(loop: asyncio.AbstractEventLoop) -> None:
     """ルートロガーにQueueHandlerを追加。多重追加はしない。"""
-    global _log_queue, _handler_installed
+    global _log_queue, _handler_installed, _installed_handler
     if _handler_installed:
         return
 
@@ -92,6 +100,7 @@ def install_log_handler(loop: asyncio.AbstractEventLoop) -> None:
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         logging.getLogger(name).addHandler(handler)
 
+    _installed_handler = handler
     _handler_installed = True
     logger.info("log stream handler installed")
 
@@ -111,15 +120,28 @@ async def start_dispatcher() -> None:
 
 async def stop_dispatcher() -> None:
     """配送タスクを停止。"""
-    global _dispatch_task
-    if _dispatch_task is None:
+    global _dispatch_task, _handler_installed, _installed_handler
+    if _dispatch_task is not None:
+        _dispatch_task.cancel()
+        try:
+            await _dispatch_task
+        except asyncio.CancelledError:  # pragma: no cover - expected on cancel
+            pass
+        _dispatch_task = None
+
+    if not _handler_installed or _installed_handler is None:
         return
-    _dispatch_task.cancel()
-    try:
-        await _dispatch_task
-    except asyncio.CancelledError:  # pragma: no cover - expected on cancel
-        pass
-    _dispatch_task = None
+
+    handler = _installed_handler
+    root_logger = logging.getLogger()
+    root_logger.removeHandler(handler)
+
+    # uvicorn系ロガーも個別に解除する（propagate=False のため）
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logging.getLogger(name).removeHandler(handler)
+
+    _installed_handler = None
+    _handler_installed = False
 
 
 def get_buffer_snapshot() -> List[LogEvent]:

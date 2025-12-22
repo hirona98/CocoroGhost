@@ -166,7 +166,8 @@ def create_app() -> FastAPI:
         """同一プロセス内Workerスレッドを停止。"""
         from cocoro_ghost import internal_worker
 
-        await asyncio.to_thread(internal_worker.stop, 5.0)
+        # internal_worker.stop は keyword-only の timeout_seconds を受け取る
+        await asyncio.to_thread(internal_worker.stop, timeout_seconds=5.0)
 
     return app
 

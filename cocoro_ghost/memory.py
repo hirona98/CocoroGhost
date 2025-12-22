@@ -235,80 +235,21 @@ class MemoryManager:
         """SSE（Server-Sent Events）形式の1メッセージを構築する。"""
         return f"event: {event}\ndata: {_json_dumps(payload)}\n\n"
 
-    def _has_pending_relationship_summary_job(self, db) -> bool:
-        rows = (
-            db.query(Job)
-            .filter(
-                Job.kind == "relationship_summary",
-                Job.status.in_([int(JobStatus.QUEUED), int(JobStatus.RUNNING)]),
-            )
-            .all()
-        )
-        # rolling:7d は scope_key 固定のため、重複抑制は「同種ジョブが1件でもあれば」とする。
-        return bool(rows)
-
-    def _enqueue_relationship_summary_job(self, db, *, now_ts: int) -> None:
-        db.add(
-            Job(
-                kind="relationship_summary",
-                payload_json=_json_dumps({"scope_key": _RELATIONSHIP_SUMMARY_SCOPE_KEY}),
-                status=int(JobStatus.QUEUED),
-                run_after=now_ts,
-                tries=0,
-                last_error=None,
-                created_at=now_ts,
-                updated_at=now_ts,
-            )
-        )
-
     def _maybe_enqueue_relationship_summary(self, db, *, now_ts: int) -> None:
         if not self.config_store.memory_enabled:
             return
-        # 重複実行を避けるため、同種ジョブが待機/実行中ならスキップする。
-        if self._has_pending_relationship_summary_job(db):
-            return
 
-        # relationshipサマリ（rolling:7d）が無い場合は即enqueueする。
-        summary_row = (
-            db.query(Unit, PayloadSummary)
-            .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
-            .filter(
-                Unit.kind == int(UnitKind.SUMMARY),
-                Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
-                PayloadSummary.scope_label == "relationship",
-                PayloadSummary.scope_key == _RELATIONSHIP_SUMMARY_SCOPE_KEY,
-            )
-            .order_by(Unit.updated_at.desc().nulls_last(), Unit.id.desc())
-            .first()
+        # enqueue判定ロジックは periodic.py 側に集約する。
+        # ここでは従来の挙動を維持するため、sensitivity フィルタは行わない（max_sensitivity=None）。
+        from cocoro_ghost.periodic import maybe_enqueue_relationship_summary  # noqa: PLC0415
+
+        maybe_enqueue_relationship_summary(
+            db,
+            now_ts=int(now_ts),
+            scope_key=_RELATIONSHIP_SUMMARY_SCOPE_KEY,
+            cooldown_seconds=_SUMMARY_REFRESH_INTERVAL_SECONDS,
+            max_sensitivity=None,
         )
-
-        if summary_row is None:
-            self._enqueue_relationship_summary_job(db, now_ts=now_ts)
-            return
-
-        summary_unit, _ps = summary_row
-        updated_at = int(summary_unit.updated_at or summary_unit.created_at or 0)
-        if updated_at <= 0:
-            self._enqueue_relationship_summary_job(db, now_ts=now_ts)
-            return
-        # 頻繁な再生成を避けるためクールダウンを入れる。
-        if now_ts - updated_at < _SUMMARY_REFRESH_INTERVAL_SECONDS:
-            return
-
-        # 最終更新以降に新規エピソードがある場合のみ更新する。
-        new_episode = (
-            db.query(Unit.id)
-            .filter(
-                Unit.kind == int(UnitKind.EPISODE),
-                Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
-                Unit.occurred_at.isnot(None),
-                Unit.occurred_at > updated_at,
-            )
-            .limit(1)
-            .scalar()
-        )
-        if new_episode is not None:
-            self._enqueue_relationship_summary_job(db, now_ts=now_ts)
 
 
     def _summarize_images(self, images: Sequence[Dict[str, str]] | None) -> List[str]:
