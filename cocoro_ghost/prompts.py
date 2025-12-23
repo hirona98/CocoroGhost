@@ -30,6 +30,7 @@ REFLECTION_SYSTEM_PROMPT = """
 """.strip()
 
 
+# ペルソナとは組み合わせない想定
 FACT_EXTRACT_SYSTEM_PROMPT = """
 あなたは cocoro_ghost の「fact抽出」モジュールです。
 入力テキストから、長期的に保持すべき安定知識（好み/設定/関係/習慣）を抽出して JSON で出力してください。
@@ -72,6 +73,7 @@ LOOP_EXTRACT_SYSTEM_PROMPT = """
 """.strip()
 
 
+# ペルソナとは組み合わせない想定
 ENTITY_EXTRACT_SYSTEM_PROMPT = """
 あなたは cocoro_ghost の「entity抽出」モジュールです。
 入力テキストから、登場する固有名（人物/場所/プロジェクト/組織/話題）を抽出して JSON で出力してください。
