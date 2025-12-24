@@ -34,14 +34,14 @@
 - `units` の `emotion_* / salience / confidence` に反映
 - `payload_episode.reflection_json` に保存
 
-## chat（SSE）: 返答末尾の内部JSON（mood trailer）
+## chat（SSE）: 返答末尾の内部JSON（otome_kairo trailer）
 
 `/api/chat` は、**同一のLLM呼び出し**で「ユーザー表示本文」と「内部用の反射JSON」を同時に生成する。
 
-- 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_INTERNAL_JSON_v1>>>` を出力し、その次行にJSONを1つだけ出力する
+- 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_OTOME_KAIRO_JSON_v1>>>` を出力し、その次行にJSONを1つだけ出力する
 - サーバ側は区切り以降をSSEに流さず回収し、Episodeへ即時反映する（`cocoro_ghost/memory.py`）
 
-### 出力JSON（mood trailer）
+### 出力JSON（otome_kairo trailer）
 
 ```json
 {

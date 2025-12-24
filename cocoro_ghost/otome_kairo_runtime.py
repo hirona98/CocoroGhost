@@ -1,6 +1,6 @@
-"""mood のランタイム上書き（デバッグ用）。
+"""otome_kairo のランタイム上書き（デバッグ用）。
 
-- UI から mood 関連の数値を参照/変更できるようにするための in-memory ストア。
+- UI から otome_kairo 関連の数値を参照/変更できるようにするための in-memory ストア。
 - 永続化（DB/設定DB/settings）は行わない。
 - FastAPI と internal worker が同一プロセスの場合に有効。
   ※ 複数プロセス/複数ワーカー構成だとプロセスごとに状態が分離される。
@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import copy
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
-from cocoro_ghost.mood import EMOTION_LABELS, clamp01, compute_partner_mood_from_episodes
+from cocoro_ghost.otome_kairo import EMOTION_LABELS, clamp01, compute_otome_state_from_episodes
 
 
 _lock = threading.Lock()
@@ -92,17 +92,17 @@ def set_override(
     if not isinstance(patch, dict):
         raise TypeError("patch must be dict")
 
-    base_mood = base if isinstance(base, dict) else compute_partner_mood_from_episodes([], now_ts=int(now_ts))
+    base_state = base if isinstance(base, dict) else compute_otome_state_from_episodes([], now_ts=int(now_ts))
 
     label = _normalize_label(patch.get("label"))
     intensity = patch.get("intensity")
     components = _normalize_components(patch.get("components"))
     policy = _normalize_policy(patch.get("policy"))
 
-    # 保存形式は「partner_mood の一部」を上書きするパッチとして保持する。
+    # 保存形式は「otome_state の一部」を上書きするパッチとして保持する。
     merged: dict[str, Any] = {
-        "label": label if label is not None else base_mood.get("label"),
-        "intensity": clamp01(float(intensity)) if intensity is not None else base_mood.get("intensity"),
+        "label": label if label is not None else base_state.get("label"),
+        "intensity": clamp01(float(intensity)) if intensity is not None else base_state.get("intensity"),
     }
 
     if components is not None:
@@ -117,20 +117,20 @@ def set_override(
         return copy.deepcopy(_override)
 
 
-def apply_partner_mood_override(
-    computed_mood: Optional[dict[str, Any]],
+def apply_otome_state_override(
+    computed_state: Optional[dict[str, Any]],
     *,
     now_ts: int,
 ) -> dict[str, Any]:
-    """計算済み partner_mood に override を適用して返す。
+    """計算済み otome_state に override を適用して返す。
 
-    override が無ければ computed_mood をそのまま返す。
+    override が無ければ computed_state をそのまま返す。
     """
     override = get_override()
     if override is None:
-        return computed_mood if isinstance(computed_mood, dict) else compute_partner_mood_from_episodes([], now_ts=int(now_ts))
+        return computed_state if isinstance(computed_state, dict) else compute_otome_state_from_episodes([], now_ts=int(now_ts))
 
-    base = computed_mood if isinstance(computed_mood, dict) else compute_partner_mood_from_episodes([], now_ts=int(now_ts))
+    base = computed_state if isinstance(computed_state, dict) else compute_otome_state_from_episodes([], now_ts=int(now_ts))
     out = copy.deepcopy(base)
 
     if isinstance(override.get("label"), str):

@@ -47,8 +47,8 @@ Partner: 「...」
 補足:
 - MemoryPack は `memorypack` を system に注入し、conversation に直近会話（max_turns_window）+ user_text を渡す形で LLM に渡される（仕様: `docs/api.md`）。
 - MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（ユーザー設定の prompt に書かせず、コード側でガードするのが推奨。例: `cocoro_ghost/memory.py`）。
-- `[CONTEXT_CAPSULE]` には `now_local` / `client_context` 等に加え、`partner_mood: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/mood.py`）。
-   - デバッグ用途: `PUT /api/mood/override` による in-memory override が有効な場合、注入される `partner_mood` は override 適用後の値になる。
+- `[CONTEXT_CAPSULE]` には `now_local` / `client_context` 等に加え、`otome_state: {...}`（重要度×時間減衰で集約した感情）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/otome_kairo.py`）。
+   - デバッグ用途: `PUT /api/otome_kairo/override` による in-memory override が有効な場合、注入される `otome_state` は override 適用後の値になる。
 
 ## 取得手順（規定）
 

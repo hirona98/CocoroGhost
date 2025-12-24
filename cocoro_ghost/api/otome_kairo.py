@@ -1,6 +1,6 @@
-"""mood デバッグ用API。
+"""otome_kairo デバッグ用API。
 
-- UI から mood の数値を参照/変更するための専用API。
+- UI から otome_kairo の数値を参照/変更するための専用API。
 - 永続化しない（DBへ保存しない）。
 - 認証は main.py 側の router include で強制される想定。
 """
@@ -13,10 +13,15 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from cocoro_ghost.config import get_config_store
 from cocoro_ghost.db import get_memory_session
-from cocoro_ghost.mood import EMOTION_LABELS, clamp01, compute_partner_mood_from_episodes
-from cocoro_ghost.mood_runtime import apply_partner_mood_override, clear_override, get_override, get_override_meta, set_override
+from cocoro_ghost.otome_kairo import EMOTION_LABELS, clamp01, compute_otome_state_from_episodes
+from cocoro_ghost.otome_kairo_runtime import (
+    apply_otome_state_override,
+    clear_override,
+    get_override,
+    get_override_meta,
+    set_override,
+)
 from cocoro_ghost.unit_enums import Sensitivity, UnitKind
 from cocoro_ghost.unit_models import Unit
 
@@ -28,28 +33,28 @@ def _now_ts() -> int:
     return int(time.time())
 
 
-class MoodOverridePolicy(BaseModel):
+class OtomeKairoOverridePolicy(BaseModel):
     cooperation: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     refusal_bias: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     refusal_allowed: Optional[bool] = None
 
 
-class MoodOverrideComponents(BaseModel):
+class OtomeKairoOverrideComponents(BaseModel):
     joy: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     sadness: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     anger: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     fear: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
-class MoodOverrideRequest(BaseModel):
+class OtomeKairoOverrideRequest(BaseModel):
     # 部分更新を許容する（デバッグUIでスライダー等を想定）
     label: Optional[str] = None
     intensity: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    components: Optional[MoodOverrideComponents] = None
-    policy: Optional[MoodOverridePolicy] = None
+    components: Optional[OtomeKairoOverrideComponents] = None
+    policy: Optional[OtomeKairoOverridePolicy] = None
 
 
-class MoodDebugResponse(BaseModel):
+class OtomeKairoDebugResponse(BaseModel):
     now_ts: int
     override_meta: Dict[str, Any]
     override: Optional[Dict[str, Any]]
@@ -58,13 +63,14 @@ class MoodDebugResponse(BaseModel):
 
 
 def _compute_from_db(*, now_ts: int, scan_limit: int) -> dict[str, Any]:
-    """現在のDB状態から partner_mood を計算する（永続化はしない）。"""
-    cfg = get_config_store().config
+    """現在のDB状態から otome_state を計算する（永続化はしない）。"""
+    # memory_enabled が false の場合でも、DB自体は存在する前提。
+    # ただし異常系では例外にして API 側で扱う。
+    from cocoro_ghost.config import get_config_store  # noqa: PLC0415
+
     memory_id = get_config_store().memory_id
     embedding_dimension = int(get_config_store().embedding_dimension)
 
-    # memory_enabled が false の場合でも、DB自体は存在する前提。
-    # ただし異常系では例外にして API 側で扱う。
     session = get_memory_session(str(memory_id), int(embedding_dimension))
     try:
         rows = (
@@ -91,14 +97,14 @@ def _compute_from_db(*, now_ts: int, scan_limit: int) -> dict[str, Any]:
                     "confidence": u.confidence,
                 }
             )
-        return compute_partner_mood_from_episodes(episodes, now_ts=int(now_ts))
+        return compute_otome_state_from_episodes(episodes, now_ts=int(now_ts))
     finally:
         session.close()
 
 
-@router.get("/mood", response_model=MoodDebugResponse)
-def get_mood_debug(scan_limit: int = 500, include_computed: bool = True):
-    """現在の mood（computed / override / effective）を返す。"""
+@router.get("/otome_kairo", response_model=OtomeKairoDebugResponse)
+def get_otome_kairo_debug(scan_limit: int = 500, include_computed: bool = True):
+    """現在の otome_kairo（computed / override / effective）を返す。"""
     now_ts = _now_ts()
 
     computed: Optional[dict[str, Any]] = None
@@ -106,12 +112,12 @@ def get_mood_debug(scan_limit: int = 500, include_computed: bool = True):
         try:
             scan_limit = max(50, min(2000, int(scan_limit)))
             computed = _compute_from_db(now_ts=now_ts, scan_limit=scan_limit)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             # デバッグ用途のため、computed が取れない場合も effective は返す
             computed = None
 
-    effective = apply_partner_mood_override(computed, now_ts=now_ts)
-    return MoodDebugResponse(
+    effective = apply_otome_state_override(computed, now_ts=now_ts)
+    return OtomeKairoDebugResponse(
         now_ts=now_ts,
         override_meta=get_override_meta(),
         override=get_override(),
@@ -120,9 +126,9 @@ def get_mood_debug(scan_limit: int = 500, include_computed: bool = True):
     )
 
 
-@router.put("/mood/override", response_model=MoodDebugResponse)
-def put_mood_override(request: MoodOverrideRequest, scan_limit: int = 500, include_computed: bool = True):
-    """mood override を設定（部分更新可）。"""
+@router.put("/otome_kairo/override", response_model=OtomeKairoDebugResponse)
+def put_otome_kairo_override(request: OtomeKairoOverrideRequest, scan_limit: int = 500, include_computed: bool = True):
+    """otome_kairo override を設定（部分更新可）。"""
     now_ts = _now_ts()
 
     label = (request.label or "").strip() if request.label is not None else None
@@ -149,8 +155,8 @@ def put_mood_override(request: MoodOverrideRequest, scan_limit: int = 500, inclu
 
     set_override(now_ts=now_ts, patch=patch, base=computed)
 
-    effective = apply_partner_mood_override(computed, now_ts=now_ts)
-    return MoodDebugResponse(
+    effective = apply_otome_state_override(computed, now_ts=now_ts)
+    return OtomeKairoDebugResponse(
         now_ts=now_ts,
         override_meta=get_override_meta(),
         override=get_override(),
@@ -159,9 +165,9 @@ def put_mood_override(request: MoodOverrideRequest, scan_limit: int = 500, inclu
     )
 
 
-@router.delete("/mood/override", response_model=MoodDebugResponse)
-def delete_mood_override(scan_limit: int = 500, include_computed: bool = True):
-    """mood override を解除する。"""
+@router.delete("/otome_kairo/override", response_model=OtomeKairoDebugResponse)
+def delete_otome_kairo_override(scan_limit: int = 500, include_computed: bool = True):
+    """otome_kairo override を解除する。"""
     now_ts = _now_ts()
     clear_override()
 
@@ -173,8 +179,8 @@ def delete_mood_override(scan_limit: int = 500, include_computed: bool = True):
         except Exception:  # noqa: BLE001
             computed = None
 
-    effective = apply_partner_mood_override(computed, now_ts=now_ts)
-    return MoodDebugResponse(
+    effective = apply_otome_state_override(computed, now_ts=now_ts)
+    return OtomeKairoDebugResponse(
         now_ts=now_ts,
         override_meta=get_override_meta(),
         override=get_override(),

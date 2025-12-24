@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
-from cocoro_ghost.mood import compute_partner_mood_from_episodes
+from cocoro_ghost.otome_kairo import compute_otome_state_from_episodes
 from cocoro_ghost.unit_enums import LoopStatus, Sensitivity, UnitKind
 from cocoro_ghost.unit_models import (
     Entity,
@@ -24,7 +24,7 @@ from cocoro_ghost.unit_models import (
     Unit,
     UnitEntity,
 )
-from cocoro_ghost.mood_runtime import apply_partner_mood_override
+from cocoro_ghost.otome_kairo_runtime import apply_otome_state_override
 
 if TYPE_CHECKING:
     from cocoro_ghost.llm_client import LlmClient
@@ -456,19 +456,19 @@ def build_memory_pack(
             if s:
                 capsule_parts.append(f"[ユーザーが今送った画像の内容] {s}")
 
-    # パートナーの機嫌（重要度×時間減衰）を同期計算して注入する。
+    # パートナーの感情（重要度×時間減衰）を同期計算して注入する。
     #
     # 目的:
     # - /api/chat は「返信生成の前」に MemoryPack を組むため、capsule_refresh（Worker）がまだ走っていないと
-    #   "partner_mood" が注入されず、機嫌の反映が1ターン遅れやすい。
+    #   "otome_state" が注入されず、感情の反映が1ターン遅れやすい。
     # - ここで同期計算して `CONTEXT_CAPSULE` に入れることで、「直前の出来事」まで含めた機嫌を次ターンから使える。
     #
-    # 計算式（詳細は cocoro_ghost/mood.py）:
+    # 計算式（詳細は cocoro_ghost/otome_kairo.py）:
     #   impact = emotion_intensity × salience × confidence × exp(-Δt/τ(salience))
     # - salience が高いほど τ が長い → 大事件が残る
     # - salience が低いほど τ が短い → 雑談はすぐ消える
     try:
-        mood_units = (
+        otome_kairo_units = (
             db.query(Unit)
             .filter(
                 Unit.kind == int(UnitKind.EPISODE),
@@ -480,9 +480,9 @@ def build_memory_pack(
             .limit(500)
             .all()
         )
-        mood_episodes = []
-        for u in mood_units:
-            mood_episodes.append(
+        otome_kairo_episodes = []
+        for u in otome_kairo_units:
+            otome_kairo_episodes.append(
                 {
                     "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
                     "created_at": int(u.created_at),
@@ -492,17 +492,19 @@ def build_memory_pack(
                     "confidence": u.confidence,
                 }
             )
-        partner_mood = compute_partner_mood_from_episodes(mood_episodes, now_ts=now_ts)
+        otome_state = compute_otome_state_from_episodes(otome_kairo_episodes, now_ts=now_ts)
         # デバッグ用: UI/API から in-memory override できるようにする（永続化しない）。
-        partner_mood = apply_partner_mood_override(partner_mood, now_ts=now_ts)
+        otome_state = apply_otome_state_override(otome_state, now_ts=now_ts)
         compact = {
-            "label": partner_mood.get("label"),
-            "intensity": partner_mood.get("intensity"),
-            "components": partner_mood.get("components"),
-            "policy": partner_mood.get("policy"),
-            "now_ts": partner_mood.get("now_ts"),
+            "label": otome_state.get("label"),
+            "intensity": otome_state.get("intensity"),
+            "components": otome_state.get("components"),
+            "policy": otome_state.get("policy"),
+            "now_ts": otome_state.get("now_ts"),
         }
-        capsule_parts.append(f"partner_mood: {json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}")
+        capsule_parts.append(
+            f"otome_state: {json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}"
+        )
     except Exception:  # noqa: BLE001
         pass
 

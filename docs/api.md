@@ -57,22 +57,22 @@ data: {"message":"...","code":"..."}
 1. 画像要約（`images` がある場合）
 2. Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 3. Schedulerで **MemoryPack** を生成（検索結果を `[EPISODE_EVIDENCE]` に含む）
-4. LLMへ `memorypack + mood_trailer_prompt` を system に注入し、conversation には直近会話（max_turns_window）+ user_text を渡す（MemoryPack内に persona/addon を含む）
-5. 返答をSSEで配信（返答末尾の内部JSON＝mood trailer はサーバ側で回収し、SSEには流さない）
+4. LLMへ `memorypack + otome_kairo_trailer_prompt` を system に注入し、conversation には直近会話（max_turns_window）+ user_text を渡す（MemoryPack内に persona/addon を含む）
+5. 返答をSSEで配信（返答末尾の内部JSON＝otome_kairo trailer はサーバ側で回収し、SSEには流さない）
 6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 7. Worker用ジョブを enqueue（reflection/extraction/embedding等）
 
-## `/api/mood`（デバッグ）
+## `/api/otome_kairo`（デバッグ）
 
-mood（パートナーの機嫌）関連の数値を **UIから参照/変更**するためのデバッグ用API。
+otome_kairo（パートナーの感情）関連の数値を **UIから参照/変更**するためのデバッグ用API。
 
 - **永続化しない**（DB/settings.db に保存しない）
 - 反映は **同一プロセス内**のみ（プロセスを跨ぐ構成ではプロセスごとに状態が分離される）
 - 認証は他の `/api/*` と同様に `Authorization: Bearer <TOKEN>`
 
-### `GET /api/mood`
+### `GET /api/otome_kairo`
 
-現在の mood を返す。
+現在の otome_kairo を返す。
 
 - query
   - `scan_limit`（任意）: DB走査件数（既定 500、範囲は内部で 50..2000 に丸める）
@@ -80,13 +80,13 @@ mood（パートナーの機嫌）関連の数値を **UIから参照/変更**�
 
 #### Response（JSON）
 
-- `computed`: DBのエピソードから「重要度×時間減衰」で計算した mood（取得に失敗した場合は `null`）
+- `computed`: DBのエピソードから「重要度×時間減衰」で計算した otome_kairo（取得に失敗した場合は `null`）
 - `override`: デバッグ用の in-memory 上書き（無ければ `null`）
-- `effective`: 実際にシステムが利用する mood（`computed` に `override` を適用）
+- `effective`: 実際にシステムが利用する otome_kairo（`computed` に `override` を適用）
 
-### `PUT /api/mood/override`
+### `PUT /api/otome_kairo/override`
 
-in-memory の mood override を設定する（**部分更新可**）。
+in-memory の otome_kairo override を設定する（**部分更新可**）。
 
 #### Request（JSON）
 
@@ -105,15 +105,15 @@ in-memory の mood override を設定する（**部分更新可**）。
 
 #### Response
 
-`GET /api/mood` と同形式。
+`GET /api/otome_kairo` と同形式。
 
-### `DELETE /api/mood/override`
+### `DELETE /api/otome_kairo/override`
 
 override を解除する。
 
 #### Response
 
-`GET /api/mood` と同形式。
+`GET /api/otome_kairo` と同形式。
 
 ## `/api/v1/notification`
 

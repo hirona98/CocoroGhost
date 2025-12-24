@@ -9,7 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_utils.tasks import repeat_every
 
 from cocoro_ghost import event_stream, log_stream
-from cocoro_ghost.api import admin, capture, chat, events, logs, meta_request, mood, notification, settings
+from cocoro_ghost.api import admin, capture, chat, events, logs, meta_request, notification, otome_kairo, settings
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.logging_config import setup_logging, suppress_uvicorn_access_log_paths
@@ -108,7 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(notification.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(meta_request.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(capture.router, dependencies=[Depends(verify_token)], prefix="/api")
-    app.include_router(mood.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(otome_kairo.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(settings.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(admin.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(logs.router, prefix="/api")

@@ -39,8 +39,8 @@ from cocoro_ghost.unit_models import (
 )
 from cocoro_ghost.versioning import canonical_json_dumps, record_unit_version
 from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
-from cocoro_ghost.mood import clamp01, compute_partner_mood_from_episodes
-from cocoro_ghost.mood_runtime import apply_partner_mood_override
+from cocoro_ghost.otome_kairo import clamp01, compute_otome_state_from_episodes
+from cocoro_ghost.otome_kairo_runtime import apply_otome_state_override
 
 
 logger = logging.getLogger(__name__)
@@ -1183,8 +1183,9 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
     """短期状態（Capsule）を更新する（LLM不要・軽量）。"""
     limit = int(payload.get("limit") or 5)
     limit = max(1, min(20, limit))
-    mood_scan_limit = int(payload.get("mood_scan_limit") or 500)
-    mood_scan_limit = max(50, min(2000, mood_scan_limit))
+    # 感情は、直近エピソード群を「重要度×時間減衰」で積分して作る。
+    otome_kairo_scan_limit = int(payload.get("otome_kairo_scan_limit") or 500)
+    otome_kairo_scan_limit = max(50, min(2000, otome_kairo_scan_limit))
 
     rows = (
         session.query(Unit, PayloadEpisode)
@@ -1213,17 +1214,17 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
             }
         )
 
-    # パートナーの機嫌（重要度×時間減衰）:
+    # パートナーの感情（重要度×時間減衰）:
     #
     # 直近N件（recent）だけで機嫌を作ると、「大事件が短時間で埋もれて消える」問題が出る。
-    # そこで、別枠で「直近mood_scan_limit件のエピソード」を走査し、各エピソードの影響度を
+    # そこで、別枠で「直近otome_kairo_scan_limit件のエピソード」を走査し、各エピソードの影響度を
     #     impact = emotion_intensity × salience × confidence × exp(-Δt/τ(salience))
-    # の形で減衰させて積分し、現在の機嫌を推定する（詳細は cocoro_ghost/mood.py を参照）。
+    # の形で減衰させて積分し、現在の感情を推定する（詳細は cocoro_ghost/otome_kairo.py を参照）。
     #
     # - salience が高いほど τ が長くなるため、「印象的な出来事」は長く残る
     # - salience が低い雑談は τ が短く、数分で影響が薄れる
     # - anger 成分が十分高いときは refusal_allowed=True となり、プロンプト側で拒否が選びやすくなる
-    mood_units = (
+    otome_kairo_units = (
         session.query(Unit)
         .filter(
             Unit.kind == int(UnitKind.EPISODE),
@@ -1232,12 +1233,12 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
             Unit.emotion_label.isnot(None),
         )
         .order_by(Unit.created_at.desc(), Unit.id.desc())
-        .limit(mood_scan_limit)
+        .limit(otome_kairo_scan_limit)
         .all()
     )
-    mood_episodes = []
-    for u in mood_units:
-        mood_episodes.append(
+    otome_kairo_episodes = []
+    for u in otome_kairo_units:
+        otome_kairo_episodes.append(
             {
                 "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
                 "created_at": int(u.created_at),
@@ -1247,15 +1248,15 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
                 "confidence": u.confidence,
             }
         )
-    partner_mood = compute_partner_mood_from_episodes(mood_episodes, now_ts=now_ts)
+    otome_state = compute_otome_state_from_episodes(otome_kairo_episodes, now_ts=now_ts)
     # デバッグ用: UI/API から in-memory override できるようにする（永続化しない）。
-    partner_mood = apply_partner_mood_override(partner_mood, now_ts=now_ts)
+    otome_state = apply_otome_state_override(otome_state, now_ts=now_ts)
 
     capsule_obj = {
         "generated_at": now_ts,
         "window": limit,
         "recent": recent,
-        "partner_mood": partner_mood,
+        "otome_state": otome_state,
     }
     capsule_json = _json_dumps(capsule_obj)
     expires_at = now_ts + 3600

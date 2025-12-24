@@ -18,7 +18,7 @@ from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope, sync_unit_vector_metadata
 from cocoro_ghost.event_stream import publish as publish_event
 from cocoro_ghost.llm_client import LlmClient
-from cocoro_ghost.mood import INTERNAL_TRAILER_MARKER, clamp01
+from cocoro_ghost.otome_kairo import OTOME_KAIRO_TRAILER_MARKER, clamp01
 from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
 from cocoro_ghost.retriever import Retriever
 from cocoro_ghost.memory_pack_builder import build_memory_pack
@@ -52,10 +52,10 @@ _META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
 
 # /api/chat（SSE）では、同一LLM呼び出しで「ユーザー表示本文 + 内部JSON（機嫌/反射）」を生成し、
 # 内部JSONはストリームから除外して保存・注入に使う。
-_STREAM_TRAILER_MARKER = INTERNAL_TRAILER_MARKER
+_STREAM_TRAILER_MARKER = OTOME_KAIRO_TRAILER_MARKER
 
 
-def _mood_trailer_system_prompt() -> str:
+def _otome_kairo_trailer_system_prompt() -> str:
     marker = _STREAM_TRAILER_MARKER
     # ここは「返答」ではなく「出力フォーマット規約」。ユーザーには見えない想定（SSEで除外）。
     return (
@@ -68,13 +68,13 @@ def _mood_trailer_system_prompt() -> str:
         "内部JSONの目的:\n"
         "- あなた（パートナーAI）の『その瞬間の感情（喜怒哀楽）/重要度』と『行動方針（協力度/拒否のしやすさ）』を更新する。\n"
         "- 内部JSONはシステムが回収して保存し、次回以降の会話にも影響させる。\n"
-        "- CONTEXT_CAPSULE 内に `partner_mood` があれば前回までの状態として参照し、今回の内部JSONで更新する。\n"
+        "- CONTEXT_CAPSULE 内に `otome_state` があれば前回までの状態として参照し、今回の内部JSONで更新する。\n"
         "- あなたは内部JSONを先に決めたうえで、それに沿って返答本文を作る（ただし出力順は本文→区切り→JSON）。\n"
         "\n"
         "内部JSONスキーマ（必須キー）:\n"
         "- emotion_label/emotion_intensity は「あなた（パートナーAI）の気分」。ユーザーの感情推定ではない。\n"
-        "- salience_score は “この出来事がどれだけ重要か” のスカラー（0..1）。後段の機嫌の持続（時間減衰）の係数に使う。\n"
-        "- confidence は推定の確からしさ（0..1）。不確実なら低くし、機嫌への影響も弱める。\n"
+        "- salience_score は “この出来事がどれだけ重要か” のスカラー（0..1）。後段の感情の持続（時間減衰）の係数に使う。\n"
+        "- confidence は推定の確からしさ（0..1）。不確実なら低くし、感情への影響も弱める。\n"
         "- partner_policy は行動方針ノブ（0..1）。怒りが強い場合は refusal_allowed=true にして「拒否/渋る」を選びやすくしてよい。\n"
         "{\n"
         '  "reflection_text": "string",\n'
@@ -421,7 +421,8 @@ class MemoryManager:
                 now_ts=now_ts,
             )
 
-        parts: List[str] = [(memory_pack or "").strip(), _mood_trailer_system_prompt()]
+        # 返信本文の末尾に、感情（otome_kairo）用の内部JSONトレーラーを付与させる。
+        parts: List[str] = [(memory_pack or "").strip(), _otome_kairo_trailer_system_prompt()]
         system_prompt = "\n\n".join([p for p in parts if p])
         conversation = [*conversation, {"role": "user", "content": request.user_text}]
 
