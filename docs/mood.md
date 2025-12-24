@@ -7,7 +7,7 @@
 - **即時反応**: 特定の発言で、そのターンの返答が怒ったり喜んだりできる
 - **持続**: 大事件（重要度が高い出来事）は数ターンで消えず、余韻として残る
 - **口調だけに閉じない**: “協力/拒否” などの行動方針にも影響させられる
-- **ユーザー介入なし**: UI操作で mood を直接上書きしない
+- **通常はユーザー介入なし**: UI操作で mood を直接上書きしない（ただしデバッグ用途では例外として専用APIで一時上書きを許可する）
 
 ## 全体像（2層）
 
@@ -75,6 +75,19 @@ JSONスキーマは `docs/prompts.md` の「chat（SSE）: 返答末尾の内部
 - 注入:
   - 同期: `cocoro_ghost/memory_pack_builder.py::build_memory_pack()` が `CONTEXT_CAPSULE` に `partner_mood: {...}` を追加
   - 非同期: `cocoro_ghost/worker.py::_handle_capsule_refresh()` が `payload_capsule.capsule_json.partner_mood` を更新
+
+## デバッグ用：ランタイム override（永続化しない）
+
+UIから mood の数値を一時的に参照/変更するため、in-memory の override を提供する。
+
+- API: `GET /api/mood` / `PUT /api/mood/override` / `DELETE /api/mood/override`（仕様: `docs/api.md`）
+- 永続化: しない（DBにも settings.db にも保存しない）
+- 反映範囲:
+  - `CONTEXT_CAPSULE` に注入する `partner_mood`（同期計算）
+  - `capsule_refresh` が保存する `payload_capsule.capsule_json.partner_mood`（非同期計算）
+- 注意:
+  - 同一プロセス内の in-memory 状態なので、プロセス再起動で消える
+  - 複数プロセス/複数ワーカー構成ではプロセスごとに状態が分離される
 
 ## 失敗時の挙動（フォールバック）
 

@@ -24,6 +24,7 @@ from cocoro_ghost.unit_models import (
     Unit,
     UnitEntity,
 )
+from cocoro_ghost.mood_runtime import apply_partner_mood_override
 
 if TYPE_CHECKING:
     from cocoro_ghost.llm_client import LlmClient
@@ -492,6 +493,8 @@ def build_memory_pack(
                 }
             )
         partner_mood = compute_partner_mood_from_episodes(mood_episodes, now_ts=now_ts)
+        # デバッグ用: UI/API から in-memory override できるようにする（永続化しない）。
+        partner_mood = apply_partner_mood_override(partner_mood, now_ts=now_ts)
         compact = {
             "label": partner_mood.get("label"),
             "intensity": partner_mood.get("intensity"),

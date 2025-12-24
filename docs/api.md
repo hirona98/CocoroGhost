@@ -62,6 +62,59 @@ data: {"message":"...","code":"..."}
 6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 7. Worker用ジョブを enqueue（reflection/extraction/embedding等）
 
+## `/api/mood`（デバッグ）
+
+mood（パートナーの機嫌）関連の数値を **UIから参照/変更**するためのデバッグ用API。
+
+- **永続化しない**（DB/settings.db に保存しない）
+- 反映は **同一プロセス内**のみ（プロセスを跨ぐ構成ではプロセスごとに状態が分離される）
+- 認証は他の `/api/*` と同様に `Authorization: Bearer <TOKEN>`
+
+### `GET /api/mood`
+
+現在の mood を返す。
+
+- query
+  - `scan_limit`（任意）: DB走査件数（既定 500、範囲は内部で 50..2000 に丸める）
+  - `include_computed`（任意）: `computed` を含めるか（既定 true）
+
+#### Response（JSON）
+
+- `computed`: DBのエピソードから「重要度×時間減衰」で計算した mood（取得に失敗した場合は `null`）
+- `override`: デバッグ用の in-memory 上書き（無ければ `null`）
+- `effective`: 実際にシステムが利用する mood（`computed` に `override` を適用）
+
+### `PUT /api/mood/override`
+
+in-memory の mood override を設定する（**部分更新可**）。
+
+#### Request（JSON）
+
+```json
+{
+  "label": "anger",
+  "intensity": 0.8,
+  "components": {"anger": 0.9},
+  "policy": {"refusal_allowed": true}
+}
+```
+
+- `label` は `joy|sadness|anger|fear|neutral` のいずれか
+- `components` は `joy/sadness/anger/fear` を任意指定（0..1）
+- `policy` は `cooperation/refusal_bias/refusal_allowed` を任意指定
+
+#### Response
+
+`GET /api/mood` と同形式。
+
+### `DELETE /api/mood/override`
+
+override を解除する。
+
+#### Response
+
+`GET /api/mood` と同形式。
+
 ## `/api/v1/notification`
 
 ### Request（JSON）

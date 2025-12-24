@@ -40,6 +40,7 @@ from cocoro_ghost.unit_models import (
 from cocoro_ghost.versioning import canonical_json_dumps, record_unit_version
 from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
 from cocoro_ghost.mood import clamp01, compute_partner_mood_from_episodes
+from cocoro_ghost.mood_runtime import apply_partner_mood_override
 
 
 logger = logging.getLogger(__name__)
@@ -1247,6 +1248,8 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
             }
         )
     partner_mood = compute_partner_mood_from_episodes(mood_episodes, now_ts=now_ts)
+    # デバッグ用: UI/API から in-memory override できるようにする（永続化しない）。
+    partner_mood = apply_partner_mood_override(partner_mood, now_ts=now_ts)
 
     capsule_obj = {
         "generated_at": now_ts,
