@@ -343,20 +343,10 @@ def commit_settings(
         raise HTTPException(status_code=400, detail=f"settings commit failed: {exc.orig}") from exc
 
     # 設定変更をランタイムへ即時反映
-    db.expunge(global_settings)
-    db.expunge(active_llm)
-    db.expunge(active_embedding)
-    db.expunge(active_persona)
-    db.expunge(active_addon)
     set_global_config_store(
         ConfigStore(
             toml_config,
             runtime_config,
-            global_settings,
-            active_llm,
-            active_embedding,
-            active_persona,
-            active_addon,
         )
     )
     reset_memory_manager()

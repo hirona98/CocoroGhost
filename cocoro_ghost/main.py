@@ -78,22 +78,9 @@ def create_app() -> FastAPI:
             addon_preset,
         )
 
-        # ConfigStore作成（プリセットオブジェクトをデタッチ状態で保持するためコピー）
-        # SQLAlchemyセッション終了後も使えるようにexpungeする
-        session.expunge(global_settings)
-        session.expunge(llm_preset)
-        session.expunge(embedding_preset)
-        session.expunge(persona_preset)
-        session.expunge(addon_preset)
-
         config_store = ConfigStore(
             toml_config,
             runtime_config,
-            global_settings,
-            llm_preset,
-            embedding_preset,
-            persona_preset,
-            addon_preset,
         )
 
     set_global_config_store(config_store)

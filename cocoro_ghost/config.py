@@ -38,6 +38,8 @@ class RuntimeConfig:
 
     # GlobalSettings由来
     exclude_keywords: List[str]
+    memory_enabled: bool
+    reminders_enabled: bool
 
     # LlmPreset由来
     llm_preset_name: str
@@ -72,25 +74,17 @@ class RuntimeConfig:
 
 
 class ConfigStore:
-    """ランタイム設定ストア。"""
+    """ランタイム設定ストア（ORMを保持しない）。"""
 
     def __init__(
         self,
         toml_config: Config,
         runtime_config: RuntimeConfig,
-        global_settings: "GlobalSettings",
-        llm_preset: "LlmPreset",
-        embedding_preset: "EmbeddingPreset",
-        persona_preset: "PersonaPreset",
-        addon_preset: "AddonPreset",
     ) -> None:
         self._toml = toml_config
         self._runtime = runtime_config
-        self._global_settings = global_settings
-        self._llm_preset = llm_preset
-        self._embedding_preset = embedding_preset
-        self._persona_preset = persona_preset
-        self._addon_preset = addon_preset
+        # NOTE: DBセッションに紐づくORMインスタンス（GlobalSettings等）は保持しない。
+        # Settings更新後も安全に参照できるよう、必要な値は RuntimeConfig にコピーして使う。
         self._lock = threading.Lock()
 
     @property
@@ -116,7 +110,12 @@ class ConfigStore:
     @property
     def memory_enabled(self) -> bool:
         """記憶機能の有効/無効を返す。"""
-        return bool(getattr(self._global_settings, "memory_enabled", True))
+        return bool(self._runtime.memory_enabled)
+
+    @property
+    def reminders_enabled(self) -> bool:
+        """リマインダー機能の有効/無効を返す。"""
+        return bool(self._runtime.reminders_enabled)
 
 
 def _require(config_dict: dict, key: str) -> str:
@@ -169,6 +168,8 @@ def build_runtime_config(
         log_level=toml_config.log_level,
         # GlobalSettings由来
         exclude_keywords=json.loads(global_settings.exclude_keywords),
+        memory_enabled=bool(getattr(global_settings, "memory_enabled", True)),
+        reminders_enabled=bool(getattr(global_settings, "reminders_enabled", True)),
         # LlmPreset由来
         llm_preset_name=llm_preset.name,
         llm_api_key=llm_preset.llm_api_key,
