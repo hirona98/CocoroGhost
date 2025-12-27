@@ -492,11 +492,11 @@ class LlmClient:
         for image_bytes in images:
             b64 = base64.b64encode(image_bytes).decode("ascii")
             messages = [
-                {"role": "system", "content": "あなたは画像を短い日本語で要約します。"},
+                {"role": "system", "content": "あなたは日本語で画像を説明します。"},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "画像を短く日本語で要約してください。"},
+                        {"type": "text", "text": "この画像を日本語で詳細に説明してください。"},
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
                     ],
                 },
