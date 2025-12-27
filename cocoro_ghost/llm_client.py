@@ -283,22 +283,6 @@ class LlmClient:
 
         return kwargs
 
-    def _log_received(self, *, kind: str, content: str, stream: bool, resp: Any | None = None) -> None:
-        if content is None:
-            content = ""
-
-        if content:
-            preview = _truncate_for_log(content.replace("\r", "").replace("\n", "\\n"), self._INFO_PREVIEW_CHARS)
-            self.logger.info("LLM %s received (%s, %d chars): %s", kind, "stream" if stream else "single", len(content), preview)
-        else:
-            self.logger.info("LLM %s received (%s, empty)", kind, "stream" if stream else "single")
-
-        if self.logger.isEnabledFor(logging.DEBUG):
-            debug_text = _truncate_for_log(content, self._DEBUG_PREVIEW_CHARS)
-            self.logger.debug("LLM %s content: %s", kind, debug_text)
-            if resp is not None:
-                self.logger.debug("LLM %s raw response: %s", kind, _response_to_dict(resp))
-
     def generate_reply_response(
         self,
         system_prompt: str,
@@ -324,8 +308,6 @@ class LlmClient:
         )
 
         resp = litellm.completion(**kwargs)
-        if not stream:
-            self._log_received(kind="reply", content=_first_choice_content(resp), stream=False, resp=resp)
         return resp
 
     def generate_reflection_response(
@@ -384,9 +366,6 @@ class LlmClient:
         )
 
         resp = litellm.completion(**kwargs)
-        content = _first_choice_content(resp)
-        self._log_received(kind="json", content=content, stream=False, resp=resp)
-
         return resp
 
     def generate_embedding(
@@ -491,16 +470,11 @@ class LlmClient:
     def stream_delta_chunks(self, resp_stream: Iterable[Any]) -> Generator[str, None, None]:
         """LiteLLM の streaming Response から delta.content を逐次抽出。"""
         parts: List[str] = []
-        try:
-            for chunk in resp_stream:
-                delta = _delta_content(chunk)
-                if delta:
-                    parts.append(delta)
-                    yield delta
-        finally:
-            content = "".join(parts)
-            if content:
-                self._log_received(kind="reply", content=content, stream=True)
+        for chunk in resp_stream:
+            delta = _delta_content(chunk)
+            if delta:
+                parts.append(delta)
+                yield delta
 
     # 既存コード互換のためのラッパー（文字列を返す）
     def generate_reflection(
