@@ -185,6 +185,46 @@ sequenceDiagram
 
 ## 4) 非同期フロー（Worker jobs）：派生物ごとに使うプロンプト
 
+<!--
+更新メモ（2025-12-27）:
+- Workerは「ジョブ単位」でLLMを呼ぶため、プロンプトが多い＝1回で全部まとめて投げる、ではない。
+- persona/addon を system prompt に合成するジョブ／しないジョブを明示。
+-->
+
+### 4.1) Workerの「LLM呼び出し単位」
+
+- Workerは `jobs(kind=...)` を1件ずつ処理し、**ジョブ種別ごとに必要なLLM呼び出しを行う**。
+  - つまりプロンプトが複数あっても、基本は「1回の会話につき1回のLLM呼び出しで全部」ではなく、**ジョブに応じて複数回に分かれる**。
+- ただし `/api/chat` は「返答本文 + 内部JSON（反射）」を同一呼び出しで回収できるため、Workerの `reflect_episode` は **反射が既に保存済みなら冪等にスキップ**される（フォールバック用途）。
+- 内蔵Workerは1本のスレッドで動く前提のため、**同一プロセス内では概ね直列**にジョブが進む（uvicorn multi-worker 等の多重起動は非対応）。
+
+#### 目安: 1エピソード（1回の会話保存）から増えうるLLM呼び出し回数
+
+- 直後にenqueueされる既定ジョブ（通常）:
+  - JSON生成: `reflect_episode`（0〜1回。/api/chatで反射を回収済みなら0回になり得る）
+  - JSON生成: `extract_entities`（1回）
+  - JSON生成: `extract_facts`（1回）
+  - JSON生成: `extract_loops`（1回）
+  - Embedding生成: `upsert_embeddings`（1回。プロンプトではなく埋め込みAPI）
+  - LLM不要: `capsule_refresh`
+- 追加で増えうるジョブ（状況次第）:
+  - `extract_entities` の結果に応じて、`person_summary_refresh` 最大3件 + `topic_summary_refresh` 最大3件（= JSON生成 最大6回）
+  - `relationship_summary`（rolling:7d。クールダウン等により実行されない場合もある）
+
+### 4.2) persona/addon を付けるプロンプト・付けないプロンプト
+
+Workerはジョブによって `persona_text/addon_text` を system prompt に合成する／しないが分かれている。
+
+- persona/addon を合成する（`wrap_prompt_with_persona(...)`）
+  - `reflect_episode`（`REFLECTION_SYSTEM_PROMPT`）
+  - `extract_loops`（`LOOP_EXTRACT_SYSTEM_PROMPT`）
+  - `relationship_summary`（`RELATIONSHIP_SUMMARY_SYSTEM_PROMPT`）
+  - `person_summary_refresh`（`PERSON_SUMMARY_SYSTEM_PROMPT`）
+  - `topic_summary_refresh`（`TOPIC_SUMMARY_SYSTEM_PROMPT`）
+- persona/addon を合成しない（固定タスクとして素の system prompt を使う）
+  - `extract_entities`（`ENTITY_EXTRACT_SYSTEM_PROMPT`）
+  - `extract_facts`（`FACT_EXTRACT_SYSTEM_PROMPT`）
+
 ```mermaid
 flowchart LR
   EP["Unit(kind=EPISODE)"] -->|enqueue| J["jobs(kind=...)"]
