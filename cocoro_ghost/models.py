@@ -66,7 +66,8 @@ class LlmPreset(Base):
     __tablename__ = "llm_presets"
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
-    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    # プリセット名は重複を許可する（UIで同名作成を許容するため）
+    name: Mapped[str] = mapped_column(String, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # LLM設定
@@ -94,7 +95,7 @@ class PersonaPreset(Base):
     __tablename__ = "persona_presets"
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
-    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     persona_text: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -108,7 +109,7 @@ class AddonPreset(Base):
     __tablename__ = "contract_presets"
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
-    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     addon_text: Mapped[str] = mapped_column("contract_text", Text, nullable=False)
 
@@ -123,7 +124,7 @@ class EmbeddingPreset(Base):
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     # name は表示名（memory_id ではない）
-    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Embedding設定

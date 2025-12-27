@@ -44,7 +44,7 @@ LLMの切替単位。LiteLLMの接続情報（chat/image）をここに持つ。
 #### カラム（実装準拠）
 
 - `id`（TEXT: UUID）
-- `name`（TEXT: unique）
+- `name`（TEXT）
 - `archived`（INTEGER: 0/1）
 - `llm_api_key`（TEXT）
 - `llm_model`（TEXT）
