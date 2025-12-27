@@ -274,13 +274,6 @@ class LlmClient:
         if self.reasoning_effort:
             kwargs["extra_body"] = {"reasoning_effort": self.reasoning_effort}
 
-        # DEBUGログ出力（api_keyはマスク）
-        if self.logger.isEnabledFor(logging.DEBUG):
-            debug_kwargs = {k: v for k, v in kwargs.items() if k != "api_key"}
-            if "api_key" in kwargs:
-                debug_kwargs["api_key"] = "***"
-            self.logger.debug("LLM request: %s", debug_kwargs)
-
         return kwargs
 
     def generate_reply_response(
