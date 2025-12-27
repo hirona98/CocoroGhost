@@ -6,11 +6,11 @@ import json
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from cocoro_ghost.unit_enums import JobStatus, Sensitivity, UnitKind, UnitState
-from cocoro_ghost.unit_models import Entity, Job, PayloadSummary, Unit, UnitEntity
+from cocoro_ghost.unit_models import Entity, Job, PayloadEpisode, PayloadSummary, Unit, UnitEntity
 
 
 def _now_ts_to_since_ts(now_ts: int, *, days: int) -> int:
@@ -118,6 +118,33 @@ def maybe_enqueue_relationship_summary(
         max_sensitivity=max_sensitivity,
     )
     if updated_at is None:
+        # 初回起動などで「直近7日エピソードが空（または実質空）」なら、空入力でLLMを呼ばない。
+        # （関係性サマリは会話が発生してから作れば十分）
+        range_end = int(now_ts)
+        range_start = range_end - 7 * 86400
+        filters = [
+            Unit.kind == int(UnitKind.EPISODE),
+            Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+            Unit.occurred_at.isnot(None),
+            Unit.occurred_at >= int(range_start),
+            Unit.occurred_at < int(range_end),
+            # worker側の行生成条件に合わせ、user/reply のどちらかが空でないものだけ対象にする。
+            or_(
+                func.length(func.trim(PayloadEpisode.user_text)) > 0,
+                func.length(func.trim(PayloadEpisode.reply_text)) > 0,
+            ),
+        ]
+        if max_sensitivity is not None:
+            filters.append(Unit.sensitivity <= int(max_sensitivity))
+        any_episode_line = (
+            session.query(Unit.id)
+            .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
+            .filter(*filters)
+            .limit(1)
+            .scalar()
+        )
+        if any_episode_line is None:
+            return False
         _enqueue_job(session, kind="relationship_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
         return True
 
