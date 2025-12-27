@@ -11,6 +11,80 @@ from typing import Any, Dict, Generator, Iterable, List, Optional
 import litellm
 
 
+# --- ログ整形ユーティリティ（DEBUG用） ---
+#
+# 目的:
+# - LLMへの送信/受信内容を「見やすいJSON」で確認したい
+# - ただしAPIキーや画像base64などの巨大/秘匿情報は出さない
+
+
+_REDACT_KEYS = {
+    # 念のため: LiteLLM/OpenAI/HTTP系で使われがちなキー
+    "api_key",
+    "authorization",
+    "proxy_authorization",
+}
+
+
+def _redact_data_url(url: str) -> str:
+    """data URL（base64等）をログ向けに短縮/マスクする。"""
+    if not url:
+        return ""
+    if not url.startswith("data:"):
+        return url
+    # 例: data:image/png;base64,AAAA.... の形式を想定
+    comma = url.find(",")
+    if comma == -1:
+        return "data:<redacted>"
+    header = url[: comma + 1]
+    payload_len = max(0, len(url) - (comma + 1))
+    return f"{header}<redacted {payload_len} chars>"
+
+
+def _redact_for_log(value: Any, *, str_limit: int) -> Any:
+    """ログに出してよい形へ変換（深いネストにも対応）。"""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return _truncate_for_log(value, str_limit)
+    if isinstance(value, bytes):
+        return f"<bytes {len(value)} bytes>"
+    if isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_redact_for_log(v, str_limit=str_limit) for v in value]
+    if isinstance(value, tuple):
+        return [_redact_for_log(v, str_limit=str_limit) for v in value]
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            key = str(k)
+            key_l = key.lower()
+            if key_l in _REDACT_KEYS:
+                out[key] = "***"
+                continue
+
+            # OpenAI互換の画像入力: {"image_url": {"url": "data:image/..."}}
+            if key_l == "url" and isinstance(v, str):
+                out[key] = _redact_data_url(_truncate_for_log(v, str_limit))
+                continue
+
+            out[key] = _redact_for_log(v, str_limit=str_limit)
+        return out
+
+    # 最後は文字列化（非シリアライズなオブジェクト対策）
+    return _truncate_for_log(str(value), str_limit)
+
+
+def _pretty_json_for_log(value: Any, *, limit: int) -> str:
+    """dict/list等を見やすいJSONとして整形して返す（長すぎる場合は切る）。"""
+    try:
+        text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, default=str)
+    except Exception:  # noqa: BLE001
+        text = str(value)
+    return _truncate_for_log(text, limit)
+
+
 def _truncate_for_log(text: str, limit: int) -> str:
     if limit <= 0:
         return ""
@@ -274,7 +348,27 @@ class LlmClient:
         if self.reasoning_effort:
             kwargs["extra_body"] = {"reasoning_effort": self.reasoning_effort}
 
+        # DEBUGログ出力（見やすく整形、秘匿/巨大データはマスク）
+        if self.logger.isEnabledFor(logging.DEBUG):
+            redacted = _redact_for_log(kwargs, str_limit=1200)
+            pretty = _pretty_json_for_log(redacted, limit=self._DEBUG_PREVIEW_CHARS)
+            self.logger.debug("LLM request (pretty):\n%s", pretty)
+
         return kwargs
+
+    def _debug_log_response(self, *, kind: str, resp: Any) -> None:
+        """DEBUG時のみ、LLMレスポンスを整形して出す。"""
+        if not self.logger.isEnabledFor(logging.DEBUG):
+            return
+        raw = _response_to_dict(resp)
+        redacted = _redact_for_log(raw, str_limit=1200)
+        pretty = _pretty_json_for_log(redacted, limit=self._DEBUG_PREVIEW_CHARS)
+        self.logger.debug("LLM %s response (pretty):\n%s", kind, pretty)
+
+        # 本文も別枠で見たいことが多いので出す（長い場合は切る）
+        content = _first_choice_content(resp)
+        if content:
+            self.logger.debug("LLM %s content (raw): %s", kind, _truncate_for_log(content, self._DEBUG_PREVIEW_CHARS))
 
     def generate_reply_response(
         self,
@@ -301,6 +395,9 @@ class LlmClient:
         )
 
         resp = litellm.completion(**kwargs)
+        # streamの場合はrespがイテレータになり得るため、ここでは触らない
+        if not stream:
+            self._debug_log_response(kind="reply", resp=resp)
         return resp
 
     def generate_reflection_response(
@@ -331,7 +428,9 @@ class LlmClient:
             response_format={"type": "json_object"},
         )
 
-        return litellm.completion(**kwargs)
+        resp = litellm.completion(**kwargs)
+        self._debug_log_response(kind="reflection", resp=resp)
+        return resp
 
     def generate_json_response(
         self,
@@ -359,6 +458,7 @@ class LlmClient:
         )
 
         resp = litellm.completion(**kwargs)
+        self._debug_log_response(kind="json", resp=resp)
         return resp
 
     def generate_embedding(
@@ -413,6 +513,7 @@ class LlmClient:
             )
 
             resp = litellm.completion(**kwargs)
+            self._debug_log_response(kind="image_summary", resp=resp)
             summaries.append(_first_choice_content(resp))
 
         return summaries
@@ -455,11 +556,21 @@ class LlmClient:
     def stream_delta_chunks(self, resp_stream: Iterable[Any]) -> Generator[str, None, None]:
         """LiteLLM の streaming Response から delta.content を逐次抽出。"""
         parts: List[str] = []
-        for chunk in resp_stream:
-            delta = _delta_content(chunk)
-            if delta:
-                parts.append(delta)
-                yield delta
+        try:
+            for chunk in resp_stream:
+                delta = _delta_content(chunk)
+                if delta:
+                    parts.append(delta)
+                    yield delta
+        finally:
+            # ストリーミングでも最終的に全文を確認したいことが多い
+            if self.logger.isEnabledFor(logging.DEBUG):
+                content = "".join(parts)
+                if content:
+                    self.logger.debug(
+                        "LLM reply stream content (raw): %s",
+                        _truncate_for_log(content, self._DEBUG_PREVIEW_CHARS),
+                    )
 
     # 既存コード互換のためのラッパー（文字列を返す）
     def generate_reflection(
