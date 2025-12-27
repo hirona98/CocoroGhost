@@ -6,12 +6,11 @@ import json
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from cocoro_ghost.scheduler import utc_week_key
 from cocoro_ghost.unit_enums import JobStatus, Sensitivity, UnitKind, UnitState
-from cocoro_ghost.unit_models import Entity, Job, PayloadSummary, Unit, UnitEntity
+from cocoro_ghost.unit_models import Entity, Job, PayloadEpisode, PayloadSummary, Unit, UnitEntity
 
 
 def _now_ts_to_since_ts(now_ts: int, *, days: int) -> int:
@@ -67,18 +66,21 @@ def _latest_summary_updated_at(
     *,
     scope_label: str,
     scope_key: str,
-    max_sensitivity: int,
+    max_sensitivity: Optional[int],
 ) -> Optional[int]:
+    filters = [
+        Unit.kind == int(UnitKind.SUMMARY),
+        Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+        PayloadSummary.scope_label == str(scope_label),
+        PayloadSummary.scope_key == str(scope_key),
+    ]
+    if max_sensitivity is not None:
+        filters.append(Unit.sensitivity <= int(max_sensitivity))
+
     row = (
         session.query(Unit.updated_at, Unit.created_at)
         .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.SUMMARY),
-            Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
-            Unit.sensitivity <= int(max_sensitivity),
-            PayloadSummary.scope_label == str(scope_label),
-            PayloadSummary.scope_key == str(scope_key),
-        )
+        .filter(*filters)
         .order_by(Unit.updated_at.desc().nulls_last(), Unit.id.desc())
         .first()
     )
@@ -89,52 +91,80 @@ def _latest_summary_updated_at(
     return ts if ts > 0 else None
 
 
-def maybe_enqueue_weekly_summary(
+def maybe_enqueue_relationship_summary(
     session: Session,
     *,
     now_ts: int,
+    scope_key: str = "rolling:7d",
     cooldown_seconds: int = 6 * 3600,
-    max_sensitivity: int = int(Sensitivity.PRIVATE),
+    max_sensitivity: Optional[int] = int(Sensitivity.PRIVATE),
 ) -> bool:
-    """現週の relationship weekly_summary を必要ならenqueueする（重複抑制 + クールダウン）。"""
-    week_key = utc_week_key(int(now_ts))
+    """relationship summary を必要ならenqueueする（重複抑制 + クールダウン）。
+
+    max_sensitivity が None の場合は sensitivity フィルタを行わない（呼び出し側互換用）。
+    """
 
     if _has_pending_job(
         session,
-        kind="weekly_summary",
-        predicate=lambda p: (str(p.get("week_key") or "").strip() in {"", week_key}),
+        kind="relationship_summary",
+        predicate=lambda p: (str(p.get("scope_key") or "").strip() in {"", scope_key}),
     ):
         return False
 
     updated_at = _latest_summary_updated_at(
         session,
         scope_label="relationship",
-        scope_key=week_key,
+        scope_key=scope_key,
         max_sensitivity=max_sensitivity,
     )
     if updated_at is None:
-        _enqueue_job(session, kind="weekly_summary", payload={"week_key": week_key}, now_ts=now_ts)
+        # 初回起動などで「直近7日エピソードが空（または実質空）」なら、空入力でLLMを呼ばない。
+        # （関係性サマリは会話が発生してから作れば十分）
+        range_end = int(now_ts)
+        range_start = range_end - 7 * 86400
+        filters = [
+            Unit.kind == int(UnitKind.EPISODE),
+            Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+            Unit.occurred_at.isnot(None),
+            Unit.occurred_at >= int(range_start),
+            Unit.occurred_at < int(range_end),
+            # worker側の行生成条件に合わせ、user/reply のどちらかが空でないものだけ対象にする。
+            or_(
+                func.length(func.trim(PayloadEpisode.user_text)) > 0,
+                func.length(func.trim(PayloadEpisode.reply_text)) > 0,
+            ),
+        ]
+        if max_sensitivity is not None:
+            filters.append(Unit.sensitivity <= int(max_sensitivity))
+        any_episode_line = (
+            session.query(Unit.id)
+            .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
+            .filter(*filters)
+            .limit(1)
+            .scalar()
+        )
+        if any_episode_line is None:
+            return False
+        _enqueue_job(session, kind="relationship_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
         return True
 
     if int(now_ts) - int(updated_at) < int(cooldown_seconds):
         return False
 
-    new_episode = (
-        session.query(Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.EPISODE),
-            Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
-            Unit.sensitivity <= int(max_sensitivity),
-            Unit.occurred_at.isnot(None),
-            Unit.occurred_at > int(updated_at),
-        )
-        .limit(1)
-        .scalar()
-    )
+    filters = [
+        Unit.kind == int(UnitKind.EPISODE),
+        Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
+        Unit.occurred_at.isnot(None),
+        Unit.occurred_at > int(updated_at),
+    ]
+    if max_sensitivity is not None:
+        filters.append(Unit.sensitivity <= int(max_sensitivity))
+
+    new_episode = session.query(Unit.id).filter(*filters).limit(1).scalar()
     if new_episode is None:
         return False
 
-    _enqueue_job(session, kind="weekly_summary", payload={"week_key": week_key}, now_ts=now_ts)
+    _enqueue_job(session, kind="relationship_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
     return True
 
 
@@ -356,15 +386,20 @@ class PeriodicEnqueueConfig:
 def enqueue_periodic_jobs(session: Session, *, now_ts: int, config: PeriodicEnqueueConfig | None = None) -> dict[str, Any]:
     """定期実行tick: 必要なjobsをenqueueして統計を返す（commitは呼び出し側）。"""
     cfg = config or PeriodicEnqueueConfig()
-    stats: dict[str, Any] = {"weekly_summary": 0, "capsule_refresh": 0, "person_summary_refresh": 0, "topic_summary_refresh": 0}
+    stats: dict[str, Any] = {
+        "relationship_summary": 0,
+        "capsule_refresh": 0,
+        "person_summary_refresh": 0,
+        "topic_summary_refresh": 0,
+    }
 
-    if maybe_enqueue_weekly_summary(
+    if maybe_enqueue_relationship_summary(
         session,
         now_ts=now_ts,
         cooldown_seconds=cfg.weekly_cooldown_seconds,
         max_sensitivity=cfg.max_sensitivity,
     ):
-        stats["weekly_summary"] += 1
+        stats["relationship_summary"] += 1
 
     entity_stats = maybe_enqueue_entity_summaries(
         session,

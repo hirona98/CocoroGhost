@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from cocoro_ghost import prompts
+from cocoro_ghost.config import get_config_store
 from cocoro_ghost.db import get_memory_session, sync_unit_vector_metadata, upsert_unit_vector
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.unit_enums import (
@@ -38,9 +39,34 @@ from cocoro_ghost.unit_models import (
 )
 from cocoro_ghost.versioning import canonical_json_dumps, record_unit_version
 from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
+from cocoro_ghost.otome_kairo import clamp01, compute_otome_state_from_episodes
+from cocoro_ghost.otome_kairo_runtime import apply_otome_state_override
 
 
 logger = logging.getLogger(__name__)
+
+
+# docs/prompt_usage_map.md の「プロンプト一覧（カタログ）」の「主な用途」から転記。
+# 目的: INFOログで「何のジョブのLLM呼び出しか」を判別しやすくする。
+_JOB_PURPOSE_FOR_INFO: dict[str, str] = {
+    "reflect_episode": "エピソードから内的メモ（感情/話題/重要度）をJSON抽出",
+    "extract_entities": "固有名と関係（任意）をJSON抽出",
+    "extract_facts": "長期保持すべき安定知識（facts）をJSON抽出",
+    "extract_loops": "未完了事項（open loops）をJSON抽出",
+    "upsert_embeddings": "テキストを埋め込みベクトルに変換（検索/類似度用）",
+    "person_summary_refresh": "人物の会話注入用サマリをJSON生成",
+    "topic_summary_refresh": "トピックの会話注入用サマリをJSON生成",
+    "relationship_summary": "関係性サマリ（SharedNarrative/relationship, rolling:7d）をJSON生成",
+}
+
+
+def _log_job_purpose_info(*, kind: str, extra: dict[str, Any]) -> None:
+    """LLM呼び出しの直前に、用途をINFOで1行出す（DEBUGログの一行上に来るように）。"""
+    purpose = _JOB_PURPOSE_FOR_INFO.get(str(kind))
+    if not purpose:
+        return
+    # 例: ■■LLM CALL■■■■■■ 長期保持すべき安定知識（facts）をJSON抽出 ■■■■■■■■
+    logger.info("■■LLM CALL■■■■■■ %s ■■■■■■■■", purpose, extra={"job_kind": str(kind), **extra})
 
 
 def _now_utc_ts() -> int:
@@ -60,6 +86,27 @@ def _json_loads(payload_json: str) -> Dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _get_persona_context() -> tuple[str | None, str | None]:
+    """現在のpersona/addon設定を取得する（未初期化ならNone）。"""
+    try:
+        cfg = get_config_store().config
+    except Exception:  # noqa: BLE001
+        return None, None
+    persona_text = (getattr(cfg, "persona_text", "") or "").strip() or None
+    addon_text = (getattr(cfg, "addon_text", "") or "").strip() or None
+    return persona_text, addon_text
+
+
+def _wrap_prompt_with_persona(base_prompt: str) -> str:
+    """persona/addonがあればsystem promptへ挿入する。"""
+    persona_text, addon_text = _get_persona_context()
+    return prompts.wrap_prompt_with_persona(
+        base_prompt,
+        persona_text=persona_text,
+        addon_text=addon_text,
+    )
 
 
 def _parse_optional_epoch_seconds(value: Any) -> Optional[int]:
@@ -167,8 +214,8 @@ def process_job(
             _handle_extract_loops(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "extract_entities":
             _handle_extract_entities(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "weekly_summary":
-            _handle_weekly_summary(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
+        elif job.kind == "relationship_summary":
+            _handle_relationship_summary(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "person_summary_refresh":
             _handle_person_summary_refresh(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "topic_summary_refresh":
@@ -292,6 +339,10 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     if row is None:
         return
     unit, pe = row
+    # /api/chat では「本文 + 内部JSON（反射）」を同一LLM呼び出しで得られるため、
+    # すでに反射が保存されている場合は冪等にスキップする。
+    if (pe.reflection_json or "").strip() and (unit.emotion_label or "").strip() and int(unit.state) == int(UnitState.VALIDATED):
+        return
     ctx_parts = []
     if pe.user_text:
         ctx_parts.append(f"user: {pe.user_text}")
@@ -303,7 +354,9 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
         ctx_parts.append(f"context_note: {pe.context_note}")
     context_text = "\n".join(ctx_parts)
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_reflection_prompt(), user_text=context_text)
+    system_prompt = _wrap_prompt_with_persona(prompts.get_reflection_prompt())
+    _log_job_purpose_info(kind="reflect_episode", extra={"unit_id": unit_id})
+    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=context_text)
     raw_text = llm_client.response_content(resp)
     raw_json = raw_text
     data = json.loads(raw_text)
@@ -500,6 +553,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
     if not text_in.strip():
         return
 
+    _log_job_purpose_info(kind="extract_entities", extra={"unit_id": unit_id})
     resp = llm_client.generate_json_response(system_prompt=prompts.get_entity_extract_prompt(), user_text=text_in)
     data = json.loads(llm_client.response_content(resp))
     entities = data.get("entities") or []
@@ -708,6 +762,7 @@ def _handle_upsert_embeddings(
     else:
         return
 
+    _log_job_purpose_info(kind="upsert_embeddings", extra={"unit_id": unit_id, "unit_kind": int(unit.kind)})
     embedding = llm_client.generate_embedding([text_to_embed])[0]
     upsert_unit_vector(
         session,
@@ -802,6 +857,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
     if not text_in.strip():
         return
 
+    _log_job_purpose_info(kind="extract_facts", extra={"unit_id": unit_id})
     resp = llm_client.generate_json_response(system_prompt=prompts.get_fact_extract_prompt(), user_text=text_in)
     data = json.loads(llm_client.response_content(resp))
     facts = data.get("facts") or []
@@ -1010,7 +1066,9 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
     if not text_in.strip():
         return
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_loop_extract_prompt(), user_text=text_in)
+    system_prompt = _wrap_prompt_with_persona(prompts.get_loop_extract_prompt())
+    _log_job_purpose_info(kind="extract_loops", extra={"unit_id": unit_id})
+    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=text_in)
     data = json.loads(llm_client.response_content(resp))
     loops = data.get("loops") or []
     if not isinstance(loops, list):
@@ -1153,6 +1211,9 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
     """短期状態（Capsule）を更新する（LLM不要・軽量）。"""
     limit = int(payload.get("limit") or 5)
     limit = max(1, min(20, limit))
+    # 感情は、直近エピソード群を「重要度×時間減衰」で積分して作る。
+    otome_kairo_scan_limit = int(payload.get("otome_kairo_scan_limit") or 500)
+    otome_kairo_scan_limit = max(50, min(2000, otome_kairo_scan_limit))
 
     rows = (
         session.query(Unit, PayloadEpisode)
@@ -1169,18 +1230,61 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
             {
                 "unit_id": int(u.id),
                 "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
+                "created_at": int(u.created_at),
                 "source": u.source,
                 "user_text": (pe.user_text or "")[:200],
                 "reply_text": (pe.reply_text or "")[:200],
                 "topic_tags": u.topic_tags,
                 "emotion_label": u.emotion_label,
+                "emotion_intensity": u.emotion_intensity,
+                "salience": u.salience,
+                "confidence": u.confidence,
             }
         )
+
+    # パートナーの感情（重要度×時間減衰）:
+    #
+    # 直近N件（recent）だけで機嫌を作ると、「大事件が短時間で埋もれて消える」問題が出る。
+    # そこで、別枠で「直近otome_kairo_scan_limit件のエピソード」を走査し、各エピソードの影響度を
+    #     impact = emotion_intensity × salience × confidence × exp(-Δt/τ(salience))
+    # の形で減衰させて積分し、現在の感情を推定する（詳細は cocoro_ghost/otome_kairo.py を参照）。
+    #
+    # - salience が高いほど τ が長くなるため、「印象的な出来事」は長く残る
+    # - salience が低い雑談は τ が短く、数分で影響が薄れる
+    # - anger 成分が十分高いときは refusal_allowed=True となり、プロンプト側で拒否が選びやすくなる
+    otome_kairo_units = (
+        session.query(Unit)
+        .filter(
+            Unit.kind == int(UnitKind.EPISODE),
+            Unit.state.in_([0, 1, 2]),
+            Unit.sensitivity <= int(Sensitivity.SECRET),
+            Unit.emotion_label.isnot(None),
+        )
+        .order_by(Unit.created_at.desc(), Unit.id.desc())
+        .limit(otome_kairo_scan_limit)
+        .all()
+    )
+    otome_kairo_episodes = []
+    for u in otome_kairo_units:
+        otome_kairo_episodes.append(
+            {
+                "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
+                "created_at": int(u.created_at),
+                "emotion_label": u.emotion_label,
+                "emotion_intensity": u.emotion_intensity,
+                "salience": u.salience,
+                "confidence": u.confidence,
+            }
+        )
+    otome_state = compute_otome_state_from_episodes(otome_kairo_episodes, now_ts=now_ts)
+    # デバッグ用: UI/API から in-memory override できるようにする（永続化しない）。
+    otome_state = apply_otome_state_override(otome_state, now_ts=now_ts)
 
     capsule_obj = {
         "generated_at": now_ts,
         "window": limit,
         "recent": recent,
+        "otome_state": otome_state,
     }
     capsule_json = _json_dumps(capsule_obj)
     expires_at = now_ts + 3600
@@ -1242,28 +1346,13 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
     )
 
 
-def _parse_week_key(week_key: str) -> tuple[int, int]:
-    # "YYYY-Www"
-    s = (week_key or "").strip()
-    if "-W" not in s:
-        raise ValueError("invalid week_key")
-    year_s, week_s = s.split("-W", 1)
-    year = int(year_s)
-    week = int(week_s)
-    start = datetime.fromisocalendar(year, week, 1).replace(tzinfo=timezone.utc, hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=7)
-    return int(start.timestamp()), int(end.timestamp())
-
-
-def _utc_week_key(ts: int) -> str:
-    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-    iso_year, iso_week, _ = dt.isocalendar()
-    return f"{iso_year}-W{iso_week:02d}"
-
-
-def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    week_key = str(payload.get("week_key") or "").strip() or _utc_week_key(now_ts)
-    range_start, range_end = _parse_week_key(week_key)
+def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
+    # 現行: rolling 7 days relationship summary（scope_key固定）
+    rolling_scope_key = "rolling:7d"
+    scope_key = str(payload.get("scope_key") or "").strip() or rolling_scope_key
+    window_days = 7
+    range_end = int(now_ts)
+    range_start = range_end - window_days * 86400
 
     ep_rows = (
         session.query(Unit, PayloadEpisode)
@@ -1291,9 +1380,11 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
         rt = rt[:220]
         lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
 
-    input_text = f"week_key: {week_key}\n\n[EPISODES]\n" + "\n".join(lines)
+    input_text = f"scope_key: {scope_key}\nrange_start: {range_start}\nrange_end: {range_end}\n\n[EPISODES]\n" + "\n".join(lines)
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_weekly_summary_prompt(), user_text=input_text)
+    system_prompt = _wrap_prompt_with_persona(prompts.get_relationship_summary_prompt())
+    _log_job_purpose_info(kind="relationship_summary", extra={"scope_key": scope_key, "range_start": range_start, "range_end": range_end})
+    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
@@ -1328,7 +1419,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
         .filter(
             Unit.kind == int(UnitKind.SUMMARY),
             PayloadSummary.scope_label == "relationship",
-            PayloadSummary.scope_key == week_key,
+            PayloadSummary.scope_key == scope_key,
         )
         .order_by(Unit.created_at.desc())
         .first()
@@ -1336,7 +1427,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
 
     payload_obj = {
         "scope_label": "relationship",
-        "scope_key": week_key,
+        "scope_key": scope_key,
         "range_start": range_start,
         "range_end": range_end,
         "summary": summary_obj,
@@ -1348,7 +1439,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
             occurred_at=range_end - 1,
             created_at=now_ts,
             updated_at=now_ts,
-            source="weekly_summary",
+            source="relationship_summary",
             state=int(UnitState.RAW),
             confidence=0.5,
             salience=0.0,
@@ -1361,7 +1452,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
             PayloadSummary(
                 unit_id=unit.id,
                 scope_label="relationship",
-                scope_key=week_key,
+                scope_key=scope_key,
                 range_start=range_start,
                 range_end=range_end,
                 summary_text=summary_text,
@@ -1372,7 +1463,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
             session,
             unit_id=int(unit.id),
             payload_obj=payload_obj,
-            patch_reason="weekly_summary",
+            patch_reason="relationship_summary",
             now_ts=now_ts,
         )
         session.add(
@@ -1403,7 +1494,7 @@ def _handle_weekly_summary(*, session: Session, llm_client: LlmClient, payload: 
         session,
         unit_id=int(unit.id),
         payload_obj=payload_obj,
-        patch_reason="weekly_summary",
+        patch_reason="relationship_summary",
         now_ts=now_ts,
     )
     sync_unit_vector_metadata(
@@ -1586,11 +1677,43 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
         episode_lines=lines,
     )
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_person_summary_prompt(), user_text=input_text)
+    system_prompt = _wrap_prompt_with_persona(prompts.get_person_summary_prompt())
+    _log_job_purpose_info(kind="person_summary_refresh", extra={"entity_id": entity_id, "entity_name": (ent.name or "")})
+    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
         return
+
+    # パートナーAI→人物の好感度（0..1）
+    # - 0.5: 中立（デフォルト）
+    # - 1.0: とても好意的
+    # - 0.0: 強い嫌悪/不信
+    liking_score_raw = data.get("liking_score")
+    liking_score = 0.5
+    if liking_score_raw is not None:
+        try:
+            liking_score = clamp01(float(liking_score_raw))
+        except Exception:  # noqa: BLE001
+            liking_score = 0.5
+
+    liking_reasons_raw = data.get("liking_reasons") or []
+    liking_reasons: list[dict[str, Any]] = []
+    if isinstance(liking_reasons_raw, list):
+        for item in liking_reasons_raw[:5]:
+            if not isinstance(item, dict):
+                continue
+            why = str(item.get("why") or "").strip()
+            try:
+                unit_id = int(item.get("unit_id"))
+            except Exception:  # noqa: BLE001
+                continue
+            if why:
+                liking_reasons.append({"unit_id": unit_id, "why": why})
+
+    # 注入テキストは Scheduler が summary_text しか使わないため、好感度も summary_text 先頭に出す。
+    if "AI好感度:" not in summary_text:
+        summary_text = f"AI好感度: {liking_score:.2f}（0..1。0.5=中立）\n{summary_text}"
 
     key_events_raw = data.get("key_events") or []
     key_events: list[dict[str, Any]] = []
@@ -1608,6 +1731,8 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
 
     summary_obj = {
         "summary_text": summary_text,
+        "liking_score": liking_score,
+        "liking_reasons": liking_reasons,
         "key_events": key_events,
         "notes": str(data.get("notes") or "").strip(),
     }
@@ -1668,7 +1793,9 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
         episode_lines=lines,
     )
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_topic_summary_prompt(), user_text=input_text)
+    system_prompt = _wrap_prompt_with_persona(prompts.get_topic_summary_prompt())
+    _log_job_purpose_info(kind="topic_summary_refresh", extra={"entity_id": entity_id, "topic_key": topic_key, "topic_name": (ent.name or "")})
+    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:

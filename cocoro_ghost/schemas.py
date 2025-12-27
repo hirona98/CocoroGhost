@@ -144,16 +144,14 @@ class UnitUpdateRequest(BaseModel):
     salience: Optional[float] = None
 
 
-class WeeklySummaryEnqueueRequest(BaseModel):
-    """週次サマリ生成ジョブ投入リクエスト。"""
-    week_key: Optional[str] = None
-
-
 class FullSettingsResponse(BaseModel):
     """全設定統合レスポンス。"""
 
     # 共通設定
     exclude_keywords: List[str]
+
+    # 記憶機能の有効/無効（UI用）
+    memory_enabled: bool
 
     # リマインダー
     reminders_enabled: bool
@@ -163,7 +161,7 @@ class FullSettingsResponse(BaseModel):
     active_llm_preset_id: Optional[str] = None
     active_embedding_preset_id: Optional[str] = None
     active_persona_preset_id: Optional[str] = None
-    active_contract_preset_id: Optional[str] = None
+    active_addon_preset_id: Optional[str] = None
 
     # アクティブなLLMプリセット
     llm_preset: List["LlmPresetSettings"]
@@ -173,7 +171,7 @@ class FullSettingsResponse(BaseModel):
 
     # プロンプトプリセット（ユーザー編集対象）
     persona_preset: List["PersonaPresetSettings"]
-    contract_preset: List["ContractPresetSettings"]
+    addon_preset: List["AddonPresetSettings"] = Field(default_factory=list)
 
 
 class ActivateResponse(BaseModel):
@@ -209,12 +207,12 @@ class PersonaPresetSettings(BaseModel):
     persona_text: str
 
 
-class ContractPresetSettings(BaseModel):
-    """設定一覧用contractプロンプトプリセット情報。"""
+class AddonPresetSettings(BaseModel):
+    """設定一覧用addon（persona追加オプション）プリセット情報。"""
 
-    contract_preset_id: str
-    contract_preset_name: str
-    contract_text: str
+    addon_preset_id: str
+    addon_preset_name: str
+    addon_text: str
 
 
 class EmbeddingPresetSettings(BaseModel):
@@ -247,13 +245,14 @@ class FullSettingsUpdateRequest(BaseModel):
     """全設定更新リクエスト。"""
 
     exclude_keywords: List[str]
+    memory_enabled: bool
     reminders_enabled: bool
     reminders: List[ReminderUpsertRequest]
     active_llm_preset_id: str
     active_embedding_preset_id: str
     active_persona_preset_id: str
-    active_contract_preset_id: str
+    active_addon_preset_id: str
     llm_preset: List[LlmPresetSettings]
     embedding_preset: List[EmbeddingPresetSettings]
     persona_preset: List[PersonaPresetSettings]
-    contract_preset: List[ContractPresetSettings]
+    addon_preset: List[AddonPresetSettings]

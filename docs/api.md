@@ -57,10 +57,63 @@ data: {"message":"...","code":"..."}
 1. 画像要約（`images` がある場合）
 2. Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 3. Schedulerで **MemoryPack** を生成（検索結果を `[EPISODE_EVIDENCE]` に含む）
-4. LLMへ `guard_prompt + memorypack` を system に注入し、conversation には直近会話（max_turns_window）+ user_text を渡す（MemoryPack内に persona/contract を含む）
-5. 返答をSSEで配信
+4. LLMへ `memorypack + otome_kairo_trailer_prompt` を system に注入し、conversation には直近会話（max_turns_window）+ user_text を渡す（MemoryPack内に persona/addon を含む）
+5. 返答をSSEで配信（返答末尾の内部JSON＝otome_kairo trailer はサーバ側で回収し、SSEには流さない）
 6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 7. Worker用ジョブを enqueue（reflection/extraction/embedding等）
+
+## `/api/otome_kairo`（デバッグ）
+
+otome_kairo（パートナーの感情）関連の数値を **UIから参照/変更**するためのデバッグ用API。
+
+- **永続化しない**（DB/settings.db に保存しない）
+- 反映は **同一プロセス内**のみ（プロセスを跨ぐ構成ではプロセスごとに状態が分離される）
+- 認証は他の `/api/*` と同様に `Authorization: Bearer <TOKEN>`
+
+### `GET /api/otome_kairo`
+
+現在の otome_kairo を返す。
+
+- query
+  - `scan_limit`（任意）: DB走査件数（既定 500、範囲は内部で 50..2000 に丸める）
+  - `include_computed`（任意）: `computed` を含めるか（既定 true）
+
+#### Response（JSON）
+
+- `computed`: DBのエピソードから「重要度×時間減衰」で計算した otome_kairo（取得に失敗した場合は `null`）
+- `override`: デバッグ用の in-memory 上書き（無ければ `null`）
+- `effective`: 実際にシステムが利用する otome_kairo（`computed` に `override` を適用）
+
+### `PUT /api/otome_kairo/override`
+
+in-memory の otome_kairo override を設定する（**部分更新可**）。
+
+#### Request（JSON）
+
+```json
+{
+  "label": "anger",
+  "intensity": 0.8,
+  "components": {"anger": 0.9},
+  "policy": {"refusal_allowed": true}
+}
+```
+
+- `label` は `joy|sadness|anger|fear|neutral` のいずれか
+- `components` は `joy/sadness/anger/fear` を任意指定（0..1）
+- `policy` は `cooperation/refusal_bias/refusal_allowed` を任意指定
+
+#### Response
+
+`GET /api/otome_kairo` と同形式。
+
+### `DELETE /api/otome_kairo/override`
+
+override を解除する。
+
+#### Response
+
+`GET /api/otome_kairo` と同形式。
 
 ## `/api/v1/notification`
 
@@ -177,34 +230,10 @@ Invoke-RestMethod -Method Post `
 ### Worker と `memory_id`
 
 - `jobs` は `memory_<memory_id>.db` に保存されるため、Worker は **アクティブな `memory_id`（= `active_embedding_preset_id`）** を対象に処理する（内蔵Worker）。
-- persona/contract は **settings 側のプロンプトプリセット**として管理し、`memory_id`（記憶DB）とは独立する（切替は `/api/settings`）
+- persona/addon は **settings 側のプロンプトプリセット**として管理し、`memory_id`（記憶DB）とは独立する（切替は `/api/settings`）
 
 補足:
-- `jobs` は内部用のキューであり、外部から任意のジョブを投入する汎用APIは提供しない（例外: 週次サマリの手動enqueue）。
-
-- **ジョブ投入**
-  - `POST /api/memories/{memory_id}/jobs/weekly_summary`（週次サマリ生成のenqueue）
-
-### `POST /api/memories/{memory_id}/jobs/weekly_summary`
-
-週次サマリ生成ジョブを enqueue する。
-
-#### Request（JSON）
-
-```json
-{
-  "week_key": "optional"
-}
-```
-
-- リクエストボディは `{}` でも送る
-- `week_key` は省略可能。省略時はWorker側で「現在のUTC週（`YYYY-Www`）」が採用される
-
-#### Response（JSON）
-
-```json
-{ "job_id": 123 }
-```
+- `jobs` は内部用のキューであり、外部から任意のジョブを投入する汎用APIは提供しない。
 
 ## 付加API
 
@@ -226,6 +255,7 @@ UI向けの「全設定」取得/更新。
 ```json
 {
   "exclude_keywords": ["例:除外したい単語"],
+  "memory_enabled": true,
   "reminders_enabled": true,
   "reminders": [
     {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
@@ -233,7 +263,7 @@ UI向けの「全設定」取得/更新。
   "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "active_contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "active_addon_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "llm_preset": [
     {
       "llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
@@ -269,17 +299,18 @@ UI向けの「全設定」取得/更新。
       "persona_text": "string"
     }
   ],
-  "contract_preset": [
+  "addon_preset": [
     {
-      "contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-      "contract_preset_name": "default",
-      "contract_text": "string"
+      "addon_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "addon_preset_name": "default",
+      "addon_text": "string"
     }
   ]
 }
 ```
 
 - `scheduled_at` はISO 8601のdatetime（Pydanticがパース可能な形式）で返す
+- `memory_enabled` は「記憶機能を使うか」を示す設定値
 
 ### `PUT /api/settings`
 
@@ -297,6 +328,7 @@ UI向けの「全設定」取得/更新。
 ```json
 {
   "exclude_keywords": ["string"],
+  "memory_enabled": true,
   "reminders_enabled": true,
   "reminders": [
     {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
@@ -304,7 +336,7 @@ UI向けの「全設定」取得/更新。
   "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "active_contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "active_addon_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "llm_preset": [
     {
       "llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
@@ -340,11 +372,11 @@ UI向けの「全設定」取得/更新。
       "persona_text": "string"
     }
   ],
-  "contract_preset": [
+  "addon_preset": [
     {
-      "contract_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-      "contract_preset_name": "default",
-      "contract_text": "string"
+      "addon_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "addon_preset_name": "default",
+      "addon_text": "string"
     }
   ]
 }
@@ -356,7 +388,7 @@ UI向けの「全設定」取得/更新。
 
 #### 注意点（実装仕様）
 
-- `llm_preset` / `embedding_preset` / `persona_preset` / `contract_preset` は「配列」で、**複数件を一括確定**する（全置換コミット）
+- `llm_preset` / `embedding_preset` / `persona_preset` / `addon_preset` は「配列」で、**複数件を一括確定**する（全置換コミット）
 - `reminders` は **全置き換え**（既存は削除されIDは作り直される）
 - 各配列内で `*_preset_id` が重複している場合は `400`
 - `active_*_preset_id` は **対応する配列に含まれるID**である必要がある（未存在/アーカイブは `400`）

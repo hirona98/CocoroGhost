@@ -31,6 +31,7 @@ class GlobalSettings(Base):
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     token: Mapped[str] = mapped_column(Text, nullable=False, default="")
     exclude_keywords: Mapped[str] = mapped_column(Text, nullable=False, default=DEFAULT_EXCLUDE_KEYWORDS_JSON)
+    memory_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     reminders_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     active_llm_preset_id: Mapped[Optional[str]] = mapped_column(String(_UUID_STR_LEN), ForeignKey("llm_presets.id"))
     active_embedding_preset_id: Mapped[Optional[str]] = mapped_column(
@@ -39,8 +40,10 @@ class GlobalSettings(Base):
     active_persona_preset_id: Mapped[Optional[str]] = mapped_column(
         String(_UUID_STR_LEN), ForeignKey("persona_presets.id")
     )
-    active_contract_preset_id: Mapped[Optional[str]] = mapped_column(
-        String(_UUID_STR_LEN), ForeignKey("contract_presets.id")
+    active_addon_preset_id: Mapped[Optional[str]] = mapped_column(
+        "active_contract_preset_id",
+        String(_UUID_STR_LEN),
+        ForeignKey("contract_presets.id"),
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -52,8 +55,8 @@ class GlobalSettings(Base):
     active_persona_preset: Mapped[Optional["PersonaPreset"]] = relationship(
         "PersonaPreset", foreign_keys=[active_persona_preset_id]
     )
-    active_contract_preset: Mapped[Optional["ContractPreset"]] = relationship(
-        "ContractPreset", foreign_keys=[active_contract_preset_id]
+    active_addon_preset: Mapped[Optional["AddonPreset"]] = relationship(
+        "AddonPreset", foreign_keys=[active_addon_preset_id]
     )
 
 
@@ -63,7 +66,8 @@ class LlmPreset(Base):
     __tablename__ = "llm_presets"
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
-    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    # プリセット名は重複を許可する（UIで同名作成を許容するため）
+    name: Mapped[str] = mapped_column(String, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # LLM設定
@@ -91,7 +95,7 @@ class PersonaPreset(Base):
     __tablename__ = "persona_presets"
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
-    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     persona_text: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -99,15 +103,15 @@ class PersonaPreset(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class ContractPreset(Base):
-    """contract プロンプトプリセット。"""
+class AddonPreset(Base):
+    """persona の任意追加オプション（addon）プリセット。"""
 
     __tablename__ = "contract_presets"
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
-    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    contract_text: Mapped[str] = mapped_column(Text, nullable=False)
+    addon_text: Mapped[str] = mapped_column("contract_text", Text, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -120,7 +124,7 @@ class EmbeddingPreset(Base):
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     # name は表示名（memory_id ではない）
-    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Embedding設定

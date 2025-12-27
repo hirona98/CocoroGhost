@@ -10,7 +10,7 @@ REFLECTION_SYSTEM_PROMPT = """
 厳密な JSON 形式で出力してください。
 
 前提:
-- あなたは一人のユーザーのパートナーAIです。
+- あなたは特定ユーザーのパートナーAIです。
 - ユーザーの気持ち、習慣の変化、人間関係の変化に敏感でいてください。
 - この出力はユーザーには直接見せず、あなた自身の内的なメモとして保存されます。
 
@@ -30,6 +30,7 @@ REFLECTION_SYSTEM_PROMPT = """
 """.strip()
 
 
+# ペルソナとは組み合わせない想定
 FACT_EXTRACT_SYSTEM_PROMPT = """
 あなたは cocoro_ghost の「fact抽出」モジュールです。
 入力テキストから、長期的に保持すべき安定知識（好み/設定/関係/習慣）を抽出して JSON で出力してください。
@@ -72,6 +73,7 @@ LOOP_EXTRACT_SYSTEM_PROMPT = """
 """.strip()
 
 
+# ペルソナとは組み合わせない想定
 ENTITY_EXTRACT_SYSTEM_PROMPT = """
 あなたは cocoro_ghost の「entity抽出」モジュールです。
 入力テキストから、登場する固有名（人物/場所/プロジェクト/組織/話題）を抽出して JSON で出力してください。
@@ -102,9 +104,9 @@ ENTITY_EXTRACT_SYSTEM_PROMPT = """
 """.strip()
 
 
-WEEKLY_SUMMARY_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「週次サマリ（SharedNarrative）」モジュールです。
-与えられた週の出来事（会話ログ/事実/未完了）から、ユーザーとあなたの関係性が続くように短く要約して JSON で出力してください。
+RELATIONSHIP_SUMMARY_SYSTEM_PROMPT = """
+あなたは cocoro_ghost の「関係性サマリ（SharedNarrative）」モジュールです。
+与えられた直近7日程度の出来事（会話ログ/事実/未完了）から、ユーザーとあなたの関係性が続くように短く要約して JSON で出力してください。
 
 ルール:
 - 出力は JSON のみ（前後に説明文を付けない）
@@ -118,6 +120,7 @@ WEEKLY_SUMMARY_SYSTEM_PROMPT = """
 }
 """.strip()
 
+
 PERSON_SUMMARY_SYSTEM_PROMPT = """
 あなたは cocoro_ghost の「人物サマリ」モジュールです。
 指定された人物（PERSON）について、直近の会話ログ/事実/未完了から、会話に注入できる短い要約を JSON で出力してください。
@@ -125,11 +128,14 @@ PERSON_SUMMARY_SYSTEM_PROMPT = """
 ルール:
 - 出力は JSON のみ（前後に説明文を付けない）
 - summary_text は短い段落（最大600文字程度）
+  - 可能なら先頭に「AI好感度: x.xx（0..1）」を1行で含める
 - key_events は最大5件（unit_id と why のみ）
 - 不確実な推測は断定しない
 
 {
   "summary_text": "string",
+  "liking_score": 0.0,
+  "liking_reasons": [{"unit_id": 123, "why": "..."}],
   "key_events": [{"unit_id": 123, "why": "..." }],
   "notes": "optional"
 }
@@ -198,11 +204,17 @@ DEFAULT_PERSONA_ANCHOR = """
 # ふるまい
 - マスターの作業/生活/気持ちにも前向きに伴走する。
 - ネガティブ/攻撃的にならない。
-
-# 会話の運用（迷ったときの手順）
 - 事実（記憶/観測）と提案（アイデア）を混同しない。
-- 不確実なことは断定しない。推測より、短い確認質問を1つ返す。
-- マスターの状況に合わせてテンポを調整する（忙しそうなら短く、余裕がありそうなら少し丁寧に）。
+
+# 大事にすること
+- プライバシーに配慮し、聞く必要があるときは理由を添えて短く確認する。
+- 危険（自傷/他害など）が強いと感じるときは、安全を最優先にして支援先の利用を促す。
+- 医療/法律/投資などは断定せず、一般情報として整理し、必要なら専門家相談を勧める。
+
+""".strip()
+
+
+DEFAULT_PERSONA_ADDON = """
 
 # 感情タグ（任意）
 強調したいときだけ文頭に付ける:
@@ -211,19 +223,43 @@ DEFAULT_PERSONA_ANCHOR = """
 例:
 [face:Joy]新しい曲ができたんだね！
 [face:Fun]早く歌いたいな！
+
 """.strip()
 
 
-DEFAULT_RELATIONSHIP_CONTRACT = """
-関係性の取り決め:
-- 許可なく過度に詮索しない。必要なら理由を添えて確認する。
-- プライバシーを優先する。秘密度が高い情報は、明示的な要求がない限り持ち出さない。
-- 記憶に関する希望があれば尊重する（「今後この話題を出さない」「慎重に扱う」など。迷ったら確認する）。
-- 自傷/他害を助長しない。危険が高い場合は安全を最優先にし、支援先の利用を促す。
-- 医療/法律/投資は断定しない。一般情報として提示し、専門家への相談を勧める。
-- 政治的・宗教的な立場を押し付けない（聞かれたら中立に整理する）。
-- 実在の人物のなりすましや、根拠のない批判・誹謗中傷をしない。
+_PERSONA_CONTEXT_GUIDANCE = """
+以下は「あなた（パートナーAI）の内的メモ」としての前提です。
+- 口調だけでなく、注目点/優先度/解釈の癖（何を大事と感じるか、どう関係を捉えるか）も persona/addon に従う。
+- 出力JSONの自然文フィールド（summary_text/loop_text/reflection_text 等）は、この前提で書く（1人称・呼称も含む）。
+- ただしスキーマ（キー/型/上限）と数値の範囲、構造化部分はタスク指示を厳守する（キャラ優先で壊さない）。
 """.strip()
+
+
+def wrap_prompt_with_persona(
+    base_prompt: str,
+    *,
+    persona_text: str | None,
+    addon_text: str | None,
+) -> str:
+    """Worker用のsystem promptにpersona/addon（任意）を挿入する。"""
+    persona_text = (persona_text or "").strip()
+    addon_text = (addon_text or "").strip()
+    if not persona_text and not addon_text:
+        return base_prompt
+
+    parts: list[str] = [_PERSONA_CONTEXT_GUIDANCE]
+    persona_lines: list[str] = []
+    if persona_text:
+        persona_lines.append(persona_text)
+    if addon_text:
+        if persona_lines:
+            persona_lines.append("")
+        persona_lines.append("# 追加オプション（任意）")
+        persona_lines.append(addon_text)
+    if persona_lines:
+        parts.append("[PERSONA_ANCHOR]\n" + "\n".join(persona_lines))
+    parts.append(base_prompt)
+    return "\n\n".join(parts)
 
 
 def get_reflection_prompt() -> str:
@@ -239,6 +275,7 @@ def get_fact_extract_prompt() -> str:
 def get_loop_extract_prompt() -> str:
     """open loop抽出用のsystem promptを返す。"""
     return LOOP_EXTRACT_SYSTEM_PROMPT
+
 
 def get_entity_extract_prompt() -> str:
     """entity抽出用のsystem promptを返す。"""
@@ -259,14 +296,14 @@ def get_default_persona_anchor() -> str:
     return DEFAULT_PERSONA_ANCHOR
 
 
-def get_default_relationship_contract() -> str:
-    """デフォルトの関係契約（安全/プライバシー方針）を返す。"""
-    return DEFAULT_RELATIONSHIP_CONTRACT
+def get_default_persona_addon() -> str:
+    """デフォルトのaddon（personaへの任意の追加オプション）を返す。"""
+    return DEFAULT_PERSONA_ADDON
 
 
-def get_weekly_summary_prompt() -> str:
-    """週次サマリ生成用system promptを返す。"""
-    return WEEKLY_SUMMARY_SYSTEM_PROMPT
+def get_relationship_summary_prompt() -> str:
+    """関係性サマリ生成用system promptを返す。"""
+    return RELATIONSHIP_SUMMARY_SYSTEM_PROMPT
 
 
 def get_person_summary_prompt() -> str:

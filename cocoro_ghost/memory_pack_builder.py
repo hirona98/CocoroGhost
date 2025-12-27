@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
+from cocoro_ghost.otome_kairo import compute_otome_state_from_episodes
 from cocoro_ghost.unit_enums import LoopStatus, Sensitivity, UnitKind
 from cocoro_ghost.unit_models import (
     Entity,
@@ -23,6 +24,7 @@ from cocoro_ghost.unit_models import (
     Unit,
     UnitEntity,
 )
+from cocoro_ghost.otome_kairo_runtime import apply_otome_state_override
 
 if TYPE_CHECKING:
     from cocoro_ghost.llm_client import LlmClient
@@ -32,13 +34,6 @@ if TYPE_CHECKING:
 def now_utc_ts() -> int:
     """現在時刻（UTC）をUNIX秒で返す。"""
     return int(time.time())
-
-
-def utc_week_key(ts: int) -> str:
-    """UNIX秒からISO週キー（YYYY-Www）を作る。"""
-    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-    iso_year, iso_week, _ = dt.isocalendar()
-    return f"{iso_year}-W{iso_week:02d}"
 
 
 def _token_budget_to_char_budget(max_inject_tokens: int) -> int:
@@ -210,7 +205,7 @@ def build_memory_pack(
     *,
     db: Session,
     persona_text: str | None,
-    contract_text: str | None,
+    addon_text: str | None,
     user_text: str,
     image_summaries: Sequence[str] | None,
     client_context: Dict[str, Any] | None,
@@ -226,7 +221,7 @@ def build_memory_pack(
     # 一旦「注入（引き出し）」を無制限にする（SECRETまで許可）。
     sensitivity_max = int(Sensitivity.SECRET)
     persona_text = (persona_text or "").strip() or None
-    contract_text = (contract_text or "").strip() or None
+    addon_text = (addon_text or "").strip() or None
 
     capsule_json: Optional[str] = None
     cap_row = (
@@ -301,9 +296,9 @@ def build_memory_pack(
         obj = entity_by_id.get(int(f.object_entity_id)) if f.object_entity_id else f.object_text
         fact_lines.append(_format_fact_line(subject=subject, predicate=f.predicate, obj_text=obj))
 
-    week_key = utc_week_key(now_ts)
+    rolling_scope_key = "rolling:7d"
     summary_texts: List[str] = []
-    scopes = ["weekly", "person", "topic"]
+    scopes = ["relationship", "person", "topic"]
 
     def add_summary(scope_label: str, scope_key: Optional[str], *, fallback_latest: bool = False) -> None:
         """指定スコープのサマリを1つ取り出してsummary_textsへ追加する（無ければ何もしない）。"""
@@ -333,9 +328,9 @@ def build_memory_pack(
             if text_:
                 summary_texts.append(text_)
 
-    if "weekly" in scopes:
-        # 現週のサマリがまだ無い場合は最新のrelationshipサマリを注入する
-        add_summary("relationship", week_key, fallback_latest=True)
+    if "relationship" in scopes:
+        # rolling（直近7日）のrelationshipサマリが無い場合は最新のrelationshipサマリを注入する
+        add_summary("relationship", rolling_scope_key, fallback_latest=True)
 
     if matched_entity_ids and ("person" in scopes or "topic" in scopes):
         ents = db.query(Entity).filter(Entity.id.in_(sorted(matched_entity_ids))).all()
@@ -461,6 +456,58 @@ def build_memory_pack(
             if s:
                 capsule_parts.append(f"[ユーザーが今送った画像の内容] {s}")
 
+    # パートナーの感情（重要度×時間減衰）を同期計算して注入する。
+    #
+    # 目的:
+    # - /api/chat は「返信生成の前」に MemoryPack を組むため、capsule_refresh（Worker）がまだ走っていないと
+    #   "otome_state" が注入されず、感情の反映が1ターン遅れやすい。
+    # - ここで同期計算して `CONTEXT_CAPSULE` に入れることで、「直前の出来事」まで含めた機嫌を次ターンから使える。
+    #
+    # 計算式（詳細は cocoro_ghost/otome_kairo.py）:
+    #   impact = emotion_intensity × salience × confidence × exp(-Δt/τ(salience))
+    # - salience が高いほど τ が長い → 大事件が残る
+    # - salience が低いほど τ が短い → 雑談はすぐ消える
+    try:
+        otome_kairo_units = (
+            db.query(Unit)
+            .filter(
+                Unit.kind == int(UnitKind.EPISODE),
+                Unit.state.in_([0, 1, 2]),
+                Unit.sensitivity <= sensitivity_max,
+                Unit.emotion_label.isnot(None),
+            )
+            .order_by(Unit.created_at.desc(), Unit.id.desc())
+            .limit(500)
+            .all()
+        )
+        otome_kairo_episodes = []
+        for u in otome_kairo_units:
+            otome_kairo_episodes.append(
+                {
+                    "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
+                    "created_at": int(u.created_at),
+                    "emotion_label": u.emotion_label,
+                    "emotion_intensity": u.emotion_intensity,
+                    "salience": u.salience,
+                    "confidence": u.confidence,
+                }
+            )
+        otome_state = compute_otome_state_from_episodes(otome_kairo_episodes, now_ts=now_ts)
+        # デバッグ用: UI/API から in-memory override できるようにする（永続化しない）。
+        otome_state = apply_otome_state_override(otome_state, now_ts=now_ts)
+        compact = {
+            "label": otome_state.get("label"),
+            "intensity": otome_state.get("intensity"),
+            "components": otome_state.get("components"),
+            "policy": otome_state.get("policy"),
+            "now_ts": otome_state.get("now_ts"),
+        }
+        capsule_parts.append(
+            f"otome_state: {json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     def section(title: str, body_lines: Sequence[str]) -> str:
         """MemoryPackの1セクション（[TITLE] ...）を組み立てる。"""
         if not body_lines:
@@ -477,8 +524,15 @@ def build_memory_pack(
     ) -> str:
         """各セクションを結合してMemoryPack全体を生成する。"""
         parts: List[str] = []
-        parts.append(section("PERSONA_ANCHOR", [persona_text.strip()] if persona_text else []))
-        parts.append(section("RELATIONSHIP_CONTRACT", [contract_text.strip()] if contract_text else []))
+        persona_lines: List[str] = []
+        if persona_text:
+            persona_lines.append(persona_text.strip())
+        if addon_text:
+            if persona_lines:
+                persona_lines.append("")
+            persona_lines.append("# 追加オプション（任意）")
+            persona_lines.append(addon_text.strip())
+        parts.append(section("PERSONA_ANCHOR", persona_lines))
         parts.append(section("CONTEXT_CAPSULE", capsule_lines))
         parts.append(section("STABLE_FACTS", facts))
         parts.append(section("SHARED_NARRATIVE", summaries))
@@ -500,7 +554,7 @@ def build_memory_pack(
     if len(pack) <= max_chars:
         return pack
 
-    # budget超過時は優先順に落とす（仕様: scheduler.md）
+    # budget超過時は優先順に落とす（仕様: docs/memory_pack_builder.md）
     evidence = []
     pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
     if len(pack) <= max_chars:

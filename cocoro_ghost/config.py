@@ -12,7 +12,7 @@ import tomli
 
 if TYPE_CHECKING:
     from cocoro_ghost.models import (
-        ContractPreset,
+        AddonPreset,
         EmbeddingPreset,
         GlobalSettings,
         LlmPreset,
@@ -38,6 +38,8 @@ class RuntimeConfig:
 
     # GlobalSettings由来
     exclude_keywords: List[str]
+    memory_enabled: bool
+    reminders_enabled: bool
 
     # LlmPreset由来
     llm_preset_name: str
@@ -67,30 +69,22 @@ class RuntimeConfig:
     # PromptPresets由来（ユーザー編集対象）
     persona_preset_name: str
     persona_text: str
-    contract_preset_name: str
-    contract_text: str
+    addon_preset_name: str
+    addon_text: str
 
 
 class ConfigStore:
-    """ランタイム設定ストア。"""
+    """ランタイム設定ストア（ORMを保持しない）。"""
 
     def __init__(
         self,
         toml_config: Config,
         runtime_config: RuntimeConfig,
-        global_settings: "GlobalSettings",
-        llm_preset: "LlmPreset",
-        embedding_preset: "EmbeddingPreset",
-        persona_preset: "PersonaPreset",
-        contract_preset: "ContractPreset",
     ) -> None:
         self._toml = toml_config
         self._runtime = runtime_config
-        self._global_settings = global_settings
-        self._llm_preset = llm_preset
-        self._embedding_preset = embedding_preset
-        self._persona_preset = persona_preset
-        self._contract_preset = contract_preset
+        # NOTE: DBセッションに紐づくORMインスタンス（GlobalSettings等）は保持しない。
+        # Settings更新後も安全に参照できるよう、必要な値は RuntimeConfig にコピーして使う。
         self._lock = threading.Lock()
 
     @property
@@ -112,6 +106,16 @@ class ConfigStore:
     def embedding_dimension(self) -> int:
         """ベクトルDBの埋め込み次元数（embedding preset由来）。"""
         return self._runtime.embedding_dimension
+
+    @property
+    def memory_enabled(self) -> bool:
+        """記憶機能の有効/無効を返す。"""
+        return bool(self._runtime.memory_enabled)
+
+    @property
+    def reminders_enabled(self) -> bool:
+        """リマインダー機能の有効/無効を返す。"""
+        return bool(self._runtime.reminders_enabled)
 
 
 def _require(config_dict: dict, key: str) -> str:
@@ -148,7 +152,7 @@ def build_runtime_config(
     llm_preset: "LlmPreset",
     embedding_preset: "EmbeddingPreset",
     persona_preset: "PersonaPreset",
-    contract_preset: "ContractPreset",
+    addon_preset: "AddonPreset",
 ) -> RuntimeConfig:
     """TOML、GlobalSettings、各種プリセットをマージしてRuntimeConfigを構築。"""
     try:
@@ -164,6 +168,8 @@ def build_runtime_config(
         log_level=toml_config.log_level,
         # GlobalSettings由来
         exclude_keywords=json.loads(global_settings.exclude_keywords),
+        memory_enabled=bool(getattr(global_settings, "memory_enabled", True)),
+        reminders_enabled=bool(getattr(global_settings, "reminders_enabled", True)),
         # LlmPreset由来
         llm_preset_name=llm_preset.name,
         llm_api_key=llm_preset.llm_api_key,
@@ -190,8 +196,8 @@ def build_runtime_config(
         # PromptPresets由来
         persona_preset_name=persona_preset.name,
         persona_text=persona_preset.persona_text,
-        contract_preset_name=contract_preset.name,
-        contract_text=contract_preset.contract_text,
+        addon_preset_name=addon_preset.name,
+        addon_text=addon_preset.addon_text,
     )
 
 

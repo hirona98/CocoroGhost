@@ -1,6 +1,6 @@
 # プロンプト使用箇所マップ（どこで何が使われるか）
 
-このドキュメントは、`cocoro_ghost/prompts.py` の各プロンプト（+ コード内の固定ガード）と、それが **どの処理フローで・どのタイミングで・どの入力で** 使われるかを図で整理したものです。
+このドキュメントは、LLMに渡す各種プロンプト（`cocoro_ghost/prompts.py` + 主要なインラインプロンプト）と、それが **どの処理フローで・どのタイミングで・どの入力で** 使われるかを図で整理したものです。
 
 > JSONスキーマそのものは `docs/prompts.md`（Reflection/Entity/Fact/Loop/Summary など）を参照してください。
 
@@ -9,16 +9,19 @@
 | Prompt ID | 定義元 | 主な用途 | 呼び出し元（代表） | 同期/非同期 |
 |---|---|---|---|---|
 | `REFLECTION_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | エピソードから内的メモ（感情/話題/重要度）をJSON抽出 | `cocoro_ghost/worker.py::_handle_reflect_episode`（+ `cocoro_ghost/reflection.py::generate_reflection`） | 非同期（Worker Job） |
-| `ENTITY_EXTRACT_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 固有名と関係（任意）をJSON抽出 | `cocoro_ghost/worker.py::_handle_extract_entities` / `cocoro_ghost/scheduler.py::_extract_entity_names_with_llm` | 非同期（Worker Job）/ 同期（MemoryPack補助） |
+| `ENTITY_EXTRACT_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 固有名と関係（任意）をJSON抽出 | `cocoro_ghost/worker.py::_handle_extract_entities` / `cocoro_ghost/memory_pack_builder.py::_extract_entity_names_with_llm` | 非同期（Worker Job）/ 同期（MemoryPack補助） |
 | `FACT_EXTRACT_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 長期保持すべき安定知識（facts）をJSON抽出 | `cocoro_ghost/worker.py::_handle_extract_facts` | 非同期（Worker Job） |
 | `LOOP_EXTRACT_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 未完了事項（open loops）をJSON抽出 | `cocoro_ghost/worker.py::_handle_extract_loops` | 非同期（Worker Job） |
 | `PERSON_SUMMARY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 人物の会話注入用サマリをJSON生成 | `cocoro_ghost/worker.py::_handle_person_summary_refresh` | 非同期（Worker Job） |
 | `TOPIC_SUMMARY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | トピックの会話注入用サマリをJSON生成 | `cocoro_ghost/worker.py::_handle_topic_summary_refresh` | 非同期（Worker Job） |
+| `RELATIONSHIP_SUMMARY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 関係性サマリ（SharedNarrative/relationship, rolling:7d）をJSON生成 | `cocoro_ghost/worker.py::_handle_relationship_summary`（enqueue: `cocoro_ghost/memory.py::MemoryManager::_maybe_enqueue_relationship_summary` / `cocoro_ghost/periodic.py::maybe_enqueue_relationship_summary`） | 非同期（Worker Job） |
 | `EXTERNAL_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 通知（notification）から“自然な返答文”を生成 | `cocoro_ghost/memory.py::MemoryManager::_process_notification_async` | 同期風（API応答後のBackgroundTasks） |
 | `META_PROACTIVE_MESSAGE_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | meta_request（指示+材料）から能動メッセージ生成 | `cocoro_ghost/memory.py::MemoryManager::_process_meta_request_async` | 同期風（API応答後のBackgroundTasks） |
 | `DEFAULT_PERSONA_ANCHOR` | `cocoro_ghost/prompts.py` | PersonaPreset の初期値（未設定時の雛形） | `cocoro_ghost/db.py`（settings初期化） | 起動時/初期化 |
-| `DEFAULT_RELATIONSHIP_CONTRACT` | `cocoro_ghost/prompts.py` | ContractPreset の初期値（安全/距離感） | `cocoro_ghost/db.py`（settings初期化） | 起動時/初期化 |
-| `_INTERNAL_CONTEXT_GUARD_PROMPT` | `cocoro_ghost/memory.py` | “内部注入（MemoryPack）をユーザーに漏らさない”固定ガード | `cocoro_ghost/memory.py::MemoryManager`（chat/notification/meta_request） | 同期（system prompt先頭に常に付与） |
+| `DEFAULT_PERSONA_ADDON` | `cocoro_ghost/prompts.py` | addon（personaの任意追加オプション）の初期値 | `cocoro_ghost/db.py`（settings初期化） | 起動時/初期化 |
+| `OTOME_KAIRO_TRAILER_PROMPT`（inline） | `cocoro_ghost/memory.py` | chatの返答末尾に「内部JSON（感情/重要度/方針ノブ）」を付加し、SSEから除外して保存（即時反映） | `cocoro_ghost/memory.py::MemoryManager.stream_chat` | 同期（chat） |
+| `IMAGE_SUMMARY_PROMPT`（inline） | `cocoro_ghost/llm_client.py` | 画像を短い日本語で要約（vision） | `cocoro_ghost/llm_client.py::LlmClient.generate_image_summary`（呼び出し: `cocoro_ghost/memory.py::MemoryManager::_summarize_images` / `cocoro_ghost/memory.py::MemoryManager.handle_capture`） | 同期（chat/capture）/ 同期風（notification/meta_request の BackgroundTasks） |
+| `EMBEDDING_API`（prompt無し） | `cocoro_ghost/llm_client.py` | テキストを埋め込みベクトルに変換（検索/類似度用） | `cocoro_ghost/worker.py::_handle_upsert_embeddings` / `cocoro_ghost/retriever.py` | 非同期（Worker Job）/ 同期（Retriever） |
 
 補足:
 - Capsule（短期状態）は **プロンプトではなく**、Workerジョブ `capsule_refresh`（LLM不要）で更新されます（`cocoro_ghost/worker.py::_handle_capsule_refresh`）。
@@ -28,13 +31,17 @@
 ```mermaid
 flowchart TD
   subgraph API["FastAPI / MemoryManager"]
-    CHAT["/api/chat (SSE)"] --> PACK["Scheduler: build_memory_pack()"]
-    NOTIF["/api/v1/notification"] --> PACKN["Scheduler: build_memory_pack()"]
-    META["/api/v1/meta_request"] --> PACKM["Scheduler: build_memory_pack()"]
+    CHAT["/api/chat (SSE)"] --> IMGC["image_summary (vision)"]
+    NOTIF["/api/v1/notification"] --> IMGN["image_summary (vision)"]
+    META["/api/v1/meta_request"] --> IMGM["image_summary (vision)"]
 
-    PACK --> SYS_CHAT["system = _INTERNAL_CONTEXT_GUARD_PROMPT + MemoryPack"]
-    PACKN --> SYS_NOTIF["system = _INTERNAL_CONTEXT_GUARD_PROMPT + MemoryPack + EXTERNAL_SYSTEM_PROMPT"]
-    PACKM --> SYS_META["system = _INTERNAL_CONTEXT_GUARD_PROMPT + MemoryPack + META_PROACTIVE_MESSAGE_SYSTEM_PROMPT"]
+    IMGC --> PACK["MemoryPack Builder: build_memory_pack()"]
+    IMGN --> PACKN["MemoryPack Builder: build_memory_pack()"]
+    IMGM --> PACKM["MemoryPack Builder: build_memory_pack()"]
+
+    PACK --> SYS_CHAT["system = MemoryPack + OTOME_KAIRO_TRAILER_PROMPT"]
+    PACKN --> SYS_NOTIF["system = MemoryPack + EXTERNAL_SYSTEM_PROMPT"]
+    PACKM --> SYS_META["system = MemoryPack + META_PROACTIVE_MESSAGE_SYSTEM_PROMPT"]
 
     SYS_CHAT --> LLM_CHAT["LLM: generate reply (stream)"]
     SYS_NOTIF --> LLM_NOTIF["LLM: generate reply (non-stream)"]
@@ -44,7 +51,8 @@ flowchart TD
     LLM_NOTIF --> SAVE_EP
     LLM_META --> SAVE_EP
 
-    SAVE_EP --> ENQ["DB: enqueue jobs"]
+    SAVE_EP --> ENQ["DB: enqueue default jobs"]
+    SAVE_EP --> ENQW_MAYBE["DB: maybe enqueue relationship_summary"]
   end
 
   subgraph WORKER["Worker（jobs）"]
@@ -56,12 +64,98 @@ flowchart TD
     ENQ --> EMB["upsert_embeddings (prompt無し)"]
     ENT --> PERS["person_summary_refresh → PERSON_SUMMARY_SYSTEM_PROMPT"]
     ENT --> TOP["topic_summary_refresh → TOPIC_SUMMARY_SYSTEM_PROMPT"]
+    ENQW_MAYBE --> WEEK["relationship_summary → RELATIONSHIP_SUMMARY_SYSTEM_PROMPT"]
+  end
+
+  subgraph OTHER["その他の入口（enqueueのみ）"]
+    PERIODIC["periodic: maybe_enqueue_relationship_summary()"] --> ENQW_MAYBE
   end
 ```
 
-## 3) 同期フロー（chat）：MemoryPack と “ガード” の位置づけ
+## 2.1) `build_memory_pack()` の中身（MemoryPackをどう組み立てるか）
 
-`/api/chat` では、ユーザー編集可能な `persona/contract` を **MemoryPackの先頭セクション**として注入しつつ、コード側の固定ガード（秘匿/安全）を system の一番先頭に付けています。
+`build_memory_pack()` は「LLMに注入する内部コンテキスト」を、入力（ユーザー発話/画像/クライアント状況/検索結果）から **セクション単位で組み立て**、最後に **文字数予算（token近似）内に収める** 関数です（`cocoro_ghost/memory_pack_builder.py::build_memory_pack`）。
+
+### 入力
+
+- `persona_text` / `addon_text`: settings の現在値（未設定なら空）
+- `user_text`: 今回のユーザー発話
+- `image_summaries`: 今回の画像要約（vision の結果）
+- `client_context`: `active_app` / `window_title` / `locale` など（任意）
+- `relevant_episodes`: Retriever が返した関連エピソード（rank済み + reason付き）
+- `max_inject_tokens`: 注入予算（内部では `max_chars = max_inject_tokens * 4` に近似）
+- `llm_client` + `entity_fallback`: Entity文字列一致で取れない場合のLLMフォールバック用（任意）
+
+### 生成手順（概略）
+
+```mermaid
+flowchart TD
+  IN["inputs: user_text / image_summaries / client_context / relevant_episodes / persona/addon"] --> CAPDB["load capsule_json (latest, not expired)"]
+  IN --> ENT["resolve entities from text\n(alias/name substring match)"]
+  ENT -->|no match & fallback| ENTFB["LLM fallback: ENTITY_EXTRACT_SYSTEM_PROMPT\n(names only)"]
+  ENT --> FACTS["select stable facts\n(pinned OR related entities OR subject is null)"]
+  ENT --> LOOPS["select open loops\n(related entities first; then global)"]
+  ENT --> SUM["select summaries\nrelationship weekly + person/topic by roles"]
+  IN --> CC["build context capsule\n(now_local + client_context + image_summaries)"]
+  REL["relevant_episodes"] --> DEC{"inject episode evidence\nhigh one or more\nor medium two or more"}
+  DEC -->|yes| EVI["build episode evidence\n(strategy: quote/summarize/full)"]
+  DEC -->|no| ASM
+  CAPDB --> ASM["assemble sections\nPERSONA/ADDON/CAPSULE/FACTS/SUMMARY/LOOPS/EVIDENCE"]
+  FACTS --> ASM
+  LOOPS --> ASM
+  SUM --> ASM
+  CC --> ASM
+  EVI --> ASM
+  ASM --> TRIM["trim to budget\n(drop evidence → trim loops → trim summaries → trim facts → trim capsule)"]
+  TRIM --> OUT["MemoryPack string"]
+```
+
+### セクション別の中身（実際に入るもの）
+
+- `[PERSONA_ANCHOR]`: `persona_text`（空ならセクションだけ残す）
+- `addon_text` は `[PERSONA_ANCHOR]` の末尾に「追加オプション（任意）」として追記される（空なら何も追記しない）
+- `[CONTEXT_CAPSULE]`:
+  - DBの `capsule_json`（最新かつ未expireがあれば先頭に1つ）
+  - `now_local: <ISO8601>`
+  - `active_app` / `window_title` / `locale`（あれば）
+  - `[ユーザーが今送った画像の内容] <image_summary>`（今回の画像ぶん）
+- `[STABLE_FACTS]`:
+  - 対象: `Unit(kind=FACT)`（最大12件）
+  - 絞り込み（entity が取れている場合）: `pin=1` または subject/object がその entity に関連、または subject が `null` のもの
+  - 絞り込み（entity が取れない場合）: 直近200件 + pin=1 を混ぜてからスコアで上位
+  - スコア: `confidence/salience/recency/pin` を合成して降順
+  - 形式: `- SUBJECT predicate OBJECT`（entity_idが引けると名前に置換、subject未指定は `USER`）
+- `[SHARED_NARRATIVE]`:
+  - `scope_key=rolling:7d` の relationship summary（無ければ latest をfallback）
+  - 今回マッチした entity に応じて追加:
+    - roles に `person` を含む: `scope_label=person, scope_key=person:<entity_id>`
+    - roles に `topic` を含む: `scope_label=topic, scope_key=topic:<normalized-or-name-lower>`
+- `[OPEN_LOOPS]`:
+  - 対象: `Unit(kind=LOOP, status=open)`（最大8件）
+  - entity が取れている場合: まず entity 関連（`unit_entities` 経由）を優先し、足りなければ全体から補充
+- `[EPISODE_EVIDENCE]`:
+  - `should_inject_episodes()` が True のときだけ注入（`high>=1` or `medium>=2`）
+  - `injection_strategy`:
+    - `quote_key_parts`（既定）: user/reply を短く引用
+    - `summarize`: 1行「要点: ...」に寄せる
+    - `full`: 長めに引用
+  - 各項目に `→ 関連: <reason>` を添える
+
+### 予算超過時の削り順（優先度）
+
+1. `[EPISODE_EVIDENCE]` を丸ごと落とす
+2. `[OPEN_LOOPS]` を末尾から減らす
+3. `[SHARED_NARRATIVE]` を1件に絞り、まだ超過なら本文を短縮
+4. `[STABLE_FACTS]` を末尾から減らす
+5. `[CONTEXT_CAPSULE]` を末尾から減らす（最後の手段）
+
+補足:
+- `build_memory_pack()` は一旦 `Sensitivity.SECRET` までを注入対象として扱います（`sensitivity_max=SECRET`）。
+- Entity の LLM フォールバックは「一致が0件」かつ「短文（正規化後8文字未満）ではない」ときだけ実行します（ノイズ回避）。
+
+## 3) 同期フロー（chat）：MemoryPack の位置づけ
+
+`/api/chat` では、ユーザー編集可能な `persona/addon` を **MemoryPackの先頭セクション**として注入します。
 
 ```mermaid
 sequenceDiagram
@@ -69,25 +163,68 @@ sequenceDiagram
   participant UI as Client
   participant API as FastAPI
   participant RET as Retriever
-  participant SCH as Scheduler
+  participant SCH as MemoryPack Builder
+  participant VIS as Vision (image summary)
   participant LLM as LLM
   participant DB as memory_<id>.db
   participant Q as jobs
 
   UI->>API: POST /api/chat (SSE)\n{user_text, images?, client_context?}
+  API->>VIS: generate_image_summary(images?)
   API->>RET: retrieve(user_text, recent_conversation)
   RET-->>API: relevant_episodes[]
-  API->>SCH: build_memory_pack(persona, contract, facts, loops, evidence...)
-  SCH-->>API: MemoryPack ([PERSONA_ANCHOR] / [RELATIONSHIP_CONTRACT] / ...)
-  Note over API: system = _INTERNAL_CONTEXT_GUARD_PROMPT + MemoryPack
+  API->>SCH: build_memory_pack(persona, addon, facts, loops, evidence...)
+  SCH-->>API: MemoryPack ([PERSONA_ANCHOR] / [SHARED_NARRATIVE] / ...)
+  Note over API: system = MemoryPack + OTOME_KAIRO_TRAILER_PROMPT
   API->>LLM: chat(system, conversation, user_text)\n(stream)
   LLM-->>API: streamed tokens
   API-->>UI: SSE stream
   API->>DB: save Unit(kind=EPISODE)\n(user_text, reply_text, image_summary...)
   API->>Q: enqueue default jobs\n(reflect/extract/embed/capsule_refresh...)
+  API->>Q: maybe enqueue relationship_summary\n(relationship summary refresh)
 ```
 
 ## 4) 非同期フロー（Worker jobs）：派生物ごとに使うプロンプト
+
+<!--
+更新メモ（2025-12-27）:
+- Workerは「ジョブ単位」でLLMを呼ぶため、プロンプトが多い＝1回で全部まとめて投げる、ではない。
+- persona/addon を system prompt に合成するジョブ／しないジョブを明示。
+-->
+
+### 4.1) Workerの「LLM呼び出し単位」
+
+- Workerは `jobs(kind=...)` を1件ずつ処理し、**ジョブ種別ごとに必要なLLM呼び出しを行う**。
+  - つまりプロンプトが複数あっても、基本は「1回の会話につき1回のLLM呼び出しで全部」ではなく、**ジョブに応じて複数回に分かれる**。
+- ただし `/api/chat` は「返答本文 + 内部JSON（反射）」を同一呼び出しで回収できるため、Workerの `reflect_episode` は **反射が既に保存済みなら冪等にスキップ**される（フォールバック用途）。
+- 内蔵Workerは1本のスレッドで動く前提のため、**同一プロセス内では概ね直列**にジョブが進む（uvicorn multi-worker 等の多重起動は非対応）。
+
+#### 目安: 1エピソード（1回の会話保存）から増えうるLLM呼び出し回数
+
+- 直後にenqueueされる既定ジョブ（通常）:
+  - JSON生成: `reflect_episode`（0〜1回。/api/chatで反射を回収済みなら0回になり得る）
+  - JSON生成: `extract_entities`（1回）
+  - JSON生成: `extract_facts`（1回）
+  - JSON生成: `extract_loops`（1回）
+  - Embedding生成: `upsert_embeddings`（1回。プロンプトではなく埋め込みAPI）
+  - LLM不要: `capsule_refresh`
+- 追加で増えうるジョブ（状況次第）:
+  - `extract_entities` の結果に応じて、`person_summary_refresh` 最大3件 + `topic_summary_refresh` 最大3件（= JSON生成 最大6回）
+  - `relationship_summary`（rolling:7d。クールダウン等により実行されない場合もある）
+
+### 4.2) persona/addon を付けるプロンプト・付けないプロンプト
+
+Workerはジョブによって `persona_text/addon_text` を system prompt に合成する／しないが分かれている。
+
+- persona/addon を合成する（`wrap_prompt_with_persona(...)`）
+  - `reflect_episode`（`REFLECTION_SYSTEM_PROMPT`）
+  - `extract_loops`（`LOOP_EXTRACT_SYSTEM_PROMPT`）
+  - `relationship_summary`（`RELATIONSHIP_SUMMARY_SYSTEM_PROMPT`）
+  - `person_summary_refresh`（`PERSON_SUMMARY_SYSTEM_PROMPT`）
+  - `topic_summary_refresh`（`TOPIC_SUMMARY_SYSTEM_PROMPT`）
+- persona/addon を合成しない（固定タスクとして素の system prompt を使う）
+  - `extract_entities`（`ENTITY_EXTRACT_SYSTEM_PROMPT`）
+  - `extract_facts`（`FACT_EXTRACT_SYSTEM_PROMPT`）
 
 ```mermaid
 flowchart LR
@@ -119,17 +256,26 @@ flowchart LR
   ENQSUM --> TOP["topic_summary_refresh"]
   TOP -->|LLM JSON| P7["TOPIC_SUMMARY_SYSTEM_PROMPT"]
   P7 --> S2["Unit(kind=SUMMARY, scope=topic) + payload_summary"]
+
+  J --> WS["relationship_summary"]
+  WS -->|LLM JSON| P8["RELATIONSHIP_SUMMARY_SYSTEM_PROMPT"]
+  P8 --> S3["Unit(kind=SUMMARY, scope=relationship, scope_key=rolling:7d) + payload_summary"]
+  S3 --> EMB2["enqueue upsert_embeddings (if changed)"]
 ```
 
 ## 5) “どの入力で” 各プロンプトが呼ばれるか（要点）
 
 - Reflection / Entities / Facts / Loops: `payload_episode` の `user_text/reply_text/image_summary` を連結して入力にする（`cocoro_ghost/worker.py`）。
-- Capsule refresh: 直近の `Unit(kind=EPISODE)`（既定 `limit=5`）の抜粋と、Unit側の `emotion_label/topic_tags` などをまとめて `payload_capsule.capsule_json` を更新する（`cocoro_ghost/worker.py::_handle_capsule_refresh`）。
+- Relationship summary（rolling:7d）: 直近7日程度の `Unit(kind=EPISODE)` を時系列で最大200件抜粋し、`range_start/range_end` + 箇条書き（unit_id + user/reply抜粋）として入力にする（`cocoro_ghost/worker.py::_handle_relationship_summary`）。
+- Capsule refresh: 直近の `Unit(kind=EPISODE)`（既定 `limit=5`）の抜粋に加え、「重要度×時間減衰」で集約した `otome_state` を `payload_capsule.capsule_json` に更新する（`cocoro_ghost/worker.py::_handle_capsule_refresh` / `cocoro_ghost/otome_kairo.py`）。
+  - デバッグ用途: `PUT /api/otome_kairo/override` による in-memory override が有効な場合、更新される `otome_state` は override 適用後の値になる。
 - Notification: `# notification ...` 形式に整形したテキスト（+ 画像要約）を `conversation=[{"role":"user","content":...}]` として渡す（`cocoro_ghost/memory.py`）。
 - Meta request: `# meta_request ...` 形式に整形したテキスト（instruction + payload + 画像要約）を渡す（`cocoro_ghost/memory.py`）。
-- Persona/Contract: settings の active preset から読み込まれ、Schedulerが `[PERSONA_ANCHOR]` / `[RELATIONSHIP_CONTRACT]` として MemoryPack に注入する（`cocoro_ghost/config.py` / `cocoro_ghost/scheduler.py`）。
-- 内部ガード: chat/notification/meta_request の system 先頭に固定で付与される（`cocoro_ghost/memory.py::_INTERNAL_CONTEXT_GUARD_PROMPT`）。
+- Persona/Addon: settings の active preset から読み込まれ、MemoryPack Builderが persona を `[PERSONA_ANCHOR]` に注入し、addon はその末尾へ「追加オプション（任意）」として追記する（`cocoro_ghost/config.py` / `cocoro_ghost/memory_pack_builder.py`）。
+- OtomeKairo trailer（chatのみ）: 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_OTOME_KAIRO_JSON_v1>>>` + 内部JSON（Reflection互換 + `partner_policy`）を付加する。サーバ側は区切り以降をSSEに流さず回収し、`units.emotion_* / salience / confidence / topic_tags` と `payload_episode.reflection_json` に即時反映する（`cocoro_ghost/memory.py`）。これにより「その発言で怒る」を同ターンで実現しつつ、Workerの `reflect_episode` は冪等にスキップ可能になる。
+- Person summary: `person_summary_refresh` は注入用の `summary_text` に加えて、`liking_score`（パートナーAI→人物の好感度 0..1）を `summary_json` に保存する。Schedulerは現状 `summary_text` を注入するため、好感度は `summary_text` 先頭に1行で含める運用（`cocoro_ghost/worker.py::_handle_person_summary_refresh`）。
+- 画像要約（vision）: `images[].base64` を画像として渡し、「短い日本語で要約」したテキストを得る（`cocoro_ghost/llm_client.py::LlmClient.generate_image_summary`）。chat/notification/meta_request/capture の `payload_episode.image_summary` に保存される。
 
 ## 6) 例外：Scheduler内での Entity 抽出（LLMフォールバック）
 
-MemoryPack の fact/summaries を「今の話題（entity）に寄せる」ため、文字列一致で entity が取れないときだけ、Schedulerが `ENTITY_EXTRACT_SYSTEM_PROMPT` を使って **候補名だけ** 抽出するフォールバックがあります（`cocoro_ghost/scheduler.py::_extract_entity_names_with_llm`）。
+MemoryPack の fact/summaries を「今の話題（entity）に寄せる」ため、文字列一致で entity が取れないときだけ、MemoryPack Builderが `ENTITY_EXTRACT_SYSTEM_PROMPT` を使って **候補名だけ** 抽出するフォールバックがあります（`cocoro_ghost/memory_pack_builder.py::_extract_entity_names_with_llm`）。

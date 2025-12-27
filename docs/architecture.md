@@ -16,7 +16,7 @@
   - 固定クエリ → Hybrid Search（Vector + BM25）→ ヒューリスティック Rerank の3段階で、関連する過去エピソードを高速に選別する
   - **LLMレス**: Query Expansion / LLM Reranking は廃止し、軽量・高速に動作
   - 仕様: `docs/retrieval.md`
-- **Scheduler（取得計画器）**
+- **MemoryPack Builder（取得計画器）**
   - 検索結果の生注入ではなく、**MemoryPack** を編成して注入
   - 注入予算（token budget）で階層的に収集・圧縮
   - Retriever の結果（relevant episodes）を `[EPISODE_EVIDENCE]` に整形して注入する
@@ -31,7 +31,7 @@
 flowchart LR
   U[User/UI] -->|/api/chat SSE| API[FastAPI]
   API -->|Contextual retrieval| RET[Retriever]
-  RET -->|relevant episodes| SCH[Scheduler]
+  RET -->|relevant episodes| SCH[MemoryPack Builder]
   SCH -->|MemoryPack| API
   API -->|LLM chat| LLM[LLM API via LiteLLM]
   API -->|Save episode RAW| DB[(SQLite memory_XXX.db)]
@@ -53,8 +53,8 @@ flowchart LR
 
 - （任意）画像要約（Vision）
 - Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
-- Schedulerで **MemoryPack** を生成（capsule/facts/summaries/loops + relevant episodes）
-- LLMへ `guard_prompt + memorypack` を system に注入し、会話履歴（max_turns_window）+ user_text を conversation として渡す（MemoryPack内に persona/contract を含む）
+- MemoryPack Builderで **MemoryPack** を生成（capsule/facts/summaries/loops + relevant episodes）
+- LLMへ `memorypack` を system に注入し、会話履歴（max_turns_window）+ user_text を conversation として渡す（MemoryPack内に persona/addon を含む）
 - 返答をSSEで配信
 - `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 - Worker用ジョブを enqueue（reflection/extraction/embedding等）
@@ -66,7 +66,7 @@ Retriever は「暗黙参照」や「会話の流れ」を取り込み、現在�
 - Phase 1: 固定クエリ生成（LLMレス。user_text / context+user_text の2本）
 - Phase 2: Hybrid Search（vec0 + FTS5）→ RRFマージ
 - Phase 3: ヒューリスティック Rerank（LLMレス。RRF + 文字n-gram類似度 + recency で軽量スコアリング）
-- Scheduler は relevant episodes を受け取り、ルール（例: high>=1 or medium>=2）と予算で `[EPISODE_EVIDENCE]` を注入する（満たさない場合は省略）
+- MemoryPack Builder は relevant episodes を受け取り、ルール（例: high>=1 or medium>=2）と予算で `[EPISODE_EVIDENCE]` を注入する（満たさない場合は省略）
 
 ```mermaid
 sequenceDiagram
@@ -74,7 +74,7 @@ sequenceDiagram
   participant UI as Client
   participant API as FastAPI
   participant RET as Retriever
-  participant SCH as Scheduler
+  participant SCH as MemoryPack Builder
   participant DB as Memory DB (SQLite)
   participant FTS as FTS5 (episode_fts)
   participant EMB as Embedding API
@@ -169,7 +169,7 @@ sequenceDiagram
 ## ストレージ境界
 
 - 設定は `settings.db`
-  - token / active preset / persona・contract / 注入予算 等
+  - token / active preset / persona・addon / 注入予算 等
 - 記憶は `memory_<memory_id>.db`
   - `units` + `payload_*` + `entities` 等
   - `vec_units`（sqlite-vec 仮想テーブル）
@@ -184,7 +184,7 @@ sequenceDiagram
   participant API as FastAPI
   participant MM as MemoryManager
   participant RET as Retriever
-  participant SCH as Scheduler
+  participant SCH as MemoryPack Builder
   participant DB as Memory DB (SQLite)
   participant LLM as LLM API
   participant Q as Jobs (DB)
@@ -216,7 +216,7 @@ sequenceDiagram
   participant API as FastAPI
   participant MM as MemoryManager
   participant RET as Retriever
-  participant SCH as Scheduler
+  participant SCH as MemoryPack Builder
   participant DB as Memory DB (SQLite)
   participant LLM as LLM API
   participant Q as Jobs (DB)

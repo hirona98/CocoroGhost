@@ -9,7 +9,7 @@ DBは `settings.db` と `memory_<memory_id>.db` を新規作成し、スキー�
    - vec0: `docs/sqlite_vec.md`
 2. 必要なら最低限の seed を入れる
    - `persona_presets`（人格コア）を 1件
-   - `contract_presets`（関係契約）を 1件
+   - `contract_presets`（addon: 任意追加オプション）を 1件
    - `global_settings.active_*_preset_id` を上記に紐付ける
 
 ## seed例（SQL）
@@ -25,9 +25,9 @@ DBは `settings.db` と `memory_<memory_id>.db` を新規作成し、スキー�
 insert into persona_presets(id, name, persona_text, created_at, updated_at)
 values ('xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', 'default', '（ここに人格コアを書く）', datetime('now'), datetime('now'));
 
--- Contract
+-- Addon（互換のためテーブル/カラム名は contract_* のまま）
 insert into contract_presets(id, name, contract_text, created_at, updated_at)
-values ('xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', 'default', '（ここに関係契約を書く）', datetime('now'), datetime('now'));
+values ('xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', 'default', '（ここに追加オプションを書く）', datetime('now'), datetime('now'));
 
 -- global_settings の active_* を更新
 update global_settings

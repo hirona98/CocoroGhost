@@ -453,7 +453,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             global_settings.active_llm_preset_id,
             global_settings.active_embedding_preset_id,
             global_settings.active_persona_preset_id,
-            global_settings.active_contract_preset_id,
+            global_settings.active_addon_preset_id,
         ]
         if all(x is not None for x in ids):
             active_llm = session.query(models.LlmPreset).filter_by(id=global_settings.active_llm_preset_id, archived=False).first()
@@ -463,10 +463,10 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             active_persona = session.query(models.PersonaPreset).filter_by(
                 id=global_settings.active_persona_preset_id, archived=False
             ).first()
-            active_contract = session.query(models.ContractPreset).filter_by(
-                id=global_settings.active_contract_preset_id, archived=False
+            active_addon = session.query(models.AddonPreset).filter_by(
+                id=global_settings.active_addon_preset_id, archived=False
             ).first()
-            if active_llm and active_embedding and active_persona and active_contract:
+            if active_llm and active_embedding and active_persona and active_addon:
                 return
 
     logger.info("設定DBの初期化を行います（TOMLのLLM設定は使用しません）")
@@ -476,6 +476,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         global_settings = models.GlobalSettings(
             token=toml_config.token,
             exclude_keywords=DEFAULT_EXCLUDE_KEYWORDS_JSON,
+            memory_enabled=True,
         )
         session.add(global_settings)
         session.flush()
@@ -550,23 +551,23 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     if active_persona_id is None or str(persona_preset.id) != str(active_persona_id):
         global_settings.active_persona_preset_id = str(persona_preset.id)
 
-    # ContractPreset の用意
-    contract_preset = None
-    active_contract_id = global_settings.active_contract_preset_id
-    if active_contract_id is not None:
-        contract_preset = session.query(models.ContractPreset).filter_by(id=active_contract_id, archived=False).first()
-    if contract_preset is None:
-        contract_preset = session.query(models.ContractPreset).filter_by(archived=False).first()
-    if contract_preset is None:
-        contract_preset = models.ContractPreset(
-            name="miku-default-contract_prompt",
+    # AddonPreset の用意（persona への任意追加オプション）
+    addon_preset = None
+    active_addon_id = global_settings.active_addon_preset_id
+    if active_addon_id is not None:
+        addon_preset = session.query(models.AddonPreset).filter_by(id=active_addon_id, archived=False).first()
+    if addon_preset is None:
+        addon_preset = session.query(models.AddonPreset).filter_by(archived=False).first()
+    if addon_preset is None:
+        addon_preset = models.AddonPreset(
+            name="miku-default-addon_prompt",
             archived=False,
-            contract_text=prompts.get_default_relationship_contract(),
+            addon_text=prompts.get_default_persona_addon(),
         )
-        session.add(contract_preset)
+        session.add(addon_preset)
         session.flush()
-    if active_contract_id is None or str(contract_preset.id) != str(active_contract_id):
-        global_settings.active_contract_preset_id = str(contract_preset.id)
+    if active_addon_id is None or str(addon_preset.id) != str(active_addon_id):
+        global_settings.active_addon_preset_id = str(addon_preset.id)
 
     session.commit()
 
@@ -624,15 +625,15 @@ def load_active_persona_preset(session: Session):
     return preset
 
 
-def load_active_contract_preset(session: Session):
-    """アクティブなContractPresetを取得。"""
+def load_active_addon_preset(session: Session):
+    """アクティブなAddonPresetを取得。"""
     from cocoro_ghost import models
 
     settings = load_global_settings(session)
-    if settings.active_contract_preset_id is None:
-        raise RuntimeError("アクティブなcontractプリセットが設定されていません")
+    if settings.active_addon_preset_id is None:
+        raise RuntimeError("アクティブなaddonプリセットが設定されていません")
 
-    preset = session.query(models.ContractPreset).filter_by(id=settings.active_contract_preset_id, archived=False).first()
+    preset = session.query(models.AddonPreset).filter_by(id=settings.active_addon_preset_id, archived=False).first()
     if preset is None:
-        raise RuntimeError(f"ContractPreset(id={settings.active_contract_preset_id})が存在しません")
+        raise RuntimeError(f"AddonPreset(id={settings.active_addon_preset_id})が存在しません")
     return preset

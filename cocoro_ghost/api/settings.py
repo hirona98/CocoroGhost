@@ -38,7 +38,7 @@ def get_settings(
     llm_presets: list[schemas.LlmPresetSettings] = []
     embedding_presets: list[schemas.EmbeddingPresetSettings] = []
     persona_presets: list[schemas.PersonaPresetSettings] = []
-    contract_presets: list[schemas.ContractPresetSettings] = []
+    addon_presets: list[schemas.AddonPresetSettings] = []
     reminders: list[schemas.ReminderSettings] = []
 
     for reminder in db.query(models.Reminder).order_by(models.Reminder.scheduled_at.asc(), models.Reminder.id.asc()).all():
@@ -97,28 +97,29 @@ def get_settings(
         )
 
     for preset in (
-        db.query(models.ContractPreset).filter_by(archived=False).order_by(models.ContractPreset.id.asc()).all()
+        db.query(models.AddonPreset).filter_by(archived=False).order_by(models.AddonPreset.id.asc()).all()
     ):
-        contract_presets.append(
-            schemas.ContractPresetSettings(
-                contract_preset_id=preset.id,
-                contract_preset_name=preset.name,
-                contract_text=preset.contract_text,
+        addon_presets.append(
+            schemas.AddonPresetSettings(
+                addon_preset_id=preset.id,
+                addon_preset_name=preset.name,
+                addon_text=preset.addon_text,
             )
         )
 
     return schemas.FullSettingsResponse(
         exclude_keywords=json.loads(global_settings.exclude_keywords),
+        memory_enabled=global_settings.memory_enabled,
         reminders_enabled=global_settings.reminders_enabled,
         reminders=reminders,
         active_llm_preset_id=global_settings.active_llm_preset_id,
         active_embedding_preset_id=global_settings.active_embedding_preset_id,
         active_persona_preset_id=global_settings.active_persona_preset_id,
-        active_contract_preset_id=global_settings.active_contract_preset_id,
+        active_addon_preset_id=global_settings.active_addon_preset_id,
         llm_preset=llm_presets,
         embedding_preset=embedding_presets,
         persona_preset=persona_presets,
-        contract_preset=contract_presets,
+        addon_preset=addon_presets,
     )
 
 
@@ -139,11 +140,11 @@ def commit_settings(
     llm_ids = [str(x.llm_preset_id) for x in request.llm_preset]
     embedding_ids = [str(x.embedding_preset_id) for x in request.embedding_preset]
     persona_ids = [str(x.persona_preset_id) for x in request.persona_preset]
-    contract_ids = [str(x.contract_preset_id) for x in request.contract_preset]
+    addon_ids = [str(x.addon_preset_id) for x in request.addon_preset]
     _ensure_unique_ids("llm_preset", llm_ids)
     _ensure_unique_ids("embedding_preset", embedding_ids)
     _ensure_unique_ids("persona_preset", persona_ids)
-    _ensure_unique_ids("contract_preset", contract_ids)
+    _ensure_unique_ids("addon_preset", addon_ids)
 
     if str(request.active_llm_preset_id) not in set(llm_ids):
         raise HTTPException(status_code=400, detail="active_llm_preset_id must be included in llm_preset list")
@@ -151,11 +152,12 @@ def commit_settings(
         raise HTTPException(status_code=400, detail="active_embedding_preset_id must be included in embedding_preset list")
     if str(request.active_persona_preset_id) not in set(persona_ids):
         raise HTTPException(status_code=400, detail="active_persona_preset_id must be included in persona_preset list")
-    if str(request.active_contract_preset_id) not in set(contract_ids):
-        raise HTTPException(status_code=400, detail="active_contract_preset_id must be included in contract_preset list")
+    if str(request.active_addon_preset_id) not in set(addon_ids):
+        raise HTTPException(status_code=400, detail="active_addon_preset_id must be included in addon_preset list")
 
     # 共通設定更新
     global_settings.exclude_keywords = json.dumps(request.exclude_keywords)
+    global_settings.memory_enabled = request.memory_enabled
     global_settings.reminders_enabled = request.reminders_enabled
 
     # リマインダー更新：常に「全置き換え」（IDは作り直される）
@@ -272,28 +274,28 @@ def commit_settings(
             preset.archived = True
 
     # Contractプリセットの更新（複数件 / 全置換 + アーカイブ）
-    contract_existing = db.query(models.ContractPreset).order_by(models.ContractPreset.id.asc()).all()
-    contract_presets_by_id: dict[str, models.ContractPreset] = {str(p.id): p for p in contract_existing}
-    for cp in request.contract_preset:
-        preset_id = str(cp.contract_preset_id)
-        preset = contract_presets_by_id.get(preset_id)
+    addon_existing = db.query(models.AddonPreset).order_by(models.AddonPreset.id.asc()).all()
+    addon_presets_by_id: dict[str, models.AddonPreset] = {str(p.id): p for p in addon_existing}
+    for ap in request.addon_preset:
+        preset_id = str(ap.addon_preset_id)
+        preset = addon_presets_by_id.get(preset_id)
         if preset is None:
-            preset = models.ContractPreset(
+            preset = models.AddonPreset(
                 id=preset_id,
-                name=cp.contract_preset_name,
+                name=ap.addon_preset_name,
                 archived=False,
-                contract_text=cp.contract_text,
+                addon_text=ap.addon_text,
             )
             db.add(preset)
-            contract_presets_by_id[preset_id] = preset
+            addon_presets_by_id[preset_id] = preset
         else:
             preset.archived = False
-            preset.name = cp.contract_preset_name
-            preset.contract_text = cp.contract_text
+            preset.name = ap.addon_preset_name
+            preset.addon_text = ap.addon_text
 
-    contract_id_set = set(contract_ids)
-    for preset in contract_existing:
-        if str(preset.id) not in contract_id_set:
+    addon_id_set = set(addon_ids)
+    for preset in addon_existing:
+        if str(preset.id) not in addon_id_set:
             preset.archived = True
 
     db.flush()
@@ -302,7 +304,7 @@ def commit_settings(
     global_settings.active_llm_preset_id = request.active_llm_preset_id
     global_settings.active_embedding_preset_id = request.active_embedding_preset_id
     global_settings.active_persona_preset_id = request.active_persona_preset_id
-    global_settings.active_contract_preset_id = request.active_contract_preset_id
+    global_settings.active_addon_preset_id = request.active_addon_preset_id
 
     active_llm = db.query(models.LlmPreset).filter_by(id=global_settings.active_llm_preset_id, archived=False).first()
     if not active_llm:
@@ -315,11 +317,9 @@ def commit_settings(
     active_persona = db.query(models.PersonaPreset).filter_by(id=global_settings.active_persona_preset_id, archived=False).first()
     if not active_persona:
         raise HTTPException(status_code=400, detail="Active persona preset is not set")
-    active_contract = (
-        db.query(models.ContractPreset).filter_by(id=global_settings.active_contract_preset_id, archived=False).first()
-    )
-    if not active_contract:
-        raise HTTPException(status_code=400, detail="Active contract preset is not set")
+    active_addon = db.query(models.AddonPreset).filter_by(id=global_settings.active_addon_preset_id, archived=False).first()
+    if not active_addon:
+        raise HTTPException(status_code=400, detail="Active addon preset is not set")
 
     # 変更後の設定で RuntimeConfig を組み立て、利用可能なメモリDBかを先に検証する
     runtime_config = build_runtime_config(
@@ -328,7 +328,7 @@ def commit_settings(
         active_llm,
         active_embedding,
         active_persona,
-        active_contract,
+        active_addon,
     )
     try:
         init_memory_db(runtime_config.memory_id, runtime_config.embedding_dimension)
@@ -343,20 +343,10 @@ def commit_settings(
         raise HTTPException(status_code=400, detail=f"settings commit failed: {exc.orig}") from exc
 
     # 設定変更をランタイムへ即時反映
-    db.expunge(global_settings)
-    db.expunge(active_llm)
-    db.expunge(active_embedding)
-    db.expunge(active_persona)
-    db.expunge(active_contract)
     set_global_config_store(
         ConfigStore(
             toml_config,
             runtime_config,
-            global_settings,
-            active_llm,
-            active_embedding,
-            active_persona,
-            active_contract,
         )
     )
     reset_memory_manager()

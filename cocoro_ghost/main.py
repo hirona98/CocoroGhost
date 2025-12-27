@@ -9,7 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_utils.tasks import repeat_every
 
 from cocoro_ghost import event_stream, log_stream
-from cocoro_ghost.api import admin, capture, chat, events, logs, meta_request, notification, settings
+from cocoro_ghost.api import admin, capture, chat, events, logs, meta_request, notification, otome_kairo, settings
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.logging_config import setup_logging, suppress_uvicorn_access_log_paths
@@ -40,7 +40,7 @@ def create_app() -> FastAPI:
         init_memory_db,
         init_settings_db,
         load_active_embedding_preset,
-        load_active_contract_preset,
+        load_active_addon_preset,
         load_active_llm_preset,
         load_active_persona_preset,
         load_global_settings,
@@ -66,7 +66,7 @@ def create_app() -> FastAPI:
         llm_preset = load_active_llm_preset(session)
         embedding_preset = load_active_embedding_preset(session)
         persona_preset = load_active_persona_preset(session)
-        contract_preset = load_active_contract_preset(session)
+        addon_preset = load_active_addon_preset(session)
 
         # RuntimeConfig構築
         runtime_config = build_runtime_config(
@@ -75,25 +75,12 @@ def create_app() -> FastAPI:
             llm_preset,
             embedding_preset,
             persona_preset,
-            contract_preset,
+            addon_preset,
         )
-
-        # ConfigStore作成（プリセットオブジェクトをデタッチ状態で保持するためコピー）
-        # SQLAlchemyセッション終了後も使えるようにexpungeする
-        session.expunge(global_settings)
-        session.expunge(llm_preset)
-        session.expunge(embedding_preset)
-        session.expunge(persona_preset)
-        session.expunge(contract_preset)
 
         config_store = ConfigStore(
             toml_config,
             runtime_config,
-            global_settings,
-            llm_preset,
-            embedding_preset,
-            persona_preset,
-            contract_preset,
         )
 
     set_global_config_store(config_store)
@@ -108,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(notification.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(meta_request.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(capture.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(otome_kairo.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(settings.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(admin.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(logs.router, prefix="/api")
@@ -166,7 +154,8 @@ def create_app() -> FastAPI:
         """同一プロセス内Workerスレッドを停止。"""
         from cocoro_ghost import internal_worker
 
-        await asyncio.to_thread(internal_worker.stop, 5.0)
+        # internal_worker.stop は keyword-only の timeout_seconds を受け取る
+        await asyncio.to_thread(internal_worker.stop, timeout_seconds=5.0)
 
     return app
 
