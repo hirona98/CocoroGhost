@@ -380,14 +380,6 @@ class LlmClient:
             kwargs["api_key"] = self.embedding_api_key
         if self.embedding_base_url:
             kwargs["api_base"] = self.embedding_base_url
-
-        # DEBUGログ出力（api_keyはマスク）
-        if self.logger.isEnabledFor(logging.DEBUG):
-            debug_kwargs = {k: v for k, v in kwargs.items() if k != "api_key"}
-            if "api_key" in kwargs:
-                debug_kwargs["api_key"] = "***"
-            self.logger.debug("LLM embedding request: %s", debug_kwargs)
-
         resp = litellm.embedding(**kwargs)
         try:
             return [item["embedding"] for item in resp["data"]]
