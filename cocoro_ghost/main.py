@@ -51,7 +51,11 @@ def create_app() -> FastAPI:
     # 1. TOML設定読み込み
     toml_config = load_config()
     setup_logging(toml_config.log_level)
-    suppress_uvicorn_access_log_paths("/api/health")
+    # uvicorn の access log から特定リクエストだけ除外（開発時にノイズになりがち）
+    suppress_uvicorn_access_log_paths(
+        "/api/health",
+        "GET /api/otome_kairo",
+    )
 
     # 2. 設定DB初期化
     init_settings_db()
