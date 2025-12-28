@@ -121,8 +121,8 @@ override を解除する。
 
 ```json
 {
-  "from": "アプリ名",
-  "message": "通知メッセージ",
+  "source_system": "アプリ名",
+  "text": "通知メッセージ",
   "images": [
     "data:image/jpeg;base64,/9j/4AAQ...",
     "data:image/png;base64,iVBORw0KGgo..."
@@ -143,14 +143,14 @@ override を解除する。
 curl -X POST http://127.0.0.1:55601/api/v1/notification \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
-  -d '{"from":"MyApp","message":"処理完了","images":["data:image/jpeg;base64,..."]}'
+  -d '{"source_system":"MyApp","text":"処理完了","images":["data:image/jpeg;base64,..."]}'
 ```
 
 ```bash
 curl -X POST http://127.0.0.1:55601/api/v1/notification \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
-  -d '{"from":"MyApp","message":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
+  -d '{"source_system":"MyApp","text":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
 ```
 
 ### 例（PowerShell）
@@ -160,7 +160,7 @@ Invoke-RestMethod -Method Post `
   -Uri "http://127.0.0.1:55601/api/v1/notification" `
   -ContentType "application/json; charset=utf-8" `
   -Headers @{ Authorization = "Bearer <TOKEN>" } `
-  -Body '{"from":"MyApp","message":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
+  -Body '{"source_system":"MyApp","text":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
 ```
 
 - HTTPレスポンスは先に返り、パートナーのセリフ（`data.message`）は `/api/events/stream` で後から届く
@@ -174,7 +174,8 @@ Invoke-RestMethod -Method Post `
 
 ```json
 {
-  "prompt": "任意のプロンプトやメッセージ",
+  "instruction": "任意の指示",
+  "payload_text": "任意の本文（省略可）",
   "images": [
     "data:image/jpeg;base64,/9j/4AAQ...",
     "data:image/png;base64,iVBORw0KGgo..."
@@ -195,7 +196,7 @@ Invoke-RestMethod -Method Post `
 curl -X POST http://127.0.0.1:55601/api/v1/meta_request \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
-  -d '{"prompt":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。：～ニュース内容～"}'
+  -d '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
 ```
 
 ### 例（PowerShell）
@@ -205,11 +206,11 @@ Invoke-RestMethod -Method Post `
   -Uri "http://127.0.0.1:55601/api/v1/meta_request" `
   -ContentType "application/json; charset=utf-8" `
   -Headers @{ Authorization = "Bearer <TOKEN>" } `
-  -Body '{"prompt":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。：～ニュース内容～"}'
+  -Body '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
 ```
 
 - HTTPレスポンスは先に返り、パートナーのセリフ（`data.message`）は `/api/events/stream` で後から届く
-- `prompt` は **永続化しない**（生成にのみ利用）
+- `instruction` / `payload_text` は **永続化しない**（生成にのみ利用）
 - 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=meta_request)` の `payload_episode.reply_text` に保存する
 
 ## 管理API

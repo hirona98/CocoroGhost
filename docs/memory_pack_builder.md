@@ -54,7 +54,7 @@ Partner: 「...」
 
 1. **常時注入（検索しない）**
    - active persona（`settings.db` の `active_persona_preset_id`）
-   - active addon（API: `active_addon_preset_id` / DB: `active_contract_preset_id`）
+   - active addon（`settings.db` の `active_addon_preset_id`）
 2. **Contextual Memory Retrieval（Retriever・LLMレス）**
    - 固定クエリ → Hybrid Search（Vector + BM25）→ ヒューリスティック Rerank（`docs/retrieval.md`）
    - relevant episodes（最大5件）を高速に取得する

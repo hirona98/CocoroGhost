@@ -40,11 +40,7 @@ class GlobalSettings(Base):
     active_persona_preset_id: Mapped[Optional[str]] = mapped_column(
         String(_UUID_STR_LEN), ForeignKey("persona_presets.id")
     )
-    active_addon_preset_id: Mapped[Optional[str]] = mapped_column(
-        "active_contract_preset_id",
-        String(_UUID_STR_LEN),
-        ForeignKey("contract_presets.id"),
-    )
+    active_addon_preset_id: Mapped[Optional[str]] = mapped_column(String(_UUID_STR_LEN), ForeignKey("addon_presets.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -106,12 +102,12 @@ class PersonaPreset(Base):
 class AddonPreset(Base):
     """persona の任意追加オプション（addon）プリセット。"""
 
-    __tablename__ = "contract_presets"
+    __tablename__ = "addon_presets"
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     name: Mapped[str] = mapped_column(String, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    addon_text: Mapped[str] = mapped_column("contract_text", Text, nullable=False)
+    addon_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

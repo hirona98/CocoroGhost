@@ -39,7 +39,7 @@ def _first_choice_content(resp: Any) -> str:
         choice = resp.choices[0]
         message = getattr(choice, "message", None) or choice["message"]
         content = getattr(message, "content", None) or message["content"]
-        # OpenAI 互換で content が list の場合もあるため統一
+        # OpenAI形式で content が list の場合もあるため統一
         if isinstance(content, list):
             return "".join([item.get("text", "") if isinstance(item, dict) else str(item) for item in content]) or ""
         return content or ""
@@ -57,7 +57,7 @@ def _delta_content(resp: Any) -> str:
         content = getattr(delta, "content", None) or delta.get("content")
         if content is None:
             return ""
-        # OpenAI 互換で content が list の場合もあるため統一
+        # OpenAI形式で content が list の場合もあるため統一
         if isinstance(content, list):
             return "".join([item.get("text", "") if isinstance(item, dict) else str(item) for item in content])
         return str(content)
@@ -467,6 +467,6 @@ class LlmClient:
         context_text: str,
         image_descriptions: Optional[List[str]] = None,
     ) -> str:
-        """reflection用のJSON応答を生成し、本文文字列だけ返す（互換API）。"""
+        """reflection用のJSON応答を生成し、本文文字列だけ返す（薄いラッパー）。"""
         resp = self.generate_reflection_response(system_prompt, context_text, image_descriptions)
         return self.response_content(resp)

@@ -484,7 +484,7 @@ def _get_or_create_entity(
         session.add(ent)
         session.flush()
     else:
-        # 既存データも表記揺れを吸収する（互換不要の前提で正規化を強制）。
+        # 同一DB内の既存レコードに対して、表記揺れを吸収して正規化する（type_label/roles_jsonの大小文字・空値・重複など）。
         current_tl = _normalize_type_label(ent.type_label)
         if current_tl is not None and ent.type_label != current_tl:
             ent.type_label = current_tl
@@ -798,7 +798,7 @@ def _find_existing_fact_unit_id(
         if row is not None:
             return int(row[0])
 
-    # フォールバック: object_text で一致（既存データ互換）
+    # フォールバック: object_entity_id が未設定のFactも対象にし、object_text で一致を取る
     row = session.execute(
         text(
             """

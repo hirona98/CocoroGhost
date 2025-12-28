@@ -230,8 +230,8 @@ def test_notification():
     base64_data = load_test_image_base64("test_image_1.png")
 
     payload = {
-        "from": "test_system",
-        "message": "これはテスト通知です"
+        "source_system": "test_system",
+        "text": "これはテスト通知です",
     }
     if base64_data:
         payload["images"] = [make_data_uri(base64_data)]
@@ -258,7 +258,8 @@ def test_meta_request():
     base64_data = load_test_image_base64("test_image_3.png")
 
     payload = {
-        "prompt": "これはテストのメタ要求です。ユーザーに音がしたと伝えてください。"
+        "instruction": "これはテストのメタ要求です。ユーザーに音がしたと伝えてください。",
+        "payload_text": "",
     }
     if base64_data:
         payload["images"] = [make_data_uri(base64_data)]

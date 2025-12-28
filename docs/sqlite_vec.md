@@ -38,7 +38,7 @@ create virtual table if not exists vec_units using vec0(
 ```
 
 > `float[1536]` は例です。実装では `settings.db` の `embedding_dimension` に合わせて作成します。  
-> 次元数を変える場合は「別DBを用意 or 再構築」する（既存vec0との互換は期待しない）。
+> 次元数を変える場合は「別DBを用意 or 再構築」する
 
 ## KNN基本クエリ（候補ID＋distance）
 

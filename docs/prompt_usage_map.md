@@ -271,7 +271,7 @@ flowchart LR
 - Notification: `# notification ...` 形式に整形したテキスト（+ 画像要約）を `conversation=[{"role":"user","content":...}]` として渡す（`cocoro_ghost/memory.py`）。
 - Meta request: `# meta_request ...` 形式に整形したテキスト（instruction + payload + 画像要約）を渡す（`cocoro_ghost/memory.py`）。
 - Persona/Addon: settings の active preset から読み込まれ、MemoryPack Builderが persona を `[PERSONA_ANCHOR]` に注入し、addon はその末尾へ「追加オプション（任意）」として追記する（`cocoro_ghost/config.py` / `cocoro_ghost/memory_pack_builder.py`）。
-- OtomeKairo trailer（chatのみ）: 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_OTOME_KAIRO_JSON_v1>>>` + 内部JSON（Reflection互換 + `partner_policy`）を付加する。サーバ側は区切り以降をSSEに流さず回収し、`units.emotion_* / salience / confidence / topic_tags` と `payload_episode.reflection_json` に即時反映する（`cocoro_ghost/memory.py`）。これにより「その発言で怒る」を同ターンで実現しつつ、Workerの `reflect_episode` は冪等にスキップ可能になる。
+- OtomeKairo trailer（chatのみ）: 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_OTOME_KAIRO_JSON_v1>>>` + 内部JSON（Reflectionスキーマ準拠 + `partner_policy`）を付加する。サーバ側は区切り以降をSSEに流さず回収し、`units.emotion_* / salience / confidence / topic_tags` と `payload_episode.reflection_json` に即時反映する（`cocoro_ghost/memory.py`）。これにより「その発言で怒る」を同ターンで実現しつつ、Workerの `reflect_episode` は冪等にスキップ可能になる。
 - Person summary: `person_summary_refresh` は注入用の `summary_text` に加えて、`liking_score`（パートナーAI→人物の好感度 0..1）を `summary_json` に保存する。Schedulerは現状 `summary_text` を注入するため、好感度は `summary_text` 先頭に1行で含める運用（`cocoro_ghost/worker.py::_handle_person_summary_refresh`）。
 - 画像要約（vision）: `images[].base64` を画像として渡し、「短い日本語で要約」したテキストを得る（`cocoro_ghost/llm_client.py::LlmClient.generate_image_summary`）。chat/notification/meta_request/capture の `payload_episode.image_summary` に保存される。
 

@@ -44,9 +44,9 @@ class NotificationRequest(BaseModel):
 
 
 class NotificationV1Request(BaseModel):
-    """/notification/v1 用リクエスト（互換API）。"""
-    from_: str = Field(validation_alias="from")
-    message: str = Field(validation_alias="message")
+    """/notification/v1 用リクエスト。"""
+    source_system: str
+    text: str
     images: List[str] = Field(default_factory=list, max_length=5)
 
     @field_validator("images")
@@ -73,8 +73,9 @@ class MetaRequestRequest(BaseModel):
 
 
 class MetaRequestV1Request(BaseModel):
-    """/meta_request/v1 用リクエスト（互換API）。"""
-    prompt: str
+    """/meta_request/v1 用リクエスト"""
+    instruction: str
+    payload_text: str = ""
     images: List[str] = Field(default_factory=list, max_length=5)
 
     @field_validator("images")

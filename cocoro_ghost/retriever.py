@@ -31,7 +31,7 @@ from cocoro_ghost.unit_enums import Sensitivity, UnitKind
 from cocoro_ghost.unit_models import PayloadEpisode, Unit
 
 
-Message = Mapping[str, str]  # chat.completions互換の {role, content} 形式を想定
+Message = Mapping[str, str]  # OpenAI chat.completions形式の {role, content} を想定
 
 # FTS5のMATCHクエリを作る際の簡易トークナイズ（空白で分割）
 _FTS5_SPLIT_RE = re.compile(r"\s+")
