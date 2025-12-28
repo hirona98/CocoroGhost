@@ -322,6 +322,7 @@ UI向けの「全設定」取得/更新。
 
 - `scheduled_at` はISO 8601のdatetime（Pydanticがパース可能な形式）で返す
 - `memory_enabled` は「記憶機能を使うか」を示す設定値
+- `exclude_keywords` は `/api/capture` の `context_text` 除外判定に使う
 
 ### `PUT /api/settings`
 
