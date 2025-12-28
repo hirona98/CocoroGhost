@@ -337,10 +337,21 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     raw_json = raw_text
     data = json.loads(raw_text)
 
+    def _parse_clamped01(value: Any, default: float) -> float:
+        """0..1 の float として保守的に解釈し、範囲外は丸める。"""
+        if value is None:
+            return float(default)
+        if isinstance(value, bool):
+            return float(default)
+        try:
+            return clamp01(float(value))
+        except Exception:  # noqa: BLE001
+            return float(default)
+
     unit.emotion_label = str(data.get("emotion_label") or "")
-    unit.emotion_intensity = float(data.get("emotion_intensity") or 0.0)
-    unit.salience = float(data.get("salience_score") or 0.0)
-    unit.confidence = float(data.get("confidence") or 0.5)
+    unit.emotion_intensity = _parse_clamped01(data.get("emotion_intensity"), 0.0)
+    unit.salience = _parse_clamped01(data.get("salience_score"), 0.0)
+    unit.confidence = _parse_clamped01(data.get("confidence"), 0.5)
     topic_tags_raw = data.get("topic_tags")
     topic_tags = topic_tags_raw if isinstance(topic_tags_raw, list) else []
     canonical_tags = canonicalize_topic_tags(topic_tags)
