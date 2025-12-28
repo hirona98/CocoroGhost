@@ -40,7 +40,7 @@ from cocoro_ghost.unit_models import (
 from cocoro_ghost.versioning import canonical_json_dumps, record_unit_version
 from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
 from cocoro_ghost.otome_kairo import clamp01, compute_otome_state_from_episodes
-from cocoro_ghost.otome_kairo_runtime import apply_otome_state_override
+from cocoro_ghost.otome_kairo_runtime import apply_otome_state_override, set_last_used
 
 
 logger = logging.getLogger(__name__)
@@ -1275,6 +1275,19 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
     otome_state = compute_otome_state_from_episodes(otome_kairo_episodes, now_ts=now_ts)
     # デバッグ用: UI/API から in-memory ランタイム状態を適用する
     otome_state = apply_otome_state_override(otome_state, now_ts=now_ts)
+
+    # UI向け: 前回使った値（compact）を保存する。
+    # Worker側の更新でも last_used を進めておく。
+    compact_otome_state = {
+        "label": otome_state.get("label"),
+        "intensity": otome_state.get("intensity"),
+        "components": otome_state.get("components"),
+        "policy": otome_state.get("policy"),
+    }
+    try:
+        set_last_used(now_ts=now_ts, state=compact_otome_state)
+    except Exception:  # noqa: BLE001
+        pass
 
     capsule_obj = {
         "generated_at": now_ts,

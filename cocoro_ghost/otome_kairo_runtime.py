@@ -20,6 +20,67 @@ _lock = threading.Lock()
 _override: Optional[dict[str, Any]] = None
 _override_updated_at: Optional[int] = None
 
+# 「前回チャットで使った値（last used）」を保持する（UI表示用）。
+# - override そのものではなく、MemoryPackに注入した otome_state（compact）の最新を保存する。
+# - 永続化しない（プロセス再起動で消える）。
+_last_used: Optional[dict[str, Any]] = None
+_last_used_at: Optional[int] = None
+
+
+def get_last_used() -> Optional[dict[str, Any]]:
+    """前回チャットで使った otome_state（compact）を返す（無ければ None）。"""
+    with _lock:
+        return copy.deepcopy(_last_used)
+
+
+def get_last_used_meta() -> dict[str, Any]:
+    """last used のメタ情報（デバッグ用）を返す。"""
+    with _lock:
+        return {
+            "enabled": _last_used is not None,
+            "updated_at": _last_used_at,
+        }
+
+
+def set_last_used(*, now_ts: int, state: dict[str, Any]) -> dict[str, Any]:
+    """前回チャットで使った値（compact）を保存する。
+
+    用途:
+    - GET /api/otome_kairo が「前回使った値」を返すため。
+    - override をPUTしても、会話が走るまでは last_used は変わらない（=意図通り）。
+    """
+    if not isinstance(state, dict):
+        raise TypeError("state must be dict")
+
+    label = _normalize_label(state.get("label"))
+    if label is None:
+        raise ValueError(f"label must be one of: {', '.join(EMOTION_LABELS)}")
+
+    intensity_raw = state.get("intensity")
+    if intensity_raw is None:
+        raise ValueError("intensity is required")
+
+    components = _normalize_components(state.get("components"))
+    if components is None:
+        raise ValueError("components must include: joy, sadness, anger, fear")
+
+    policy = _normalize_policy(state.get("policy"))
+    if policy is None:
+        raise ValueError("policy must include: cooperation, refusal_bias, refusal_allowed")
+
+    merged: dict[str, Any] = {
+        "label": label,
+        "intensity": clamp01(intensity_raw),
+        "components": components,
+        "policy": policy,
+    }
+
+    with _lock:
+        global _last_used, _last_used_at
+        _last_used = copy.deepcopy(merged)
+        _last_used_at = int(now_ts)
+        return copy.deepcopy(_last_used)
+
 
 def get_override() -> Optional[dict[str, Any]]:
     """現在の override を返す（無ければ None）。"""

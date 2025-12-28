@@ -24,7 +24,7 @@ from cocoro_ghost.unit_models import (
     Unit,
     UnitEntity,
 )
-from cocoro_ghost.otome_kairo_runtime import apply_otome_state_override
+from cocoro_ghost.otome_kairo_runtime import apply_otome_state_override, set_last_used
 
 if TYPE_CHECKING:
     from cocoro_ghost.llm_client import LlmClient
@@ -514,6 +514,12 @@ def build_memory_pack(
             "policy": otome_state.get("policy"),
             "now_ts": otome_state.get("now_ts"),
         }
+        # UI向け: 前回チャットで使った値（注入した値）を保存する。
+        # ここでの値が、次のチャットの直前状態として扱われる。
+        try:
+            set_last_used(now_ts=now_ts, state=compact)
+        except Exception:  # noqa: BLE001
+            pass
         capsule_parts.append(
             f"otome_state: {json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}"
         )

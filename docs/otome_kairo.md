@@ -81,6 +81,8 @@ JSONスキーマは `docs/prompts.md` の「chat（SSE）: 返答末尾の内部
 UIから otome_kairo の数値を一時的に参照/変更するため、in-memory のランタイム状態を提供する。
 
 - API: `GET /api/otome_kairo` / `PUT /api/otome_kairo`（仕様: `docs/api.md`）
+- override解除: `DELETE /api/otome_kairo`（自然計算に戻す）
+- `GET` は「前回チャットで使った値（last used）」を返す（無ければデフォルト値）。DBからの計算はしない
 - 永続化: しない（DBにも `settings.db` にも保存しない）
 - 反映範囲:
   - `CONTEXT_CAPSULE` に注入する `otome_state`（同期計算）

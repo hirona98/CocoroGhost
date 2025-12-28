@@ -72,22 +72,36 @@ otome_kairo（パートナーの感情）関連の数値を **UIから参照/変
 
 ### `GET /api/otome_kairo`
 
-現在の otome_kairo を返す。
+otome_kairo の **前回チャットで使った値（last used）** を返す。
+（LLMに渡す直前でDBから取得して計算するため、"現在値"という概念はない）
 
-- query
-  - `scan_limit`（任意）: DB走査件数（既定 500、範囲は内部で 50..2000 に丸める）
-  - `include_computed`（任意）: `computed` を含めるか（既定 true）
+- `PUT /api/otome_kairo` で override を設定しても、**会話（/api/chat）が走るまでは** last used は更新されない
 
 #### Response（JSON）
 
-- `runtime_meta`: デバッグ用メタ情報（`enabled` / `updated_at`）
-- `computed`: DBのエピソードから「重要度×時間減衰」で計算した otome_kairo（取得に失敗した場合は `null`）
-- `runtime_state`: デバッグ用のランタイム状態（無ければ `null`）
-- `effective`: 実際にシステムが利用する otome_kairo（`computed` に `runtime_state` を適用）
+システムが実際に利用する otome_kairo（有効値）を返す。
+
+```json
+{
+  "label": "neutral",
+  "intensity": 0.0,
+  "components": {
+    "joy": 0.0,
+    "sadness": 0.0,
+    "anger": 0.0,
+    "fear": 0.0
+  },
+  "policy": {
+    "cooperation": 1.0,
+    "refusal_bias": 0.0,
+    "refusal_allowed": false
+  }
+}
+```
 
 ### `PUT /api/otome_kairo`
 
-in-memory の otome_kairo ランタイム状態を設定する
+in-memory の otome_kairo ランタイム状態（次のチャットで有効な値）を設定する
 
 #### Request（JSON）
 
@@ -116,7 +130,15 @@ in-memory の otome_kairo ランタイム状態を設定する
 
 #### Response
 
-`GET /api/otome_kairo` と同形式。
+`GET /api/otome_kairo` と同形式（有効値を返す）。
+
+### `DELETE /api/otome_kairo`
+
+in-memory の otome_kairo ランタイム状態（override）を解除し、自然計算（DBからの同期計算）に戻す。
+
+#### Response
+
+`GET /api/otome_kairo` と同形式（解除後の有効値を返す）。
 
 ## `/api/v1/notification`
 
