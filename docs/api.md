@@ -86,7 +86,7 @@ otome_kairo（パートナーの感情）関連の数値を **UIから参照/変
 
 ### `PUT /api/otome_kairo/override`
 
-in-memory の otome_kairo override を設定する（**部分更新可**）。
+in-memory の otome_kairo override を設定する（**完全上書きのみ**）。
 
 #### Request（JSON）
 
@@ -94,14 +94,24 @@ in-memory の otome_kairo override を設定する（**部分更新可**）。
 {
   "label": "anger",
   "intensity": 0.8,
-  "components": {"anger": 0.9},
-  "policy": {"refusal_allowed": true}
+  "components": {
+    "joy": 0.0,
+    "sadness": 0.1,
+    "anger": 0.9,
+    "fear": 0.0
+  },
+  "policy": {
+    "cooperation": 0.2,
+    "refusal_bias": 0.8,
+    "refusal_allowed": true
+  }
 }
 ```
 
 - `label` は `joy|sadness|anger|fear|neutral` のいずれか
-- `components` は `joy/sadness/anger/fear` を任意指定（0..1）
-- `policy` は `cooperation/refusal_bias/refusal_allowed` を任意指定
+- `intensity` は 0..1
+- `components` は `joy/sadness/anger/fear` を **すべて指定**（0..1）
+- `policy` は `cooperation/refusal_bias/refusal_allowed` を **すべて指定**
 
 #### Response
 

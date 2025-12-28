@@ -1,8 +1,9 @@
 """otome_kairo のランタイム上書き（デバッグ用）。
 
-- UI から otome_kairo 関連の数値を参照/変更できるようにするための in-memory ストア。
-- 永続化（DB/設定DB/settings）は行わない。
-- FastAPI と internal worker が同一プロセスの場合に有効。
+ - UI から otome_kairo 関連の数値を参照/変更できるようにするための in-memory ストア。
+ - override は完全上書きのみ（部分マージしない）。
+ - 永続化（DB/設定DB/settings）は行わない。
+ - FastAPI と internal worker が同一プロセスの場合に有効。
   ※ 複数プロセス/複数ワーカー構成だとプロセスごとに状態が分離される。
 """
 
@@ -53,10 +54,12 @@ def _normalize_components(raw: Any) -> Optional[dict[str, float]]:
         return None
     if not isinstance(raw, dict):
         return None
+    required = ("joy", "sadness", "anger", "fear")
+    if any(k not in raw for k in required):
+        return None
     out: dict[str, float] = {}
-    for k in ("joy", "sadness", "anger", "fear"):
-        if k in raw:
-            out[k] = clamp01(raw.get(k))
+    for k in required:
+        out[k] = clamp01(raw.get(k))
     return out
 
 
@@ -65,50 +68,48 @@ def _normalize_policy(raw: Any) -> Optional[dict[str, Any]]:
         return None
     if not isinstance(raw, dict):
         return None
+    required = ("cooperation", "refusal_bias", "refusal_allowed")
+    if any(k not in raw for k in required):
+        return None
     out: dict[str, Any] = {}
-    if "cooperation" in raw:
-        out["cooperation"] = clamp01(raw.get("cooperation"))
-    if "refusal_bias" in raw:
-        out["refusal_bias"] = clamp01(raw.get("refusal_bias"))
-    if "refusal_allowed" in raw:
-        out["refusal_allowed"] = bool(raw.get("refusal_allowed"))
+    out["cooperation"] = clamp01(raw.get("cooperation"))
+    out["refusal_bias"] = clamp01(raw.get("refusal_bias"))
+    out["refusal_allowed"] = bool(raw.get("refusal_allowed"))
     return out
 
 
 def set_override(
     *,
     now_ts: int,
-    patch: dict[str, Any],
-    base: Optional[dict[str, Any]] = None,
+    state: dict[str, Any],
 ) -> dict[str, Any]:
-    """override を設定する。
+    """override を設定する（完全上書きのみ）。"""
+    if not isinstance(state, dict):
+        raise TypeError("state must be dict")
 
-    patch は部分指定を許容する。
-    - base があればそれを土台に merge
-    - base が無ければ neutral ベースを土台に merge
+    # 完全上書きのみ: 必須キーが揃わなければエラーにする。
+    label = _normalize_label(state.get("label"))
+    if label is None:
+        raise ValueError(f"label must be one of: {', '.join(EMOTION_LABELS)}")
 
-    返り値は「保存された override（deep copy）」。
-    """
-    if not isinstance(patch, dict):
-        raise TypeError("patch must be dict")
+    intensity_raw = state.get("intensity")
+    if intensity_raw is None:
+        raise ValueError("intensity is required")
 
-    base_state = base if isinstance(base, dict) else compute_otome_state_from_episodes([], now_ts=int(now_ts))
+    components = _normalize_components(state.get("components"))
+    if components is None:
+        raise ValueError("components must include: joy, sadness, anger, fear")
 
-    label = _normalize_label(patch.get("label"))
-    intensity = patch.get("intensity")
-    components = _normalize_components(patch.get("components"))
-    policy = _normalize_policy(patch.get("policy"))
+    policy = _normalize_policy(state.get("policy"))
+    if policy is None:
+        raise ValueError("policy must include: cooperation, refusal_bias, refusal_allowed")
 
-    # 保存形式は「otome_state の一部」を上書きするパッチとして保持する。
     merged: dict[str, Any] = {
-        "label": label if label is not None else base_state.get("label"),
-        "intensity": clamp01(float(intensity)) if intensity is not None else base_state.get("intensity"),
+        "label": label,
+        "intensity": clamp01(intensity_raw),
+        "components": components,
+        "policy": policy,
     }
-
-    if components is not None:
-        merged["components"] = components
-    if policy is not None:
-        merged["policy"] = policy
 
     with _lock:
         global _override, _override_updated_at
@@ -132,27 +133,10 @@ def apply_otome_state_override(
 
     base = computed_state if isinstance(computed_state, dict) else compute_otome_state_from_episodes([], now_ts=int(now_ts))
     out = copy.deepcopy(base)
-
-    if isinstance(override.get("label"), str):
-        out["label"] = override["label"]
-    if override.get("intensity") is not None:
-        out["intensity"] = clamp01(override.get("intensity"))
-
-    # components/policy は部分上書き
-    if isinstance(override.get("components"), dict):
-        comps = dict(out.get("components") or {})
-        for k, v in override["components"].items():
-            comps[str(k)] = clamp01(v)
-        out["components"] = comps
-
-    if isinstance(override.get("policy"), dict):
-        pol = dict(out.get("policy") or {})
-        for k, v in override["policy"].items():
-            if str(k) == "refusal_allowed":
-                pol["refusal_allowed"] = bool(v)
-            else:
-                pol[str(k)] = clamp01(v)
-        out["policy"] = pol
-
+    # 完全上書き: components/policy も含めて差し替える。
+    out["label"] = override["label"]
+    out["intensity"] = clamp01(override["intensity"])
+    out["components"] = copy.deepcopy(override["components"])
+    out["policy"] = copy.deepcopy(override["policy"])
     out["now_ts"] = int(now_ts)
     return out

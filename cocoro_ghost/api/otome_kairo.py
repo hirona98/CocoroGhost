@@ -1,6 +1,7 @@
 """otome_kairo デバッグ用API。
 
 - UI から otome_kairo の数値を参照/変更するための専用API。
+- override は完全上書きのみ（部分更新は不可）。
 - 永続化しない（DBへ保存しない）。
 - 認証は main.py 側の router include で強制される想定。
 """
@@ -34,24 +35,24 @@ def _now_ts() -> int:
 
 
 class OtomeKairoOverridePolicy(BaseModel):
-    cooperation: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    refusal_bias: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    refusal_allowed: Optional[bool] = None
+    cooperation: float = Field(ge=0.0, le=1.0)
+    refusal_bias: float = Field(ge=0.0, le=1.0)
+    refusal_allowed: bool
 
 
 class OtomeKairoOverrideComponents(BaseModel):
-    joy: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    sadness: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    anger: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    fear: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    joy: float = Field(ge=0.0, le=1.0)
+    sadness: float = Field(ge=0.0, le=1.0)
+    anger: float = Field(ge=0.0, le=1.0)
+    fear: float = Field(ge=0.0, le=1.0)
 
 
 class OtomeKairoOverrideRequest(BaseModel):
-    # 部分更新を許容する（デバッグUIでスライダー等を想定）
-    label: Optional[str] = None
-    intensity: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    components: Optional[OtomeKairoOverrideComponents] = None
-    policy: Optional[OtomeKairoOverridePolicy] = None
+    # 完全上書きのみ（部分更新は不可）
+    label: str
+    intensity: float = Field(ge=0.0, le=1.0)
+    components: OtomeKairoOverrideComponents
+    policy: OtomeKairoOverridePolicy
 
 
 class OtomeKairoDebugResponse(BaseModel):
@@ -128,11 +129,11 @@ def get_otome_kairo_debug(scan_limit: int = 500, include_computed: bool = True):
 
 @router.put("/otome_kairo/override", response_model=OtomeKairoDebugResponse)
 def put_otome_kairo_override(request: OtomeKairoOverrideRequest, scan_limit: int = 500, include_computed: bool = True):
-    """otome_kairo override を設定（部分更新可）。"""
+    """otome_kairo override を設定（完全上書きのみ）。"""
     now_ts = _now_ts()
 
-    label = (request.label or "").strip() if request.label is not None else None
-    if label is not None and label and label not in EMOTION_LABELS:
+    label = (request.label or "").strip()
+    if not label or label not in EMOTION_LABELS:
         raise HTTPException(status_code=400, detail=f"label must be one of: {', '.join(EMOTION_LABELS)}")
 
     computed: Optional[dict[str, Any]] = None
@@ -143,17 +144,15 @@ def put_otome_kairo_override(request: OtomeKairoOverrideRequest, scan_limit: int
         except Exception:  # noqa: BLE001
             computed = None
 
-    patch: dict[str, Any] = {}
-    if request.label is not None:
-        patch["label"] = label
-    if request.intensity is not None:
-        patch["intensity"] = clamp01(request.intensity)
-    if request.components is not None:
-        patch["components"] = {k: v for k, v in request.components.model_dump().items() if v is not None}
-    if request.policy is not None:
-        patch["policy"] = {k: v for k, v in request.policy.model_dump().items() if v is not None}
+    # 完全上書きで保存する。
+    state: dict[str, Any] = {
+        "label": label,
+        "intensity": clamp01(request.intensity),
+        "components": request.components.model_dump(),
+        "policy": request.policy.model_dump(),
+    }
 
-    set_override(now_ts=now_ts, patch=patch, base=computed)
+    set_override(now_ts=now_ts, state=state)
 
     effective = apply_otome_state_override(computed, now_ts=now_ts)
     return OtomeKairoDebugResponse(
