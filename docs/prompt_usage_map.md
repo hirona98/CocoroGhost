@@ -21,7 +21,6 @@
 | `DEFAULT_PERSONA_ADDON` | `cocoro_ghost/prompts.py` | addon（personaの任意追加オプション）の初期値 | `cocoro_ghost/db.py`（settings初期化） | 起動時/初期化 |
 | `OTOME_KAIRO_TRAILER_PROMPT`（inline） | `cocoro_ghost/memory.py` | chatの返答末尾に「内部JSON（感情/重要度/方針ノブ）」を付加し、SSEから除外して保存（即時反映） | `cocoro_ghost/memory.py::MemoryManager.stream_chat` | 同期（chat） |
 | `IMAGE_SUMMARY_PROMPT`（inline） | `cocoro_ghost/llm_client.py` | 画像を短い日本語で要約（vision） | `cocoro_ghost/llm_client.py::LlmClient.generate_image_summary`（呼び出し: `cocoro_ghost/memory.py::MemoryManager::_summarize_images` / `cocoro_ghost/memory.py::MemoryManager.handle_capture`） | 同期（chat/capture）/ 同期風（notification/meta_request の BackgroundTasks） |
-| `EMBEDDING_API`（prompt無し） | `cocoro_ghost/llm_client.py` | テキストを埋め込みベクトルに変換（検索/類似度用） | `cocoro_ghost/worker.py::_handle_upsert_embeddings` / `cocoro_ghost/retriever.py` | 非同期（Worker Job）/ 同期（Retriever） |
 
 補足:
 - Capsule（短期状態）は **プロンプトではなく**、Workerジョブ `capsule_refresh`（LLM不要）で更新されます（`cocoro_ghost/worker.py::_handle_capsule_refresh`）。

@@ -262,13 +262,6 @@ class Retriever:
 
         try:
             # ベクトル検索用の埋め込みを一括生成する（クエリ数ぶん）。
-            # docs/prompt_usage_map.md の「プロンプト一覧（カタログ）」の「主な用途」から転記。
-            # 目的: LLM埋め込みログが「検索由来」だと分かるようにする。
-            self.logger.info(
-                "■■LLM CALL■■■■■■ %s ■■■■■■■■",
-                "テキストを埋め込みベクトルに変換（検索/類似度用）",
-                extra={"job_kind": "retriever_embedding", "count": len(all_queries)},
-            )
             embeddings = self.llm_client.generate_embedding(all_queries)
         except Exception as exc:  # noqa: BLE001
             self.logger.debug("embedding failed", exc_info=exc)

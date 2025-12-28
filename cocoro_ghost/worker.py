@@ -46,29 +46,6 @@ from cocoro_ghost.otome_kairo_runtime import apply_otome_state_override
 logger = logging.getLogger(__name__)
 
 
-# docs/prompt_usage_map.md の「プロンプト一覧（カタログ）」の「主な用途」から転記。
-# 目的: INFOログで「何のジョブのLLM呼び出しか」を判別しやすくする。
-_JOB_PURPOSE_FOR_INFO: dict[str, str] = {
-    "reflect_episode": "エピソードから内的メモ（感情/話題/重要度）をJSON抽出",
-    "extract_entities": "固有名と関係（任意）をJSON抽出",
-    "extract_facts": "長期保持すべき安定知識（facts）をJSON抽出",
-    "extract_loops": "未完了事項（open loops）をJSON抽出",
-    "upsert_embeddings": "テキストを埋め込みベクトルに変換（検索/類似度用）",
-    "person_summary_refresh": "人物の会話注入用サマリをJSON生成",
-    "topic_summary_refresh": "トピックの会話注入用サマリをJSON生成",
-    "relationship_summary": "関係性サマリ（SharedNarrative/relationship, rolling:7d）をJSON生成",
-}
-
-
-def _log_job_purpose_info(*, kind: str, extra: dict[str, Any]) -> None:
-    """LLM呼び出しの直前に、用途をINFOで1行出す（DEBUGログの一行上に来るように）。"""
-    purpose = _JOB_PURPOSE_FOR_INFO.get(str(kind))
-    if not purpose:
-        return
-    # 例: ■■LLM CALL■■■■■■ 長期保持すべき安定知識（facts）をJSON抽出 ■■■■■■■■
-    logger.info("■■LLM CALL■■■■■■ %s ■■■■■■■■", purpose, extra={"job_kind": str(kind), **extra})
-
-
 def _now_utc_ts() -> int:
     """現在時刻（UTC）をUNIX秒で返す。"""
     return int(time.time())
@@ -355,7 +332,6 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     context_text = "\n".join(ctx_parts)
 
     system_prompt = _wrap_prompt_with_persona(prompts.get_reflection_prompt())
-    _log_job_purpose_info(kind="reflect_episode", extra={"unit_id": unit_id})
     resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=context_text)
     raw_text = llm_client.response_content(resp)
     raw_json = raw_text
@@ -553,7 +529,6 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
     if not text_in.strip():
         return
 
-    _log_job_purpose_info(kind="extract_entities", extra={"unit_id": unit_id})
     resp = llm_client.generate_json_response(system_prompt=prompts.get_entity_extract_prompt(), user_text=text_in)
     data = json.loads(llm_client.response_content(resp))
     entities = data.get("entities") or []
@@ -762,7 +737,6 @@ def _handle_upsert_embeddings(
     else:
         return
 
-    _log_job_purpose_info(kind="upsert_embeddings", extra={"unit_id": unit_id, "unit_kind": int(unit.kind)})
     embedding = llm_client.generate_embedding([text_to_embed])[0]
     upsert_unit_vector(
         session,
@@ -857,7 +831,6 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
     if not text_in.strip():
         return
 
-    _log_job_purpose_info(kind="extract_facts", extra={"unit_id": unit_id})
     resp = llm_client.generate_json_response(system_prompt=prompts.get_fact_extract_prompt(), user_text=text_in)
     data = json.loads(llm_client.response_content(resp))
     facts = data.get("facts") or []
@@ -1067,7 +1040,6 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
         return
 
     system_prompt = _wrap_prompt_with_persona(prompts.get_loop_extract_prompt())
-    _log_job_purpose_info(kind="extract_loops", extra={"unit_id": unit_id})
     resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=text_in)
     data = json.loads(llm_client.response_content(resp))
     loops = data.get("loops") or []
@@ -1383,7 +1355,6 @@ def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, pay
     input_text = f"scope_key: {scope_key}\nrange_start: {range_start}\nrange_end: {range_end}\n\n[EPISODES]\n" + "\n".join(lines)
 
     system_prompt = _wrap_prompt_with_persona(prompts.get_relationship_summary_prompt())
-    _log_job_purpose_info(kind="relationship_summary", extra={"scope_key": scope_key, "range_start": range_start, "range_end": range_end})
     resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
@@ -1678,7 +1649,6 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
     )
 
     system_prompt = _wrap_prompt_with_persona(prompts.get_person_summary_prompt())
-    _log_job_purpose_info(kind="person_summary_refresh", extra={"entity_id": entity_id, "entity_name": (ent.name or "")})
     resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
@@ -1794,7 +1764,6 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
     )
 
     system_prompt = _wrap_prompt_with_persona(prompts.get_topic_summary_prompt())
-    _log_job_purpose_info(kind="topic_summary_refresh", extra={"entity_id": entity_id, "topic_key": topic_key, "topic_name": (ent.name or "")})
     resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
