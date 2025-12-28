@@ -505,7 +505,7 @@ def build_memory_pack(
                 }
             )
         otome_state = compute_otome_state_from_episodes(otome_kairo_episodes, now_ts=now_ts)
-        # デバッグ用: UI/API から in-memory override できるようにする（永続化しない）。
+        # デバッグ用: UI/API から in-memory ランタイム状態を適用する
         otome_state = apply_otome_state_override(otome_state, now_ts=now_ts)
         compact = {
             "label": otome_state.get("label"),

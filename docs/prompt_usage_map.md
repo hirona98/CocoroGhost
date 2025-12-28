@@ -268,7 +268,7 @@ flowchart LR
 - Reflection / Entities / Facts / Loops: `payload_episode` の `user_text/reply_text/image_summary` を連結して入力にする（`cocoro_ghost/worker.py`）。
 - Relationship summary（rolling:7d）: 直近7日程度の `Unit(kind=EPISODE)` を時系列で最大200件抜粋し、`range_start/range_end` + 箇条書き（unit_id + user/reply抜粋）として入力にする（`cocoro_ghost/worker.py::_handle_relationship_summary`）。
 - Capsule refresh: 直近の `Unit(kind=EPISODE)`（既定 `limit=5`）の抜粋に加え、「重要度×時間減衰」で集約した `otome_state` を `payload_capsule.capsule_json` に更新する（`cocoro_ghost/worker.py::_handle_capsule_refresh` / `cocoro_ghost/otome_kairo.py`）。
-  - デバッグ用途: `PUT /api/otome_kairo/override` による in-memory override が有効な場合、更新される `otome_state` は override 適用後の値になる。
+  - デバッグ用途: `PUT /api/otome_kairo` による in-memory ランタイム状態が有効な場合、更新される `otome_state` は適用後の値になる。
 - Notification: `# notification ...` 形式に整形したテキスト（+ 画像要約）を `conversation=[{"role":"user","content":...}]` として渡す（`cocoro_ghost/memory.py`）。
 - Meta request: `# meta_request ...` 形式に整形したテキスト（instruction + payload + 画像要約）を渡す（`cocoro_ghost/memory.py`）。
 - Persona/Addon: settings の active preset から読み込まれ、MemoryPack Builderが persona を `[PERSONA_ANCHOR]` に注入し、addon はその末尾へ「追加オプション（任意）」として追記する（`cocoro_ghost/config.py` / `cocoro_ghost/memory_pack_builder.py`）。

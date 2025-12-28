@@ -1,7 +1,7 @@
 """otome_kairo デバッグ用API。
 
 - UI から otome_kairo の数値を参照/変更するための専用API。
-- override は完全上書きのみ（部分更新は不可）。
+- 変更は完全上書きのみ（部分更新は不可）。
 - 永続化しない（DBへ保存しない）。
 - 認証は main.py 側の router include で強制される想定。
 """
@@ -18,7 +18,6 @@ from cocoro_ghost.db import get_memory_session
 from cocoro_ghost.otome_kairo import EMOTION_LABELS, clamp01, compute_otome_state_from_episodes
 from cocoro_ghost.otome_kairo_runtime import (
     apply_otome_state_override,
-    clear_override,
     get_override,
     get_override_meta,
     set_override,
@@ -34,31 +33,31 @@ def _now_ts() -> int:
     return int(time.time())
 
 
-class OtomeKairoOverridePolicy(BaseModel):
+class OtomeKairoRuntimePolicy(BaseModel):
     cooperation: float = Field(ge=0.0, le=1.0)
     refusal_bias: float = Field(ge=0.0, le=1.0)
     refusal_allowed: bool
 
 
-class OtomeKairoOverrideComponents(BaseModel):
+class OtomeKairoRuntimeComponents(BaseModel):
     joy: float = Field(ge=0.0, le=1.0)
     sadness: float = Field(ge=0.0, le=1.0)
     anger: float = Field(ge=0.0, le=1.0)
     fear: float = Field(ge=0.0, le=1.0)
 
 
-class OtomeKairoOverrideRequest(BaseModel):
-    # 完全上書きのみ（部分更新は不可）
+class OtomeKairoRuntimeRequest(BaseModel):
+    # ランタイム状態は完全上書きのみ（部分更新は不可）
     label: str
     intensity: float = Field(ge=0.0, le=1.0)
-    components: OtomeKairoOverrideComponents
-    policy: OtomeKairoOverridePolicy
+    components: OtomeKairoRuntimeComponents
+    policy: OtomeKairoRuntimePolicy
 
 
 class OtomeKairoDebugResponse(BaseModel):
     now_ts: int
-    override_meta: Dict[str, Any]
-    override: Optional[Dict[str, Any]]
+    runtime_meta: Dict[str, Any]
+    runtime_state: Optional[Dict[str, Any]]
     computed: Optional[Dict[str, Any]]
     effective: Dict[str, Any]
 
@@ -105,7 +104,7 @@ def _compute_from_db(*, now_ts: int, scan_limit: int) -> dict[str, Any]:
 
 @router.get("/otome_kairo", response_model=OtomeKairoDebugResponse)
 def get_otome_kairo_debug(scan_limit: int = 500, include_computed: bool = True):
-    """現在の otome_kairo（computed / override / effective）を返す。"""
+    """現在の otome_kairo（computed / runtime_state / effective）を返す。"""
     now_ts = _now_ts()
 
     computed: Optional[dict[str, Any]] = None
@@ -120,16 +119,16 @@ def get_otome_kairo_debug(scan_limit: int = 500, include_computed: bool = True):
     effective = apply_otome_state_override(computed, now_ts=now_ts)
     return OtomeKairoDebugResponse(
         now_ts=now_ts,
-        override_meta=get_override_meta(),
-        override=get_override(),
+        runtime_meta=get_override_meta(),
+        runtime_state=get_override(),
         computed=computed,
         effective=effective,
     )
 
 
-@router.put("/otome_kairo/override", response_model=OtomeKairoDebugResponse)
-def put_otome_kairo_override(request: OtomeKairoOverrideRequest, scan_limit: int = 500, include_computed: bool = True):
-    """otome_kairo override を設定（完全上書きのみ）。"""
+@router.put("/otome_kairo", response_model=OtomeKairoDebugResponse)
+def put_otome_kairo(request: OtomeKairoRuntimeRequest, scan_limit: int = 500, include_computed: bool = True):
+    """otome_kairo のランタイム状態を設定（完全上書きのみ）。"""
     now_ts = _now_ts()
 
     label = (request.label or "").strip()
@@ -157,32 +156,8 @@ def put_otome_kairo_override(request: OtomeKairoOverrideRequest, scan_limit: int
     effective = apply_otome_state_override(computed, now_ts=now_ts)
     return OtomeKairoDebugResponse(
         now_ts=now_ts,
-        override_meta=get_override_meta(),
-        override=get_override(),
-        computed=computed,
-        effective=effective,
-    )
-
-
-@router.delete("/otome_kairo/override", response_model=OtomeKairoDebugResponse)
-def delete_otome_kairo_override(scan_limit: int = 500, include_computed: bool = True):
-    """otome_kairo override を解除する。"""
-    now_ts = _now_ts()
-    clear_override()
-
-    computed: Optional[dict[str, Any]] = None
-    if include_computed:
-        try:
-            scan_limit = max(50, min(2000, int(scan_limit)))
-            computed = _compute_from_db(now_ts=now_ts, scan_limit=scan_limit)
-        except Exception:  # noqa: BLE001
-            computed = None
-
-    effective = apply_otome_state_override(computed, now_ts=now_ts)
-    return OtomeKairoDebugResponse(
-        now_ts=now_ts,
-        override_meta=get_override_meta(),
-        override=get_override(),
+        runtime_meta=get_override_meta(),
+        runtime_state=get_override(),
         computed=computed,
         effective=effective,
     )

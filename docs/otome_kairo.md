@@ -76,11 +76,11 @@ JSONスキーマは `docs/prompts.md` の「chat（SSE）: 返答末尾の内部
   - 同期: `cocoro_ghost/memory_pack_builder.py::build_memory_pack()` が `CONTEXT_CAPSULE` に `otome_state: {...}` を追加
   - 非同期: `cocoro_ghost/worker.py::_handle_capsule_refresh()` が `payload_capsule.capsule_json.otome_state` を更新
 
-## デバッグ用：ランタイム override（永続化しない）
+## デバッグ用：ランタイム状態
 
-UIから otome_kairo の数値を一時的に参照/変更するため、in-memory の override を提供する。
+UIから otome_kairo の数値を一時的に参照/変更するため、in-memory のランタイム状態を提供する。
 
-- API: `GET /api/otome_kairo` / `PUT /api/otome_kairo/override` / `DELETE /api/otome_kairo/override`（仕様: `docs/api.md`）
+- API: `GET /api/otome_kairo` / `PUT /api/otome_kairo`（仕様: `docs/api.md`）
 - 永続化: しない（DBにも `settings.db` にも保存しない）
 - 反映範囲:
   - `CONTEXT_CAPSULE` に注入する `otome_state`（同期計算）

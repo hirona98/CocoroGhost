@@ -80,13 +80,14 @@ otome_kairo（パートナーの感情）関連の数値を **UIから参照/変
 
 #### Response（JSON）
 
+- `runtime_meta`: デバッグ用メタ情報（`enabled` / `updated_at`）
 - `computed`: DBのエピソードから「重要度×時間減衰」で計算した otome_kairo（取得に失敗した場合は `null`）
-- `override`: デバッグ用の in-memory 上書き（無ければ `null`）
-- `effective`: 実際にシステムが利用する otome_kairo（`computed` に `override` を適用）
+- `runtime_state`: デバッグ用のランタイム状態（無ければ `null`）
+- `effective`: 実際にシステムが利用する otome_kairo（`computed` に `runtime_state` を適用）
 
-### `PUT /api/otome_kairo/override`
+### `PUT /api/otome_kairo`
 
-in-memory の otome_kairo override を設定する（**完全上書きのみ**）。
+in-memory の otome_kairo ランタイム状態を設定する
 
 #### Request（JSON）
 
@@ -112,14 +113,6 @@ in-memory の otome_kairo override を設定する（**完全上書きのみ**�
 - `intensity` は 0..1
 - `components` は `joy/sadness/anger/fear` を **すべて指定**（0..1）
 - `policy` は `cooperation/refusal_bias/refusal_allowed` を **すべて指定**
-
-#### Response
-
-`GET /api/otome_kairo` と同形式。
-
-### `DELETE /api/otome_kairo/override`
-
-override を解除する。
 
 #### Response
 
