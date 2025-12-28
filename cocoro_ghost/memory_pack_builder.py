@@ -94,21 +94,20 @@ def _extract_entity_names_with_llm(llm_client: "LlmClient", text: str) -> list[s
 
     # LLM抽出はベストエフォート。失敗してもスケジューリングは継続する。
     try:
-        resp = llm_client.generate_json_response(system_prompt=prompts.get_entity_extract_prompt(), user_text=text)
+        # ここは「names only」専用の軽量プロンプトを使う（roles/relationsの推測を避ける）。
+        resp = llm_client.generate_json_response(system_prompt=prompts.get_entity_names_only_prompt(), user_text=text)
         raw = llm_client.response_content(resp)
         data = json.loads(raw or "{}")
     except Exception:  # noqa: BLE001
         return []
 
-    entities = data.get("entities") or []
+    names_raw = data.get("names") or []
     names: list[str] = []
-    if isinstance(entities, list):
-        for ent in entities:
-            if not isinstance(ent, dict):
-                continue
-            name = str(ent.get("name") or "").strip()
-            if name:
-                names.append(name)
+    if isinstance(names_raw, list):
+        for n in names_raw:
+            s = str(n or "").strip()
+            if s:
+                names.append(s)
     return names
 
 
@@ -469,7 +468,8 @@ def build_memory_pack(
     # - salience が低いほど τ が短い → 雑談はすぐ消える
     try:
         otome_kairo_units = (
-            db.query(Unit)
+            db.query(Unit, PayloadEpisode)
+            .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
             .filter(
                 Unit.kind == int(UnitKind.EPISODE),
                 Unit.state.in_([0, 1, 2]),
@@ -481,7 +481,17 @@ def build_memory_pack(
             .all()
         )
         otome_kairo_episodes = []
-        for u in otome_kairo_units:
+        # partner_policy は直近だけ見れば十分なので、JSON parse は上位N件に限定する。
+        partner_policy_parse_limit = 60
+        for idx, (u, pe) in enumerate(otome_kairo_units):
+            partner_policy = None
+            if idx < partner_policy_parse_limit and (pe.reflection_json or "").strip():
+                try:
+                    obj = json.loads(pe.reflection_json)
+                    pp = obj.get("partner_policy") if isinstance(obj, dict) else None
+                    partner_policy = pp if isinstance(pp, dict) else None
+                except Exception:  # noqa: BLE001
+                    partner_policy = None
             otome_kairo_episodes.append(
                 {
                     "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
@@ -490,6 +500,8 @@ def build_memory_pack(
                     "emotion_intensity": u.emotion_intensity,
                     "salience": u.salience,
                     "confidence": u.confidence,
+                    # /api/chat の内部JSONで出た「方針ノブ」を次ターン以降にも効かせる。
+                    "partner_policy": partner_policy,
                 }
             )
         otome_state = compute_otome_state_from_episodes(otome_kairo_episodes, now_ts=now_ts)

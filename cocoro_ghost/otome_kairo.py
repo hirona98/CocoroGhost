@@ -26,6 +26,26 @@ OTOME_KAIRO_TRAILER_MARKER = "<<<COCORO_GHOST_OTOME_KAIRO_JSON_v1>>>"
 EMOTION_LABELS = ("joy", "sadness", "anger", "fear", "neutral")
 
 
+def _normalize_partner_policy(raw: object) -> dict | None:
+    """LLM出力の partner_policy を内部policy形式へ正規化する（不正値はNone）。"""
+    if not isinstance(raw, dict):
+        return None
+    required = ("cooperation", "refusal_bias", "refusal_allowed")
+    if any(k not in raw for k in required):
+        return None
+    try:
+        cooperation = clamp01(raw.get("cooperation"))
+        refusal_bias = clamp01(raw.get("refusal_bias"))
+        refusal_allowed = bool(raw.get("refusal_allowed"))
+    except Exception:  # noqa: BLE001
+        return None
+    return {
+        "cooperation": cooperation,
+        "refusal_bias": refusal_bias,
+        "refusal_allowed": refusal_allowed,
+    }
+
+
 def clamp01(x: float) -> float:
     """0..1 にクランプする（不正値は0扱い）。"""
     try:
@@ -87,16 +107,20 @@ def compute_otome_state_from_episodes(
     p = params or OtomeKairoDecayParams()
     sums: Dict[str, float] = {k: 0.0 for k in EMOTION_LABELS}
 
+    # partner_policy（行動方針ノブ）は、最新の強い出来事を優先して状態へ反映する。
+    # - /api/chat の内部JSONで「その瞬間の態度」を出せても、積分ロジックだけだと反映されないため。
+    # - 強さは salience×confidence×時間減衰 で評価する（感情強度とは独立）。
+    policy_candidate: tuple[float, dict] | None = None
+
     for e in episodes:
         label = str(e.get("emotion_label") or "").strip()
         if label not in EMOTION_LABELS:
-            continue
+            # 感情ラベルが無くても、partner_policy だけは拾う。
+            label = ""
 
         intensity = clamp01(e.get("emotion_intensity") or 0.0)
         salience = clamp01(e.get("salience") or 0.0)
         confidence = clamp01(e.get("confidence") or 0.5)
-        if intensity <= 0.0 or salience <= 0.0:
-            continue
 
         occurred_at = e.get("occurred_at")
         created_at = e.get("created_at")
@@ -111,8 +135,22 @@ def compute_otome_state_from_episodes(
         dt = max(0, int(now_ts) - int(base_ts))
         tau = tau_from_salience(salience, params=p)
         w = decay_weight(dt_seconds=dt, tau_seconds=tau)
-        impact = float(intensity * salience * confidence * w)
-        sums[label] += impact
+
+        # partner_policy は「最新で重要なもの」を優先し、徐々に薄れる。
+        # ここでは単純に最大スコアのものを採用する（複数混ぜるより暴れにくい）。
+        raw_policy = e.get("partner_policy")
+        policy = _normalize_partner_policy(raw_policy)
+        if policy is not None:
+            score = clamp01(1.5 * salience * confidence * w)
+            if score > 0.0 and (policy_candidate is None or score > policy_candidate[0]):
+                policy_candidate = (score, policy)
+
+        # 感情の積分（labelが無い/neutralは無視）
+        if label and label in EMOTION_LABELS:
+            if intensity <= 0.0 or salience <= 0.0:
+                continue
+            impact = float(intensity * salience * confidence * w)
+            sums[label] += impact
 
     # neutral は採点に使わない（“何もないのに neutral が強い”を避ける）
     comps = {
@@ -134,17 +172,37 @@ def compute_otome_state_from_episodes(
     cooperation = clamp01(1.0 - 0.9 * refusal_bias)
     refusal_allowed = bool(anger >= 0.75)
 
+    policy_obj = {
+        "cooperation": cooperation,
+        "refusal_bias": refusal_bias,
+        "refusal_allowed": refusal_allowed,
+    }
+
+    # partner_policy がある場合はブレンドする。
+    # - 数値は線形補間（0..1）
+    # - boolは重みが強いときのみ上書き（弱いときは標準ロジックを優先）
+    if policy_candidate is not None:
+        weight, override_policy = policy_candidate
+        weight = clamp01(weight)
+        try:
+            policy_obj["cooperation"] = clamp01(
+                (1.0 - weight) * float(policy_obj["cooperation"]) + weight * float(override_policy["cooperation"])
+            )
+            policy_obj["refusal_bias"] = clamp01(
+                (1.0 - weight) * float(policy_obj["refusal_bias"]) + weight * float(override_policy["refusal_bias"])
+            )
+            if weight >= 0.5:
+                policy_obj["refusal_allowed"] = bool(override_policy["refusal_allowed"])
+        except Exception:  # noqa: BLE001
+            pass
+
     return {
         "schema": "otome_state_v1",
         "now_ts": int(now_ts),
         "label": dominant,
         "intensity": clamp01(intensity),
         "components": {k: clamp01(v) for k, v in comps.items()},
-        "policy": {
-            "cooperation": cooperation,
-            "refusal_bias": refusal_bias,
-            "refusal_allowed": refusal_allowed,
-        },
+        "policy": policy_obj,
         "params": {
             "tau_min_seconds": float(p.tau_min_seconds),
             "tau_max_seconds": float(p.tau_max_seconds),

@@ -62,6 +62,7 @@
 - `emotion_label/emotion_intensity` は **パートナーAI側の気分**（ユーザーの感情推定ではない）
 - `salience_score` は「重要度×時間減衰」集約の係数（重要な出来事ほど長く残す）
 - `partner_policy` は口調だけでなく「協力/拒否」などの行動方針に効かせるための内部ノブ
+  - 実装では `otome_state.policy`（次ターン以降の注入）にも反映される
 
 ## Entity抽出
 
@@ -95,6 +96,7 @@
       "subject": {"type_label": "PERSON", "name": "USER"},
       "predicate": "prefers",
       "object_text": "静かなカフェ",
+      "object": {"type_label": "PLACE", "name": "静かなカフェ"},
       "confidence": 0.0,
       "validity": {"from": null, "to": null}
     }

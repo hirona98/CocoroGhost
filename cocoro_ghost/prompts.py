@@ -104,6 +104,22 @@ ENTITY_EXTRACT_SYSTEM_PROMPT = """
 """.strip()
 
 
+# MemoryPack Builder の entity フォールバック用（names only）。
+ENTITY_NAMES_ONLY_SYSTEM_PROMPT = """
+あなたは cocoro_ghost の「entity名抽出（names only）」モジュールです。
+入力テキストから、登場する固有名（人物/場所/プロジェクト/作品/話題など）の“名前だけ”を抽出して JSON で出力してください。
+
+ルール:
+- 出力は JSON のみ（前後に説明文を付けない）
+- roles / relations / type_label などの推測はしない（名前だけ）
+- 個数は多すぎない（最大10件）
+
+{
+  "names": ["string", "..."]
+}
+""".strip()
+
+
 RELATIONSHIP_SUMMARY_SYSTEM_PROMPT = """
 あなたは cocoro_ghost の「関係性サマリ（SharedNarrative）」モジュールです。
 与えられた直近7日程度の出来事（会話ログ/事実/未完了）から、ユーザーとあなたの関係性が続くように短く要約して JSON で出力してください。
@@ -280,6 +296,11 @@ def get_loop_extract_prompt() -> str:
 def get_entity_extract_prompt() -> str:
     """entity抽出用のsystem promptを返す。"""
     return ENTITY_EXTRACT_SYSTEM_PROMPT
+
+
+def get_entity_names_only_prompt() -> str:
+  """entity名抽出（names only）用のsystem promptを返す。"""
+  return ENTITY_NAMES_ONLY_SYSTEM_PROMPT
 
 
 def get_external_prompt() -> str:

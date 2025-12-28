@@ -1236,7 +1236,8 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
     # - salience が低い雑談は τ が短く、数分で影響が薄れる
     # - anger 成分が十分高いときは refusal_allowed=True となり、プロンプト側で拒否が選びやすくなる
     otome_kairo_units = (
-        session.query(Unit)
+        session.query(Unit, PayloadEpisode)
+        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
         .filter(
             Unit.kind == int(UnitKind.EPISODE),
             Unit.state.in_([0, 1, 2]),
@@ -1248,7 +1249,17 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
         .all()
     )
     otome_kairo_episodes = []
-    for u in otome_kairo_units:
+    # partner_policy は直近だけ見れば十分なので、JSON parse は上位N件に限定する。
+    partner_policy_parse_limit = 60
+    for idx, (u, pe) in enumerate(otome_kairo_units):
+        partner_policy = None
+        if idx < partner_policy_parse_limit and (pe.reflection_json or "").strip():
+            try:
+                obj = json.loads(pe.reflection_json)
+                pp = obj.get("partner_policy") if isinstance(obj, dict) else None
+                partner_policy = pp if isinstance(pp, dict) else None
+            except Exception:  # noqa: BLE001
+                partner_policy = None
         otome_kairo_episodes.append(
             {
                 "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
@@ -1257,6 +1268,8 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
                 "emotion_intensity": u.emotion_intensity,
                 "salience": u.salience,
                 "confidence": u.confidence,
+                # /api/chat の内部JSONで出た「方針ノブ」を次ターン以降にも効かせる。
+                "partner_policy": partner_policy,
             }
         )
     otome_state = compute_otome_state_from_episodes(otome_kairo_episodes, now_ts=now_ts)
