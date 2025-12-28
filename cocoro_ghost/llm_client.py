@@ -461,7 +461,6 @@ class LlmClient:
                 parts.append(delta)
                 yield delta
 
-    # 既存コード互換のためのラッパー（文字列を返す）
     def generate_reflection(
         self,
         system_prompt: str,

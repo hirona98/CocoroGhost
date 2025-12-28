@@ -380,7 +380,7 @@ def _normalize_roles(raw: Any, *, type_label: str | None = None) -> list[str]:
             if s:
                 roles.append(s)
 
-    # 互換: rolesが無い/空のときは type_label から最低限推定する
+    # rolesが無い/空のときは type_label から最低限推定する
     tl = _normalize_type_label(type_label)
     if not roles:
         if tl == "PERSON":

@@ -101,7 +101,7 @@ def maybe_enqueue_relationship_summary(
 ) -> bool:
     """relationship summary を必要ならenqueueする（重複抑制 + クールダウン）。
 
-    max_sensitivity が None の場合は sensitivity フィルタを行わない（呼び出し側互換用）。
+    max_sensitivity が None の場合は sensitivity フィルタを行わない。
     """
 
     if _has_pending_job(
