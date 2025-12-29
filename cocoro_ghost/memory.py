@@ -14,6 +14,7 @@ import logging
 import re
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional, Sequence
 
@@ -44,6 +45,18 @@ _SUMMARY_REFRESH_INTERVAL_SECONDS = 6 * 3600
 _BOND_SUMMARY_SCOPE_KEY = "rolling:7d"
 
 
+@dataclass(frozen=True)
+class EmbeddingPresetSnapshot:
+    """セッション外でも使えるEmbeddingPresetのスナップショット。"""
+
+    embedding_model: str
+    embedding_api_key: str | None
+    embedding_base_url: str | None
+    embedding_dimension: int
+    similar_episodes_limit: int
+    max_inject_tokens: int
+
+
 def _matches_exclude_keyword(pattern: str, text: str) -> bool:
     """除外キーワード（部分一致 or 正規表現）にマッチするか判定する。"""
     if not pattern:
@@ -62,8 +75,8 @@ _META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
 _STREAM_TRAILER_MARKER = PARTNER_AFFECT_TRAILER_MARKER
 
 
-def _load_embedding_preset_by_embedding_preset_id(embedding_preset_id: str) -> models.EmbeddingPreset | None:
-    """embedding_preset_id（= embedding_presets.id）からEmbeddingPresetを取得する。
+def _load_embedding_preset_by_embedding_preset_id(embedding_preset_id: str) -> EmbeddingPresetSnapshot | None:
+    """embedding_preset_id（= embedding_presets.id）からEmbeddingPresetスナップショットを取得する。
 
     /api/chat で embedding_preset_id を指定できる設計のため、
     アクティブpreset以外も参照できるようにする。
@@ -72,10 +85,21 @@ def _load_embedding_preset_by_embedding_preset_id(embedding_preset_id: str) -> m
     if not pid:
         return None
     with settings_session_scope() as session:
-        return (
+        preset = (
             session.query(models.EmbeddingPreset)
             .filter_by(id=pid, archived=False)
             .first()
+        )
+        if preset is None:
+            return None
+        # セッション終了後も安全に使えるようスナップショット化する。
+        return EmbeddingPresetSnapshot(
+            embedding_model=str(preset.embedding_model),
+            embedding_api_key=preset.embedding_api_key,
+            embedding_base_url=preset.embedding_base_url,
+            embedding_dimension=int(preset.embedding_dimension),
+            similar_episodes_limit=int(preset.similar_episodes_limit),
+            max_inject_tokens=int(preset.max_inject_tokens),
         )
 
 
@@ -431,8 +455,8 @@ class MemoryManager:
 
         # 指定された embedding_preset_id の embedding preset を settings.db から解決し、
         # 次元・検索上限・注入予算・embeddingモデルを per-request で適用する。
-        preset = _load_embedding_preset_by_embedding_preset_id(embedding_preset_id)
-        if preset is None:
+        preset_snapshot = _load_embedding_preset_by_embedding_preset_id(embedding_preset_id)
+        if preset_snapshot is None:
             yield self._sse(
                 "error",
                 {
@@ -442,20 +466,20 @@ class MemoryManager:
             )
             return
 
-        embedding_dimension = int(preset.embedding_dimension)
-        similar_episodes_limit = int(preset.similar_episodes_limit)
-        max_inject_tokens = int(preset.max_inject_tokens)
+        embedding_dimension = int(preset_snapshot.embedding_dimension)
+        similar_episodes_limit = int(preset_snapshot.similar_episodes_limit)
+        max_inject_tokens = int(preset_snapshot.max_inject_tokens)
 
         # 埋め込みモデルだけを差し替えた LlmClient を作り、Retriever用に使う。
         # chat/image側は現行設定（アクティブLLMプリセット）に従う。
         embedding_llm_client = LlmClient(
             model=cfg.llm_model,
-            embedding_model=preset.embedding_model,
+            embedding_model=preset_snapshot.embedding_model,
             image_model=cfg.image_model,
             api_key=cfg.llm_api_key,
-            embedding_api_key=preset.embedding_api_key,
+            embedding_api_key=preset_snapshot.embedding_api_key,
             llm_base_url=cfg.llm_base_url,
-            embedding_base_url=preset.embedding_base_url,
+            embedding_base_url=preset_snapshot.embedding_base_url,
             image_llm_base_url=cfg.image_llm_base_url,
             image_model_api_key=cfg.image_model_api_key,
             reasoning_effort=cfg.reasoning_effort,
