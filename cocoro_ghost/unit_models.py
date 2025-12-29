@@ -28,8 +28,8 @@ class Unit(UnitBase):
     pin: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     topic_tags: Mapped[Optional[str]] = mapped_column(Text)
-    emotion_label: Mapped[Optional[str]] = mapped_column(Text)
-    emotion_intensity: Mapped[Optional[float]] = mapped_column(Float)
+    partner_affect_label: Mapped[Optional[str]] = mapped_column(Text)
+    partner_affect_intensity: Mapped[Optional[float]] = mapped_column(Float)
 
 
 class PayloadEpisode(UnitBase):
@@ -140,7 +140,7 @@ class Edge(UnitBase):
         primary_key=True,
     )
     # 固定Enumではなく自由ラベル（"friend"/"likes"/"mentor" など）
-    rel_label: Mapped[str] = mapped_column(Text, primary_key=True)
+    relation_label: Mapped[str] = mapped_column(Text, primary_key=True)
     dst_entity_id: Mapped[int] = mapped_column(
         ForeignKey("entities.id", ondelete="CASCADE"),
         primary_key=True,

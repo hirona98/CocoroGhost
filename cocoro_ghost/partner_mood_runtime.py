@@ -1,9 +1,9 @@
-"""otome_kairo のランタイム上書き（デバッグ用）。
+"""partner_mood のランタイム上書き（デバッグ用）。
 
- - UI から otome_kairo 関連の数値を参照/変更できるようにするための in-memory ストア。
- - override は完全上書きのみ（部分マージしない）。
- - 永続化（DB/設定DB/settings）は行わない。
- - FastAPI と internal worker が同一プロセスの場合に有効。
+- UI から partner_mood（パートナーの機嫌）を参照/変更できるようにするための in-memory ストア。
+- override は完全上書きのみ（部分マージしない）。
+- 永続化（DB/設定DB/settings）は行わない。
+- FastAPI と internal worker が同一プロセスの場合に有効。
   ※ 複数プロセス/複数ワーカー構成だとプロセスごとに状態が分離される。
 """
 
@@ -13,7 +13,7 @@ import copy
 import threading
 from typing import Any, Optional
 
-from cocoro_ghost.otome_kairo import EMOTION_LABELS, clamp01, compute_otome_state_from_episodes
+from cocoro_ghost.partner_mood import PARTNER_MOOD_LABELS, clamp01, compute_partner_mood_state_from_episodes
 
 
 _lock = threading.Lock()
@@ -21,14 +21,14 @@ _override: Optional[dict[str, Any]] = None
 _override_updated_at: Optional[int] = None
 
 # 「前回チャットで使った値（last used）」を保持する（UI表示用）。
-# - override そのものではなく、MemoryPackに注入した otome_state（compact）の最新を保存する。
+# - override そのものではなく、MemoryPackに注入した partner_mood_state（compact）の最新を保存する。
 # - 永続化しない（プロセス再起動で消える）。
 _last_used: Optional[dict[str, Any]] = None
 _last_used_at: Optional[int] = None
 
 
 def get_last_used() -> Optional[dict[str, Any]]:
-    """前回チャットで使った otome_state（compact）を返す（無ければ None）。"""
+    """前回チャットで使った partner_mood_state（compact）を返す（無ければ None）。"""
     with _lock:
         return copy.deepcopy(_last_used)
 
@@ -46,7 +46,7 @@ def set_last_used(*, now_ts: int, state: dict[str, Any]) -> dict[str, Any]:
     """前回チャットで使った値（compact）を保存する。
 
     用途:
-    - GET /api/otome_kairo が「前回使った値」を返すため。
+    - GET /api/partner_mood が「前回使った値」を返すため。
     - override をPUTしても、会話が走るまでは last_used は変わらない（=意図通り）。
     """
     if not isinstance(state, dict):
@@ -54,7 +54,7 @@ def set_last_used(*, now_ts: int, state: dict[str, Any]) -> dict[str, Any]:
 
     label = _normalize_label(state.get("label"))
     if label is None:
-        raise ValueError(f"label must be one of: {', '.join(EMOTION_LABELS)}")
+        raise ValueError(f"label must be one of: {', '.join(PARTNER_MOOD_LABELS)}")
 
     intensity_raw = state.get("intensity")
     if intensity_raw is None:
@@ -64,15 +64,15 @@ def set_last_used(*, now_ts: int, state: dict[str, Any]) -> dict[str, Any]:
     if components is None:
         raise ValueError("components must include: joy, sadness, anger, fear")
 
-    policy = _normalize_policy(state.get("policy"))
-    if policy is None:
-        raise ValueError("policy must include: cooperation, refusal_bias, refusal_allowed")
+    response_policy = _normalize_policy(state.get("response_policy"))
+    if response_policy is None:
+        raise ValueError("response_policy must include: cooperation, refusal_bias, refusal_allowed")
 
     merged: dict[str, Any] = {
         "label": label,
         "intensity": clamp01(intensity_raw),
         "components": components,
-        "policy": policy,
+        "response_policy": response_policy,
     }
 
     with _lock:
@@ -107,7 +107,7 @@ def clear_override() -> None:
 
 def _normalize_label(label: Any) -> Optional[str]:
     s = str(label or "").strip()
-    return s if s in EMOTION_LABELS else None
+    return s if s in PARTNER_MOOD_LABELS else None
 
 
 def _normalize_components(raw: Any) -> Optional[dict[str, float]]:
@@ -151,7 +151,7 @@ def set_override(
     # 完全上書きのみ: 必須キーが揃わなければエラーにする。
     label = _normalize_label(state.get("label"))
     if label is None:
-        raise ValueError(f"label must be one of: {', '.join(EMOTION_LABELS)}")
+        raise ValueError(f"label must be one of: {', '.join(PARTNER_MOOD_LABELS)}")
 
     intensity_raw = state.get("intensity")
     if intensity_raw is None:
@@ -161,15 +161,15 @@ def set_override(
     if components is None:
         raise ValueError("components must include: joy, sadness, anger, fear")
 
-    policy = _normalize_policy(state.get("policy"))
-    if policy is None:
-        raise ValueError("policy must include: cooperation, refusal_bias, refusal_allowed")
+    response_policy = _normalize_policy(state.get("response_policy"))
+    if response_policy is None:
+        raise ValueError("response_policy must include: cooperation, refusal_bias, refusal_allowed")
 
     merged: dict[str, Any] = {
         "label": label,
         "intensity": clamp01(intensity_raw),
         "components": components,
-        "policy": policy,
+        "response_policy": response_policy,
     }
 
     with _lock:
@@ -179,25 +179,33 @@ def set_override(
         return copy.deepcopy(_override)
 
 
-def apply_otome_state_override(
+def apply_partner_mood_state_override(
     computed_state: Optional[dict[str, Any]],
     *,
     now_ts: int,
 ) -> dict[str, Any]:
-    """計算済み otome_state に override を適用して返す。
+    """計算済み partner_mood_state に override を適用して返す。
 
     override が無ければ computed_state をそのまま返す。
     """
     override = get_override()
     if override is None:
-        return computed_state if isinstance(computed_state, dict) else compute_otome_state_from_episodes([], now_ts=int(now_ts))
+        return (
+            computed_state
+            if isinstance(computed_state, dict)
+            else compute_partner_mood_state_from_episodes([], now_ts=int(now_ts))
+        )
 
-    base = computed_state if isinstance(computed_state, dict) else compute_otome_state_from_episodes([], now_ts=int(now_ts))
+    base = (
+        computed_state
+        if isinstance(computed_state, dict)
+        else compute_partner_mood_state_from_episodes([], now_ts=int(now_ts))
+    )
     out = copy.deepcopy(base)
-    # 完全上書き: components/policy も含めて差し替える。
+    # 完全上書き: components/response_policy も含めて差し替える。
     out["label"] = override["label"]
     out["intensity"] = clamp01(override["intensity"])
     out["components"] = copy.deepcopy(override["components"])
-    out["policy"] = copy.deepcopy(override["policy"])
+    out["response_policy"] = copy.deepcopy(override["response_policy"])
     out["now_ts"] = int(now_ts)
     return out

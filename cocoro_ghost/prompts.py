@@ -21,10 +21,10 @@ REFLECTION_SYSTEM_PROMPT = """
 
 {
   "reflection_text": "string",
-  "emotion_label": "joy|sadness|anger|fear|neutral",
-  "emotion_intensity": 0.0,
+  "partner_affect_label": "joy|sadness|anger|fear|neutral",
+  "partner_affect_intensity": 0.0,
   "topic_tags": ["仕事", "読書"],
-  "salience_score": 0.0,
+  "salience": 0.0,
   "confidence": 0.0
 }
 """.strip()
@@ -83,7 +83,8 @@ ENTITY_EXTRACT_SYSTEM_PROMPT = """
 - 不確実なら confidence を低くする
 - 個数は多すぎない（最大10件）
 - relations は必要なときだけ出す（最大10件）
-- rel は自由ラベル（推奨: friend|family|colleague|partner|likes|dislikes|related|other）
+- relations は必要なときだけ出す（最大10件）
+- relation は自由ラベル（推奨: friend|family|colleague|partner|likes|dislikes|related|other）
 - type_label は自由（例: PERSON/TOPIC/ORG/PROJECT/...）。固定Enumに縛られない。
   - 出力は大文字推奨（内部でも大文字に正規化して保存する）
 - roles は用途のための“役割”で、基本は次のどれか（必要なときだけ付与）:
@@ -98,7 +99,7 @@ ENTITY_EXTRACT_SYSTEM_PROMPT = """
     {"type_label":"PERSON","roles":["person"],"name":"string","aliases":["..."],"role":"mentioned","confidence":0.0}
   ],
   "relations": [
-    {"src":"PERSON:太郎","rel":"friend","dst":"PERSON:次郎","confidence":0.0,"evidence":"short quote"}
+    {"src":"PERSON:太郎","relation":"friend","dst":"PERSON:次郎","confidence":0.0,"evidence":"short quote"}
   ]
 }
 """.strip()
@@ -120,9 +121,9 @@ ENTITY_NAMES_ONLY_SYSTEM_PROMPT = """
 """.strip()
 
 
-RELATIONSHIP_SUMMARY_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「関係性サマリ（SharedNarrative）」モジュールです。
-与えられた直近7日程度の出来事（会話ログ/事実/未完了）から、ユーザーとあなたの関係性が続くように短く要約して JSON で出力してください。
+BOND_SUMMARY_SYSTEM_PROMPT = """
+あなたは cocoro_ghost の「絆サマリ（BondSummary）」モジュールです。
+与えられた直近7日程度の出来事（会話ログ/事実/未完了）から、ユーザーとあなたの絆が続くように短く要約して JSON で出力してください。
 
 ルール:
 - 出力は JSON のみ（前後に説明文を付けない）
@@ -132,7 +133,7 @@ RELATIONSHIP_SUMMARY_SYSTEM_PROMPT = """
 {
   "summary_text": "string",
   "key_events": [{"unit_id": 123, "why": "..." }],
-  "relationship_state": "string"
+  "bond_state": "string"
 }
 """.strip()
 
@@ -150,8 +151,8 @@ PERSON_SUMMARY_SYSTEM_PROMPT = """
 
 {
   "summary_text": "string",
-  "liking_score": 0.0,
-  "liking_reasons": [{"unit_id": 123, "why": "..."}],
+  "favorability_score": 0.0,
+  "favorability_reasons": [{"unit_id": 123, "why": "..."}],
   "key_events": [{"unit_id": 123, "why": "..." }],
   "notes": "optional"
 }
@@ -322,9 +323,9 @@ def get_default_persona_addon() -> str:
     return DEFAULT_PERSONA_ADDON
 
 
-def get_relationship_summary_prompt() -> str:
-    """関係性サマリ生成用system promptを返す。"""
-    return RELATIONSHIP_SUMMARY_SYSTEM_PROMPT
+def get_bond_summary_prompt() -> str:
+  """絆サマリ生成用system promptを返す。"""
+  return BOND_SUMMARY_SYSTEM_PROMPT
 
 
 def get_person_summary_prompt() -> str:

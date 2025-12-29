@@ -120,8 +120,8 @@ class UnitMeta(BaseModel):
     sensitivity: int
     pin: int
     topic_tags: Optional[str] = None
-    emotion_label: Optional[str] = None
-    emotion_intensity: Optional[float] = None
+    partner_affect_label: Optional[str] = None
+    partner_affect_intensity: Optional[float] = None
 
 
 class UnitListResponse(BaseModel):

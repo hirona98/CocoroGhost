@@ -18,7 +18,7 @@ from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope, sync_unit_vector_metadata
 from cocoro_ghost.event_stream import publish as publish_event
 from cocoro_ghost.llm_client import LlmClient
-from cocoro_ghost.otome_kairo import OTOME_KAIRO_TRAILER_MARKER, clamp01
+from cocoro_ghost.partner_mood import PARTNER_AFFECT_TRAILER_MARKER, clamp01
 from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
 from cocoro_ghost.retriever import Retriever
 from cocoro_ghost.memory_pack_builder import build_memory_pack
@@ -34,7 +34,7 @@ _memory_locks: dict[str, threading.Lock] = {}
 
 _REGEX_META_CHARS = re.compile(r"[.^$*+?{}\[\]\\|()]")
 _SUMMARY_REFRESH_INTERVAL_SECONDS = 6 * 3600
-_RELATIONSHIP_SUMMARY_SCOPE_KEY = "rolling:7d"
+_BOND_SUMMARY_SCOPE_KEY = "rolling:7d"
 
 
 def _matches_exclude_keyword(pattern: str, text: str) -> bool:
@@ -52,10 +52,10 @@ _META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
 
 # /api/chat（SSE）では、同一LLM呼び出しで「ユーザー表示本文 + 内部JSON（機嫌/反射）」を生成し、
 # 内部JSONはストリームから除外して保存・注入に使う。
-_STREAM_TRAILER_MARKER = OTOME_KAIRO_TRAILER_MARKER
+_STREAM_TRAILER_MARKER = PARTNER_AFFECT_TRAILER_MARKER
 
 
-def _otome_kairo_trailer_system_prompt() -> str:
+def _partner_affect_trailer_system_prompt() -> str:
     marker = _STREAM_TRAILER_MARKER
     # ここは「返答」ではなく「出力フォーマット規約」。ユーザーには見えない想定（SSEで除外）。
     return (
@@ -66,31 +66,31 @@ def _otome_kairo_trailer_system_prompt() -> str:
         "3) 区切り文字の次の行に、厳密な JSON オブジェクトを1つだけ出力する（前後に説明文やコードフェンスは禁止）。\n"
         "\n"
         "ユーザーに見せる返答本文のルール:\n"
-        "- 内部JSONのための数値（emotion_intensity/salience/confidence 等）を、ユーザー向け本文で示唆/説明しない。\n"
+        "- 内部JSONのための数値（partner_affect_intensity/salience/confidence 等）を、ユーザー向け本文で示唆/説明しない。\n"
         "- ユーザーに感情の強さを確認する必要がある場合でも、(1〜10 などの) 数値スケールでレーティングを求めない。\n"
         "\n"
         "内部JSONの目的:\n"
-        "- あなた（パートナーAI）の『その瞬間の感情（喜怒哀楽）/重要度』と『行動方針（協力度/拒否のしやすさ）』を更新する。\n"
+        "- あなた（パートナーAI）の『その瞬間の感情反応（affect）/重要度』と『行動方針（協力度/拒否のしやすさ）』を更新する。\n"
         "- 内部JSONはシステムが回収して保存し、次回以降の会話にも影響させる。\n"
-        "- CONTEXT_CAPSULE 内に `otome_state` があれば前回までの状態として参照し、今回の内部JSONで更新する。\n"
-        "- `otome_state` は“あなたの今の機嫌”の一次情報であり、本文の口調と内部JSONの感情はこれに整合させる。\n"
-        "  - 例: otome_state.label が anger で強い場合、本文は不機嫌/苛立ちを明確にし、内部JSONの emotion_label は anger にする。\n"
-        "  - 直近ログや関係性サマリが愛情寄りでも、otome_state が強い怒りならそちらを優先する（口調が矛盾しないように）。\n"
+        "- CONTEXT_CAPSULE 内に `partner_mood_state` があれば前回までの機嫌として参照し、今回の内部JSONで整合させる。\n"
+        "- `partner_mood_state` は“あなたの今の機嫌（mood）”の一次情報であり、本文の口調と内部JSONの感情反応はこれに整合させる。\n"
+        "  - 例: partner_mood_state.label が anger で強い場合、本文は不機嫌/苛立ちを明確にし、内部JSONの partner_affect_label は anger にする。\n"
+        "  - 直近ログや関係性サマリが愛情寄りでも、partner_mood_state が強い怒りならそちらを優先する（口調が矛盾しないように）。\n"
         "- あなたは内部JSONを先に決めたうえで、それに沿って返答本文を作る（ただし出力順は本文→区切り→JSON）。\n"
         "\n"
         "内部JSONスキーマ（必須キー）:\n"
-        "- emotion_label/emotion_intensity は「あなた（パートナーAI）の気分」。ユーザーの感情推定ではない。\n"
-        "- salience_score は “この出来事がどれだけ重要か” のスカラー（0..1）。後段の感情の持続（時間減衰）の係数に使う。\n"
+        "- partner_affect_label/partner_affect_intensity は「あなた（パートナーAI）の感情反応（affect）」。ユーザーの感情推定ではない。\n"
+        "- salience は “この出来事がどれだけ重要か” のスカラー（0..1）。後段の感情の持続（時間減衰）の係数に使う。\n"
         "- confidence は推定の確からしさ（0..1）。不確実なら低くし、感情への影響も弱める。\n"
-        "- partner_policy は行動方針ノブ（0..1）。怒りが強い場合は refusal_allowed=true にして「拒否/渋る」を選びやすくしてよい。\n"
+        "- partner_response_policy は行動方針ノブ（0..1）。怒りが強い場合は refusal_allowed=true にして「拒否/渋る」を選びやすくしてよい。\n"
         "{\n"
         '  "reflection_text": "string",\n'
-        '  "emotion_label": "joy|sadness|anger|fear|neutral",\n'
-        '  "emotion_intensity": 0.0,\n'
+        '  "partner_affect_label": "joy|sadness|anger|fear|neutral",\n'
+        '  "partner_affect_intensity": 0.0,\n'
         '  "topic_tags": ["仕事","読書"],\n'
-        '  "salience_score": 0.0,\n'
+        '  "salience": 0.0,\n'
         '  "confidence": 0.0,\n'
-        '  "partner_policy": {\n'
+        '  "partner_response_policy": {\n'
         '    "cooperation": 0.0,\n'
         '    "refusal_bias": 0.0,\n'
         '    "refusal_allowed": true\n'
@@ -182,16 +182,16 @@ class MemoryManager:
         if unit is None or pe is None:
             return
 
-        label = str(reflection_obj.get("emotion_label") or "").strip()
-        intensity = reflection_obj.get("emotion_intensity")
-        salience = reflection_obj.get("salience_score")
+        label = str(reflection_obj.get("partner_affect_label") or "").strip()
+        intensity = reflection_obj.get("partner_affect_intensity")
+        salience = reflection_obj.get("salience")
         confidence = reflection_obj.get("confidence")
 
         if label:
-            unit.emotion_label = label
+            unit.partner_affect_label = label
         if intensity is not None:
             try:
-                unit.emotion_intensity = clamp01(float(intensity))
+                unit.partner_affect_intensity = clamp01(float(intensity))
             except Exception:  # noqa: BLE001
                 pass
         if salience is not None:
@@ -242,18 +242,18 @@ class MemoryManager:
         """SSE（Server-Sent Events）形式の1メッセージを構築する。"""
         return f"event: {event}\ndata: {_json_dumps(payload)}\n\n"
 
-    def _maybe_enqueue_relationship_summary(self, db, *, now_ts: int) -> None:
+    def _maybe_enqueue_bond_summary(self, db, *, now_ts: int) -> None:
         if not self.config_store.memory_enabled:
             return
 
         # enqueue判定ロジックは periodic.py 側に集約する。
         # ここでは従来の挙動を維持するため、sensitivity フィルタは行わない（max_sensitivity=None）。
-        from cocoro_ghost.periodic import maybe_enqueue_relationship_summary  # noqa: PLC0415
+        from cocoro_ghost.periodic import maybe_enqueue_bond_summary  # noqa: PLC0415
 
-        maybe_enqueue_relationship_summary(
+        maybe_enqueue_bond_summary(
             db,
             now_ts=int(now_ts),
-            scope_key=_RELATIONSHIP_SUMMARY_SCOPE_KEY,
+            scope_key=_BOND_SUMMARY_SCOPE_KEY,
             cooldown_seconds=_SUMMARY_REFRESH_INTERVAL_SECONDS,
             max_sensitivity=None,
         )
@@ -428,8 +428,8 @@ class MemoryManager:
                 now_ts=now_ts,
             )
 
-        # 返信本文の末尾に、感情（otome_kairo）用の内部JSONトレーラーを付与させる。
-        parts: List[str] = [(memory_pack or "").strip(), _otome_kairo_trailer_system_prompt()]
+        # 返信本文の末尾に、partner_affect 用の内部JSONトレーラーを付与させる。
+        parts: List[str] = [(memory_pack or "").strip(), _partner_affect_trailer_system_prompt()]
         system_prompt = "\n\n".join([p for p in parts if p])
         conversation = [*conversation, {"role": "user", "content": request.user_text}]
 
@@ -526,7 +526,7 @@ class MemoryManager:
                         reflection_obj=reflection_obj,
                     )
                 self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=episode_unit_id)
-                self._maybe_enqueue_relationship_summary(db, now_ts=now_ts)
+                self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
         except Exception as exc:  # noqa: BLE001
             logger.error("episode保存に失敗しました", exc_info=exc)
             yield self._sse("error", {"message": str(exc), "code": "db_write_failed"})
@@ -670,7 +670,7 @@ class MemoryManager:
                 image_summary=image_summary_text,
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
-            self._maybe_enqueue_relationship_summary(db, now_ts=now_ts)
+            self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
 
         publish_event(
             type="notification",
@@ -817,7 +817,7 @@ class MemoryManager:
             )
             # 文書生成は会話ログと同様に検索対象にしたい（埋め込みのみで十分）。
             self._enqueue_embeddings_job(db, now_ts=now_ts, unit_id=unit_id)
-            self._maybe_enqueue_relationship_summary(db, now_ts=now_ts)
+            self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
 
         publish_event(
             type="meta_request",
@@ -859,7 +859,7 @@ class MemoryManager:
                 sensitivity=int(Sensitivity.PRIVATE),
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
-            self._maybe_enqueue_relationship_summary(db, now_ts=now_ts)
+            self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
         return schemas.CaptureResponse(episode_id=unit_id, stored=True)
 
     def _create_episode_unit(
@@ -886,8 +886,8 @@ class MemoryManager:
             sensitivity=sensitivity,
             pin=0,
             topic_tags=None,
-            emotion_label=None,
-            emotion_intensity=None,
+            partner_affect_label=None,
+            partner_affect_intensity=None,
         )
         db.add(unit)
         db.flush()

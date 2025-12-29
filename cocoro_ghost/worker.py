@@ -39,8 +39,8 @@ from cocoro_ghost.unit_models import (
 )
 from cocoro_ghost.versioning import canonical_json_dumps, record_unit_version
 from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
-from cocoro_ghost.otome_kairo import clamp01, compute_otome_state_from_episodes
-from cocoro_ghost.otome_kairo_runtime import apply_otome_state_override, set_last_used
+from cocoro_ghost.partner_mood import clamp01, compute_partner_mood_state_from_episodes
+from cocoro_ghost.partner_mood_runtime import apply_partner_mood_state_override, set_last_used
 
 
 logger = logging.getLogger(__name__)
@@ -191,8 +191,8 @@ def process_job(
             _handle_extract_loops(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "extract_entities":
             _handle_extract_entities(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "relationship_summary":
-            _handle_relationship_summary(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
+        elif job.kind == "bond_summary":
+            _handle_bond_summary(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "person_summary_refresh":
             _handle_person_summary_refresh(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "topic_summary_refresh":
@@ -318,7 +318,11 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     unit, pe = row
     # /api/chat では「本文 + 内部JSON（反射）」を同一LLM呼び出しで得られるため、
     # すでに反射が保存されている場合は冪等にスキップする。
-    if (pe.reflection_json or "").strip() and (unit.emotion_label or "").strip() and int(unit.state) == int(UnitState.VALIDATED):
+    if (
+        (pe.reflection_json or "").strip()
+        and (unit.partner_affect_label or "").strip()
+        and int(unit.state) == int(UnitState.VALIDATED)
+    ):
         return
     ctx_parts = []
     if pe.user_text:
@@ -348,9 +352,9 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
         except Exception:  # noqa: BLE001
             return float(default)
 
-    unit.emotion_label = str(data.get("emotion_label") or "")
-    unit.emotion_intensity = _parse_clamped01(data.get("emotion_intensity"), 0.0)
-    unit.salience = _parse_clamped01(data.get("salience_score"), 0.0)
+    unit.partner_affect_label = str(data.get("partner_affect_label") or "")
+    unit.partner_affect_intensity = _parse_clamped01(data.get("partner_affect_intensity"), 0.0)
+    unit.salience = _parse_clamped01(data.get("salience"), 0.0)
     unit.confidence = _parse_clamped01(data.get("confidence"), 0.5)
     topic_tags_raw = data.get("topic_tags")
     topic_tags = topic_tags_raw if isinstance(topic_tags_raw, list) else []
@@ -635,8 +639,8 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
             continue
         src_raw = str(r.get("src") or "")
         dst_raw = str(r.get("dst") or "")
-        rel_raw = str(r.get("rel") or "")
-        if not src_raw.strip() or not dst_raw.strip() or not rel_raw.strip():
+        relation_raw = str(r.get("relation") or "")
+        if not src_raw.strip() or not dst_raw.strip() or not relation_raw.strip():
             continue
 
         src_parsed = _parse_entity_ref(src_raw)
@@ -645,7 +649,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
             continue
         src_type_label, src_name = src_parsed
         dst_type_label, dst_name = dst_parsed
-        rel_label = _normalize_relation_label(rel_raw)
+        relation_label = _normalize_relation_label(relation_raw)
 
         confidence = float(r.get("confidence") or 0.0)
         weight = max(0.1, confidence) if confidence > 0 else 1.0
@@ -671,7 +675,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
             session.query(Edge)
             .filter(
                 Edge.src_entity_id == int(src_ent.id),
-                Edge.rel_label == str(rel_label),
+                Edge.relation_label == str(relation_label),
                 Edge.dst_entity_id == int(dst_ent.id),
             )
             .one_or_none()
@@ -680,7 +684,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
             session.add(
                 Edge(
                     src_entity_id=int(src_ent.id),
-                    rel_label=str(rel_label),
+                    relation_label=str(relation_label),
                     dst_entity_id=int(dst_ent.id),
                     weight=weight,
                     first_seen_at=now_ts,
@@ -977,8 +981,8 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
             sensitivity=int(src_unit.sensitivity),
             pin=0,
             topic_tags=None,
-            emotion_label=None,
-            emotion_intensity=None,
+            partner_affect_label=None,
+            partner_affect_intensity=None,
         )
         session.add(fact_unit)
         session.flush()
@@ -1142,8 +1146,8 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
             sensitivity=int(src_unit.sensitivity),
             pin=0,
             topic_tags=None,
-            emotion_label=None,
-            emotion_intensity=None,
+            partner_affect_label=None,
+            partner_affect_intensity=None,
         )
         session.add(pl_unit)
         session.flush()
@@ -1195,8 +1199,8 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
     limit = int(payload.get("limit") or 5)
     limit = max(1, min(20, limit))
     # 感情は、直近エピソード群を「重要度×時間減衰」で積分して作る。
-    otome_kairo_scan_limit = int(payload.get("otome_kairo_scan_limit") or 500)
-    otome_kairo_scan_limit = max(50, min(2000, otome_kairo_scan_limit))
+    partner_mood_scan_limit = int(payload.get("partner_mood_scan_limit") or 500)
+    partner_mood_scan_limit = max(50, min(2000, partner_mood_scan_limit))
 
     rows = (
         session.query(Unit, PayloadEpisode)
@@ -1218,8 +1222,8 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
                 "user_text": (pe.user_text or "")[:200],
                 "reply_text": (pe.reply_text or "")[:200],
                 "topic_tags": u.topic_tags,
-                "emotion_label": u.emotion_label,
-                "emotion_intensity": u.emotion_intensity,
+                "partner_affect_label": u.partner_affect_label,
+                "partner_affect_intensity": u.partner_affect_intensity,
                 "salience": u.salience,
                 "confidence": u.confidence,
             }
@@ -1228,64 +1232,64 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
     # パートナーの感情（重要度×時間減衰）:
     #
     # 直近N件（recent）だけで機嫌を作ると、「大事件が短時間で埋もれて消える」問題が出る。
-    # そこで、別枠で「直近otome_kairo_scan_limit件のエピソード」を走査し、各エピソードの影響度を
-    #     impact = emotion_intensity × salience × confidence × exp(-Δt/τ(salience))
-    # の形で減衰させて積分し、現在の感情を推定する（詳細は cocoro_ghost/otome_kairo.py を参照）。
+    # そこで、別枠で「直近partner_mood_scan_limit件のエピソード」を走査し、各エピソードの影響度を
+    #     impact = partner_affect_intensity × salience × confidence × exp(-Δt/τ(salience))
+    # の形で減衰させて積分し、現在の機嫌（partner_mood_state）を推定する。
     #
     # - salience が高いほど τ が長くなるため、「印象的な出来事」は長く残る
     # - salience が低い雑談は τ が短く、数分で影響が薄れる
     # - anger 成分が十分高いときは refusal_allowed=True となり、プロンプト側で拒否が選びやすくなる
-    otome_kairo_units = (
+    partner_mood_units = (
         session.query(Unit, PayloadEpisode)
         .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
         .filter(
             Unit.kind == int(UnitKind.EPISODE),
             Unit.state.in_([0, 1, 2]),
             Unit.sensitivity <= int(Sensitivity.SECRET),
-            Unit.emotion_label.isnot(None),
+            Unit.partner_affect_label.isnot(None),
         )
         .order_by(Unit.created_at.desc(), Unit.id.desc())
-        .limit(otome_kairo_scan_limit)
+        .limit(partner_mood_scan_limit)
         .all()
     )
-    otome_kairo_episodes = []
-    # partner_policy は直近だけ見れば十分なので、JSON parse は上位N件に限定する。
-    partner_policy_parse_limit = 60
-    for idx, (u, pe) in enumerate(otome_kairo_units):
-        partner_policy = None
-        if idx < partner_policy_parse_limit and (pe.reflection_json or "").strip():
+    partner_mood_episodes = []
+    # partner_response_policy は直近だけ見れば十分なので、JSON parse は上位N件に限定する。
+    partner_response_policy_parse_limit = 60
+    for idx, (u, pe) in enumerate(partner_mood_units):
+        partner_response_policy = None
+        if idx < partner_response_policy_parse_limit and (pe.reflection_json or "").strip():
             try:
                 obj = json.loads(pe.reflection_json)
-                pp = obj.get("partner_policy") if isinstance(obj, dict) else None
-                partner_policy = pp if isinstance(pp, dict) else None
+                pp = obj.get("partner_response_policy") if isinstance(obj, dict) else None
+                partner_response_policy = pp if isinstance(pp, dict) else None
             except Exception:  # noqa: BLE001
-                partner_policy = None
-        otome_kairo_episodes.append(
+                partner_response_policy = None
+        partner_mood_episodes.append(
             {
                 "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
                 "created_at": int(u.created_at),
-                "emotion_label": u.emotion_label,
-                "emotion_intensity": u.emotion_intensity,
+                "partner_affect_label": u.partner_affect_label,
+                "partner_affect_intensity": u.partner_affect_intensity,
                 "salience": u.salience,
                 "confidence": u.confidence,
                 # /api/chat の内部JSONで出た「方針ノブ」を次ターン以降にも効かせる。
-                "partner_policy": partner_policy,
+                "partner_response_policy": partner_response_policy,
             }
         )
-    otome_state = compute_otome_state_from_episodes(otome_kairo_episodes, now_ts=now_ts)
+    partner_mood_state = compute_partner_mood_state_from_episodes(partner_mood_episodes, now_ts=now_ts)
     # デバッグ用: UI/API から in-memory ランタイム状態を適用する
-    otome_state = apply_otome_state_override(otome_state, now_ts=now_ts)
+    partner_mood_state = apply_partner_mood_state_override(partner_mood_state, now_ts=now_ts)
 
     # UI向け: 前回使った値（compact）を保存する。
     # Worker側の更新でも last_used を進めておく。
-    compact_otome_state = {
-        "label": otome_state.get("label"),
-        "intensity": otome_state.get("intensity"),
-        "components": otome_state.get("components"),
-        "policy": otome_state.get("policy"),
+    compact_partner_mood_state = {
+        "label": partner_mood_state.get("label"),
+        "intensity": partner_mood_state.get("intensity"),
+        "components": partner_mood_state.get("components"),
+        "response_policy": partner_mood_state.get("response_policy"),
     }
     try:
-        set_last_used(now_ts=now_ts, state=compact_otome_state)
+        set_last_used(now_ts=now_ts, state=compact_partner_mood_state)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1293,7 +1297,7 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
         "generated_at": now_ts,
         "window": limit,
         "recent": recent,
-        "otome_state": otome_state,
+        "partner_mood_state": partner_mood_state,
     }
     capsule_json = _json_dumps(capsule_obj)
     expires_at = now_ts + 3600
@@ -1325,8 +1329,8 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
             sensitivity=int(Sensitivity.PRIVATE),
             pin=0,
             topic_tags=None,
-            emotion_label=None,
-            emotion_intensity=None,
+            partner_affect_label=None,
+            partner_affect_intensity=None,
         )
         session.add(cap_unit)
         session.flush()
@@ -1355,8 +1359,8 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
     )
 
 
-def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    # 現行: rolling 7 days relationship summary（scope_key固定）
+def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
+    # 現行: rolling 7 days bond summary（scope_key固定）
     rolling_scope_key = "rolling:7d"
     scope_key = str(payload.get("scope_key") or "").strip() or rolling_scope_key
     window_days = 7
@@ -1391,7 +1395,7 @@ def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, pay
 
     input_text = f"scope_key: {scope_key}\nrange_start: {range_start}\nrange_end: {range_end}\n\n[EPISODES]\n" + "\n".join(lines)
 
-    system_prompt = _wrap_prompt_with_persona(prompts.get_relationship_summary_prompt())
+    system_prompt = _wrap_prompt_with_persona(prompts.get_bond_summary_prompt())
     resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
@@ -1413,11 +1417,11 @@ def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, pay
             key_events.append({"unit_id": unit_id, "why": why})
     key_events = key_events[:5]
 
-    relationship_state = str(data.get("relationship_state") or "").strip()
+    bond_state = str(data.get("bond_state") or "").strip()
     summary_obj = {
         "summary_text": summary_text,
         "key_events": key_events,
-        "relationship_state": relationship_state,
+        "bond_state": bond_state,
     }
     summary_json = canonical_json_dumps(summary_obj)
 
@@ -1426,7 +1430,7 @@ def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, pay
         .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
         .filter(
             Unit.kind == int(UnitKind.SUMMARY),
-            PayloadSummary.scope_label == "relationship",
+            PayloadSummary.scope_label == "bond",
             PayloadSummary.scope_key == scope_key,
         )
         .order_by(Unit.created_at.desc())
@@ -1434,7 +1438,7 @@ def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, pay
     )
 
     payload_obj = {
-        "scope_label": "relationship",
+        "scope_label": "bond",
         "scope_key": scope_key,
         "range_start": range_start,
         "range_end": range_end,
@@ -1447,7 +1451,7 @@ def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, pay
             occurred_at=range_end - 1,
             created_at=now_ts,
             updated_at=now_ts,
-            source="relationship_summary",
+            source="bond_summary",
             state=int(UnitState.RAW),
             confidence=0.5,
             salience=0.0,
@@ -1459,7 +1463,7 @@ def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, pay
         session.add(
             PayloadSummary(
                 unit_id=unit.id,
-                scope_label="relationship",
+                scope_label="bond",
                 scope_key=scope_key,
                 range_start=range_start,
                 range_end=range_end,
@@ -1471,7 +1475,7 @@ def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, pay
             session,
             unit_id=int(unit.id),
             payload_obj=payload_obj,
-            patch_reason="relationship_summary",
+            patch_reason="bond_summary",
             now_ts=now_ts,
         )
         session.add(
@@ -1502,7 +1506,7 @@ def _handle_relationship_summary(*, session: Session, llm_client: LlmClient, pay
         session,
         unit_id=int(unit.id),
         payload_obj=payload_obj,
-        patch_reason="relationship_summary",
+        patch_reason="bond_summary",
         now_ts=now_ts,
     )
     sync_unit_vector_metadata(
@@ -1696,18 +1700,18 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
     # - 0.5: 中立（デフォルト）
     # - 1.0: とても好意的
     # - 0.0: 強い嫌悪/不信
-    liking_score_raw = data.get("liking_score")
-    liking_score = 0.5
-    if liking_score_raw is not None:
+    favorability_score_raw = data.get("favorability_score")
+    favorability_score = 0.5
+    if favorability_score_raw is not None:
         try:
-            liking_score = clamp01(float(liking_score_raw))
+            favorability_score = clamp01(float(favorability_score_raw))
         except Exception:  # noqa: BLE001
-            liking_score = 0.5
+            favorability_score = 0.5
 
-    liking_reasons_raw = data.get("liking_reasons") or []
-    liking_reasons: list[dict[str, Any]] = []
-    if isinstance(liking_reasons_raw, list):
-        for item in liking_reasons_raw[:5]:
+    favorability_reasons_raw = data.get("favorability_reasons") or []
+    favorability_reasons: list[dict[str, Any]] = []
+    if isinstance(favorability_reasons_raw, list):
+        for item in favorability_reasons_raw[:5]:
             if not isinstance(item, dict):
                 continue
             why = str(item.get("why") or "").strip()
@@ -1716,11 +1720,11 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
             except Exception:  # noqa: BLE001
                 continue
             if why:
-                liking_reasons.append({"unit_id": unit_id, "why": why})
+                favorability_reasons.append({"unit_id": unit_id, "why": why})
 
     # 注入テキストは Scheduler が summary_text しか使わないため、好感度も summary_text 先頭に出す。
     if "AI好感度:" not in summary_text:
-        summary_text = f"AI好感度: {liking_score:.2f}（0..1。0.5=中立）\n{summary_text}"
+        summary_text = f"AI好感度: {favorability_score:.2f}（0..1。0.5=中立）\n{summary_text}"
 
     key_events_raw = data.get("key_events") or []
     key_events: list[dict[str, Any]] = []
@@ -1738,8 +1742,8 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
 
     summary_obj = {
         "summary_text": summary_text,
-        "liking_score": liking_score,
-        "liking_reasons": liking_reasons,
+        "favorability_score": favorability_score,
+        "favorability_reasons": favorability_reasons,
         "key_events": key_events,
         "notes": str(data.get("notes") or "").strip(),
     }

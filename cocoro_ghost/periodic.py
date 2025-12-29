@@ -91,7 +91,7 @@ def _latest_summary_updated_at(
     return ts if ts > 0 else None
 
 
-def maybe_enqueue_relationship_summary(
+def maybe_enqueue_bond_summary(
     session: Session,
     *,
     now_ts: int,
@@ -99,21 +99,21 @@ def maybe_enqueue_relationship_summary(
     cooldown_seconds: int = 6 * 3600,
     max_sensitivity: Optional[int] = int(Sensitivity.PRIVATE),
 ) -> bool:
-    """relationship summary を必要ならenqueueする（重複抑制 + クールダウン）。
+    """bond summary を必要ならenqueueする（重複抑制 + クールダウン）。
 
     max_sensitivity が None の場合は sensitivity フィルタを行わない。
     """
 
     if _has_pending_job(
         session,
-        kind="relationship_summary",
+        kind="bond_summary",
         predicate=lambda p: (str(p.get("scope_key") or "").strip() in {"", scope_key}),
     ):
         return False
 
     updated_at = _latest_summary_updated_at(
         session,
-        scope_label="relationship",
+        scope_label="bond",
         scope_key=scope_key,
         max_sensitivity=max_sensitivity,
     )
@@ -145,7 +145,7 @@ def maybe_enqueue_relationship_summary(
         )
         if any_episode_line is None:
             return False
-        _enqueue_job(session, kind="relationship_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
+        _enqueue_job(session, kind="bond_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
         return True
 
     if int(now_ts) - int(updated_at) < int(cooldown_seconds):
@@ -164,7 +164,7 @@ def maybe_enqueue_relationship_summary(
     if new_episode is None:
         return False
 
-    _enqueue_job(session, kind="relationship_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
+    _enqueue_job(session, kind="bond_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
     return True
 
 
@@ -387,19 +387,19 @@ def enqueue_periodic_jobs(session: Session, *, now_ts: int, config: PeriodicEnqu
     """定期実行tick: 必要なjobsをenqueueして統計を返す（commitは呼び出し側）。"""
     cfg = config or PeriodicEnqueueConfig()
     stats: dict[str, Any] = {
-        "relationship_summary": 0,
+        "bond_summary": 0,
         "capsule_refresh": 0,
         "person_summary_refresh": 0,
         "topic_summary_refresh": 0,
     }
 
-    if maybe_enqueue_relationship_summary(
+    if maybe_enqueue_bond_summary(
         session,
         now_ts=now_ts,
         cooldown_seconds=cfg.weekly_cooldown_seconds,
         max_sensitivity=cfg.max_sensitivity,
     ):
-        stats["relationship_summary"] += 1
+        stats["bond_summary"] += 1
 
     entity_stats = maybe_enqueue_entity_summaries(
         session,

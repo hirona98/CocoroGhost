@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
-from cocoro_ghost.otome_kairo import compute_otome_state_from_episodes
+from cocoro_ghost.partner_mood import compute_partner_mood_state_from_episodes
 from cocoro_ghost.unit_enums import LoopStatus, Sensitivity, UnitKind
 from cocoro_ghost.unit_models import (
     Entity,
@@ -24,7 +24,7 @@ from cocoro_ghost.unit_models import (
     Unit,
     UnitEntity,
 )
-from cocoro_ghost.otome_kairo_runtime import apply_otome_state_override, set_last_used
+from cocoro_ghost.partner_mood_runtime import apply_partner_mood_state_override, set_last_used
 
 if TYPE_CHECKING:
     from cocoro_ghost.llm_client import LlmClient
@@ -239,8 +239,8 @@ def build_memory_pack(
         _cu, cap = cap_row
         capsule_json = (cap.capsule_json or "").strip() or None
 
-    def _otome_guidance_from_state(state: dict[str, Any]) -> str | None:
-        """otome_state を本文の口調へ落とし込むための短い指示（内部向け）。
+    def _partner_mood_guidance_from_state(state: dict[str, Any]) -> str | None:
+        """partner_mood_state を本文の口調へ落とし込むための短い指示（内部向け）。
 
         - LLMは数値の解釈がブレることがあるため、言語化したガイダンスを併記する。
         - ユーザーには見せない前提（MemoryPack内）。
@@ -248,8 +248,8 @@ def build_memory_pack(
         try:
             label = str(state.get("label") or "").strip()
             intensity = float(state.get("intensity") or 0.0)
-            policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
-            refusal_allowed = bool(policy.get("refusal_allowed"))
+            response_policy = state.get("response_policy") if isinstance(state.get("response_policy"), dict) else {}
+            refusal_allowed = bool(response_policy.get("refusal_allowed"))
         except Exception:  # noqa: BLE001
             return None
 
@@ -324,7 +324,7 @@ def build_memory_pack(
 
     rolling_scope_key = "rolling:7d"
     summary_texts: List[str] = []
-    scopes = ["relationship", "person", "topic"]
+    scopes = ["bond", "person", "topic"]
 
     def add_summary(scope_label: str, scope_key: Optional[str], *, fallback_latest: bool = False) -> None:
         """指定スコープのサマリを1つ取り出してsummary_textsへ追加する（無ければ何もしない）。"""
@@ -354,9 +354,9 @@ def build_memory_pack(
             if text_:
                 summary_texts.append(text_)
 
-    if "relationship" in scopes:
-        # rolling（直近7日）のrelationshipサマリが無い場合は最新のrelationshipサマリを注入する
-        add_summary("relationship", rolling_scope_key, fallback_latest=True)
+    if "bond" in scopes:
+        # rolling（直近7日）のbondサマリが無い場合は最新のbondサマリを注入する
+        add_summary("bond", rolling_scope_key, fallback_latest=True)
 
     if matched_entity_ids and ("person" in scopes or "topic" in scopes):
         ents = db.query(Entity).filter(Entity.id.in_(sorted(matched_entity_ids))).all()
@@ -486,60 +486,60 @@ def build_memory_pack(
     #
     # 目的:
     # - /api/chat は「返信生成の前」に MemoryPack を組むため、capsule_refresh（Worker）がまだ走っていないと
-    #   "otome_state" が注入されず、感情の反映が1ターン遅れやすい。
+    #   "partner_mood_state" が注入されず、感情の反映が1ターン遅れやすい。
     # - ここで同期計算して `CONTEXT_CAPSULE` に入れることで、「直前の出来事」まで含めた機嫌を次ターンから使える。
     #
-    # 計算式（詳細は cocoro_ghost/otome_kairo.py）:
-    #   impact = emotion_intensity × salience × confidence × exp(-Δt/τ(salience))
+    # 計算式（partner_mood の積分ロジック）:
+    #   impact = partner_affect_intensity × salience × confidence × exp(-Δt/τ(salience))
     # - salience が高いほど τ が長い → 大事件が残る
     # - salience が低いほど τ が短い → 雑談はすぐ消える
     try:
-        otome_kairo_units = (
+        partner_mood_units = (
             db.query(Unit, PayloadEpisode)
             .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
             .filter(
                 Unit.kind == int(UnitKind.EPISODE),
                 Unit.state.in_([0, 1, 2]),
                 Unit.sensitivity <= sensitivity_max,
-                Unit.emotion_label.isnot(None),
+                Unit.partner_affect_label.isnot(None),
             )
             .order_by(Unit.created_at.desc(), Unit.id.desc())
             .limit(500)
             .all()
         )
-        otome_kairo_episodes = []
-        # partner_policy は直近だけ見れば十分なので、JSON parse は上位N件に限定する。
-        partner_policy_parse_limit = 60
-        for idx, (u, pe) in enumerate(otome_kairo_units):
-            partner_policy = None
-            if idx < partner_policy_parse_limit and (pe.reflection_json or "").strip():
+        partner_mood_episodes = []
+        # partner_response_policy は直近だけ見れば十分なので、JSON parse は上位N件に限定する。
+        partner_response_policy_parse_limit = 60
+        for idx, (u, pe) in enumerate(partner_mood_units):
+            partner_response_policy = None
+            if idx < partner_response_policy_parse_limit and (pe.reflection_json or "").strip():
                 try:
                     obj = json.loads(pe.reflection_json)
-                    pp = obj.get("partner_policy") if isinstance(obj, dict) else None
-                    partner_policy = pp if isinstance(pp, dict) else None
+                    pp = obj.get("partner_response_policy") if isinstance(obj, dict) else None
+                    partner_response_policy = pp if isinstance(pp, dict) else None
                 except Exception:  # noqa: BLE001
-                    partner_policy = None
-            otome_kairo_episodes.append(
+                    partner_response_policy = None
+            partner_mood_episodes.append(
                 {
                     "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
                     "created_at": int(u.created_at),
-                    "emotion_label": u.emotion_label,
-                    "emotion_intensity": u.emotion_intensity,
+                    "partner_affect_label": u.partner_affect_label,
+                    "partner_affect_intensity": u.partner_affect_intensity,
                     "salience": u.salience,
                     "confidence": u.confidence,
                     # /api/chat の内部JSONで出た「方針ノブ」を次ターン以降にも効かせる。
-                    "partner_policy": partner_policy,
+                    "partner_response_policy": partner_response_policy,
                 }
             )
-        otome_state = compute_otome_state_from_episodes(otome_kairo_episodes, now_ts=now_ts)
+        partner_mood_state = compute_partner_mood_state_from_episodes(partner_mood_episodes, now_ts=now_ts)
         # デバッグ用: UI/API から in-memory ランタイム状態を適用する
-        otome_state = apply_otome_state_override(otome_state, now_ts=now_ts)
+        partner_mood_state = apply_partner_mood_state_override(partner_mood_state, now_ts=now_ts)
         compact = {
-            "label": otome_state.get("label"),
-            "intensity": otome_state.get("intensity"),
-            "components": otome_state.get("components"),
-            "policy": otome_state.get("policy"),
-            "now_ts": otome_state.get("now_ts"),
+            "label": partner_mood_state.get("label"),
+            "intensity": partner_mood_state.get("intensity"),
+            "components": partner_mood_state.get("components"),
+            "response_policy": partner_mood_state.get("response_policy"),
+            "now_ts": partner_mood_state.get("now_ts"),
         }
         # UI向け: 前回チャットで使った値（注入した値）を保存する。
         # ここでの値が、次のチャットの直前状態として扱われる。
@@ -548,14 +548,16 @@ def build_memory_pack(
         except Exception:  # noqa: BLE001
             pass
         capsule_parts.append(
-            f"otome_state: {json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}"
+            f"partner_mood_state: {json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}"
         )
 
-        # otome_state を口調へ確実に反映させるため、短い言語ガイドを併記する。
+        # partner_mood_state を口調へ確実に反映させるため、短い言語ガイドを併記する。
         # ※ capsule_json（過去の状態や直近のJoy発話など）に強く引っ張られないよう、こちらを優先材料にする。
-        guidance = _otome_guidance_from_state(otome_state if isinstance(otome_state, dict) else {})
+        guidance = _partner_mood_guidance_from_state(
+            partner_mood_state if isinstance(partner_mood_state, dict) else {}
+        )
         if guidance:
-            capsule_parts.append(f"otome_guidance: {guidance}")
+            capsule_parts.append(f"partner_mood_guidance: {guidance}")
     except Exception:  # noqa: BLE001
         pass
 
@@ -593,7 +595,7 @@ def build_memory_pack(
 
     # NOTE:
     # - settings_db の capsule_json には直近の reply_text 等が含まれ、口調が強くプライミングされやすい。
-    # - otome_state を一貫して反映させたいので、ここでは capsule_json を注入しない。
+    # - partner_mood_state を一貫して反映させたいので、ここでは capsule_json を注入しない。
     capsule_lines: List[str] = []
     capsule_lines.extend(capsule_parts)
 
@@ -601,10 +603,10 @@ def build_memory_pack(
     summaries = list(summary_texts)
 
     # 怒りが強いときは「関係性サマリ（大好き等）」が口調を上書きしやすい。
-    # ここでは短期状態（otome_state）を優先し、SharedNarrativeを注入しない。
+    # ここでは短期状態（partner_mood_state）を優先し、SharedNarrativeを注入しない。
     try:
-        if isinstance(otome_state, dict):
-            if str(otome_state.get("label") or "") == "anger" and float(otome_state.get("intensity") or 0.0) >= 0.6:
+        if isinstance(partner_mood_state, dict):
+            if str(partner_mood_state.get("label") or "") == "anger" and float(partner_mood_state.get("intensity") or 0.0) >= 0.6:
                 summaries = []
     except Exception:  # noqa: BLE001
         pass
@@ -628,7 +630,7 @@ def build_memory_pack(
         return pack
 
     if summaries:
-        # まず数を絞る（relationshipを優先）
+        # まず数を絞る（bondを優先）
         summaries = summaries[:1]
         pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
         if len(pack) > max_chars:

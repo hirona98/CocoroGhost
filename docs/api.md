@@ -57,29 +57,29 @@ data: {"message":"...","code":"..."}
 1. 画像要約（`images` がある場合）
 2. Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 3. Schedulerで **MemoryPack** を生成（検索結果を `[EPISODE_EVIDENCE]` に含む）
-4. LLMへ `memorypack + otome_kairo_trailer_prompt` を system に注入し、conversation には直近会話（max_turns_window）+ user_text を渡す（MemoryPack内に persona/addon を含む）
-5. 返答をSSEで配信（返答末尾の内部JSON＝otome_kairo trailer はサーバ側で回収し、SSEには流さない）
+4. LLMへ `memorypack + partner_affect_trailer_prompt` を system に注入し、conversation には直近会話（max_turns_window）+ user_text を渡す（MemoryPack内に persona/addon を含む）
+5. 返答をSSEで配信（返答末尾の内部JSON＝partner_affect trailer はサーバ側で回収し、SSEには流さない）
 6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 7. Worker用ジョブを enqueue（reflection/extraction/embedding等）
 
-## `/api/otome_kairo`（デバッグ）
+## `/api/partner_mood`（デバッグ）
 
-otome_kairo（パートナーの感情）関連の数値を **UIから参照/変更**するためのデバッグ用API。
+partner_mood（パートナーの機嫌）関連の数値を **UIから参照/変更**するためのデバッグ用API。
 
 - **永続化しない**（DB/settings.db に保存しない）
 - 反映は **同一プロセス内**のみ（プロセスを跨ぐ構成ではプロセスごとに状態が分離される）
 - 認証は他の `/api/*` と同様に `Authorization: Bearer <TOKEN>`
 
-### `GET /api/otome_kairo`
+### `GET /api/partner_mood`
 
-otome_kairo の **前回チャットで使った値（last used）** を返す。
+partner_mood の **前回チャットで使った値（last used）** を返す。
 （LLMに渡す直前でDBから取得して計算するため、"現在値"という概念はない）
 
-- `PUT /api/otome_kairo` で override を設定しても、**会話（/api/chat）が走るまでは** last used は更新されない
+- `PUT /api/partner_mood` で override を設定しても、**会話（/api/chat）が走るまでは** last used は更新されない
 
 #### Response（JSON）
 
-システムが実際に利用する otome_kairo（有効値）を返す。
+システムが実際に利用する partner_mood（有効値）を返す。
 
 ```json
 {
@@ -91,7 +91,7 @@ otome_kairo の **前回チャットで使った値（last used）** を返す�
     "anger": 0.0,
     "fear": 0.0
   },
-  "policy": {
+  "response_policy": {
     "cooperation": 1.0,
     "refusal_bias": 0.0,
     "refusal_allowed": false
@@ -99,9 +99,9 @@ otome_kairo の **前回チャットで使った値（last used）** を返す�
 }
 ```
 
-### `PUT /api/otome_kairo`
+### `PUT /api/partner_mood`
 
-in-memory の otome_kairo ランタイム状態（次のチャットで有効な値）を設定する
+in-memory の partner_mood ランタイム状態（次のチャットで有効な値）を設定する
 
 #### Request（JSON）
 
@@ -115,7 +115,7 @@ in-memory の otome_kairo ランタイム状態（次のチャットで有効な
     "anger": 0.9,
     "fear": 0.0
   },
-  "policy": {
+  "response_policy": {
     "cooperation": 0.2,
     "refusal_bias": 0.8,
     "refusal_allowed": true
@@ -126,19 +126,19 @@ in-memory の otome_kairo ランタイム状態（次のチャットで有効な
 - `label` は `joy|sadness|anger|fear|neutral` のいずれか
 - `intensity` は 0..1
 - `components` は `joy/sadness/anger/fear` を **すべて指定**（0..1）
-- `policy` は `cooperation/refusal_bias/refusal_allowed` を **すべて指定**
+- `response_policy` は `cooperation/refusal_bias/refusal_allowed` を **すべて指定**
 
 #### Response
 
-`GET /api/otome_kairo` と同形式（有効値を返す）。
+`GET /api/partner_mood` と同形式（有効値を返す）。
 
-### `DELETE /api/otome_kairo`
+### `DELETE /api/partner_mood`
 
-in-memory の otome_kairo ランタイム状態（override）を解除し、自然計算（DBからの同期計算）に戻す。
+in-memory の partner_mood ランタイム状態（override）を解除し、自然計算（DBからの同期計算）に戻す。
 
 #### Response
 
-`GET /api/otome_kairo` と同形式（解除後の有効値を返す）。
+`GET /api/partner_mood` と同形式（解除後の有効値を返す）。
 
 ## `/api/v1/notification`
 
