@@ -296,17 +296,14 @@ class LlmClient:
         completion API呼び出し用のkwargsを構築する。
         モデル固有の制約（gpt-5系のtemperature制限等）を考慮する。
         """
-        # gpt-5 系は temperature の制約が厳しい（LiteLLM側で弾かれる）
-        # - gpt-5 / gpt-5-mini 等: temperature は 1 のみ
-        # - gpt-5.1: reasoning_effort が none（未指定）なら temperature 可
+        # gpt-5 以降は temperature の制約が厳しい（LiteLLM側で弾かれる）
+        # - gpt-5 / gpt-5-mini / gpt-6 ... 等: temperature は 1 のみ
         model_l = (model or "").lower()
         temp = float(temperature)
-        if "gpt-5" in model_l:
-            if "gpt-5.1" in model_l:
-                eff = (self.reasoning_effort or "").strip().lower()
-                if eff and eff != "none":
-                    temp = 1.0
-            else:
+        m = re.search(r"\bgpt-(\d+)(?:\.(\d+))?\b", model_l)
+        if m:
+            major = int(m.group(1))
+            if major >= 5:
                 temp = 1.0
 
         # 基本パラメータ
