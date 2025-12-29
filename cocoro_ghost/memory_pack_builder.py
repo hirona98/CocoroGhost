@@ -239,6 +239,33 @@ def build_memory_pack(
         _cu, cap = cap_row
         capsule_json = (cap.capsule_json or "").strip() or None
 
+    def _otome_guidance_from_state(state: dict[str, Any]) -> str | None:
+        """otome_state を本文の口調へ落とし込むための短い指示（内部向け）。
+
+        - LLMは数値の解釈がブレることがあるため、言語化したガイダンスを併記する。
+        - ユーザーには見せない前提（MemoryPack内）。
+        """
+        try:
+            label = str(state.get("label") or "").strip()
+            intensity = float(state.get("intensity") or 0.0)
+            policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+            refusal_allowed = bool(policy.get("refusal_allowed"))
+        except Exception:  # noqa: BLE001
+            return None
+
+        if label == "anger":
+            return "機嫌: 怒り（強）。口調は不機嫌/苛立ちを明確に。愛情表現は控える。"
+        if label == "sadness":
+            return "機嫌: 悲しみ。口調は落ち込み気味で、優しい言葉を増やす。"
+        if label == "fear":
+            return "機嫌: 不安/恐れ。慎重で確認が多め。安心材料を求める。"
+        if label == "joy":
+            return "機嫌: 喜び。明るく、親しみやすく。"
+        if label == "neutral":
+            return "機嫌: 落ち着き。淡々と、安定した口調。"
+
+        return None
+
     # Facts（intent→entity解決→スコアで上位）
     entity_text = "\n".join(filter(None, [user_text, *(image_summaries or [])]))
     matched_entity_ids = _resolve_entity_ids_from_text(
@@ -523,6 +550,12 @@ def build_memory_pack(
         capsule_parts.append(
             f"otome_state: {json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}"
         )
+
+        # otome_state を口調へ確実に反映させるため、短い言語ガイドを併記する。
+        # ※ capsule_json（過去の状態や直近のJoy発話など）に強く引っ張られないよう、こちらを優先材料にする。
+        guidance = _otome_guidance_from_state(otome_state if isinstance(otome_state, dict) else {})
+        if guidance:
+            capsule_parts.append(f"otome_guidance: {guidance}")
     except Exception:  # noqa: BLE001
         pass
 
@@ -558,13 +591,23 @@ def build_memory_pack(
         parts.append(section("EPISODE_EVIDENCE", evidence))
         return "".join(parts)
 
+    # NOTE:
+    # - settings_db の capsule_json には直近の reply_text 等が含まれ、口調が強くプライミングされやすい。
+    # - otome_state を一貫して反映させたいので、ここでは capsule_json を注入しない。
     capsule_lines: List[str] = []
-    if capsule_json:
-        capsule_lines.append(capsule_json)
     capsule_lines.extend(capsule_parts)
 
     facts = list(fact_lines)
     summaries = list(summary_texts)
+
+    # 怒りが強いときは「関係性サマリ（大好き等）」が口調を上書きしやすい。
+    # ここでは短期状態（otome_state）を優先し、SharedNarrativeを注入しない。
+    try:
+        if isinstance(otome_state, dict):
+            if str(otome_state.get("label") or "") == "anger" and float(otome_state.get("intensity") or 0.0) >= 0.6:
+                summaries = []
+    except Exception:  # noqa: BLE001
+        pass
     loops = list(loop_lines)
     evidence = list(evidence_lines)
 
