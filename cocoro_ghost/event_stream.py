@@ -35,7 +35,7 @@ class AppEvent:
     event_id: str  # イベント固有ID（UUID）
     ts: str  # ISO形式タイムスタンプ
     type: str  # イベント種別（notification_done, meta_done等）
-    memory_id: str  # 対象メモリID
+    embedding_preset_id: str  # 対象EmbeddingPreset ID（= 記憶DB識別子）
     unit_id: int  # 関連UnitID
     data: Dict[str, Any]  # 追加データ
 
@@ -115,7 +115,7 @@ async def stop_dispatcher() -> None:
     _dispatch_task = None
 
 
-def publish(*, type: str, memory_id: str, unit_id: int, data: Optional[Dict[str, Any]] = None) -> None:
+def publish(*, type: str, embedding_preset_id: str, unit_id: int, data: Optional[Dict[str, Any]] = None) -> None:
     """
     イベントをキューに投入する。
 
@@ -127,7 +127,7 @@ def publish(*, type: str, memory_id: str, unit_id: int, data: Optional[Dict[str,
         event_id=str(uuid.uuid4()),
         ts=datetime.now(timezone.utc).isoformat(),
         type=type,
-        memory_id=memory_id,
+        embedding_preset_id=embedding_preset_id,
         unit_id=int(unit_id),
         data=data or {},
     )

@@ -66,7 +66,7 @@ class RuntimeConfig:
 
     # EmbeddingPreset由来（埋め込みベクトル設定）
     embedding_preset_name: str    # Embeddingプリセット名
-    memory_id: str                # 記憶DBのID
+    embedding_preset_id: str      # 記憶DBのID（= EmbeddingPreset.id）
     embedding_model: str          # 埋め込みモデル名
     embedding_api_key: Optional[str]    # Embedding APIキー
     embedding_base_url: Optional[str]   # Embedding APIエンドポイント
@@ -110,9 +110,9 @@ class ConfigStore:
         return self._toml
 
     @property
-    def memory_id(self) -> str:
-        """アクティブな記憶DBのID（embedding preset由来）。"""
-        return self._runtime.memory_id
+    def embedding_preset_id(self) -> str:
+        """アクティブなEmbeddingPresetのID（= 記憶DBファイルを選ぶためのID）。"""
+        return self._runtime.embedding_preset_id
 
     @property
     def embedding_dimension(self) -> int:
@@ -211,7 +211,7 @@ def build_runtime_config(
         image_timeout_seconds=llm_preset.image_timeout_seconds,
         # EmbeddingPreset由来
         embedding_preset_name=embedding_preset.name,
-        memory_id=str(embedding_preset.id),
+        embedding_preset_id=str(embedding_preset.id),
         embedding_model=embedding_preset.embedding_model,
         embedding_api_key=embedding_preset.embedding_api_key,
         embedding_base_url=embedding_preset.embedding_base_url,

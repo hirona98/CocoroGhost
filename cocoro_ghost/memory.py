@@ -62,18 +62,19 @@ _META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
 _STREAM_TRAILER_MARKER = PARTNER_AFFECT_TRAILER_MARKER
 
 
-def _load_embedding_preset_by_memory_id(memory_id: str) -> models.EmbeddingPreset | None:
-    """memory_id（= embedding_presets.id）からEmbeddingPresetを取得する。
+def _load_embedding_preset_by_embedding_preset_id(embedding_preset_id: str) -> models.EmbeddingPreset | None:
+    """embedding_preset_id（= embedding_presets.id）からEmbeddingPresetを取得する。
 
-    /api/chat で memory_id を指定できる設計のため、アクティブpreset以外も参照できるようにする。
+    /api/chat で embedding_preset_id を指定できる設計のため、
+    アクティブpreset以外も参照できるようにする。
     """
-    mid = str(memory_id or "").strip()
-    if not mid:
+    pid = str(embedding_preset_id or "").strip()
+    if not pid:
         return None
     with settings_session_scope() as session:
         return (
             session.query(models.EmbeddingPreset)
-            .filter_by(id=mid, archived=False)
+            .filter_by(id=pid, archived=False)
             .first()
         )
 
@@ -156,12 +157,12 @@ def _now_utc_ts() -> int:
     return int(time.time())
 
 
-def _get_memory_lock(memory_id: str) -> threading.Lock:
-    """memory_idごとの排他ロックを取得（同一DBへの同時書き込みを抑制）。"""
-    lock = _memory_locks.get(memory_id)
+def _get_memory_lock(embedding_preset_id: str) -> threading.Lock:
+    """embedding_preset_idごとの排他ロックを取得（同一DBへの同時書き込みを抑制）。"""
+    lock = _memory_locks.get(embedding_preset_id)
     if lock is None:
         lock = threading.Lock()
-        _memory_locks[memory_id] = lock
+        _memory_locks[embedding_preset_id] = lock
     return lock
 
 
@@ -411,32 +412,32 @@ class MemoryManager:
         """
         cfg = self.config_store.config
 
-        # 運用前のため、/api/chat は memory_id 指定を必須とする。
-        # memory_id は embedding_presets.id（UUID）を想定。
-        memory_id = (request.memory_id or "").strip()
-        if not memory_id:
+        # 運用前のため、/api/chat は embedding_preset_id 指定を必須とする。
+        # embedding_preset_id は embedding_presets.id（UUID）を想定。
+        embedding_preset_id = (request.embedding_preset_id or "").strip()
+        if not embedding_preset_id:
             yield self._sse(
                 "error",
                 {
-                    "message": "memory_id is required",
-                    "code": "missing_memory_id",
+                    "message": "embedding_preset_id is required",
+                    "code": "missing_embedding_preset_id",
                 },
             )
             return
 
-        lock = _get_memory_lock(memory_id)
+        lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
         memory_enabled = self.config_store.memory_enabled
 
-        # 指定された memory_id の embedding preset を settings.db から解決し、
+        # 指定された embedding_preset_id の embedding preset を settings.db から解決し、
         # 次元・検索上限・注入予算・embeddingモデルを per-request で適用する。
-        preset = _load_embedding_preset_by_memory_id(memory_id)
+        preset = _load_embedding_preset_by_embedding_preset_id(embedding_preset_id)
         if preset is None:
             yield self._sse(
                 "error",
                 {
-                    "message": "unknown memory_id (embedding preset not found or archived)",
-                    "code": "invalid_memory_id",
+                    "message": "unknown embedding_preset_id (embedding preset not found or archived)",
+                    "code": "invalid_embedding_preset_id",
                 },
             )
             return
@@ -469,7 +470,7 @@ class MemoryManager:
         memory_pack = ""
         if memory_enabled:
             try:
-                with lock, memory_session_scope(memory_id, embedding_dimension) as db:
+                with lock, memory_session_scope(embedding_preset_id, embedding_dimension) as db:
                     recent_conversation = self._load_recent_conversation(db, turns=3)
                     llm_turns_window = int(getattr(cfg, "max_turns_window", 0) or 0)
                     if llm_turns_window > 0:
@@ -587,7 +588,7 @@ class MemoryManager:
         context_note = _json_dumps(request.client_context) if request.client_context else None
 
         try:
-            with lock, memory_session_scope(memory_id, embedding_dimension) as db:
+            with lock, memory_session_scope(embedding_preset_id, embedding_dimension) as db:
                 episode_unit_id = self._create_episode_unit(
                     db,
                     now_ts=now_ts,
@@ -621,14 +622,14 @@ class MemoryManager:
         background_tasks: Optional[BackgroundTasks] = None,
     ) -> schemas.NotificationResponse:
         """外部システムからの通知をEpisodeとして保存し、必要なジョブをenqueueする。"""
-        memory_id = self.config_store.memory_id
-        lock = _get_memory_lock(memory_id)
+        embedding_preset_id = self.config_store.embedding_preset_id
+        lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
         system_text = f"[{request.source_system}] {request.text}".strip()
         context_note = _json_dumps({"source_system": request.source_system, "text": request.text})
 
-        with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
             unit_id = self._create_episode_unit(
                 db,
                 now_ts=now_ts,
@@ -643,7 +644,7 @@ class MemoryManager:
         if background_tasks is not None:
             background_tasks.add_task(
                 self._process_notification_async,
-                memory_id=memory_id,
+                embedding_preset_id=embedding_preset_id,
                 unit_id=int(unit_id),
                 source_system=request.source_system,
                 text=request.text,
@@ -652,7 +653,7 @@ class MemoryManager:
             )
         else:
             self._process_notification_async(
-                memory_id=memory_id,
+                embedding_preset_id=embedding_preset_id,
                 unit_id=int(unit_id),
                 source_system=request.source_system,
                 text=request.text,
@@ -664,14 +665,14 @@ class MemoryManager:
     def _process_notification_async(
         self,
         *,
-        memory_id: str,
+        embedding_preset_id: str,
         unit_id: int,
         source_system: str,
         text: str,
         images: Sequence[Dict[str, str]],
         system_text: str,
     ) -> None:
-        lock = _get_memory_lock(memory_id)
+        lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
         image_summaries = self._summarize_images(list(images))
@@ -691,7 +692,7 @@ class MemoryManager:
         memory_pack = ""
         if memory_enabled:
             try:
-                with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+                with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
                     recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
                     retriever = Retriever(llm_client=self.llm_client, db=db)
                     relevant_episodes = retriever.retrieve(
@@ -742,7 +743,7 @@ class MemoryManager:
             logger.error("notification reply generation failed", exc_info=exc)
             message = ""
 
-        with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
             self._update_episode_unit(
                 db,
                 now_ts=now_ts,
@@ -755,7 +756,7 @@ class MemoryManager:
 
         publish_event(
             type="notification",
-            memory_id=memory_id,
+            embedding_preset_id=embedding_preset_id,
             unit_id=unit_id,
             data={"system_text": system_text, "message": message},
         )
@@ -771,11 +772,11 @@ class MemoryManager:
 
         background_tasks があれば非同期実行し、結果はevent_streamで通知する。
         """
-        memory_id = request.memory_id or self.config_store.memory_id
-        lock = _get_memory_lock(memory_id)
+        embedding_preset_id = request.embedding_preset_id or self.config_store.embedding_preset_id
+        lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
-        with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
             unit_id = self._create_episode_unit(
                 db,
                 now_ts=now_ts,
@@ -790,7 +791,7 @@ class MemoryManager:
         if background_tasks is not None:
             background_tasks.add_task(
                 self._process_meta_request_async,
-                memory_id=memory_id,
+                embedding_preset_id=embedding_preset_id,
                 unit_id=int(unit_id),
                 instruction=request.instruction,
                 payload_text=request.payload_text,
@@ -798,7 +799,7 @@ class MemoryManager:
             )
         else:
             self._process_meta_request_async(
-                memory_id=memory_id,
+                embedding_preset_id=embedding_preset_id,
                 unit_id=int(unit_id),
                 instruction=request.instruction,
                 payload_text=request.payload_text,
@@ -809,13 +810,13 @@ class MemoryManager:
     def _process_meta_request_async(
         self,
         *,
-        memory_id: str,
+        embedding_preset_id: str,
         unit_id: int,
         instruction: str,
         payload_text: str,
         images: Sequence[Dict[str, str]],
     ) -> None:
-        lock = _get_memory_lock(memory_id)
+        lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
         image_summaries = self._summarize_images(list(images))
@@ -838,7 +839,7 @@ class MemoryManager:
         memory_pack = ""
         if memory_enabled:
             try:
-                with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+                with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
                     recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
                     retriever = Retriever(llm_client=self.llm_client, db=db)
                     relevant_episodes = retriever.retrieve(
@@ -889,7 +890,7 @@ class MemoryManager:
             logger.error("meta_request document generation failed", exc_info=exc)
             message = ""
 
-        with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
             self._update_episode_unit(
                 db,
                 now_ts=now_ts,
@@ -903,7 +904,7 @@ class MemoryManager:
 
         publish_event(
             type="meta_request",
-            memory_id=memory_id,
+            embedding_preset_id=embedding_preset_id,
             unit_id=unit_id,
             data={"message": message},
         )
@@ -911,8 +912,8 @@ class MemoryManager:
     def handle_capture(self, request: schemas.CaptureRequest) -> schemas.CaptureResponse:
         """スクリーンショット/カメラ画像を要約してEpisodeとして保存する。"""
         cfg = self.config_store.config
-        memory_id = self.config_store.memory_id
-        lock = _get_memory_lock(memory_id)
+        embedding_preset_id = self.config_store.embedding_preset_id
+        lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
         text_to_check = request.context_text or ""
@@ -929,7 +930,7 @@ class MemoryManager:
             image_summary = "画像要約に失敗しました"
 
         source = "desktop_capture" if request.capture_type == "desktop" else "camera_capture"
-        with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
             unit_id = self._create_episode_unit(
                 db,
                 now_ts=now_ts,

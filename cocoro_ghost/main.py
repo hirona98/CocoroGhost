@@ -103,8 +103,8 @@ def create_app() -> FastAPI:
     # グローバル設定ストアとして登録
     set_global_config_store(config_store)
 
-    # 5. 記憶DB初期化（memory_idに対応するDBファイルを作成/接続）
-    init_memory_db(runtime_config.memory_id, runtime_config.embedding_dimension)
+    # 5. 記憶DB初期化（embedding_preset_idに対応するDBファイルを作成/接続）
+    init_memory_db(runtime_config.embedding_preset_id, runtime_config.embedding_dimension)
 
     # 6. FastAPIアプリ作成
     app = FastAPI(title="CocoroGhost API")
@@ -156,8 +156,11 @@ def create_app() -> FastAPI:
         """同一プロセス内のWorkerスレッドを起動。jobsテーブルのタスクを処理する。"""
         from cocoro_ghost import internal_worker
 
-        internal_worker.start(memory_id=runtime_config.memory_id, embedding_dimension=runtime_config.embedding_dimension)
-        logger.info("internal worker started", extra={"memory_id": runtime_config.memory_id})
+        internal_worker.start(
+            embedding_preset_id=runtime_config.embedding_preset_id,
+            embedding_dimension=runtime_config.embedding_dimension,
+        )
+        logger.info("internal worker started", extra={"embedding_preset_id": runtime_config.embedding_preset_id})
 
     @app.on_event("shutdown")
     async def stop_log_stream_dispatcher() -> None:

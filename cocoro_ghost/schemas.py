@@ -46,7 +46,7 @@ class ChatRequest(BaseModel):
     /chat 用リクエスト。
     ユーザーのメッセージと添付画像を受け付ける。
     """
-    memory_id: Optional[str] = None      # 使用する記憶DBのID（未指定時はデフォルト）
+    embedding_preset_id: Optional[str] = None
     user_text: str                       # ユーザーの入力テキスト
     images: List[Dict[str, str]] = Field(default_factory=list)  # 添付画像リスト
     client_context: Optional[Dict[str, Any]] = None  # クライアント側コンテキスト
@@ -98,7 +98,7 @@ class MetaRequestRequest(BaseModel):
     /meta_request 用リクエスト（内部形式）。
     システムからパートナーへの指示を伝える。
     """
-    memory_id: Optional[str] = None      # 使用する記憶DBのID
+    embedding_preset_id: Optional[str] = None
     instruction: str                     # パートナーへの指示
     payload_text: str                    # 追加情報テキスト
     images: List[Dict[str, str]] = Field(default_factory=list)  # 添付画像

@@ -9,7 +9,7 @@
 ## 入力
 
 - `user_text`
-- `memory_id`（対象の記憶DB）
+- `embedding_preset_id`（対象の記憶DB）
 - `now_utc`（epoch sec。MemoryPack の `[CONTEXT_CAPSULE]` に `now_local` として注入される。`now_local` はサーバのローカル時刻）
 - `client_context`（任意）
 - `max_inject_tokens`（プリセット）

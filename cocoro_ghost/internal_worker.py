@@ -28,7 +28,7 @@ def is_alive() -> bool:
     return t is not None and t.is_alive()
 
 
-def start(*, memory_id: str, embedding_dimension: int) -> None:
+def start(*, embedding_preset_id: str, embedding_dimension: int) -> None:
     """
     内蔵Workerスレッドを起動する。
 
@@ -52,7 +52,7 @@ def start(*, memory_id: str, embedding_dimension: int) -> None:
         t = threading.Thread(
             target=run_forever,
             kwargs={
-                "memory_id": str(memory_id),
+                "embedding_preset_id": str(embedding_preset_id),
                 "embedding_dimension": int(embedding_dimension),
                 "llm_client": llm_client,
                 # 固定値（cron無し定期enqueue込み）
@@ -89,24 +89,24 @@ def stop(*, timeout_seconds: float = 5.0) -> None:
         _stop_event = None
 
 
-def restart(*, memory_id: str, embedding_dimension: int) -> None:
+def restart(*, embedding_preset_id: str, embedding_dimension: int) -> None:
     """
     内蔵Workerを再起動する。
 
     設定変更後にWorkerを新しい設定で再起動させる。
     """
     stop()
-    start(memory_id=memory_id, embedding_dimension=embedding_dimension)
+    start(embedding_preset_id=embedding_preset_id, embedding_dimension=embedding_dimension)
 
 
-def request_restart_async(*, memory_id: str, embedding_dimension: int) -> None:
+def request_restart_async(*, embedding_preset_id: str, embedding_dimension: int) -> None:
     """
     非同期コンテキストからWorkerを再起動する。
 
     BackgroundTasks等から呼び出され、例外を外部に伝播させない。
     """
     try:
-        restart(memory_id=memory_id, embedding_dimension=embedding_dimension)
+        restart(embedding_preset_id=embedding_preset_id, embedding_dimension=embedding_dimension)
     except Exception:  # noqa: BLE001
         # ここでログ依存を持たせない（呼び出し側でログする）
         return

@@ -11,11 +11,10 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
-from cocoro_ghost.config import ConfigStore
-from cocoro_ghost.db import memory_session_scope, sync_unit_vector_metadata
-from cocoro_ghost.deps import get_config_store_dep
+from cocoro_ghost import models
+from cocoro_ghost.db import memory_session_scope, settings_session_scope, sync_unit_vector_metadata
 from cocoro_ghost.topic_tags import canonicalize_topic_tags_json
 
 from cocoro_ghost.schemas import (
@@ -37,6 +36,18 @@ from cocoro_ghost.versioning import record_unit_version
 
 
 router = APIRouter()
+
+
+def _resolve_embedding_dimension(embedding_preset_id: str) -> int:
+    """embedding_preset_id に対応する埋め込み次元を settings.db から解決する。"""
+    pid = (embedding_preset_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="embedding_preset_id is required")
+    with settings_session_scope() as session:
+        preset = session.query(models.EmbeddingPreset).filter_by(id=pid, archived=False).first()
+        if preset is None:
+            raise HTTPException(status_code=400, detail="invalid embedding_preset_id")
+        return int(preset.embedding_dimension)
 
 
 def _to_unit_meta(u: Unit) -> UnitMeta:
@@ -63,21 +74,21 @@ def _to_unit_meta(u: Unit) -> UnitMeta:
     )
 
 
-@router.get("/memories/{memory_id}/units", response_model=UnitListResponse)
+@router.get("/memories/{embedding_preset_id}/units", response_model=UnitListResponse)
 def list_units(
-    memory_id: str,
+    embedding_preset_id: str,
     kind: Optional[int] = Query(default=None),
     state: Optional[int] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    config_store: ConfigStore = Depends(get_config_store_dep),
 ):
     """
     Unit一覧を返す。
 
     kind/stateでフィルタリング可能。作成日時の降順でソートされる。
     """
-    with memory_session_scope(memory_id, config_store.embedding_dimension) as db:
+    embedding_dimension = _resolve_embedding_dimension(embedding_preset_id)
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         q = db.query(Unit)
         if kind is not None:
             q = q.filter(Unit.kind == int(kind))
@@ -87,18 +98,18 @@ def list_units(
         return UnitListResponse(items=[_to_unit_meta(u) for u in units])
 
 
-@router.get("/memories/{memory_id}/units/{unit_id}", response_model=UnitDetailResponse)
+@router.get("/memories/{embedding_preset_id}/units/{unit_id}", response_model=UnitDetailResponse)
 def get_unit(
-    memory_id: str,
+    embedding_preset_id: str,
     unit_id: int,
-    config_store: ConfigStore = Depends(get_config_store_dep),
 ):
     """
     Unit詳細を返す。
 
     メタ情報とkindに応じたペイロード（Episode/Fact/Summary等）を含む。
     """
-    with memory_session_scope(memory_id, config_store.embedding_dimension) as db:
+    embedding_dimension = _resolve_embedding_dimension(embedding_preset_id)
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         unit = db.query(Unit).filter(Unit.id == unit_id).one_or_none()
         if unit is None:
             raise HTTPException(status_code=404, detail="unit not found")
@@ -149,12 +160,11 @@ def get_unit(
         return UnitDetailResponse(unit=_to_unit_meta(unit), payload=payload)
 
 
-@router.patch("/memories/{memory_id}/units/{unit_id}", response_model=UnitMeta)
+@router.patch("/memories/{embedding_preset_id}/units/{unit_id}", response_model=UnitMeta)
 def update_unit(
-    memory_id: str,
+    embedding_preset_id: str,
     unit_id: int,
     request: UnitUpdateRequest,
-    config_store: ConfigStore = Depends(get_config_store_dep),
 ):
     """
     Unitのメタ情報を更新する。
@@ -163,7 +173,8 @@ def update_unit(
     変更時はバージョン履歴を記録し、ベクトルメタデータも同期する。
     """
     now_ts = int(time.time())
-    with memory_session_scope(memory_id, config_store.embedding_dimension) as db:
+    embedding_dimension = _resolve_embedding_dimension(embedding_preset_id)
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         unit = db.query(Unit).filter(Unit.id == unit_id).one_or_none()
         if unit is None:
             raise HTTPException(status_code=404, detail="unit not found")
