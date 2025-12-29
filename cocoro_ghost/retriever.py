@@ -1,15 +1,20 @@
 """
-文脈考慮型の記憶検索（Contextual Memory Retrieval）。
+文脈考慮型の記憶検索（Contextual Memory Retrieval）
 
 本モジュールは「直近の会話 + ユーザー入力」を手掛かりに、過去のエピソード（対話ログ）を検索して
-“参照すべき記憶”として返すためのロジックを提供する。
+"参照すべき記憶"として返すためのロジックを提供する。
 
-流れ（概略）:
-1) ハイブリッド検索（Vector 近傍探索 + FTS5/BM25）で候補IDを集める
+処理フロー:
+1) ハイブリッド検索（Vector近傍探索 + FTS5/BM25）で候補IDを集める
 2) RRF（Reciprocal Rank Fusion）でランキングを統合する
 3) 文字N-gramの類似度 + 新しさ（減衰）を用いた簡易リランキングで最終結果を選ぶ
 
-※ LLM によるクエリ拡張は行わず、固定の複数クエリ（user_text / context+user_text）だけで検索する。
+主要クラス:
+- Retriever: 記憶検索のエントリポイント
+- RankedEpisode: 最終的に採用されたエピソード
+- CandidateEpisode: リランキング前の候補エピソード
+
+注意: LLMによるクエリ拡張は行わず、固定の複数クエリのみで検索する。
 """
 
 from __future__ import annotations

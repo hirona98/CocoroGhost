@@ -1,4 +1,10 @@
-"""DB 接続とセッション管理（設定DB・記憶DB分離版）。"""
+"""
+DB 接続とセッション管理（設定DB・記憶DB分離版）
+
+SQLite+sqlite-vecを使用したデータベース管理モジュール。
+設定DBと記憶DBを分離し、それぞれ独立して管理する。
+ベクトル検索（sqlite-vec）とBM25検索（FTS5）をサポート。
+"""
 
 from __future__ import annotations
 
@@ -19,7 +25,7 @@ from cocoro_ghost.defaults import DEFAULT_EXCLUDE_KEYWORDS_JSON
 logger = logging.getLogger(__name__)
 
 # sqlite-vec 仮想テーブル名（検索用ベクトルインデックス）
-# vec_units は本文を置かず unit_id で JOIN して取得する。
+# vec_units は本文を置かず unit_id で JOIN して取得する
 VEC_UNITS_TABLE_NAME = "vec_units"
 
 # FTS5 仮想テーブル名（BM25インデックス）
@@ -34,41 +40,51 @@ UnitBase = declarative_base()
 # グローバルセッション（設定DB用）
 SettingsSessionLocal: sessionmaker | None = None
 
-# 記憶DBセッションのキャッシュ（memory_id -> sessionmaker）
+
 @dataclasses.dataclass(frozen=True)
 class _MemorySessionEntry:
+    """記憶DBセッションのエントリ（セッションファクトリと次元数を保持）。"""
     session_factory: sessionmaker
     embedding_dimension: int
 
 
+# 記憶DBセッションのキャッシュ（memory_id -> sessionmaker）
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
 def get_data_dir() -> Path:
-    """データディレクトリを取得（存在しなければ作成）。"""
+    """
+    データディレクトリを取得する。
+    存在しなければ作成する。
+    """
     data_dir = Path(__file__).parent.parent / "data"
     data_dir.mkdir(exist_ok=True)
     return data_dir
 
 
 def get_settings_db_path() -> str:
-    """設定DBのパスを取得。"""
+    """設定DBのパスを取得。SQLAlchemy用のURL形式で返す。"""
     return f"sqlite:///{get_data_dir() / 'settings.db'}"
 
 
 def get_memory_db_path(memory_id: str) -> str:
-    """記憶DBのパスを取得。"""
+    """記憶DBのパスを取得。memory_idごとに別ファイルとなる。"""
     return f"sqlite:///{get_data_dir() / f'memory_{memory_id}.db'}"
 
 
 def _create_engine_with_vec_support(db_url: str):
-    """sqlite-vec拡張をサポートするエンジンを作成。"""
+    """
+    sqlite-vec拡張をサポートするSQLAlchemyエンジンを作成する。
+    接続ごとに拡張をロードし、必要なPRAGMAを適用する。
+    """
     import sqlite_vec
 
+    # SQLiteの場合はスレッドチェックを無効化
     connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
     engine = create_engine(db_url, future=True, connect_args=connect_args)
 
     if db_url.startswith("sqlite"):
+        # sqlite-vec拡張のパスを取得
         vec_path = getattr(sqlite_vec, "loadable_path", None)
         vec_path = vec_path() if callable(vec_path) else str(Path(sqlite_vec.__file__).parent / "vec0")
         vec_path = str(vec_path)
@@ -95,14 +111,20 @@ def _create_engine_with_vec_support(db_url: str):
 
 
 def _enable_sqlite_vec(engine, dimension: int) -> None:
-    """sqlite-vec の仮想テーブルを作成。sqlite-vec拡張は接続時に自動ロードされる。"""
+    """
+    sqlite-vecの仮想テーブルを作成する。
+    既存テーブルがある場合は次元数の一致を確認する。
+    """
     with engine.connect() as conn:
+        # 既存テーブルの確認
         existing = conn.execute(
             text(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name = :name"
             ),
             {"name": VEC_UNITS_TABLE_NAME},
         ).fetchone()
+
+        # 次元数の一致確認
         if existing is not None and existing[0]:
             m = re.search(r"embedding\s+float\[(\d+)\]", str(existing[0]))
             if m:
@@ -114,6 +136,8 @@ def _enable_sqlite_vec(engine, dimension: int) -> None:
                     )
             else:
                 logger.warning("vec_units schema parse failed", extra={"sql": str(existing[0])})
+
+        # ベクトル検索用仮想テーブルを作成
         conn.execute(
             text(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS {VEC_UNITS_TABLE_NAME} USING vec0("
@@ -130,8 +154,12 @@ def _enable_sqlite_vec(engine, dimension: int) -> None:
 
 
 def _enable_episode_fts(engine) -> None:
-    """Episode の BM25 検索用に FTS5 仮想テーブルと同期トリガーを用意する。"""
+    """
+    EpisodeのBM25検索用にFTS5仮想テーブルと同期トリガーを用意する。
+    payload_episodeテーブルの変更に自動追従する。
+    """
     with engine.connect() as conn:
+        # FTSテーブルの存在確認
         existed = (
             conn.execute(
                 text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:name"),
@@ -140,6 +168,7 @@ def _enable_episode_fts(engine) -> None:
             is not None
         )
 
+        # FTS5仮想テーブル作成
         conn.execute(
             text(
                 f"""
@@ -155,6 +184,7 @@ def _enable_episode_fts(engine) -> None:
         )
 
         # external content FTS はトリガーで追従させる
+        # INSERT用トリガー
         conn.execute(
             text(
                 f"""
@@ -167,6 +197,7 @@ def _enable_episode_fts(engine) -> None:
                 """
             )
         )
+        # DELETE用トリガー
         conn.execute(
             text(
                 f"""
@@ -179,6 +210,7 @@ def _enable_episode_fts(engine) -> None:
                 """
             )
         )
+        # UPDATE用トリガー（DELETE + INSERT）
         conn.execute(
             text(
                 f"""
@@ -194,23 +226,25 @@ def _enable_episode_fts(engine) -> None:
             )
         )
 
+        # 初回作成時のみ rebuild（既存の payload_episode を索引化）
         if not existed:
-            # 初回作成時のみ rebuild（既存の payload_episode を索引化）
             conn.execute(text(f"INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}) VALUES ('rebuild')"))
 
         conn.commit()
 
 
 def _apply_memory_pragmas(engine) -> None:
+    """記憶DBのパフォーマンス設定PRAGMAを適用する。"""
     with engine.connect() as conn:
-        conn.execute(text("PRAGMA journal_mode=WAL"))
-        conn.execute(text("PRAGMA synchronous=NORMAL"))
-        conn.execute(text("PRAGMA temp_store=MEMORY"))
-        conn.execute(text("PRAGMA foreign_keys=ON"))
+        conn.execute(text("PRAGMA journal_mode=WAL"))      # WALモードで並行性向上
+        conn.execute(text("PRAGMA synchronous=NORMAL"))    # 書き込み性能最適化
+        conn.execute(text("PRAGMA temp_store=MEMORY"))     # 一時テーブルをメモリに
+        conn.execute(text("PRAGMA foreign_keys=ON"))       # 外部キー制約を有効化
         conn.commit()
 
 
 def _create_memory_indexes(engine) -> None:
+    """記憶DBの検索性能向上用インデックスを作成する。"""
     stmts = [
         "CREATE INDEX IF NOT EXISTS idx_units_kind_created ON units(kind, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_units_occurred ON units(occurred_at)",
@@ -232,12 +266,14 @@ def _create_memory_indexes(engine) -> None:
         conn.commit()
 
 
-
 # --- 設定DB ---
 
 
 def init_settings_db() -> None:
-    """設定DBを初期化。"""
+    """
+    設定DBを初期化する。
+    グローバルセッションファクトリを作成し、テーブルを作成する。
+    """
     global SettingsSessionLocal
 
     db_url = get_settings_db_path()
@@ -249,7 +285,10 @@ def init_settings_db() -> None:
 
 
 def get_settings_db() -> Iterator[Session]:
-    """設定DBのセッションを取得（FastAPI依存性注入用）。"""
+    """
+    設定DBのセッションを取得する（FastAPI依存性注入用）。
+    使用後は自動的にクローズされる。
+    """
     if SettingsSessionLocal is None:
         raise RuntimeError("Settings database not initialized. Call init_settings_db() first.")
     db = SettingsSessionLocal()
@@ -261,7 +300,10 @@ def get_settings_db() -> Iterator[Session]:
 
 @contextlib.contextmanager
 def settings_session_scope() -> Iterator[Session]:
-    """設定DBのセッションスコープ。"""
+    """
+    設定DBのセッションスコープ（with文用）。
+    正常終了時はコミット、例外時はロールバックする。
+    """
     if SettingsSessionLocal is None:
         raise RuntimeError("Settings database not initialized. Call init_settings_db() first.")
     session = SettingsSessionLocal()
@@ -279,9 +321,14 @@ def settings_session_scope() -> Iterator[Session]:
 
 
 def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
-    """指定されたmemory_idの記憶DBを初期化し、sessionmakerを返す。"""
+    """
+    指定されたmemory_idの記憶DBを初期化し、sessionmakerを返す。
+    既に初期化済みの場合はキャッシュから返す。
+    """
+    # キャッシュ確認
     entry = _memory_sessions.get(memory_id)
     if entry is not None:
+        # 次元数の一致確認
         if int(entry.embedding_dimension) != int(embedding_dimension):
             raise RuntimeError(
                 f"memory_id={memory_id} は既に embedding_dimension={entry.embedding_dimension} で初期化済みです。"
@@ -293,6 +340,7 @@ def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
     db_url = get_memory_db_path(memory_id)
     engine = _create_engine_with_vec_support(db_url)
 
+    # パフォーマンス設定を適用
     _apply_memory_pragmas(engine)
 
     # 記憶用テーブルを作成（Unitベース新仕様）
@@ -306,6 +354,7 @@ def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
     if db_url.startswith("sqlite"):
         _enable_sqlite_vec(engine, embedding_dimension)
 
+    # セッションファクトリをキャッシュ
     session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     _memory_sessions[memory_id] = _MemorySessionEntry(session_factory=session_factory, embedding_dimension=int(embedding_dimension))
     logger.info(f"記憶DB初期化完了: {db_url}")
@@ -313,14 +362,17 @@ def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
 
 
 def get_memory_session(memory_id: str, embedding_dimension: int) -> Session:
-    """指定されたmemory_idの記憶DBセッションを取得。"""
+    """指定されたmemory_idの記憶DBセッションを取得する。"""
     session_factory = init_memory_db(memory_id, embedding_dimension)
     return session_factory()
 
 
 @contextlib.contextmanager
 def memory_session_scope(memory_id: str, embedding_dimension: int) -> Iterator[Session]:
-    """記憶DBのセッションスコープ。"""
+    """
+    記憶DBのセッションスコープ（with文用）。
+    正常終了時はコミット、例外時はロールバックする。
+    """
     session = get_memory_session(memory_id, embedding_dimension)
     try:
         yield session
@@ -345,9 +397,15 @@ def upsert_unit_vector(
     state: int,
     sensitivity: int,
 ) -> None:
-    """Unitの検索用ベクトルを更新または挿入（sqlite-vec仮想テーブル）。"""
+    """
+    Unitの検索用ベクトルを更新または挿入する（sqlite-vec仮想テーブル）。
+    既存のベクトルがあれば削除してから挿入する。
+    """
     embedding_json = json.dumps(embedding)
+    # 日付をエポック日数に変換（検索フィルタ用）
     occurred_day = (occurred_at // 86400) if occurred_at is not None else None
+
+    # 既存レコードを削除してから挿入
     session.execute(text(f"DELETE FROM {VEC_UNITS_TABLE_NAME} WHERE unit_id = :unit_id"), {"unit_id": unit_id})
     session.execute(
         text(
@@ -375,7 +433,10 @@ def sync_unit_vector_metadata(
     state: int,
     sensitivity: int,
 ) -> None:
-    """vec_units の metadata columns を units と同期する（埋め込みは更新しない）。"""
+    """
+    vec_unitsのメタデータカラムをunitsと同期する（埋め込みは更新しない）。
+    状態変更や日付変更時にフィルタ条件を更新するために使用。
+    """
     occurred_day = (occurred_at // 86400) if occurred_at is not None else None
     session.execute(
         text(
@@ -405,8 +466,13 @@ def search_similar_unit_ids(
     max_sensitivity: int,
     occurred_day_range: tuple[int, int] | None = None,
 ) -> list:
-    """類似Unit IDを検索（sqlite-vec仮想テーブル）。"""
+    """
+    類似Unit IDを検索する（sqlite-vec仮想テーブル）。
+    コサイン距離に基づいてk件の類似ユニットを返す。
+    """
     query_json = json.dumps(query_embedding)
+
+    # 日付範囲フィルタの構築
     day_filter = ""
     params = {
         "query": query_json,
@@ -419,6 +485,7 @@ def search_similar_unit_ids(
         params["d0"] = occurred_day_range[0]
         params["d1"] = occurred_day_range[1]
 
+    # ベクトル類似検索を実行
     rows = session.execute(
         text(
             f"""
@@ -442,7 +509,10 @@ def search_similar_unit_ids(
 
 
 def ensure_initial_settings(session: Session, toml_config) -> None:
-    """設定DBに必要な初期レコードが無ければ作成する。"""
+    """
+    設定DBに必要な初期レコードが無ければ作成する。
+    各種プリセット（LLM, Embedding, Persona, Addon）のデフォルトを用意する。
+    """
     from cocoro_ghost import models
     from cocoro_ghost import prompts
 
@@ -455,6 +525,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             global_settings.active_persona_preset_id,
             global_settings.active_addon_preset_id,
         ]
+        # すべてのプリセットIDが設定済みか確認
         if all(x is not None for x in ids):
             active_llm = session.query(models.LlmPreset).filter_by(id=global_settings.active_llm_preset_id, archived=False).first()
             active_embedding = session.query(models.EmbeddingPreset).filter_by(
@@ -573,7 +644,10 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
 
 
 def load_global_settings(session: Session):
-    """GlobalSettingsを取得。"""
+    """
+    GlobalSettingsを取得する。
+    存在しない場合はRuntimeErrorを発生させる。
+    """
     from cocoro_ghost import models
 
     settings = session.query(models.GlobalSettings).first()
@@ -583,7 +657,10 @@ def load_global_settings(session: Session):
 
 
 def load_active_llm_preset(session: Session):
-    """アクティブなLlmPresetを取得。"""
+    """
+    アクティブなLlmPresetを取得する。
+    設定されていない場合はRuntimeErrorを発生させる。
+    """
     from cocoro_ghost import models
 
     settings = load_global_settings(session)
@@ -597,7 +674,10 @@ def load_active_llm_preset(session: Session):
 
 
 def load_active_embedding_preset(session: Session):
-    """アクティブなEmbeddingPresetを取得。"""
+    """
+    アクティブなEmbeddingPresetを取得する。
+    設定されていない場合はRuntimeErrorを発生させる。
+    """
     from cocoro_ghost import models
 
     settings = load_global_settings(session)
@@ -612,7 +692,10 @@ def load_active_embedding_preset(session: Session):
 
 
 def load_active_persona_preset(session: Session):
-    """アクティブなPersonaPresetを取得。"""
+    """
+    アクティブなPersonaPresetを取得する。
+    設定されていない場合はRuntimeErrorを発生させる。
+    """
     from cocoro_ghost import models
 
     settings = load_global_settings(session)
@@ -626,7 +709,10 @@ def load_active_persona_preset(session: Session):
 
 
 def load_active_addon_preset(session: Session):
-    """アクティブなAddonPresetを取得。"""
+    """
+    アクティブなAddonPresetを取得する。
+    設定されていない場合はRuntimeErrorを発生させる。
+    """
     from cocoro_ghost import models
 
     settings = load_global_settings(session)

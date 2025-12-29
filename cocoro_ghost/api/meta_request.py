@@ -1,4 +1,10 @@
-"""/v1/meta_request エンドポイント。"""
+"""
+/v1/meta_request エンドポイント
+
+システムからの指示（instruction）とペイロードを受け取り、
+パートナーAIに能動的なメッセージを生成させる。
+ユーザーに対して自然に話しかける機能として使用される。
+"""
 
 from __future__ import annotations
 

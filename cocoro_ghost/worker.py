@@ -1,4 +1,27 @@
-"""非同期ジョブWorker（jobsテーブル実行）。"""
+"""
+非同期ジョブWorker（jobsテーブル実行）
+
+バックグラウンドでjobsテーブルのタスクを処理するWorkerモジュール。
+Episode作成後の反射（reflection）、エンティティ抽出、ファクト抽出、
+埋め込みベクトル生成、サマリ更新などを非同期で実行する。
+
+主要関数:
+- run_forever: Workerのメインループ
+- process_due_jobs: 期限到達ジョブの一括処理
+- claim_next_job: 次のジョブを取得してRUNNINGにする
+- process_job: 単一ジョブの処理実行
+
+ジョブ種別:
+- reflect_episode: エピソードの内的思考を生成
+- extract_entities: エンティティ（固有名）抽出
+- extract_facts: ファクト（安定知識）抽出
+- extract_loops: オープンループ（未完了事項）抽出
+- upsert_embeddings: 埋め込みベクトル生成/更新
+- bond_summary: 絆サマリ生成
+- person_summary_refresh: 人物サマリ更新
+- topic_summary_refresh: トピックサマリ更新
+- capsule_refresh: 短期状態カプセル更新
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,10 @@
-"""FastAPIプロセス内で動く内蔵Workerの管理。"""
+"""
+FastAPIプロセス内で動く内蔵Workerの管理
+
+アプリケーション起動時にバックグラウンドスレッドでWorkerを起動し、
+非同期ジョブ（埋め込み生成、反射、要約等）を処理する。
+設定変更時には自動で再起動される。
+"""
 
 from __future__ import annotations
 
@@ -13,13 +19,22 @@ _stop_event: threading.Event | None = None
 
 
 def is_alive() -> bool:
-    """内蔵Workerスレッドが稼働中か返す。"""
+    """
+    内蔵Workerスレッドの稼働状態を確認する。
+
+    スレッドが存在し、実行中であればTrueを返す。
+    """
     t = _thread
     return t is not None and t.is_alive()
 
 
 def start(*, memory_id: str, embedding_dimension: int) -> None:
-    """内蔵Workerスレッドを起動する（起動済みなら何もしない）。"""
+    """
+    内蔵Workerスレッドを起動する。
+
+    既に起動済みの場合や記憶機能が無効な場合は何もしない。
+    デーモンスレッドとして起動し、アプリ終了時に自動停止する。
+    """
     from cocoro_ghost.config import get_config_store
     from cocoro_ghost.deps import get_llm_client
 
@@ -55,7 +70,11 @@ def start(*, memory_id: str, embedding_dimension: int) -> None:
 
 
 def stop(*, timeout_seconds: float = 5.0) -> None:
-    """内蔵Workerスレッドに停止を通知し、指定秒数までjoinする。"""
+    """
+    内蔵Workerスレッドを停止する。
+
+    停止イベントをセットし、指定秒数までスレッドの終了を待機する。
+    """
     with _lock:
         global _thread, _stop_event
         if _stop_event is not None:
@@ -71,13 +90,21 @@ def stop(*, timeout_seconds: float = 5.0) -> None:
 
 
 def restart(*, memory_id: str, embedding_dimension: int) -> None:
-    """設定変更後に内蔵Workerを追従させるための再起動。"""
+    """
+    内蔵Workerを再起動する。
+
+    設定変更後にWorkerを新しい設定で再起動させる。
+    """
     stop()
     start(memory_id=memory_id, embedding_dimension=embedding_dimension)
 
 
 def request_restart_async(*, memory_id: str, embedding_dimension: int) -> None:
-    """BackgroundTasks等から呼ぶ用（例外を外に出さない）。"""
+    """
+    非同期コンテキストからWorkerを再起動する。
+
+    BackgroundTasks等から呼び出され、例外を外部に伝播させない。
+    """
     try:
         restart(memory_id=memory_id, embedding_dimension=embedding_dimension)
     except Exception:  # noqa: BLE001

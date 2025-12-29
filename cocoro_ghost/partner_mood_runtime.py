@@ -1,10 +1,13 @@
-"""partner_mood のランタイム上書き（デバッグ用）。
+"""
+partner_moodのランタイム上書き（デバッグ用）
 
-- UI から partner_mood（パートナーの機嫌）を参照/変更できるようにするための in-memory ストア。
-- override は完全上書きのみ（部分マージしない）。
-- 永続化（DB/設定DB/settings）は行わない。
-- FastAPI と internal worker が同一プロセスの場合に有効。
-  ※ 複数プロセス/複数ワーカー構成だとプロセスごとに状態が分離される。
+UIからpartner_mood（パートナーの機嫌）を参照/変更するためのin-memoryストア。
+
+特徴:
+- overrideは完全上書きのみ（部分マージしない）
+- 永続化しない（プロセス再起動で消える）
+- FastAPIとinternal workerが同一プロセスの場合に有効
+  ※複数プロセス構成だとプロセスごとに状態が分離される
 """
 
 from __future__ import annotations
@@ -28,13 +31,21 @@ _last_used_at: Optional[int] = None
 
 
 def get_last_used() -> Optional[dict[str, Any]]:
-    """前回チャットで使った partner_mood_state（compact）を返す（無ければ None）。"""
+    """
+    前回チャットで使った機嫌状態を取得する。
+
+    MemoryPackに注入されたpartner_mood_stateの最新値を返す。
+    """
     with _lock:
         return copy.deepcopy(_last_used)
 
 
 def get_last_used_meta() -> dict[str, Any]:
-    """last used のメタ情報（デバッグ用）を返す。"""
+    """
+    last_usedのメタ情報を取得する。
+
+    有効フラグと最終更新日時を含むデバッグ情報を返す。
+    """
     with _lock:
         return {
             "enabled": _last_used is not None,
@@ -43,11 +54,11 @@ def get_last_used_meta() -> dict[str, Any]:
 
 
 def set_last_used(*, now_ts: int, state: dict[str, Any]) -> dict[str, Any]:
-    """前回チャットで使った値（compact）を保存する。
+    """
+    前回チャットで使った機嫌状態を保存する。
 
-    用途:
-    - GET /api/partner_mood が「前回使った値」を返すため。
-    - override をPUTしても、会話が走るまでは last_used は変わらない（=意図通り）。
+    GET /api/partner_moodが「前回使った値」を返すために使用。
+    overrideをPUTしても会話が走るまでlast_usedは変わらない。
     """
     if not isinstance(state, dict):
         raise TypeError("state must be dict")
@@ -83,13 +94,21 @@ def set_last_used(*, now_ts: int, state: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_override() -> Optional[dict[str, Any]]:
-    """現在の override を返す（無ければ None）。"""
+    """
+    現在のoverrideを取得する。
+
+    設定されていなければNoneを返す。
+    """
     with _lock:
         return copy.deepcopy(_override)
 
 
 def get_override_meta() -> dict[str, Any]:
-    """override のメタ情報（デバッグ用）を返す。"""
+    """
+    overrideのメタ情報を取得する。
+
+    有効フラグと最終更新日時を含むデバッグ情報を返す。
+    """
     with _lock:
         return {
             "enabled": _override is not None,
@@ -98,7 +117,11 @@ def get_override_meta() -> dict[str, Any]:
 
 
 def clear_override() -> None:
-    """override を解除する。"""
+    """
+    overrideを解除する。
+
+    計算値に戻り、次のチャットから通常の機嫌計算が適用される。
+    """
     with _lock:
         global _override, _override_updated_at
         _override = None
@@ -144,7 +167,11 @@ def set_override(
     now_ts: int,
     state: dict[str, Any],
 ) -> dict[str, Any]:
-    """override を設定する（完全上書きのみ）。"""
+    """
+    overrideを設定する。
+
+    完全上書きのみ。必須キーが揃わなければエラーになる。
+    """
     if not isinstance(state, dict):
         raise TypeError("state must be dict")
 
@@ -184,9 +211,10 @@ def apply_partner_mood_state_override(
     *,
     now_ts: int,
 ) -> dict[str, Any]:
-    """計算済み partner_mood_state に override を適用して返す。
+    """
+    計算済み状態にoverrideを適用する。
 
-    override が無ければ computed_state をそのまま返す。
+    overrideが設定されていれば上書き、なければそのまま返す。
     """
     override = get_override()
     if override is None:

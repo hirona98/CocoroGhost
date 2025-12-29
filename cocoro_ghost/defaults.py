@@ -1,6 +1,8 @@
-"""Application defaults.
+"""
+アプリケーションのデフォルト値
 
-These defaults are applied when initializing `settings.db`.
+settings.db初期化時に適用されるデフォルト設定。
+除外キーワードなど、初期状態で設定される値を定義する。
 """
 
 from __future__ import annotations

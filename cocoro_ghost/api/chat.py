@@ -1,4 +1,9 @@
-"""/chat エンドポイント。"""
+"""
+/chat エンドポイント
+
+ユーザーからのチャットリクエストを受け付け、LLMの応答をSSE（Server-Sent Events）
+形式でストリーミング返却する。画像添付にも対応し、会話はEpisodeとしてDBに保存される。
+"""
 
 from __future__ import annotations
 

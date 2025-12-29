@@ -1,4 +1,10 @@
-"""Unitベース記憶のEnum定義。"""
+"""
+Unitベース記憶のEnum定義
+
+記憶システムで使用する各種列挙型を定義する。
+UnitKind（記憶種別）、UnitState（ライフサイクル状態）、
+Sensitivity（秘匿度）、JobStatus（ジョブ状態）などを含む。
+"""
 
 from __future__ import annotations
 
@@ -6,43 +12,67 @@ from enum import IntEnum
 
 
 class UnitKind(IntEnum):
-    """Unitの種類（Episode/Fact/Summary/...）。"""
-    EPISODE = 1
-    FACT = 2
-    SUMMARY = 3
-    CAPSULE = 6
-    LOOP = 7
+    """
+    Unitの種類を表す列挙型。
+
+    記憶ユニットの種別を定義する。
+    """
+    EPISODE = 1   # 対話エピソード（会話ログ）
+    FACT = 2      # ファクト（三つ組の知識）
+    SUMMARY = 3   # 要約（日次/週次など）
+    CAPSULE = 6   # カプセル（期限付きメモ）
+    LOOP = 7      # ループ（未解決タスク/気掛かり）
 
 
 class UnitState(IntEnum):
-    """Unitのライフサイクル状態。"""
-    RAW = 0
-    VALIDATED = 1
-    CONSOLIDATED = 2
-    ARCHIVED = 3
+    """
+    Unitのライフサイクル状態を表す列挙型。
+
+    記憶の成熟度・処理状態を示す。
+    """
+    RAW = 0          # 未処理（生データ）
+    VALIDATED = 1    # 検証済み
+    CONSOLIDATED = 2 # 統合済み
+    ARCHIVED = 3     # アーカイブ（非アクティブ）
 
 
 class Sensitivity(IntEnum):
-    """秘匿度（高いほど外部に出しにくい）。"""
-    NORMAL = 0
-    PRIVATE = 1
-    SECRET = 2
+    """
+    秘匿度を表す列挙型。
+
+    値が高いほど外部公開を避けるべき情報を示す。
+    """
+    NORMAL = 0   # 通常（公開可能）
+    PRIVATE = 1  # プライベート（限定公開）
+    SECRET = 2   # 秘密（非公開）
 
 
 class EntityRole(IntEnum):
-    """UnitとEntityの関係（現状は言及のみ）。"""
-    MENTIONED = 1
+    """
+    UnitとEntityの関係を表す列挙型。
+
+    Unit内でエンティティがどのように参照されているかを示す。
+    """
+    MENTIONED = 1  # 言及（会話中に登場）
 
 
 class LoopStatus(IntEnum):
-    """ループ（未解決タスク/気掛かり等）の状態。"""
-    OPEN = 0
-    CLOSED = 1
+    """
+    ループの状態を表す列挙型。
+
+    未解決タスクや気掛かりの解決状況を示す。
+    """
+    OPEN = 0    # 未解決
+    CLOSED = 1  # 解決済み
 
 
 class JobStatus(IntEnum):
-    """jobsテーブルの実行状態。"""
-    QUEUED = 0
-    RUNNING = 1
-    DONE = 2
-    FAILED = 3
+    """
+    ジョブの実行状態を表す列挙型。
+
+    Workerが処理する非同期ジョブの状態を示す。
+    """
+    QUEUED = 0   # キュー待ち
+    RUNNING = 1  # 実行中
+    DONE = 2     # 完了
+    FAILED = 3   # 失敗

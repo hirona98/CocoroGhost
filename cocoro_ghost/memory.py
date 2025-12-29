@@ -1,4 +1,10 @@
-"""記憶・エピソード生成（Unitベース）。"""
+"""
+記憶・エピソード生成（Unitベース）
+
+チャット、通知、メタ要求、キャプチャを「Episode Unit」として保存し、
+LLMを使った反射（reflection）や埋め込み生成のジョブをエンキューする。
+MemoryManagerがすべての記憶操作の中心となる。
+"""
 
 from __future__ import annotations
 

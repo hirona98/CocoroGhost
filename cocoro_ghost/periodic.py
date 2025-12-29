@@ -1,4 +1,10 @@
-"""cron無しの定期実行（jobs enqueue）ユーティリティ。"""
+"""
+cron無しの定期実行ユーティリティ
+
+Workerから定期的に呼び出され、必要なジョブをenqueueする。
+bond_summary、entity_summary、capsule_refreshなどの
+定期ジョブを重複抑制・クールダウン付きで管理する。
+"""
 
 from __future__ import annotations
 
@@ -99,8 +105,10 @@ def maybe_enqueue_bond_summary(
     cooldown_seconds: int = 6 * 3600,
     max_sensitivity: Optional[int] = int(Sensitivity.PRIVATE),
 ) -> bool:
-    """bond summary を必要ならenqueueする（重複抑制 + クールダウン）。
+    """
+    bond summary ジョブを必要に応じてenqueueする。
 
+    重複抑制とクールダウンを考慮し、新規エピソードがある場合のみ実行する。
     max_sensitivity が None の場合は sensitivity フィルタを行わない。
     """
 
@@ -176,7 +184,11 @@ def maybe_enqueue_capsule_refresh(
     limit: int = 5,
     max_sensitivity: int = int(Sensitivity.PRIVATE),
 ) -> bool:
-    """capsule_refresh を一定間隔でenqueueする（重複抑制）。"""
+    """
+    capsule_refresh ジョブを一定間隔でenqueueする。
+
+    重複抑制を行い、前回実行から一定時間経過した場合のみ実行する。
+    """
     if _has_pending_job(
         session,
         kind="capsule_refresh",
@@ -271,7 +283,12 @@ def maybe_enqueue_entity_summaries(
     max_topic: int = 3,
     max_sensitivity: int = int(Sensitivity.PRIVATE),
 ) -> dict[str, int]:
-    """person/topic の summary refresh を周期的にenqueueする（重複抑制 + クールダウン + 新規Episode判定）。"""
+    """
+    person/topic の summary refresh を周期的にenqueueする。
+
+    重複抑制・クールダウン・新規Episode判定を考慮し、
+    頻出エンティティの要約更新ジョブを登録する。
+    """
     stats = {"person": 0, "topic": 0}
     candidate_ids = _pick_entities_to_refresh(
         session,
@@ -372,7 +389,11 @@ def maybe_enqueue_entity_summaries(
 
 @dataclass(frozen=True)
 class PeriodicEnqueueConfig:
-    """定期enqueueのチューニングパラメータ（クールダウン/上限/秘匿度など）。"""
+    """
+    定期enqueueのチューニングパラメータ。
+
+    クールダウン間隔、上限数、秘匿度フィルタなどを設定する。
+    """
     weekly_cooldown_seconds: int = 6 * 3600
     entity_cooldown_seconds: int = 12 * 3600
     entity_window_days: int = 14
@@ -384,7 +405,12 @@ class PeriodicEnqueueConfig:
 
 
 def enqueue_periodic_jobs(session: Session, *, now_ts: int, config: PeriodicEnqueueConfig | None = None) -> dict[str, Any]:
-    """定期実行tick: 必要なjobsをenqueueして統計を返す（commitは呼び出し側）。"""
+    """
+    定期実行のメインエントリポイント。
+
+    必要なジョブをenqueueし、登録した件数の統計を返す。
+    commitは呼び出し側で行う。
+    """
     cfg = config or PeriodicEnqueueConfig()
     stats: dict[str, Any] = {
         "bond_summary": 0,

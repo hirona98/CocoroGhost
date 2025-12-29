@@ -1,4 +1,10 @@
-"""MemoryPack生成（取得計画器）。"""
+"""
+MemoryPack生成（取得計画器）
+
+会話に注入する「内部コンテキスト（MemoryPack）」を組み立てる。
+Persona、Facts、Summary、Loops、Episode証拠、Capsule、partner_mood_state等を
+トークン予算内で優先順位に従って構築する。
+"""
 
 from __future__ import annotations
 
@@ -32,7 +38,11 @@ if TYPE_CHECKING:
 
 
 def now_utc_ts() -> int:
-    """現在時刻（UTC）をUNIX秒で返す。"""
+    """
+    現在時刻をUNIX秒で返す。
+
+    UTCベースのタイムスタンプを取得する。
+    """
     return int(time.time())
 
 
@@ -185,7 +195,11 @@ def _entity_roles(entity: Entity) -> set[str]:
 
 
 def should_inject_episodes(relevant_episodes: Sequence["RankedEpisode"]) -> bool:
-    """検索結果を会話に注入するべきか（high>=1 または medium>=2）を判定する。"""
+    """
+    エピソード検索結果を注入すべきか判定する。
+
+    high関連度が1件以上、またはmedium関連度が2件以上なら注入する。
+    """
     if not relevant_episodes:
         return False
 
@@ -215,7 +229,13 @@ def build_memory_pack(
     llm_client: "LlmClient | None" = None,
     entity_fallback: bool = False,
 ) -> str:
-    """会話に注入する「内部コンテキスト（MemoryPack）」を予算内で組み立てる。"""
+    """
+    MemoryPackを組み立てる。
+
+    Persona、Facts、Summary、Loops、Episode証拠、Capsule等を
+    トークン予算内で優先順位に従って組み立て、文字列として返す。
+    予算超過時はEpisode証拠→Loops→Summary→Factsの順に削減する。
+    """
     max_chars = _token_budget_to_char_budget(max_inject_tokens)
     # 一旦「注入（引き出し）」を無制限にする（SECRETまで許可）。
     sensitivity_max = int(Sensitivity.SECRET)

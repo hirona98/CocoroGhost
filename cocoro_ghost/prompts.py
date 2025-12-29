@@ -1,4 +1,21 @@
-"""プロンプト管理。"""
+"""
+プロンプト管理
+
+LLMに送信するシステムプロンプトを一元管理するモジュール。
+各種タスク（reflection、entity抽出、fact抽出等）用のプロンプトテンプレートと、
+ペルソナ設定を組み合わせるユーティリティを提供する。
+
+プロンプト種別:
+- REFLECTION_SYSTEM_PROMPT: 内的思考（reflection）生成用
+- FACT_EXTRACT_SYSTEM_PROMPT: ファクト抽出用
+- LOOP_EXTRACT_SYSTEM_PROMPT: オープンループ抽出用
+- ENTITY_EXTRACT_SYSTEM_PROMPT: エンティティ抽出用
+- BOND_SUMMARY_SYSTEM_PROMPT: 絆サマリ生成用
+- PERSON_SUMMARY_SYSTEM_PROMPT: 人物サマリ生成用
+- TOPIC_SUMMARY_SYSTEM_PROMPT: トピックサマリ生成用
+- EXTERNAL_SYSTEM_PROMPT: 外部通知応答用
+- META_PROACTIVE_MESSAGE_SYSTEM_PROMPT: メタ要求（能動メッセージ）用
+"""
 
 from __future__ import annotations
 

@@ -1,14 +1,15 @@
-"""パートナーの機嫌（partner_mood）計算ユーティリティ。
+"""
+パートナーの機嫌（partner_mood）計算ユーティリティ
 
-このモジュールは「会話本文に“機嫌の反映”を入れる」ための中核ロジックです。
+会話における「機嫌の反映」を実現するための中核ロジック。
 
-ここでいう機嫌は、次をまとめて扱う仕組みを指します。
+ここでいう機嫌は2つの性質を持つ:
+- 即時性: /api/chat の内部JSON（reflection）でpartner_affect_*を即時更新
+- 持続性: 過去エピソードの影響を「重要度×時間減衰」で積分し、現在状態を推定
 
-- 即時性（“その発言で怒る”）: /api/chat の同一LLM出力に埋め込んだ内部JSON（reflection）で
-  Unit.partner_affect_* を即時更新する。
-- 持続性（“大事件の余韻が残る”）: 過去エピソードの影響を「重要度×時間減衰」で積分し、
-  現在の状態（partner_mood_state）を推定する。
-
+計算式: impact = intensity × salience × confidence × exp(-Δt/τ)
+- salienceが高いほどτが長く、大事件の余韻が長く残る
+- salienceが低いほどτが短く、雑談はすぐに消える
 """
 
 from __future__ import annotations
@@ -27,7 +28,11 @@ PARTNER_MOOD_LABELS = ("joy", "sadness", "anger", "fear", "neutral")
 
 
 def _normalize_partner_response_policy(raw: object) -> dict | None:
-    """LLM出力の partner_response_policy を内部response_policy形式へ正規化する（不正値はNone）。"""
+    """
+    partner_response_policyを正規化する。
+
+    LLM出力を内部形式に変換し、不正値はNoneを返す。
+    """
     if not isinstance(raw, dict):
         return None
     required = ("cooperation", "refusal_bias", "refusal_allowed")
@@ -47,7 +52,11 @@ def _normalize_partner_response_policy(raw: object) -> dict | None:
 
 
 def clamp01(x: float) -> float:
-    """0..1 にクランプする（不正値は0扱い）。"""
+    """
+    値を0..1の範囲にクランプする。
+
+    変換できない不正値は0として扱う。
+    """
     try:
         x = float(x)
     except Exception:  # noqa: BLE001
@@ -61,7 +70,11 @@ def clamp01(x: float) -> float:
 
 @dataclass(frozen=True)
 class PartnerMoodDecayParams:
-    """salienceに応じて残留時間を変えるためのパラメータ。"""
+    """
+    時間減衰パラメータ。
+
+    salienceに応じて残留時間τを変化させる。
+    """
 
     tau_min_seconds: float = 120.0
     tau_max_seconds: float = 6 * 3600.0
@@ -69,7 +82,11 @@ class PartnerMoodDecayParams:
 
 
 def tau_from_salience(salience: float, *, params: PartnerMoodDecayParams) -> float:
-    """salience（重要度）から残留時間 τ（秒）を決める。"""
+    """
+    salienceから残留時間τを計算する。
+
+    重要度が高いほど長時間残り、低いほど早く消える。
+    """
     s = clamp01(salience)
     tau_min = max(1.0, float(params.tau_min_seconds))
     tau_max = max(tau_min, float(params.tau_max_seconds))
@@ -78,7 +95,11 @@ def tau_from_salience(salience: float, *, params: PartnerMoodDecayParams) -> flo
 
 
 def decay_weight(*, dt_seconds: float, tau_seconds: float) -> float:
-    """時間減衰の重み（0..1）を返す。 w = exp(-Δt / τ)"""
+    """
+    時間減衰の重みを計算する。
+
+    指数減衰 w = exp(-Δt / τ) で0..1の値を返す。
+    """
     if tau_seconds <= 0:
         return 0.0
     dt = max(0.0, float(dt_seconds))
@@ -86,7 +107,11 @@ def decay_weight(*, dt_seconds: float, tau_seconds: float) -> float:
 
 
 def compress_sum_to_01(x: float) -> float:
-    """0..∞ の和を 0..1 に圧縮する（単調増加・飽和）。 y = 1 - exp(-x)"""
+    """
+    累積値を0..1に圧縮する。
+
+    y = 1 - exp(-x) で単調増加し、飽和する。
+    """
     x = max(0.0, float(x))
     return float(1.0 - math.exp(-x))
 
@@ -97,12 +122,13 @@ def compute_partner_mood_state_from_episodes(
     now_ts: int,
     params: PartnerMoodDecayParams | None = None,
 ) -> dict:
-    """Episode列（dict）から partner_mood_state を推定する。
+    """
+    エピソード列からpartner_mood_stateを推定する。
 
-    episodes の要素は最低限:
-      occurred_at(int|None), created_at(int|None),
-      partner_affect_label(str|None), partner_affect_intensity(float|None),
-      salience(float|None), confidence(float|None)
+    各エピソードの感情ラベル・強度・重要度・時間を考慮し、
+    現在の感情状態と行動方針を計算する。
+    episodesには occurred_at, created_at, partner_affect_label,
+    partner_affect_intensity, salience, confidence が必要。
     """
     p = params or PartnerMoodDecayParams()
     sums: Dict[str, float] = {k: 0.0 for k in PARTNER_MOOD_LABELS}

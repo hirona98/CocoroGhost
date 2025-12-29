@@ -1,20 +1,18 @@
-"""LLM送受信のデバッグ出力ユーティリティ。
+"""
+LLM送受信のデバッグ出力ユーティリティ
 
-- 送受信箇所に後から差し込みやすいように、LLMクライアント実装から独立。
-- JSONっぽい文字列（```json フェンス/前後の文章/末尾カンマ/生改行 等）を
-  できる範囲で補正してパースし、見やすく整形して出力する。
-- token / api_key などの秘匿情報は可能な限りマスクする。
+LLMとの通信内容をデバッグ用に整形・出力する。
+LLMクライアント実装から独立しており、任意の箇所に差し込み可能。
+
+主な機能:
+- JSONっぽい文字列の補正とパース（フェンス除去、末尾カンマ修正等）
+- 秘匿情報（api_key、token等）のマスク
+- 環境変数 COCORO_LLM_IO_DEBUG=1 で強制出力
 
 使い方例:
-
     from cocoro_ghost.llm_debug import log_llm_payload
-
     log_llm_payload(logger, "LLM request", payload_dict)
     log_llm_payload(logger, "LLM response", response_text)
-
-環境変数:
-- COCORO_LLM_IO_DEBUG=1 を設定すると、loggerレベルに関わらず出力する。
-  （未設定時は logger が DEBUG のときのみ出す）
 """
 
 from __future__ import annotations

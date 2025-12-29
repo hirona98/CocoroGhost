@@ -1,4 +1,10 @@
-"""WebSocketによるログストリーミングAPI。"""
+"""
+WebSocketによるログストリーミングAPI
+
+アプリケーションログをリアルタイムでクライアントに配信する。
+デバッグやモニタリング目的でCocoroConsole等から購読される。
+ログはバッファリングされ、新規接続時に直近のログも送信される。
+"""
 
 from __future__ import annotations
 
@@ -13,7 +19,12 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 
 @router.websocket("/stream")
 async def stream_logs(websocket: WebSocket) -> None:
-    """アプリログをWebSocketでストリーミング配信する。"""
+    """
+    アプリログをWebSocketでストリーミング配信する。
+
+    Bearer認証後に接続を受け入れ、バッファ済みログを送信してから
+    新規ログをリアルタイムで配信する。切断時は自動でクライアント登録解除。
+    """
     if not await authenticate_ws_bearer(websocket):
         return
 
