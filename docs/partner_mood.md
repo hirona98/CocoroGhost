@@ -67,6 +67,42 @@ JSONスキーマは `docs/prompts.md` の「chat（SSE）: 返答末尾の内部
 - `refusal_bias`（0..1）: 拒否に寄せる度合い
 - `cooperation`（0..1）: 協力に寄せる度合い
 
+#### なぜ label/intensity と分けるのか
+
+`label`/`intensity` は「今の機嫌が何っぽいか（状態の要約）」、`partner_response_policy` は「返答生成での振る舞い（行動方針のノブ）」で役割が違うため分けています。
+
+- `label` が同じでも、常に同じ行動（拒否/協力）にしたいとは限らない
+  - 例: `anger` でも “言い方が冷たいだけ” と “実際に拒否/渋る” は別
+- 1つのスカラーに潰すと、後段で結局しきい値・カーブ・例外が必要になり、調整が難しくなりがち
+- `refusal_allowed` は連続量というより安全弁（「拒否してよいか」を安定して切り替えるため）
+
+#### refusal_allowed は誰がどうやって決めるか
+
+`refusal_allowed` には、次の3つの経路があります。
+
+1) **通常（自動計算）**
+
+過去エピソードから集約した `anger` 成分が十分高いときに `refusal_allowed=true` になります。
+
+- `anger` は joy/sadness/anger/fear の積分（重要度×時間減衰）の結果を 0..1 に圧縮した値
+- 既定のゲートは `anger >= 0.75`
+
+2) **LLMの内部JSON（partner_affect trailer）による間接/直接の制御**
+
+`/api/chat` の内部JSONは Episode に保存され、次ターン以降の機嫌計算に取り込まれます。
+
+- 間接: `partner_affect_label/intensity/salience/confidence` によって `anger` が上がれば、結果として `refusal_allowed` が立ちやすくなる
+- 直接（上書き候補）: 内部JSONに `partner_response_policy.refusal_allowed` を含めた場合、
+  - 「直近で重要な出来事（salience×confidence×時間減衰）が強い」ときほど採用されやすい
+  - bool は暴れやすいので、重みが強いときのみ上書きする（弱いときは自動計算を優先）
+
+3) **デバッグ用API（in-memory override）による強制上書き**
+
+UI/デバッグ用途では `PUT /api/partner_mood` で `response_policy` を含む状態を完全上書きできます。
+
+- 永続化はしない（プロセス内のみ）
+- override がある場合は計算結果に対して完全上書きが適用される
+
 ## 保存場所 / 注入場所
 
 - 保存（素材）:
