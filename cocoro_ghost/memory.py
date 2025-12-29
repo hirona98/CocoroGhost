@@ -20,8 +20,9 @@ from typing import Any, Dict, Generator, List, Optional, Sequence
 from fastapi import BackgroundTasks
 
 from cocoro_ghost import schemas
+from cocoro_ghost import models
 from cocoro_ghost.config import ConfigStore
-from cocoro_ghost.db import memory_session_scope, sync_unit_vector_metadata
+from cocoro_ghost.db import memory_session_scope, settings_session_scope, sync_unit_vector_metadata
 from cocoro_ghost.event_stream import publish as publish_event
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.partner_mood import PARTNER_AFFECT_TRAILER_MARKER, clamp01
@@ -59,6 +60,22 @@ _META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
 # /api/chat（SSE）では、同一LLM呼び出しで「ユーザー表示本文 + 内部JSON（機嫌/反射）」を生成し、
 # 内部JSONはストリームから除外して保存・注入に使う。
 _STREAM_TRAILER_MARKER = PARTNER_AFFECT_TRAILER_MARKER
+
+
+def _load_embedding_preset_by_memory_id(memory_id: str) -> models.EmbeddingPreset | None:
+    """memory_id（= embedding_presets.id）からEmbeddingPresetを取得する。
+
+    /api/chat で memory_id を指定できる設計のため、アクティブpreset以外も参照できるようにする。
+    """
+    mid = str(memory_id or "").strip()
+    if not mid:
+        return None
+    with settings_session_scope() as session:
+        return (
+            session.query(models.EmbeddingPreset)
+            .filter_by(id=mid, archived=False)
+            .first()
+        )
 
 
 def _system_prompt_guard() -> str:
@@ -393,10 +410,58 @@ class MemoryManager:
         - 返信をSSEでストリームし、最後にEpisodeとして保存する
         """
         cfg = self.config_store.config
-        memory_id = request.memory_id or self.config_store.memory_id
+
+        # 運用前のため、/api/chat は memory_id 指定を必須とする。
+        # memory_id は embedding_presets.id（UUID）を想定。
+        memory_id = (request.memory_id or "").strip()
+        if not memory_id:
+            yield self._sse(
+                "error",
+                {
+                    "message": "memory_id is required",
+                    "code": "missing_memory_id",
+                },
+            )
+            return
+
         lock = _get_memory_lock(memory_id)
         now_ts = _now_utc_ts()
         memory_enabled = self.config_store.memory_enabled
+
+        # 指定された memory_id の embedding preset を settings.db から解決し、
+        # 次元・検索上限・注入予算・embeddingモデルを per-request で適用する。
+        preset = _load_embedding_preset_by_memory_id(memory_id)
+        if preset is None:
+            yield self._sse(
+                "error",
+                {
+                    "message": "unknown memory_id (embedding preset not found or archived)",
+                    "code": "invalid_memory_id",
+                },
+            )
+            return
+
+        embedding_dimension = int(preset.embedding_dimension)
+        similar_episodes_limit = int(preset.similar_episodes_limit)
+        max_inject_tokens = int(preset.max_inject_tokens)
+
+        # 埋め込みモデルだけを差し替えた LlmClient を作り、Retriever用に使う。
+        # chat/image側は現行設定（アクティブLLMプリセット）に従う。
+        embedding_llm_client = LlmClient(
+            model=cfg.llm_model,
+            embedding_model=preset.embedding_model,
+            image_model=cfg.image_model,
+            api_key=cfg.llm_api_key,
+            embedding_api_key=preset.embedding_api_key,
+            llm_base_url=cfg.llm_base_url,
+            embedding_base_url=preset.embedding_base_url,
+            image_llm_base_url=cfg.image_llm_base_url,
+            image_model_api_key=cfg.image_model_api_key,
+            reasoning_effort=cfg.reasoning_effort,
+            max_tokens=cfg.max_tokens,
+            max_tokens_vision=cfg.max_tokens_vision,
+            image_timeout_seconds=cfg.image_timeout_seconds,
+        )
 
         image_summaries = self._summarize_images(request.images)
 
@@ -404,16 +469,16 @@ class MemoryManager:
         memory_pack = ""
         if memory_enabled:
             try:
-                with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+                with lock, memory_session_scope(memory_id, embedding_dimension) as db:
                     recent_conversation = self._load_recent_conversation(db, turns=3)
                     llm_turns_window = int(getattr(cfg, "max_turns_window", 0) or 0)
                     if llm_turns_window > 0:
                         conversation = self._load_recent_conversation(db, turns=llm_turns_window)
-                    retriever = Retriever(llm_client=self.llm_client, db=db)
+                    retriever = Retriever(llm_client=embedding_llm_client, db=db)
                     relevant_episodes = retriever.retrieve(
                         request.user_text,
                         recent_conversation,
-                        max_results=int(cfg.similar_episodes_limit or 5),
+                        max_results=int(similar_episodes_limit),
                     )
                     memory_pack = build_memory_pack(
                         db=db,
@@ -423,7 +488,7 @@ class MemoryManager:
                         image_summaries=image_summaries,
                         client_context=request.client_context,
                         now_ts=now_ts,
-                        max_inject_tokens=int(cfg.max_inject_tokens),
+                        max_inject_tokens=int(max_inject_tokens),
                         relevant_episodes=relevant_episodes,
                         injection_strategy=retriever.last_injection_strategy,
                         llm_client=self.llm_client,
@@ -522,7 +587,7 @@ class MemoryManager:
         context_note = _json_dumps(request.client_context) if request.client_context else None
 
         try:
-            with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+            with lock, memory_session_scope(memory_id, embedding_dimension) as db:
                 episode_unit_id = self._create_episode_unit(
                     db,
                     now_ts=now_ts,

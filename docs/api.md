@@ -30,7 +30,7 @@
 }
 ```
 
-- `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `active_embedding_preset_id` を `memory_id` として使用する）
+- `memory_id` は必須
 - `memory_id` は embedding_presets.id（UUID）を想定。埋め込み次元が一致しないDBは初期化に失敗するため、次元一致を前提に指定する
 - `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
 - `client_context` は省略可能（指定時は `payload_episode.context_note` にJSON文字列として保存される）
