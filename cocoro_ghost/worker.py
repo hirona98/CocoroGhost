@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 
 from cocoro_ghost import prompts
 from cocoro_ghost.config import get_config_store
-from cocoro_ghost.db import get_memory_session, sync_unit_vector_metadata, upsert_unit_vector
+from cocoro_ghost.db import get_memory_session, sync_unit_vector_metadata, upsert_edges, upsert_unit_vector
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.unit_enums import (
     EntityRole,
@@ -231,16 +231,25 @@ def process_job(
         session.commit()
         return True
     except Exception as exc:  # noqa: BLE001
+        # flush/commit で失敗した場合、Session は「ロールバック待ち」状態になる。
+        # この状態でDB操作すると PendingRollbackError になるので、まず rollback() する。
+        session.rollback()
         logger.error("job failed", exc_info=exc, extra={"job_id": job_id, "kind": job.kind})
-        job.tries = int(job.tries or 0) + 1
-        job.last_error = str(exc)
-        job.updated_at = now_ts
-        if job.tries >= max_tries:
-            job.status = int(JobStatus.FAILED)
+
+        # rollback 後はオブジェクト状態が不安定になりうるため、job を取り直してから更新する。
+        job2 = session.query(Job).filter(Job.id == job_id).one_or_none()
+        if job2 is None:
+            return False
+
+        job2.tries = int(job2.tries or 0) + 1
+        job2.last_error = str(exc)
+        job2.updated_at = now_ts
+        if job2.tries >= max_tries:
+            job2.status = int(JobStatus.FAILED)
         else:
-            job.status = int(JobStatus.QUEUED)
-            job.run_after = now_ts + _backoff_seconds(job.tries)
-        session.add(job)
+            job2.status = int(JobStatus.QUEUED)
+            job2.run_after = now_ts + _backoff_seconds(job2.tries)
+        session.add(job2)
         session.commit()
         return False
 
@@ -657,6 +666,11 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
     relations = data.get("relations") or []
     if not isinstance(relations, list):
         return
+
+    # memory Session は autoflush=False のため、同一PKの Edge を複数 add() すると
+    # commit時にまとめてINSERTされて UNIQUE 制約違反になりうる。
+    # ここで重複を畳み込み、DB側も UPSERT で冪等にする。
+    edge_rows_by_key: dict[tuple[int, str, int], dict] = {}
     for r in relations:
         if not isinstance(r, dict):
             continue
@@ -694,34 +708,24 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
             now_ts=now_ts,
         )
 
-        edge = (
-            session.query(Edge)
-            .filter(
-                Edge.src_entity_id == int(src_ent.id),
-                Edge.relation_label == str(relation_label),
-                Edge.dst_entity_id == int(dst_ent.id),
-            )
-            .one_or_none()
-        )
-        if edge is None:
-            session.add(
-                Edge(
-                    src_entity_id=int(src_ent.id),
-                    relation_label=str(relation_label),
-                    dst_entity_id=int(dst_ent.id),
-                    weight=weight,
-                    first_seen_at=now_ts,
-                    last_seen_at=now_ts,
-                    evidence_unit_id=unit_id,
-                )
-            )
+        key = (int(src_ent.id), str(relation_label), int(dst_ent.id))
+        existing = edge_rows_by_key.get(key)
+        if existing is None:
+            edge_rows_by_key[key] = {
+                "src_entity_id": int(src_ent.id),
+                "relation_label": str(relation_label),
+                "dst_entity_id": int(dst_ent.id),
+                "weight": float(weight),
+                "first_seen_at": int(now_ts),
+                "last_seen_at": int(now_ts),
+                "evidence_unit_id": int(unit_id),
+            }
         else:
-            edge.weight = max(float(edge.weight or 0.0), weight)
-            edge.last_seen_at = now_ts
-            if edge.first_seen_at is None:
-                edge.first_seen_at = now_ts
-            edge.evidence_unit_id = unit_id
-            session.add(edge)
+            existing["weight"] = max(float(existing.get("weight") or 0.0), float(weight))
+            existing["last_seen_at"] = int(now_ts)
+            existing["evidence_unit_id"] = int(unit_id)
+
+    upsert_edges(session, rows=list(edge_rows_by_key.values()))
 
 
 def _handle_upsert_embeddings(

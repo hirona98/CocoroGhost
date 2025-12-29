@@ -17,7 +17,8 @@ import time
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event, func, text
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from cocoro_ghost.defaults import DEFAULT_EXCLUDE_KEYWORDS_JSON
@@ -365,6 +366,36 @@ def get_memory_session(memory_id: str, embedding_dimension: int) -> Session:
     """指定されたmemory_idの記憶DBセッションを取得する。"""
     session_factory = init_memory_db(memory_id, embedding_dimension)
     return session_factory()
+
+
+def upsert_edges(session: Session, *, rows: list[dict]) -> None:
+    """edges をUPSERTする。
+
+    - edges は (src_entity_id, relation_label, dst_entity_id) が主キー。
+    - Worker側が冪等に動けるのが本来あるべき姿なので、UNIQUE違反で落とさない。
+    - 同一キーが既に存在する場合は、weight/first_seen_at/last_seen_at を自然に統合する。
+    """
+    if not rows:
+        return
+
+    # 循環importを避けるため、ここでimportする。
+    from cocoro_ghost.unit_models import Edge
+
+    stmt = sqlite_insert(Edge).values(rows)
+    excluded = stmt.excluded
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[Edge.src_entity_id, Edge.relation_label, Edge.dst_entity_id],
+        set_={
+            # 強さは「強い方」を採用（過去情報を弱めて消さない）。
+            "weight": func.max(Edge.weight, excluded.weight),
+            # 初出は早い方 / 最終確認は遅い方。
+            "first_seen_at": func.min(func.coalesce(Edge.first_seen_at, excluded.first_seen_at), excluded.first_seen_at),
+            "last_seen_at": func.max(func.coalesce(Edge.last_seen_at, excluded.last_seen_at), excluded.last_seen_at),
+            # evidence は最新のUnitに更新（単一列なので履歴は持てない）。
+            "evidence_unit_id": excluded.evidence_unit_id,
+        },
+    )
+    session.execute(stmt)
 
 
 @contextlib.contextmanager
