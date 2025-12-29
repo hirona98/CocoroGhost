@@ -288,7 +288,6 @@ def wrap_prompt_with_persona(
     if addon_text:
         if persona_lines:
             persona_lines.append("")
-        persona_lines.append("# 追加オプション（任意）")
         persona_lines.append(addon_text)
     if persona_lines:
         parts.append("[PERSONA_ANCHOR]\n" + "\n".join(persona_lines))

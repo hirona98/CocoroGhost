@@ -338,7 +338,6 @@ class MemoryManager:
         if addon_text:
             if persona_lines:
                 persona_lines.append("")
-            persona_lines.append("# 追加オプション（任意）")
             persona_lines.append(addon_text)
         parts.append(section("PERSONA_ANCHOR", persona_lines))
         parts.append(section("CONTEXT_CAPSULE", capsule_lines))
