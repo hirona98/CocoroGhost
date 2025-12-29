@@ -484,6 +484,9 @@ def build_memory_pack(
 
     # Context capsule（軽量）
     capsule_parts: List[str] = []
+    if capsule_json:
+        # 最新の短期カプセルをそのまま注入する。
+        capsule_parts.append(f"capsule_json: {capsule_json}")
     now_local = datetime.fromtimestamp(now_ts).astimezone().isoformat()
     capsule_parts.append(f"now_local: {now_local}")
     if client_context:
@@ -614,8 +617,7 @@ def build_memory_pack(
         return "".join(parts)
 
     # NOTE:
-    # - settings_db の capsule_json には直近の reply_text 等が含まれ、口調が強くプライミングされやすい。
-    # - partner_mood_state を一貫して反映させたいので、ここでは capsule_json を注入しない。
+    # - capsule_json と同期計算した partner_mood_state の両方を注入する。
     capsule_lines: List[str] = []
     capsule_lines.extend(capsule_parts)
 
