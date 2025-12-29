@@ -244,8 +244,8 @@ class MemoryManager:
         reflection_obj["topic_tags"] = canonical
         unit.topic_tags = dumps_topic_tags_json(canonical) if canonical else None
 
-        # 反射が得られた場合はVALIDATED扱いにしておく（Workerのreflectをスキップ可能にするため）
-        unit.state = int(UnitState.VALIDATED)
+        # /api/chat は Unit を RAW で保存する。
+        # inline reflection が得られても state は変更しない（Worker側は reflection_json の有無で冪等にスキップする）。
         unit.updated_at = int(now_ts)
 
         # JSONは解析用にそのまま保存

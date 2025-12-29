@@ -350,11 +350,7 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     unit, pe = row
     # /api/chat では「本文 + 内部JSON（反射）」を同一LLM呼び出しで得られるため、
     # すでに反射が保存されている場合は冪等にスキップする。
-    if (
-        (pe.reflection_json or "").strip()
-        and (unit.partner_affect_label or "").strip()
-        and int(unit.state) == int(UnitState.VALIDATED)
-    ):
+    if (pe.reflection_json or "").strip() and (unit.partner_affect_label or "").strip():
         return
     ctx_parts = []
     if pe.user_text:
