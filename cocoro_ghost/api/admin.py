@@ -1,4 +1,10 @@
-"""管理API（Unit閲覧・編集）。"""
+"""
+管理API（Unit閲覧・編集）
+
+記憶ユニット（Unit）の一覧取得、詳細取得、メタ情報更新を提供する。
+デバッグや運用管理で記憶内容を確認・調整するために使用される。
+Unit種別（Episode, Fact, Summary, Loop, Capsule）に応じたペイロードを返す。
+"""
 
 from __future__ import annotations
 
@@ -34,6 +40,11 @@ router = APIRouter()
 
 
 def _to_unit_meta(u: Unit) -> UnitMeta:
+    """
+    UnitモデルをUnitMetaスキーマに変換する。
+
+    データベースのUnitレコードをAPI応答用のPydanticモデルに変換する。
+    """
     return UnitMeta(
         id=int(u.id),
         kind=int(u.kind),
@@ -47,8 +58,8 @@ def _to_unit_meta(u: Unit) -> UnitMeta:
         sensitivity=int(u.sensitivity),
         pin=int(u.pin),
         topic_tags=u.topic_tags,
-        emotion_label=u.emotion_label,
-        emotion_intensity=float(u.emotion_intensity) if u.emotion_intensity is not None else None,
+        partner_affect_label=u.partner_affect_label,
+        partner_affect_intensity=float(u.partner_affect_intensity) if u.partner_affect_intensity is not None else None,
     )
 
 
@@ -61,7 +72,11 @@ def list_units(
     offset: int = Query(default=0, ge=0),
     config_store: ConfigStore = Depends(get_config_store_dep),
 ):
-    """Unit一覧を返す（kind/stateで絞り込み可）。"""
+    """
+    Unit一覧を返す。
+
+    kind/stateでフィルタリング可能。作成日時の降順でソートされる。
+    """
     with memory_session_scope(memory_id, config_store.embedding_dimension) as db:
         q = db.query(Unit)
         if kind is not None:
@@ -78,7 +93,11 @@ def get_unit(
     unit_id: int,
     config_store: ConfigStore = Depends(get_config_store_dep),
 ):
-    """Unit詳細（メタ + kindに応じたpayload）を返す。"""
+    """
+    Unit詳細を返す。
+
+    メタ情報とkindに応じたペイロード（Episode/Fact/Summary等）を含む。
+    """
     with memory_session_scope(memory_id, config_store.embedding_dimension) as db:
         unit = db.query(Unit).filter(Unit.id == unit_id).one_or_none()
         if unit is None:
@@ -137,7 +156,12 @@ def update_unit(
     request: UnitUpdateRequest,
     config_store: ConfigStore = Depends(get_config_store_dep),
 ):
-    """Unitのメタ情報（pin/sensitivity/state/topic_tags等）を更新する。"""
+    """
+    Unitのメタ情報を更新する。
+
+    pin/sensitivity/state/topic_tags/confidence/salienceを変更可能。
+    変更時はバージョン履歴を記録し、ベクトルメタデータも同期する。
+    """
     now_ts = int(time.time())
     with memory_session_scope(memory_id, config_store.embedding_dimension) as db:
         unit = db.query(Unit).filter(Unit.id == unit_id).one_or_none()

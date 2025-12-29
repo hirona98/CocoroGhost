@@ -47,14 +47,14 @@ Partner: 「...」
 補足:
 - MemoryPack は `memorypack` を system に注入し、conversation に直近会話（max_turns_window）+ user_text を渡す形で LLM に渡される（仕様: `docs/api.md`）。
 - MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（ユーザー設定の prompt に書かせず、コード側でガードするのが推奨。例: `cocoro_ghost/memory.py`）。
-- `[CONTEXT_CAPSULE]` には `now_local` / `client_context` 等に加え、`otome_state: {...}`（重要度×時間減衰で集約した感情）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/otome_kairo.py`）。
-   - デバッグ用途: `PUT /api/otome_kairo/override` による in-memory override が有効な場合、注入される `otome_state` は override 適用後の値になる。
+- `[CONTEXT_CAPSULE]` には `now_local` / `client_context` 等に加え、`partner_mood_state: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/partner_mood.py`）。
+   - デバッグ用途: `PUT /api/partner_mood` による in-memory ランタイム状態が有効な場合、注入される `partner_mood_state` は適用後の値になる。
 
 ## 取得手順（規定）
 
 1. **常時注入（検索しない）**
    - active persona（`settings.db` の `active_persona_preset_id`）
-   - active addon（API: `active_addon_preset_id` / DB: `active_contract_preset_id`）
+   - active addon（`settings.db` の `active_addon_preset_id`）
 2. **Contextual Memory Retrieval（Retriever・LLMレス）**
    - 固定クエリ → Hybrid Search（Vector + BM25）→ ヒューリスティック Rerank（`docs/retrieval.md`）
    - relevant episodes（最大5件）を高速に取得する
@@ -65,8 +65,8 @@ Partner: 「...」
 4. **Facts優先取得**
    - 関連entityのfactを信頼度・鮮度・pinでスコアリング
 5. **Summaries取得**
-   - 週次（RELATIONSHIP）＋該当topic/person
-   - Current: RELATIONSHIP週次 + person/topic を注入対象として運用（生成は自動enqueue）
+   - 週次（BOND）＋該当topic/person
+   - Current: BOND週次 + person/topic を注入対象として運用（生成は自動enqueue）
 6. **OpenLoops取得**
    - openのみ、due順、entity一致を優先
 7. **Episode evidence 注入**

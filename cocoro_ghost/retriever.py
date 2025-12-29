@@ -1,15 +1,20 @@
 """
-文脈考慮型の記憶検索（Contextual Memory Retrieval）。
+文脈考慮型の記憶検索（Contextual Memory Retrieval）
 
 本モジュールは「直近の会話 + ユーザー入力」を手掛かりに、過去のエピソード（対話ログ）を検索して
-“参照すべき記憶”として返すためのロジックを提供する。
+"参照すべき記憶"として返すためのロジックを提供する。
 
-流れ（概略）:
-1) ハイブリッド検索（Vector 近傍探索 + FTS5/BM25）で候補IDを集める
+処理フロー:
+1) ハイブリッド検索（Vector近傍探索 + FTS5/BM25）で候補IDを集める
 2) RRF（Reciprocal Rank Fusion）でランキングを統合する
 3) 文字N-gramの類似度 + 新しさ（減衰）を用いた簡易リランキングで最終結果を選ぶ
 
-※ LLM によるクエリ拡張は行わず、固定の複数クエリ（user_text / context+user_text）だけで検索する。
+主要クラス:
+- Retriever: 記憶検索のエントリポイント
+- RankedEpisode: 最終的に採用されたエピソード
+- CandidateEpisode: リランキング前の候補エピソード
+
+注意: LLMによるクエリ拡張は行わず、固定の複数クエリのみで検索する。
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ from cocoro_ghost.unit_enums import Sensitivity, UnitKind
 from cocoro_ghost.unit_models import PayloadEpisode, Unit
 
 
-Message = Mapping[str, str]  # chat.completions互換の {role, content} 形式を想定
+Message = Mapping[str, str]  # OpenAI chat.completions形式の {role, content} を想定
 
 # FTS5のMATCHクエリを作る際の簡易トークナイズ（空白で分割）
 _FTS5_SPLIT_RE = re.compile(r"\s+")
@@ -262,13 +267,6 @@ class Retriever:
 
         try:
             # ベクトル検索用の埋め込みを一括生成する（クエリ数ぶん）。
-            # docs/prompt_usage_map.md の「プロンプト一覧（カタログ）」の「主な用途」から転記。
-            # 目的: LLM埋め込みログが「検索由来」だと分かるようにする。
-            self.logger.info(
-                "■■LLM CALL■■■■■■ %s ■■■■■■■■",
-                "テキストを埋め込みベクトルに変換（検索/類似度用）",
-                extra={"job_kind": "retriever_embedding", "count": len(all_queries)},
-            )
             embeddings = self.llm_client.generate_embedding(all_queries)
         except Exception as exc:  # noqa: BLE001
             self.logger.debug("embedding failed", exc_info=exc)

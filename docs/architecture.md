@@ -190,7 +190,7 @@ sequenceDiagram
   participant Q as Jobs (DB)
   participant WS as /api/events/stream (WebSocket)
 
-  UI->>API: POST /api/v1/notification\n{from,message,images?}
+  UI->>API: POST /api/v1/notification\n{source_system,text,images?}
   API->>MM: handle_notification(request)\n(create placeholder unit)
   MM->>DB: save Unit(kind=EPISODE, source=notification)\nuser_text=system_text, reply_text=null
   API-->>UI: 204 No Content
@@ -222,7 +222,7 @@ sequenceDiagram
   participant Q as Jobs (DB)
   participant WS as /api/events/stream (WebSocket)
 
-  UI->>API: POST /api/v1/meta_request\n{prompt,images?}
+  UI->>API: POST /api/v1/meta_request\n{instruction,payload_text?,images?}
   API->>MM: handle_meta_request(request)\n(create placeholder unit)
   MM->>DB: save Unit(kind=EPISODE, source=meta_request)\nuser_text=[redacted], reply_text=null
   API-->>UI: 204 No Content

@@ -1,4 +1,9 @@
-"""WebSocket向けのログ配信サポート。"""
+"""
+WebSocket向けログ配信サポート
+
+アプリケーションログをWebSocketクライアントにリアルタイム配信する。
+ログはリングバッファに保持され、新規接続時に直近のログを送信する。
+"""
 
 from __future__ import annotations
 
@@ -19,12 +24,16 @@ MAX_BUFFER = 500
 
 @dataclass
 class LogEvent:
-    """配信用のログイベント。"""
+    """
+    配信用のログイベント。
 
-    ts: str
-    level: str
-    logger: str
-    msg: str
+    ログレコードをシリアライズ可能な形式で保持する。
+    """
+
+    ts: str  # ISO形式タイムスタンプ
+    level: str  # ログレベル（INFO/WARNING等）
+    logger: str  # ロガー名
+    msg: str  # メッセージ
 
 
 _log_queue: Optional[asyncio.Queue[LogEvent]] = None
@@ -37,7 +46,11 @@ logger = logging.getLogger(__name__)
 
 
 def _serialize_event(event: LogEvent) -> str:
-    """JSON文字列に整形（改行はスペースに潰す）。"""
+    """
+    ログイベントをJSON文字列にシリアライズする。
+
+    改行文字はスペースに置換してWebSocket送信に適した形式にする。
+    """
     clean_msg = event.msg.replace("\r", " ").replace("\n", " ")
     return json.dumps(
         {
@@ -57,7 +70,11 @@ def _record_to_event(record: logging.LogRecord) -> LogEvent:
 
 
 class _QueueHandler(logging.Handler):
-    """logging -> asyncio.Queue ブリッジ。"""
+    """
+    loggingからasyncio.Queueへのブリッジハンドラ。
+
+    標準ログをasyncioキューに転送し、WebSocket配信を可能にする。
+    """
 
     def __init__(self, queue: asyncio.Queue[LogEvent], loop: asyncio.AbstractEventLoop) -> None:
         super().__init__()
@@ -65,7 +82,11 @@ class _QueueHandler(logging.Handler):
         self.loop = loop
 
     def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - simple passthrough
-        """LogRecordをLogEventへ変換してキューへ投入する（例外は握り潰してログへ）。"""
+        """
+        ログレコードをイベントに変換してキューに投入する。
+
+        イベントループ終了時やログストリーム関連のログは無視する。
+        """
         try:
             # shutdown レース対策:
             # サーバ停止時にイベントループが先に閉じられると call_soon_threadsafe が例外になる。
@@ -85,7 +106,12 @@ class _QueueHandler(logging.Handler):
 
 
 def install_log_handler(loop: asyncio.AbstractEventLoop) -> None:
-    """ルートロガーにQueueHandlerを追加。多重追加はしない。"""
+    """
+    ログストリーム用ハンドラを設置する。
+
+    ルートロガーとuvicorn関連ロガーにQueueHandlerを追加する。
+    多重呼び出しは無視される。
+    """
     global _log_queue, _handler_installed, _installed_handler
     if _handler_installed:
         return
@@ -106,7 +132,11 @@ def install_log_handler(loop: asyncio.AbstractEventLoop) -> None:
 
 
 async def start_dispatcher() -> None:
-    """ログ配送タスクを起動（既に動作中なら何もしない）。"""
+    """
+    ログ配信タスクを起動する。
+
+    キューからログを取り出し、接続中の全クライアントへ配信する。
+    """
     global _dispatch_task
     if _dispatch_task is not None:
         return
@@ -119,7 +149,11 @@ async def start_dispatcher() -> None:
 
 
 async def stop_dispatcher() -> None:
-    """配送タスクを停止。"""
+    """
+    ログ配信タスクを停止する。
+
+    タスクをキャンセルし、ハンドラをロガーから解除する。
+    """
     global _dispatch_task, _handler_installed, _installed_handler
     if _dispatch_task is not None:
         _dispatch_task.cancel()
@@ -145,22 +179,38 @@ async def stop_dispatcher() -> None:
 
 
 def get_buffer_snapshot() -> List[LogEvent]:
-    """リングバッファのスナップショットを返す。"""
+    """
+    バッファ内のログイベントを取得する。
+
+    新規接続時のキャッチアップ用にリングバッファの内容を返す。
+    """
     return list(_buffer)
 
 
 async def add_client(ws: "WebSocket") -> None:
-    """購読クライアントを登録する。"""
+    """
+    WebSocketクライアントを購読リストに登録する。
+
+    以降のログがこのクライアントに配信される。
+    """
     _clients.add(ws)
 
 
 async def remove_client(ws: "WebSocket") -> None:
-    """購読クライアントを解除する。"""
+    """
+    WebSocketクライアントを購読リストから解除する。
+
+    切断時やエラー時に呼び出される。
+    """
     _clients.discard(ws)
 
 
 async def send_buffer(ws: "WebSocket") -> None:
-    """接続直後に直近500件を送信。"""
+    """
+    バッファ内のログを送信する。
+
+    新規接続時にキャッチアップとして直近500件のログを送信する。
+    """
     for event in get_buffer_snapshot():
         await ws.send_text(_serialize_event(event))
 

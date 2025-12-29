@@ -1,4 +1,10 @@
-"""/v1/notification エンドポイント。"""
+"""
+/v1/notification エンドポイント
+
+外部システム（ファイル監視、カレンダー、RSSリーダー等）からの通知を受け付ける。
+通知はEpisode Unitとして保存され、パートナーAIが応答を生成する。
+処理は非同期で行われ、結果はevent_streamで配信される。
+"""
 
 from __future__ import annotations
 
@@ -20,6 +26,6 @@ def notification_v1(
 ) -> Response:
     """通知をUnit(Episode)として保存し、派生ジョブを積む。"""
     images = [{"type": "data_uri", "base64": schemas.data_uri_image_to_base64(s)} for s in request.images]
-    internal = schemas.NotificationRequest(source_system=request.from_, text=request.message, images=images)
+    internal = schemas.NotificationRequest(source_system=request.source_system, text=request.text, images=images)
     memory_manager.handle_notification(internal, background_tasks=background_tasks)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

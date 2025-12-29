@@ -1,4 +1,21 @@
-"""プロンプト管理。"""
+"""
+プロンプト管理
+
+LLMに送信するシステムプロンプトを一元管理するモジュール。
+各種タスク（reflection、entity抽出、fact抽出等）用のプロンプトテンプレートと、
+ペルソナ設定を組み合わせるユーティリティを提供する。
+
+プロンプト種別:
+- REFLECTION_SYSTEM_PROMPT: 内的思考（reflection）生成用
+- FACT_EXTRACT_SYSTEM_PROMPT: ファクト抽出用
+- LOOP_EXTRACT_SYSTEM_PROMPT: オープンループ抽出用
+- ENTITY_EXTRACT_SYSTEM_PROMPT: エンティティ抽出用
+- BOND_SUMMARY_SYSTEM_PROMPT: 絆サマリ生成用
+- PERSON_SUMMARY_SYSTEM_PROMPT: 人物サマリ生成用
+- TOPIC_SUMMARY_SYSTEM_PROMPT: トピックサマリ生成用
+- EXTERNAL_SYSTEM_PROMPT: 外部通知応答用
+- META_PROACTIVE_MESSAGE_SYSTEM_PROMPT: メタ要求（能動メッセージ）用
+"""
 
 from __future__ import annotations
 
@@ -21,10 +38,10 @@ REFLECTION_SYSTEM_PROMPT = """
 
 {
   "reflection_text": "string",
-  "emotion_label": "joy|sadness|anger|fear|neutral",
-  "emotion_intensity": 0.0,
+  "partner_affect_label": "joy|sadness|anger|fear|neutral",
+  "partner_affect_intensity": 0.0,
   "topic_tags": ["仕事", "読書"],
-  "salience_score": 0.0,
+  "salience": 0.0,
   "confidence": 0.0
 }
 """.strip()
@@ -83,7 +100,8 @@ ENTITY_EXTRACT_SYSTEM_PROMPT = """
 - 不確実なら confidence を低くする
 - 個数は多すぎない（最大10件）
 - relations は必要なときだけ出す（最大10件）
-- rel は自由ラベル（推奨: friend|family|colleague|partner|likes|dislikes|related|other）
+- relations は必要なときだけ出す（最大10件）
+- relation は自由ラベル（推奨: friend|family|colleague|partner|likes|dislikes|related|other）
 - type_label は自由（例: PERSON/TOPIC/ORG/PROJECT/...）。固定Enumに縛られない。
   - 出力は大文字推奨（内部でも大文字に正規化して保存する）
 - roles は用途のための“役割”で、基本は次のどれか（必要なときだけ付与）:
@@ -98,15 +116,31 @@ ENTITY_EXTRACT_SYSTEM_PROMPT = """
     {"type_label":"PERSON","roles":["person"],"name":"string","aliases":["..."],"role":"mentioned","confidence":0.0}
   ],
   "relations": [
-    {"src":"PERSON:太郎","rel":"friend","dst":"PERSON:次郎","confidence":0.0,"evidence":"short quote"}
+    {"src":"PERSON:太郎","relation":"friend","dst":"PERSON:次郎","confidence":0.0,"evidence":"short quote"}
   ]
 }
 """.strip()
 
 
-RELATIONSHIP_SUMMARY_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「関係性サマリ（SharedNarrative）」モジュールです。
-与えられた直近7日程度の出来事（会話ログ/事実/未完了）から、ユーザーとあなたの関係性が続くように短く要約して JSON で出力してください。
+# MemoryPack Builder の entity フォールバック用（names only）。
+ENTITY_NAMES_ONLY_SYSTEM_PROMPT = """
+あなたは cocoro_ghost の「entity名抽出（names only）」モジュールです。
+入力テキストから、登場する固有名（人物/場所/プロジェクト/作品/話題など）の“名前だけ”を抽出して JSON で出力してください。
+
+ルール:
+- 出力は JSON のみ（前後に説明文を付けない）
+- roles / relations / type_label などの推測はしない（名前だけ）
+- 個数は多すぎない（最大10件）
+
+{
+  "names": ["string", "..."]
+}
+""".strip()
+
+
+BOND_SUMMARY_SYSTEM_PROMPT = """
+あなたは cocoro_ghost の「絆サマリ（BondSummary）」モジュールです。
+与えられた直近7日程度の出来事（会話ログ/事実/未完了）から、ユーザーとあなたの絆が続くように短く要約して JSON で出力してください。
 
 ルール:
 - 出力は JSON のみ（前後に説明文を付けない）
@@ -116,7 +150,7 @@ RELATIONSHIP_SUMMARY_SYSTEM_PROMPT = """
 {
   "summary_text": "string",
   "key_events": [{"unit_id": 123, "why": "..." }],
-  "relationship_state": "string"
+  "bond_state": "string"
 }
 """.strip()
 
@@ -134,8 +168,8 @@ PERSON_SUMMARY_SYSTEM_PROMPT = """
 
 {
   "summary_text": "string",
-  "liking_score": 0.0,
-  "liking_reasons": [{"unit_id": 123, "why": "..."}],
+  "favorability_score": 0.0,
+  "favorability_reasons": [{"unit_id": 123, "why": "..."}],
   "key_events": [{"unit_id": 123, "why": "..." }],
   "notes": "optional"
 }
@@ -254,7 +288,6 @@ def wrap_prompt_with_persona(
     if addon_text:
         if persona_lines:
             persona_lines.append("")
-        persona_lines.append("# 追加オプション（任意）")
         persona_lines.append(addon_text)
     if persona_lines:
         parts.append("[PERSONA_ANCHOR]\n" + "\n".join(persona_lines))
@@ -282,6 +315,11 @@ def get_entity_extract_prompt() -> str:
     return ENTITY_EXTRACT_SYSTEM_PROMPT
 
 
+def get_entity_names_only_prompt() -> str:
+  """entity名抽出（names only）用のsystem promptを返す。"""
+  return ENTITY_NAMES_ONLY_SYSTEM_PROMPT
+
+
 def get_external_prompt() -> str:
     """notification（外部通知）に対する応答用system promptを返す。"""
     return EXTERNAL_SYSTEM_PROMPT
@@ -301,9 +339,9 @@ def get_default_persona_addon() -> str:
     return DEFAULT_PERSONA_ADDON
 
 
-def get_relationship_summary_prompt() -> str:
-    """関係性サマリ生成用system promptを返す。"""
-    return RELATIONSHIP_SUMMARY_SYSTEM_PROMPT
+def get_bond_summary_prompt() -> str:
+  """絆サマリ生成用system promptを返す。"""
+  return BOND_SUMMARY_SYSTEM_PROMPT
 
 
 def get_person_summary_prompt() -> str:

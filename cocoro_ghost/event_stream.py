@@ -1,4 +1,10 @@
-"""WebSocket向けのアプリイベント配信サポート（通知/メタ等）。"""
+"""
+WebSocket向けアプリイベント配信
+
+通知完了、メタ要求完了などのアプリケーションイベントを
+WebSocketクライアントにリアルタイム配信する。
+イベントはリングバッファに保持され、新規接続時にキャッチアップ可能。
+"""
 
 from __future__ import annotations
 
@@ -20,14 +26,18 @@ MAX_BUFFER = 200
 
 @dataclass
 class AppEvent:
-    """WebSocket配信用のイベント（メモリID/UnitIDに紐づく通知）。"""
+    """
+    WebSocket配信用のイベント。
 
-    event_id: str
-    ts: str
-    type: str
-    memory_id: str
-    unit_id: int
-    data: Dict[str, Any]
+    メモリID・UnitIDに紐づく通知データを保持する。
+    """
+
+    event_id: str  # イベント固有ID（UUID）
+    ts: str  # ISO形式タイムスタンプ
+    type: str  # イベント種別（notification_done, meta_done等）
+    memory_id: str  # 対象メモリID
+    unit_id: int  # 関連UnitID
+    data: Dict[str, Any]  # 追加データ
 
 
 _event_queue: Optional[asyncio.Queue[AppEvent]] = None
@@ -40,7 +50,11 @@ logger = logging.getLogger(__name__)
 
 
 def _serialize_event(event: AppEvent) -> str:
-    """WebSocketで送る最小ペイロードに整形してJSON化する。"""
+    """
+    イベントをJSON文字列にシリアライズする。
+
+    WebSocket送信用の最小ペイロードに整形する。
+    """
     return json.dumps(
         {
             "unit_id": event.unit_id,
@@ -53,7 +67,12 @@ def _serialize_event(event: AppEvent) -> str:
 
 
 def install(loop: asyncio.AbstractEventLoop) -> None:
-    """publish() のためにイベントループとキューを初期化。多重実行はしない。"""
+    """
+    イベントストリームを初期化する。
+
+    publish()で使用するイベントループとキューをセットアップする。
+    多重呼び出しは無視される。
+    """
     global _event_queue, _handler_installed, _loop
     if _handler_installed:
         return
@@ -64,7 +83,11 @@ def install(loop: asyncio.AbstractEventLoop) -> None:
 
 
 async def start_dispatcher() -> None:
-    """キューからイベントを取り出して接続中のクライアントへ配信するタスクを起動する。"""
+    """
+    イベント配信タスクを起動する。
+
+    キューからイベントを取り出し、接続中の全クライアントへ配信する。
+    """
     global _dispatch_task
     if _dispatch_task is not None:
         return
@@ -76,7 +99,11 @@ async def start_dispatcher() -> None:
 
 
 async def stop_dispatcher() -> None:
-    """dispatcherタスクを停止する。"""
+    """
+    イベント配信タスクを停止する。
+
+    アプリケーション終了時に呼び出してタスクをキャンセルする。
+    """
     global _dispatch_task
     if _dispatch_task is None:
         return
@@ -89,7 +116,11 @@ async def stop_dispatcher() -> None:
 
 
 def publish(*, type: str, memory_id: str, unit_id: int, data: Optional[Dict[str, Any]] = None) -> None:
-    """スレッドセーフにイベントを投入（WS配送はdispatcherが行う）。"""
+    """
+    イベントをキューに投入する。
+
+    スレッドセーフにイベントを追加し、dispatcherが配信を行う。
+    """
     if _event_queue is None or _loop is None:
         return
     event = AppEvent(
@@ -104,22 +135,38 @@ def publish(*, type: str, memory_id: str, unit_id: int, data: Optional[Dict[str,
 
 
 def get_buffer_snapshot() -> List[AppEvent]:
-    """直近イベントのリングバッファを返す（接続直後のcatch-up用）。"""
+    """
+    バッファ内の直近イベントを取得する。
+
+    新規接続時のキャッチアップ用にリングバッファの内容を返す。
+    """
     return list(_buffer)
 
 
 async def add_client(ws: "WebSocket") -> None:
-    """購読クライアントを登録する。"""
+    """
+    WebSocketクライアントを購読リストに登録する。
+
+    以降のイベントがこのクライアントに配信される。
+    """
     _clients.add(ws)
 
 
 async def remove_client(ws: "WebSocket") -> None:
-    """購読クライアントを解除する。"""
+    """
+    WebSocketクライアントを購読リストから解除する。
+
+    切断時やエラー時に呼び出される。
+    """
     _clients.discard(ws)
 
 
 async def send_buffer(ws: "WebSocket") -> None:
-    """接続直後にバッファを順に送信する。"""
+    """
+    バッファ内のイベントを送信する。
+
+    新規接続時にキャッチアップとして直近イベントを順に送信する。
+    """
     for event in get_buffer_snapshot():
         await ws.send_text(_serialize_event(event))
 

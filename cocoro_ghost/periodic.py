@@ -1,4 +1,10 @@
-"""cron無しの定期実行（jobs enqueue）ユーティリティ。"""
+"""
+cron無しの定期実行ユーティリティ
+
+Workerから定期的に呼び出され、必要なジョブをenqueueする。
+bond_summary、entity_summary、capsule_refreshなどの
+定期ジョブを重複抑制・クールダウン付きで管理する。
+"""
 
 from __future__ import annotations
 
@@ -91,7 +97,7 @@ def _latest_summary_updated_at(
     return ts if ts > 0 else None
 
 
-def maybe_enqueue_relationship_summary(
+def maybe_enqueue_bond_summary(
     session: Session,
     *,
     now_ts: int,
@@ -99,21 +105,23 @@ def maybe_enqueue_relationship_summary(
     cooldown_seconds: int = 6 * 3600,
     max_sensitivity: Optional[int] = int(Sensitivity.PRIVATE),
 ) -> bool:
-    """relationship summary を必要ならenqueueする（重複抑制 + クールダウン）。
+    """
+    bond summary ジョブを必要に応じてenqueueする。
 
-    max_sensitivity が None の場合は sensitivity フィルタを行わない（呼び出し側互換用）。
+    重複抑制とクールダウンを考慮し、新規エピソードがある場合のみ実行する。
+    max_sensitivity が None の場合は sensitivity フィルタを行わない。
     """
 
     if _has_pending_job(
         session,
-        kind="relationship_summary",
+        kind="bond_summary",
         predicate=lambda p: (str(p.get("scope_key") or "").strip() in {"", scope_key}),
     ):
         return False
 
     updated_at = _latest_summary_updated_at(
         session,
-        scope_label="relationship",
+        scope_label="bond",
         scope_key=scope_key,
         max_sensitivity=max_sensitivity,
     )
@@ -145,7 +153,7 @@ def maybe_enqueue_relationship_summary(
         )
         if any_episode_line is None:
             return False
-        _enqueue_job(session, kind="relationship_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
+        _enqueue_job(session, kind="bond_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
         return True
 
     if int(now_ts) - int(updated_at) < int(cooldown_seconds):
@@ -164,7 +172,7 @@ def maybe_enqueue_relationship_summary(
     if new_episode is None:
         return False
 
-    _enqueue_job(session, kind="relationship_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
+    _enqueue_job(session, kind="bond_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
     return True
 
 
@@ -176,7 +184,11 @@ def maybe_enqueue_capsule_refresh(
     limit: int = 5,
     max_sensitivity: int = int(Sensitivity.PRIVATE),
 ) -> bool:
-    """capsule_refresh を一定間隔でenqueueする（重複抑制）。"""
+    """
+    capsule_refresh ジョブを一定間隔でenqueueする。
+
+    重複抑制を行い、前回実行から一定時間経過した場合のみ実行する。
+    """
     if _has_pending_job(
         session,
         kind="capsule_refresh",
@@ -271,7 +283,12 @@ def maybe_enqueue_entity_summaries(
     max_topic: int = 3,
     max_sensitivity: int = int(Sensitivity.PRIVATE),
 ) -> dict[str, int]:
-    """person/topic の summary refresh を周期的にenqueueする（重複抑制 + クールダウン + 新規Episode判定）。"""
+    """
+    person/topic の summary refresh を周期的にenqueueする。
+
+    重複抑制・クールダウン・新規Episode判定を考慮し、
+    頻出エンティティの要約更新ジョブを登録する。
+    """
     stats = {"person": 0, "topic": 0}
     candidate_ids = _pick_entities_to_refresh(
         session,
@@ -372,7 +389,11 @@ def maybe_enqueue_entity_summaries(
 
 @dataclass(frozen=True)
 class PeriodicEnqueueConfig:
-    """定期enqueueのチューニングパラメータ（クールダウン/上限/秘匿度など）。"""
+    """
+    定期enqueueのチューニングパラメータ。
+
+    クールダウン間隔、上限数、秘匿度フィルタなどを設定する。
+    """
     weekly_cooldown_seconds: int = 6 * 3600
     entity_cooldown_seconds: int = 12 * 3600
     entity_window_days: int = 14
@@ -384,22 +405,27 @@ class PeriodicEnqueueConfig:
 
 
 def enqueue_periodic_jobs(session: Session, *, now_ts: int, config: PeriodicEnqueueConfig | None = None) -> dict[str, Any]:
-    """定期実行tick: 必要なjobsをenqueueして統計を返す（commitは呼び出し側）。"""
+    """
+    定期実行のメインエントリポイント。
+
+    必要なジョブをenqueueし、登録した件数の統計を返す。
+    commitは呼び出し側で行う。
+    """
     cfg = config or PeriodicEnqueueConfig()
     stats: dict[str, Any] = {
-        "relationship_summary": 0,
+        "bond_summary": 0,
         "capsule_refresh": 0,
         "person_summary_refresh": 0,
         "topic_summary_refresh": 0,
     }
 
-    if maybe_enqueue_relationship_summary(
+    if maybe_enqueue_bond_summary(
         session,
         now_ts=now_ts,
         cooldown_seconds=cfg.weekly_cooldown_seconds,
         max_sensitivity=cfg.max_sensitivity,
     ):
-        stats["relationship_summary"] += 1
+        stats["bond_summary"] += 1
 
     entity_stats = maybe_enqueue_entity_summaries(
         session,

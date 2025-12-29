@@ -45,7 +45,7 @@
 
 補足（重要）:
 - `jobs` は **外部クライアント向けの汎用「ジョブ投入API」ではない**。
-- 現状、ジョブは「APIプロセスが内部でenqueueする」か「管理APIで relationship サマリ（`rolling:7d`）のみ手動enqueueできる」だけ。
+- 現状、ジョブは「APIプロセスが内部でenqueueする」か「管理APIで bond サマリ（`rolling:7d`）のみ手動enqueueできる」だけ。
 - つまりこの“契約”は **API（同期）⇄ 内蔵Worker（非同期）** の内部契約を指す。
 
 ### 6) state / sensitivity で「運用上のガード」を表現する
@@ -81,8 +81,8 @@ create table if not exists units (
 
   -- 任意：検索補助
   topic_tags    text,                    -- JSON array string（例: ["仕事","読書"]）
-  emotion_label text,                    -- joy/sadness/anger/fear/neutral
-  emotion_intensity real                 -- 0..1
+  partner_affect_label text,             -- joy/sadness/anger/fear/neutral
+  partner_affect_intensity real          -- 0..1
 );
 
 create index if not exists idx_units_kind_created on units(kind, created_at);
@@ -106,8 +106,8 @@ create index if not exists idx_units_state on units(state);
 | `sensitivity` | INTEGER | Sensitivity。PRIVATE以上は外部UI/注入の制約に使う。 | API/Worker/Admin |
 | `pin` | INTEGER | ピン留め（0/1）。Schedulerの採用優先度にボーナス。 | Admin |
 | `topic_tags` | TEXT | JSON array文字列。NFKC正規化・重複除去・ソートで安定化推奨。 | Worker/Admin |
-| `emotion_label` | TEXT | 反射（reflect_episode）の結果ラベル。 | Worker |
-| `emotion_intensity` | REAL | 反射の強度（0..1）。 | Worker |
+| `partner_affect_label` | TEXT | 反射（reflect_episode）の結果ラベル。 | Worker |
+| `partner_affect_intensity` | REAL | 反射の強度（0..1）。 | Worker |
 
 補足:
 - `occurred_at` が無い場合は `created_at` を代替にしている箇所がある（Retrieverの時刻など）。
@@ -146,13 +146,13 @@ create index if not exists idx_unit_entities_entity on unit_entities(entity_id);
 
 create table if not exists edges (
   src_entity_id    integer not null references entities(id) on delete cascade,
-  rel_label        text    not null,  -- 自由ラベル（例: friend/likes/mentor/...）
+  relation_label   text    not null,  -- 自由ラベル（例: friend/likes/mentor/...）
   dst_entity_id    integer not null references entities(id) on delete cascade,
   weight           real    not null default 1.0,
   first_seen_at    integer,
   last_seen_at     integer,
   evidence_unit_id integer references units(id),
-  primary key(src_entity_id, rel_label, dst_entity_id)
+  primary key(src_entity_id, relation_label, dst_entity_id)
 );
 create index if not exists idx_edges_src on edges(src_entity_id);
 create index if not exists idx_edges_dst on edges(dst_entity_id);
@@ -279,12 +279,12 @@ create index if not exists idx_fact_subject_pred on payload_fact(subject_entity_
 ```sql
 create table if not exists payload_summary (
   unit_id      integer primary key references units(id) on delete cascade,
-  scope_label  text not null,       -- 自由ラベル（例: relationship/person/topic/...）
+  scope_label  text not null,       -- 自由ラベル（例: bond/person/topic/...）
   scope_key    text not null,       -- "rolling:7d", "person:123", "topic:unity" ...
   range_start  integer,
   range_end    integer,
   summary_text text not null,
-  summary_json text              -- JSON string（LLM出力を丸ごと保存、例: {"summary_text":...,"key_events":[...],"relationship_state":...}）
+  summary_json text              -- JSON string（LLM出力を丸ごと保存、例: {"summary_text":...,"key_events":[...],"bond_state":...}）
 );
 
 create index if not exists idx_summary_scope on payload_summary(scope_label, scope_key);
@@ -293,7 +293,7 @@ create index if not exists idx_summary_scope on payload_summary(scope_label, sco
 #### 使い方（Summary）
 
   - `scope_label` と `scope_key` で「どの範囲の要約か」を表す。
-    - relationship: `rolling:7d`（直近7日ローリング）
+    - bond: `rolling:7d`（直近7日ローリング）
     - person: `person:<entity_id>`
     - topic: `topic:<normalized>`
 - `summary_text` は注入用のプレーンテキスト（Schedulerが `[SHARED_NARRATIVE]` に入れる）。
@@ -314,7 +314,7 @@ create table if not exists payload_capsule (
 - 直近状態（現在日時/直近の文脈）を軽量に保つ「短期メモ」用途。
 - `expires_at` がある場合、Schedulerは期限切れを注入しない。
 - `capsule_json` はJSON文字列（構造は運用で決める）。
-  - 現行の `capsule_refresh` では `recent`（直近の抜粋）に加えて、`otome_state`（感情: 重要度×時間減衰の集約）を含める。
+  - 現行の `capsule_refresh` では `recent`（直近の抜粋）に加えて、`partner_mood_state`（機嫌: 重要度×時間減衰の集約）を含める。
 
 ### OpenLoop（未完了：次に話す理由）
 
@@ -356,7 +356,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 | column | 意味/使い方 |
 |---|---|
-| `kind` | ジョブ種別（例: `reflect_episode`, `extract_entities`, `upsert_embeddings`, `relationship_summary` など）。 |
+| `kind` | ジョブ種別（例: `reflect_episode`, `extract_entities`, `upsert_embeddings`, `bond_summary` など）。 |
 | `payload_json` | 入力（例: `{"unit_id":123}` / `{"scope_key":"rolling:7d"}`）。 |
 | `status` | 0 queued / 1 running / 2 done / 3 failed。 |
 | `run_after` | 実行可能時刻（UTC epoch sec）。バックオフに使う。 |
@@ -375,24 +375,24 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 - 対象: `units(kind=EPISODE)` を保存した直後
 - enqueue: `reflect_episode` / `extract_entities` / `extract_facts` / `extract_loops` / `upsert_embeddings` / `capsule_refresh(limit=5)`
-- `capsule_refresh` の payload は `{"limit":5, "otome_kairo_scan_limit":500}` のように拡張可能（`otome_kairo_scan_limit` は感情集約の走査件数）。
+- `capsule_refresh` の payload は `{"limit":5, "partner_mood_scan_limit":500}` のように拡張可能（`partner_mood_scan_limit` は機嫌集約の走査件数）。
 - 入口の例:
   - `/api/chat` の完了時（SSE done直前の保存）
   - `/api/v1/notification` の処理完了時（reply生成後の保存更新）
   - `/api/capture`（desktop/camera）
 
-**B. relationship サマリ（現行: `rolling:7d`）の更新**
+**B. bond サマリ（現行: `rolling:7d`）の更新**
 
-- 対象: `payload_summary(scope_label=relationship, scope_key=rolling:7d)` を作成/更新する `relationship_summary` job
+- 対象: `payload_summary(scope_label=bond, scope_key=rolling:7d)` を作成/更新する `bond_summary` job
 - Workerの生成内容（現行）:
   - 対象Episode: 直近7日（`occurred_at`）のEPISODEを最大200件（`sensitivity <= SECRET`）
-  - 出力: `payload_summary.summary_text`（注入用） + `payload_summary.summary_json`（例: `{summary_text,key_events,relationship_state}`）
-  - メタ: `units.source=relationship_summary`、更新時は `units.state=VALIDATED`、`range_start/range_end` を保存
+  - 出力: `payload_summary.summary_text`（注入用） + `payload_summary.summary_json`（例: `{summary_text,key_events,bond_state}`）
+  - メタ: `units.source=bond_summary`、更新時は `units.state=VALIDATED`、`range_start/range_end` を保存
 - enqueue経路:
   - Episode保存時に必要なら自動enqueue（重複抑制あり / クールダウンあり）
   - 定期実行ユーティリティ（cron無し）から必要ならenqueue（重複抑制あり / クールダウンあり）
   - 判定ロジック（共通の意図）:
-    - `relationship_summary` が `queued/running` なら enqueue しない
+    - `bond_summary` が `queued/running` なら enqueue しない
     - サマリが無い場合は enqueue
     - サマリ最終更新から一定時間（現行: 6h）未満なら enqueue しない
     - 最終更新以降の新規Episode（`occurred_at` があり、`occurred_at > summary.updated_at`）がある場合のみ enqueue
@@ -465,7 +465,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 ### RelationType
 
-固定の RelationType（enum値）は運用で破綻しやすいため廃止し、`edges.rel_label`（TEXT）で表現する。
+固定の RelationType（enum値）は運用で破綻しやすいため廃止し、`edges.relation_label`（TEXT）で表現する。
 
 - 推奨ラベル: `friend` / `family` / `colleague` / `partner` / `likes` / `dislikes` / `related` / `other`
 - ただし自由に増やしてよい（例: `mentor` / `manager` / `rival` / `coworker` ...）
@@ -474,7 +474,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 固定の SummaryScopeType（enum値）は運用で破綻しやすいため廃止し、`payload_summary.scope_label`（TEXT）で表現する。
 
-- 推奨ラベル: `relationship` / `person` / `topic`（必要なら `daily` / `monthly` などを追加）
+- 推奨ラベル: `bond` / `person` / `topic`（必要なら `daily` / `monthly` などを追加）
 
 ### EntityRole
 

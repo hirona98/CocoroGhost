@@ -1,4 +1,9 @@
-"""/capture エンドポイント。"""
+"""
+/capture エンドポイント
+
+デスクトップキャプチャやカメラ画像を受け取り、Episode Unitとして保存する。
+画像はLLMで要約され、後続の記憶処理（埋め込み生成等）のジョブがエンキューされる。
+"""
 
 from __future__ import annotations
 

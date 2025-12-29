@@ -1,4 +1,10 @@
-"""ロギング設定。"""
+"""
+ロギング設定
+
+アプリケーションのログ出力を設定する。
+標準loggingの初期化、外部ライブラリのログ抑制、
+uvicornアクセスログからの特定パス除外などを行う。
+"""
 
 from __future__ import annotations
 
@@ -6,14 +12,22 @@ import logging
 
 
 class _UvicornAccessPathFilter(logging.Filter):
-    """uvicorn.accessログから特定パスを除外するためのFilter。"""
+    """
+    uvicornアクセスログから特定パスを除外するフィルタ。
+
+    ヘルスチェック等の頻繁なリクエストをログから除外する。
+    """
 
     def __init__(self, suppressed_paths: set[str]) -> None:
         super().__init__()
         self._suppressed_paths = suppressed_paths
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
-        """Trueなら通す。suppressed_pathsに一致するアクセスログだけ落とす。"""
+        """
+        ログレコードのフィルタリングを行う。
+
+        除外パスに一致しないログのみ通過させる。
+        """
         try:
             msg = record.getMessage()
         except Exception:
@@ -22,7 +36,11 @@ class _UvicornAccessPathFilter(logging.Filter):
 
 
 def suppress_uvicorn_access_log_paths(*paths: str) -> None:
-    """uvicorn.access のアクセスログから特定パスの行だけ除外。"""
+    """
+    uvicornアクセスログから特定パスを除外する。
+
+    指定されたパスを含むアクセスログを出力しないようにする。
+    """
     if not paths:
         return
     logger = logging.getLogger("uvicorn.access")
@@ -30,7 +48,11 @@ def suppress_uvicorn_access_log_paths(*paths: str) -> None:
 
 
 def setup_logging(level: str = "INFO") -> None:
-    """標準loggingの初期化と、外部ライブラリのログレベル調整を行う。"""
+    """
+    ロギングを初期化する。
+
+    標準loggingのフォーマット設定と、外部ライブラリのログレベル調整を行う。
+    """
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",

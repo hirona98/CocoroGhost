@@ -1,4 +1,10 @@
-"""/v1/meta_request エンドポイント。"""
+"""
+/v1/meta_request エンドポイント
+
+システムからの指示（instruction）とペイロードを受け取り、
+パートナーAIに能動的なメッセージを生成させる。
+ユーザーに対して自然に話しかける機能として使用される。
+"""
 
 from __future__ import annotations
 
@@ -20,6 +26,10 @@ def meta_request_v1(
 ) -> Response:
     """メタ要求をUnit(Episode)として保存し、派生ジョブを積む。"""
     images = [{"type": "data_uri", "base64": schemas.data_uri_image_to_base64(s)} for s in request.images]
-    internal = schemas.MetaRequestRequest(instruction=request.prompt, payload_text="", images=images)
+    internal = schemas.MetaRequestRequest(
+        instruction=request.instruction,
+        payload_text=request.payload_text,
+        images=images,
+    )
     memory_manager.handle_meta_request(internal, background_tasks=background_tasks)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

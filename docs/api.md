@@ -30,8 +30,9 @@
 }
 ```
 
-- `memory_id` は省略可能（省略時は、`/api/settings` で選択中の `active_embedding_preset_id` を `memory_id` として使用する）
+- `memory_id` は必須
 - `memory_id` は embedding_presets.id（UUID）を想定。埋め込み次元が一致しないDBは初期化に失敗するため、次元一致を前提に指定する
+- 注意: `jobs` は `memory_<memory_id>.db` に作られるが、内蔵Workerの処理対象は `active_embedding_preset_id`（アクティブな `memory_id`）のみ。非アクティブ `memory_id` のジョブは処理されない。
 - `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
 - `client_context` は省略可能（指定時は `payload_episode.context_note` にJSON文字列として保存される）
 
@@ -57,36 +58,51 @@ data: {"message":"...","code":"..."}
 1. 画像要約（`images` がある場合）
 2. Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 3. Schedulerで **MemoryPack** を生成（検索結果を `[EPISODE_EVIDENCE]` に含む）
-4. LLMへ `memorypack + otome_kairo_trailer_prompt` を system に注入し、conversation には直近会話（max_turns_window）+ user_text を渡す（MemoryPack内に persona/addon を含む）
-5. 返答をSSEで配信（返答末尾の内部JSON＝otome_kairo trailer はサーバ側で回収し、SSEには流さない）
+4. LLMへ `memorypack + partner_affect_trailer_prompt` を system に注入し、conversation には直近会話（max_turns_window）+ user_text を渡す（MemoryPack内に persona/addon を含む）
+5. 返答をSSEで配信（返答末尾の内部JSON＝partner_affect trailer はサーバ側で回収し、SSEには流さない）
 6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 7. Worker用ジョブを enqueue（reflection/extraction/embedding等）
 
-## `/api/otome_kairo`（デバッグ）
+## `/api/partner_mood`（デバッグ）
 
-otome_kairo（パートナーの感情）関連の数値を **UIから参照/変更**するためのデバッグ用API。
+partner_mood（パートナーの機嫌）関連の数値を **UIから参照/変更**するためのデバッグ用API。
 
 - **永続化しない**（DB/settings.db に保存しない）
 - 反映は **同一プロセス内**のみ（プロセスを跨ぐ構成ではプロセスごとに状態が分離される）
 - 認証は他の `/api/*` と同様に `Authorization: Bearer <TOKEN>`
 
-### `GET /api/otome_kairo`
+### `GET /api/partner_mood`
 
-現在の otome_kairo を返す。
+partner_mood の **前回チャットで使った値（last used）** を返す。
+（LLMに渡す直前でDBから取得して計算するため、"現在値"という概念はない）
 
-- query
-  - `scan_limit`（任意）: DB走査件数（既定 500、範囲は内部で 50..2000 に丸める）
-  - `include_computed`（任意）: `computed` を含めるか（既定 true）
+- `PUT /api/partner_mood` で override を設定しても、**会話（/api/chat）が走るまでは** last used は更新されない
 
 #### Response（JSON）
 
-- `computed`: DBのエピソードから「重要度×時間減衰」で計算した otome_kairo（取得に失敗した場合は `null`）
-- `override`: デバッグ用の in-memory 上書き（無ければ `null`）
-- `effective`: 実際にシステムが利用する otome_kairo（`computed` に `override` を適用）
+システムが実際に利用する partner_mood（有効値）を返す。
 
-### `PUT /api/otome_kairo/override`
+```json
+{
+  "label": "neutral",
+  "intensity": 0.0,
+  "components": {
+    "joy": 0.0,
+    "sadness": 0.0,
+    "anger": 0.0,
+    "fear": 0.0
+  },
+  "response_policy": {
+    "cooperation": 1.0,
+    "refusal_bias": 0.0,
+    "refusal_allowed": false
+  }
+}
+```
 
-in-memory の otome_kairo override を設定する（**部分更新可**）。
+### `PUT /api/partner_mood`
+
+in-memory の partner_mood ランタイム状態（次のチャットで有効な値）を設定する
 
 #### Request（JSON）
 
@@ -94,26 +110,36 @@ in-memory の otome_kairo override を設定する（**部分更新可**）。
 {
   "label": "anger",
   "intensity": 0.8,
-  "components": {"anger": 0.9},
-  "policy": {"refusal_allowed": true}
+  "components": {
+    "joy": 0.0,
+    "sadness": 0.1,
+    "anger": 0.9,
+    "fear": 0.0
+  },
+  "response_policy": {
+    "cooperation": 0.2,
+    "refusal_bias": 0.8,
+    "refusal_allowed": true
+  }
 }
 ```
 
 - `label` は `joy|sadness|anger|fear|neutral` のいずれか
-- `components` は `joy/sadness/anger/fear` を任意指定（0..1）
-- `policy` は `cooperation/refusal_bias/refusal_allowed` を任意指定
+- `intensity` は 0..1
+- `components` は `joy/sadness/anger/fear` を **すべて指定**（0..1）
+- `response_policy` は `cooperation/refusal_bias/refusal_allowed` を **すべて指定**
 
 #### Response
 
-`GET /api/otome_kairo` と同形式。
+`GET /api/partner_mood` と同形式（有効値を返す）。
 
-### `DELETE /api/otome_kairo/override`
+### `DELETE /api/partner_mood`
 
-override を解除する。
+in-memory の partner_mood ランタイム状態（override）を解除し、自然計算（DBからの同期計算）に戻す。
 
 #### Response
 
-`GET /api/otome_kairo` と同形式。
+`GET /api/partner_mood` と同形式（解除後の有効値を返す）。
 
 ## `/api/v1/notification`
 
@@ -121,8 +147,8 @@ override を解除する。
 
 ```json
 {
-  "from": "アプリ名",
-  "message": "通知メッセージ",
+  "source_system": "アプリ名",
+  "text": "通知メッセージ",
   "images": [
     "data:image/jpeg;base64,/9j/4AAQ...",
     "data:image/png;base64,iVBORw0KGgo..."
@@ -143,14 +169,14 @@ override を解除する。
 curl -X POST http://127.0.0.1:55601/api/v1/notification \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
-  -d '{"from":"MyApp","message":"処理完了","images":["data:image/jpeg;base64,..."]}'
+  -d '{"source_system":"MyApp","text":"処理完了","images":["data:image/jpeg;base64,..."]}'
 ```
 
 ```bash
 curl -X POST http://127.0.0.1:55601/api/v1/notification \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
-  -d '{"from":"MyApp","message":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
+  -d '{"source_system":"MyApp","text":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
 ```
 
 ### 例（PowerShell）
@@ -160,7 +186,7 @@ Invoke-RestMethod -Method Post `
   -Uri "http://127.0.0.1:55601/api/v1/notification" `
   -ContentType "application/json; charset=utf-8" `
   -Headers @{ Authorization = "Bearer <TOKEN>" } `
-  -Body '{"from":"MyApp","message":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
+  -Body '{"source_system":"MyApp","text":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
 ```
 
 - HTTPレスポンスは先に返り、パートナーのセリフ（`data.message`）は `/api/events/stream` で後から届く
@@ -174,7 +200,8 @@ Invoke-RestMethod -Method Post `
 
 ```json
 {
-  "prompt": "任意のプロンプトやメッセージ",
+  "instruction": "任意の指示",
+  "payload_text": "任意の本文（省略可）",
   "images": [
     "data:image/jpeg;base64,/9j/4AAQ...",
     "data:image/png;base64,iVBORw0KGgo..."
@@ -195,7 +222,7 @@ Invoke-RestMethod -Method Post `
 curl -X POST http://127.0.0.1:55601/api/v1/meta_request \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
-  -d '{"prompt":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。：～ニュース内容～"}'
+  -d '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
 ```
 
 ### 例（PowerShell）
@@ -205,11 +232,11 @@ Invoke-RestMethod -Method Post `
   -Uri "http://127.0.0.1:55601/api/v1/meta_request" `
   -ContentType "application/json; charset=utf-8" `
   -Headers @{ Authorization = "Bearer <TOKEN>" } `
-  -Body '{"prompt":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。：～ニュース内容～"}'
+  -Body '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
 ```
 
 - HTTPレスポンスは先に返り、パートナーのセリフ（`data.message`）は `/api/events/stream` で後から届く
-- `prompt` は **永続化しない**（生成にのみ利用）
+- `instruction` / `payload_text` は **永続化しない**（生成にのみ利用）
 - 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=meta_request)` の `payload_episode.reply_text` に保存する
 
 ## 管理API
@@ -311,6 +338,7 @@ UI向けの「全設定」取得/更新。
 
 - `scheduled_at` はISO 8601のdatetime（Pydanticがパース可能な形式）で返す
 - `memory_enabled` は「記憶機能を使うか」を示す設定値
+- `exclude_keywords` は `/api/capture` の `context_text` 除外判定に使う
 
 ### `PUT /api/settings`
 

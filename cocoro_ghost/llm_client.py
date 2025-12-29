@@ -1,4 +1,11 @@
-"""LiteLLM ラッパー（Response API 対応）。"""
+"""cocoro_ghost.llm_client
+
+LiteLLM ラッパー。
+
+LLM API 呼び出しを抽象化するクライアントクラス。
+現状は `litellm.completion()`（OpenAI の chat.completions 互換の messages 形式）を中心に利用する。
+会話生成、JSON 生成、埋め込みベクトル生成、画像認識をサポートする。
+"""
 
 from __future__ import annotations
 
@@ -11,81 +18,8 @@ from typing import Any, Dict, Generator, Iterable, List, Optional
 import litellm
 
 
-# --- ログ整形ユーティリティ（DEBUG用） ---
-#
-# 目的:
-# - LLMへの送信/受信内容を「見やすいJSON」で確認したい
-# - ただしAPIキーや画像base64などの巨大/秘匿情報は出さない
-
-
-_REDACT_KEYS = {
-    # 念のため: LiteLLM/OpenAI/HTTP系で使われがちなキー
-    "api_key",
-    "authorization",
-    "proxy_authorization",
-}
-
-
-def _redact_data_url(url: str) -> str:
-    """data URL（base64等）をログ向けに短縮/マスクする。"""
-    if not url:
-        return ""
-    if not url.startswith("data:"):
-        return url
-    # 例: data:image/png;base64,AAAA.... の形式を想定
-    comma = url.find(",")
-    if comma == -1:
-        return "data:<redacted>"
-    header = url[: comma + 1]
-    payload_len = max(0, len(url) - (comma + 1))
-    return f"{header}<redacted {payload_len} chars>"
-
-
-def _redact_for_log(value: Any, *, str_limit: int) -> Any:
-    """ログに出してよい形へ変換（深いネストにも対応）。"""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return _truncate_for_log(value, str_limit)
-    if isinstance(value, bytes):
-        return f"<bytes {len(value)} bytes>"
-    if isinstance(value, (int, float, bool)):
-        return value
-    if isinstance(value, list):
-        return [_redact_for_log(v, str_limit=str_limit) for v in value]
-    if isinstance(value, tuple):
-        return [_redact_for_log(v, str_limit=str_limit) for v in value]
-    if isinstance(value, dict):
-        out: Dict[str, Any] = {}
-        for k, v in value.items():
-            key = str(k)
-            key_l = key.lower()
-            if key_l in _REDACT_KEYS:
-                out[key] = "***"
-                continue
-
-            # OpenAI互換の画像入力: {"image_url": {"url": "data:image/..."}}
-            if key_l == "url" and isinstance(v, str):
-                out[key] = _redact_data_url(_truncate_for_log(v, str_limit))
-                continue
-
-            out[key] = _redact_for_log(v, str_limit=str_limit)
-        return out
-
-    # 最後は文字列化（非シリアライズなオブジェクト対策）
-    return _truncate_for_log(str(value), str_limit)
-
-
-def _pretty_json_for_log(value: Any, *, limit: int) -> str:
-    """dict/list等を見やすいJSONとして整形して返す（長すぎる場合は切る）。"""
-    try:
-        text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, default=str)
-    except Exception:  # noqa: BLE001
-        text = str(value)
-    return _truncate_for_log(text, limit)
-
-
 def _truncate_for_log(text: str, limit: int) -> str:
+    """ログ出力用にテキストを切り詰める。"""
     if limit <= 0:
         return ""
     if len(text) <= limit:
@@ -94,7 +28,10 @@ def _truncate_for_log(text: str, limit: int) -> str:
 
 
 def _response_to_dict(resp: Any) -> Dict[str, Any]:
-    """LiteLLM Response をシリアライズ可能な dict に変換。"""
+    """
+    LiteLLM Responseをシリアライズ可能なdictに変換する。
+    デバッグやログ出力に使用する。
+    """
     if hasattr(resp, "model_dump"):
         return resp.model_dump()
     if hasattr(resp, "dict"):
@@ -108,12 +45,15 @@ def _response_to_dict(resp: Any) -> Dict[str, Any]:
 
 
 def _first_choice_content(resp: Any) -> str:
-    """choices[0].message.content を取り出すユーティリティ。"""
+    """
+    choices[0].message.contentを取り出すユーティリティ。
+    LLMレスポンスから本文テキストを抽出する。
+    """
     try:
         choice = resp.choices[0]
         message = getattr(choice, "message", None) or choice["message"]
         content = getattr(message, "content", None) or message["content"]
-        # OpenAI 互換で content が list の場合もあるため統一
+        # OpenAI形式で content が list の場合もあるため統一
         if isinstance(content, list):
             return "".join([item.get("text", "") if isinstance(item, dict) else str(item) for item in content]) or ""
         return content or ""
@@ -122,7 +62,10 @@ def _first_choice_content(resp: Any) -> str:
 
 
 def _delta_content(resp: Any) -> str:
-    """stream chunk から delta.content を取り出す。"""
+    """
+    ストリーミングチャンクからdelta.contentを取り出す。
+    ストリーミング応答の逐次処理に使用する。
+    """
     try:
         choice = resp.choices[0]
         delta = getattr(choice, "delta", None) or choice.get("delta")
@@ -131,7 +74,7 @@ def _delta_content(resp: Any) -> str:
         content = getattr(delta, "content", None) or delta.get("content")
         if content is None:
             return ""
-        # OpenAI 互換で content が list の場合もあるため統一
+        # OpenAI形式で content が list の場合もあるため統一
         if isinstance(content, list):
             return "".join([item.get("text", "") if isinstance(item, dict) else str(item) for item in content])
         return str(content)
@@ -139,11 +82,12 @@ def _delta_content(resp: Any) -> str:
         return ""
 
 
+# コードフェンス検出用正規表現
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
 
 
 def _strip_code_fences(text: str) -> str:
-    """```json ... ``` のようなフェンスがあれば中身だけを取り出す。"""
+    """```json ... ```のようなフェンスがあれば中身だけを取り出す。"""
     if not text:
         return ""
     m = _JSON_FENCE_RE.search(text)
@@ -151,16 +95,21 @@ def _strip_code_fences(text: str) -> str:
 
 
 def _extract_first_json_value(text: str) -> str:
-    """文字列から最初の JSON 値（object/array）らしき部分を抜き出す。"""
+    """
+    文字列から最初のJSON値（object/array）らしき部分を抜き出す。
+    LLMが出力した「ほぼJSON」から有効な部分を抽出する。
+    """
     text = _strip_code_fences(text).strip()
     if not text:
         return ""
 
+    # { か [ の最初の出現位置を探す
     obj_i = text.find("{")
     arr_i = text.find("[")
     if obj_i == -1 and arr_i == -1:
         return text
 
+    # 開始文字と閉じ文字を決定
     if obj_i == -1:
         start = arr_i
         open_ch, close_ch = "[", "]"
@@ -171,6 +120,7 @@ def _extract_first_json_value(text: str) -> str:
         start = obj_i if obj_i < arr_i else arr_i
         open_ch, close_ch = ("{", "}") if start == obj_i else ("[", "]")
 
+    # 対応する閉じ括弧を探す（文字列内を考慮）
     depth = 0
     in_string = False
     escaped = False
@@ -202,7 +152,10 @@ def _extract_first_json_value(text: str) -> str:
 
 
 def _escape_control_chars_in_json_strings(text: str) -> str:
-    """JSON 文字列内に混入した生の改行/タブ等をエスケープする。"""
+    """
+    JSON文字列内に混入した生の改行/タブ等をエスケープする。
+    LLMが出力した不正なJSONを修復するために使用。
+    """
     if not text:
         return ""
     out: list[str] = []
@@ -222,6 +175,7 @@ def _escape_control_chars_in_json_strings(text: str) -> str:
                 out.append(ch)
                 in_string = False
                 continue
+            # 制御文字をエスケープ
             if ch == "\n":
                 out.append("\\n")
                 continue
@@ -241,12 +195,15 @@ def _escape_control_chars_in_json_strings(text: str) -> str:
 
 
 def _repair_json_like_text(text: str) -> str:
-    """LLM が生成しがちな「ほぼ JSON」を、最低限パースできるように整形する。"""
+    """
+    LLMが生成しがちな「ほぼJSON」を、最低限パースできるように整形する。
+    スマートクォートの置換、制御文字のエスケープ、末尾カンマの除去を行う。
+    """
     if not text:
         return ""
     s = text.strip()
     # スマートクォート対策
-    s = s.replace("“", '"').replace("”", '"')
+    s = s.replace(""", '"').replace(""", '"')
     # 文字列内の改行/タブ等
     s = _escape_control_chars_in_json_strings(s)
     # 末尾カンマ
@@ -255,6 +212,7 @@ def _repair_json_like_text(text: str) -> str:
 
 
 def _finish_reason(resp: Any) -> str:
+    """レスポンスからfinish_reasonを取得する。"""
     try:
         choice = resp.choices[0]
         finish_reason = getattr(choice, "finish_reason", None) or choice.get("finish_reason")
@@ -264,8 +222,12 @@ def _finish_reason(resp: Any) -> str:
 
 
 class LlmClient:
-    """LLM APIクライアント。"""
+    """
+    LLM APIクライアント。
+    LiteLLMを使用してLLM APIを呼び出し、会話応答やJSON生成を行う。
+    """
 
+    # ログ出力時のプレビュー文字数
     _INFO_PREVIEW_CHARS = 300
     _DEBUG_PREVIEW_CHARS = 5000
 
@@ -285,6 +247,24 @@ class LlmClient:
         max_tokens_vision: int = 4096,
         image_timeout_seconds: int = 60,
     ):
+        """
+        LLMクライアントを初期化する。
+
+        Args:
+            model: メインLLMモデル名
+            embedding_model: 埋め込みモデル名
+            image_model: 画像認識用モデル名
+            api_key: LLM APIキー
+            embedding_api_key: 埋め込みAPIキー（未指定時はapi_keyを使用）
+            llm_base_url: LLM APIベースURL
+            embedding_base_url: 埋め込みAPIベースURL
+            image_llm_base_url: 画像モデルAPIベースURL
+            image_model_api_key: 画像モデルAPIキー
+            reasoning_effort: 推論詳細度設定（o1系用）
+            max_tokens: 通常時の最大トークン数
+            max_tokens_vision: 画像認識時の最大トークン数
+            image_timeout_seconds: 画像処理タイムアウト秒数
+        """
         self.logger = logging.getLogger(__name__)
         self.model = model
         self.embedding_model = embedding_model
@@ -312,20 +292,21 @@ class LlmClient:
         timeout: Optional[int] = None,
         stream: bool = False,
     ) -> Dict:
-        """completion API呼び出し用のkwargsを構築。"""
-        # gpt-5 系は temperature の制約が厳しい（LiteLLM側で弾かれる）。
-        # - gpt-5 / gpt-5-mini 等: temperature は 1 のみ
-        # - gpt-5.1: reasoning_effort が none（未指定）なら temperature 可（それ以外は 1 に寄せる）
+        """
+        completion API呼び出し用のkwargsを構築する。
+        モデル固有の制約（gpt-5系のtemperature制限等）を考慮する。
+        """
+        # gpt-5 以降は temperature の制約が厳しい（LiteLLM側で弾かれる）
+        # - gpt-5 / gpt-5-mini / gpt-6 ... 等: temperature は 1 のみ
         model_l = (model or "").lower()
         temp = float(temperature)
-        if "gpt-5" in model_l:
-            if "gpt-5.1" in model_l:
-                eff = (self.reasoning_effort or "").strip().lower()
-                if eff and eff != "none":
-                    temp = 1.0
-            else:
+        m = re.search(r"\bgpt-(\d+)(?:\.(\d+))?\b", model_l)
+        if m:
+            major = int(m.group(1))
+            if major >= 5:
                 temp = 1.0
 
+        # 基本パラメータ
         kwargs = {
             "model": model,
             "messages": messages,
@@ -333,6 +314,7 @@ class LlmClient:
             "stream": stream,
         }
 
+        # オプションパラメータを追加
         if api_key:
             kwargs["api_key"] = api_key
         if base_url:
@@ -348,27 +330,7 @@ class LlmClient:
         if self.reasoning_effort:
             kwargs["extra_body"] = {"reasoning_effort": self.reasoning_effort}
 
-        # DEBUGログ出力（見やすく整形、秘匿/巨大データはマスク）
-        if self.logger.isEnabledFor(logging.DEBUG):
-            redacted = _redact_for_log(kwargs, str_limit=1200)
-            pretty = _pretty_json_for_log(redacted, limit=self._DEBUG_PREVIEW_CHARS)
-            self.logger.debug("LLM request (pretty):\n%s", pretty)
-
         return kwargs
-
-    def _debug_log_response(self, *, kind: str, resp: Any) -> None:
-        """DEBUG時のみ、LLMレスポンスを整形して出す。"""
-        if not self.logger.isEnabledFor(logging.DEBUG):
-            return
-        raw = _response_to_dict(resp)
-        redacted = _redact_for_log(raw, str_limit=1200)
-        pretty = _pretty_json_for_log(redacted, limit=self._DEBUG_PREVIEW_CHARS)
-        self.logger.debug("LLM %s response (pretty):\n%s", kind, pretty)
-
-        # 本文も別枠で見たいことが多いので出す（長い場合は切る）
-        content = _first_choice_content(resp)
-        if content:
-            self.logger.debug("LLM %s content (raw): %s", kind, _truncate_for_log(content, self._DEBUG_PREVIEW_CHARS))
 
     def generate_reply_response(
         self,
@@ -377,7 +339,11 @@ class LlmClient:
         temperature: float = 0.7,
         stream: bool = False,
     ):
-        """会話応答を生成（Response オブジェクト or ストリーム）。"""
+        """
+        会話応答を生成する（Responseオブジェクト or ストリーム）。
+        システムプロンプトと会話履歴からLLMに応答を生成させる。
+        """
+        # メッセージ配列を構築
         messages = [{"role": "system", "content": system_prompt}]
         for m in conversation:
             messages.append({"role": m["role"], "content": m["content"]})
@@ -395,9 +361,6 @@ class LlmClient:
         )
 
         resp = litellm.completion(**kwargs)
-        # streamの場合はrespがイテレータになり得るため、ここでは触らない
-        if not stream:
-            self._debug_log_response(kind="reply", resp=resp)
         return resp
 
     def generate_reflection_response(
@@ -406,7 +369,11 @@ class LlmClient:
         context_text: str,
         image_descriptions: Optional[List[str]] = None,
     ):
-        """内的思考（リフレクション）を生成（Response オブジェクト）。"""
+        """
+        内的思考（リフレクション）を生成する（Responseオブジェクト）。
+        コンテキストに基づいてJSON形式の思考結果を返す。
+        """
+        # コンテキストブロックを構築
         context_block = context_text
         if image_descriptions:
             context_block += "\n" + "\n".join(image_descriptions)
@@ -419,18 +386,16 @@ class LlmClient:
         self.logger.info("LLM reflection", extra={"model": self.model})
 
         kwargs = self._build_completion_kwargs(
-            model=self.model,  # reflection_modelは廃止、modelを使用
+            model=self.model,
             messages=messages,
-            temperature=0.1,
+            temperature=0.1,  # リフレクションは低温度で安定性重視
             api_key=self.api_key,
             base_url=self.llm_base_url,
             max_tokens=self.max_tokens,
             response_format={"type": "json_object"},
         )
 
-        resp = litellm.completion(**kwargs)
-        self._debug_log_response(kind="reflection", resp=resp)
-        return resp
+        return litellm.completion(**kwargs)
 
     def generate_json_response(
         self,
@@ -440,7 +405,10 @@ class LlmClient:
         temperature: float = 0.1,
         max_tokens: Optional[int] = None,
     ):
-        """JSON（json_object）を生成（Response オブジェクト）。"""
+        """
+        JSON（json_object）を生成する（Responseオブジェクト）。
+        構造化データの抽出や分析結果の出力に使用する。
+        """
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
@@ -458,7 +426,6 @@ class LlmClient:
         )
 
         resp = litellm.completion(**kwargs)
-        self._debug_log_response(kind="json", resp=resp)
         return resp
 
     def generate_embedding(
@@ -466,7 +433,10 @@ class LlmClient:
         texts: List[str],
         images: Optional[List[bytes]] = None,
     ) -> List[List[float]]:
-        """テキストの埋め込みベクトルを生成。"""
+        """
+        テキストの埋め込みベクトルを生成する。
+        複数テキストを一括処理し、各テキストに対応するベクトルを返す。
+        """
         self.logger.info(
             "LLM embedding",
             extra={"model": self.embedding_model, "count": len(texts)},
@@ -480,23 +450,30 @@ class LlmClient:
             kwargs["api_key"] = self.embedding_api_key
         if self.embedding_base_url:
             kwargs["api_base"] = self.embedding_base_url
+
         resp = litellm.embedding(**kwargs)
+
+        # レスポンス形式に応じてベクトルを抽出
         try:
             return [item["embedding"] for item in resp["data"]]
         except Exception:  # noqa: BLE001
             return [item.embedding for item in resp.data]
 
     def generate_image_summary(self, images: List[bytes]) -> List[str]:
-        """画像の要約を生成。"""
+        """
+        画像の要約を生成する。
+        各画像をVision LLMで解析し、日本語で説明テキストを返す。
+        """
         summaries: List[str] = []
         for image_bytes in images:
+            # 画像をbase64エンコード
             b64 = base64.b64encode(image_bytes).decode("ascii")
             messages = [
-                {"role": "system", "content": "あなたは画像を短い日本語で要約します。"},
+                {"role": "system", "content": "あなたは日本語で画像を説明します。"},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "画像を短く日本語で要約してください。"},
+                        {"type": "text", "text": "この画像を日本語で詳細に説明してください。"},
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
                     ],
                 },
@@ -513,7 +490,6 @@ class LlmClient:
             )
 
             resp = litellm.completion(**kwargs)
-            self._debug_log_response(kind="image_summary", resp=resp)
             summaries.append(_first_choice_content(resp))
 
         return summaries
@@ -527,15 +503,20 @@ class LlmClient:
         return _first_choice_content(resp)
 
     def response_json(self, resp: Any) -> Any:
-        """LLM 応答本文から JSON を抽出・修復しつつ parse する。"""
+        """
+        LLM応答本文からJSONを抽出・修復しつつパースする。
+        LLMが出力した不正なJSONも可能な限り修復してパースを試みる。
+        """
         content = self.response_content(resp)
         candidate = _extract_first_json_value(content)
         if not candidate:
             raise ValueError("empty LLM content for JSON parsing")
 
+        # まず通常のパースを試行
         try:
             return json.loads(candidate)
         except json.JSONDecodeError as exc1:
+            # 失敗した場合は修復を試みる
             repaired = _repair_json_like_text(candidate)
             try:
                 parsed = json.loads(repaired)
@@ -546,7 +527,7 @@ class LlmClient:
                 )
                 return parsed
             except json.JSONDecodeError as exc:
-                # 失敗時はデバッグ用に内容を残す（本番ログは INFO で抑制）
+                # 失敗時はデバッグ用に内容を残す
                 self.logger.debug("response_json parse failed: %s", exc)
                 self.logger.debug("response_json content (raw): %s", _truncate_for_log(content, self._DEBUG_PREVIEW_CHARS))
                 self.logger.debug("response_json candidate: %s", _truncate_for_log(candidate, self._DEBUG_PREVIEW_CHARS))
@@ -554,31 +535,26 @@ class LlmClient:
                 raise
 
     def stream_delta_chunks(self, resp_stream: Iterable[Any]) -> Generator[str, None, None]:
-        """LiteLLM の streaming Response から delta.content を逐次抽出。"""
+        """
+        LiteLLMのstreaming Responseからdelta.contentを逐次抽出する。
+        ストリーミング応答をリアルタイムで処理するジェネレータ。
+        """
         parts: List[str] = []
-        try:
-            for chunk in resp_stream:
-                delta = _delta_content(chunk)
-                if delta:
-                    parts.append(delta)
-                    yield delta
-        finally:
-            # ストリーミングでも最終的に全文を確認したいことが多い
-            if self.logger.isEnabledFor(logging.DEBUG):
-                content = "".join(parts)
-                if content:
-                    self.logger.debug(
-                        "LLM reply stream content (raw): %s",
-                        _truncate_for_log(content, self._DEBUG_PREVIEW_CHARS),
-                    )
+        for chunk in resp_stream:
+            delta = _delta_content(chunk)
+            if delta:
+                parts.append(delta)
+                yield delta
 
-    # 既存コード互換のためのラッパー（文字列を返す）
     def generate_reflection(
         self,
         system_prompt: str,
         context_text: str,
         image_descriptions: Optional[List[str]] = None,
     ) -> str:
-        """reflection用のJSON応答を生成し、本文文字列だけ返す（互換API）。"""
+        """
+        reflection用のJSON応答を生成し、本文文字列だけ返す（薄いラッパー）。
+        generate_reflection_responseの結果から本文のみを抽出する。
+        """
         resp = self.generate_reflection_response(system_prompt, context_text, image_descriptions)
         return self.response_content(resp)

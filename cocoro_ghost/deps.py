@@ -1,4 +1,10 @@
-"""依存オブジェクトの生成。"""
+"""
+依存オブジェクトの生成
+
+FastAPIの依存性注入（Depends）で使用するファクトリ関数群。
+LlmClient、MemoryManager、ConfigStore、DBセッションの取得を提供する。
+MemoryManagerはシングルトンとして管理される。
+"""
 
 from __future__ import annotations
 
@@ -16,7 +22,12 @@ _memory_manager: MemoryManager | None = None
 
 
 def get_llm_client() -> LlmClient:
-    """ConfigStoreからLlmClientを生成。"""
+    """
+    ConfigStoreからLlmClientを生成する。
+
+    設定ストアから現在の設定を取得し、LLM/埋め込み/画像モデルの
+    APIキー・エンドポイント・パラメータを設定したクライアントを返す。
+    """
     config_store = get_config_store()
     cfg = config_store.config
     return LlmClient(
@@ -37,7 +48,12 @@ def get_llm_client() -> LlmClient:
 
 
 def get_memory_manager() -> MemoryManager:
-    """MemoryManagerのシングルトンを取得。"""
+    """
+    MemoryManagerのシングルトンを取得する。
+
+    初回呼び出し時にインスタンスを生成し、以降は同じインスタンスを返す。
+    設定変更時はreset_memory_manager()でリセットが必要。
+    """
     global _memory_manager
     if _memory_manager is None:
         config_store = get_config_store()
@@ -47,23 +63,40 @@ def get_memory_manager() -> MemoryManager:
 
 
 def reset_memory_manager() -> None:
-    """MemoryManagerをリセット（設定変更時などに使用）。"""
+    """
+    MemoryManagerをリセットする。
+
+    設定変更時などに呼び出し、次回get_memory_manager()で新しいインスタンスを生成させる。
+    """
     global _memory_manager
     _memory_manager = None
 
 
 def get_config_store_dep() -> ConfigStore:
-    """FastAPI依存性注入用。"""
+    """
+    ConfigStoreをFastAPI依存性注入で取得する。
+
+    Depends(get_config_store_dep)として使用し、エンドポイントで設定にアクセスする。
+    """
     return get_config_store()
 
 
 def get_settings_db_dep() -> Iterator[Session]:
-    """設定DBセッションのFastAPI依存性注入用。"""
+    """
+    設定DBセッションをFastAPI依存性注入で取得する。
+
+    リクエスト終了時に自動でセッションがクローズされる。
+    """
     yield from get_settings_db()
 
 
 def get_memory_db_dep() -> Iterator[Session]:
-    """記憶DBセッションのFastAPI依存性注入用。"""
+    """
+    記憶DBセッションをFastAPI依存性注入で取得する。
+
+    現在のmemory_idに対応するDBファイルへのセッションを提供する。
+    リクエスト終了時に自動でセッションがクローズされる。
+    """
     config_store = get_config_store()
     session = get_memory_session(config_store.memory_id, config_store.embedding_dimension)
     try:

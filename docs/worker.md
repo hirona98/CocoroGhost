@@ -23,17 +23,17 @@
 - `extract_facts(unit_id)`
 - `extract_loops(unit_id)`
 - `upsert_embeddings(unit_id)`（episode/fact/summary/loop…必要種別）
-- `relationship_summary(scope_key=rolling:7d)`（定期 / `memory_id` は Worker が扱うDBで暗黙）
+- `bond_summary(scope_key=rolling:7d)`（定期 / `memory_id` は Worker が扱うDBで暗黙）
 - `person_summary_refresh(entity_id)`（人物サマリ更新）
 - `topic_summary_refresh(entity_id)`（トピックサマリ更新）
-- `capsule_refresh(limit, otome_kairo_scan_limit)`（任意 / `limit` は直近件数、既定5。`otome_kairo_scan_limit` は感情集約用の走査件数、既定500）
+- `capsule_refresh(limit, partner_mood_scan_limit)`（任意 / `limit` は直近件数、既定5。`partner_mood_scan_limit` は機嫌集約用の走査件数、既定500）
 
 補足:
 - `/api/chat` は「返答本文 + 内部JSON（反射）」を同一LLM呼び出しで得て、Episodeへ即時反映するため、`reflect_episode` は既に反射が入っている場合は冪等にスキップされます（フォールバック用として残す）。
 
 ## 実装ステータス（Current/Planned）
 
-- Current: relationship summary（rolling:7d）は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり）。
+- Current: bond summary（rolling:7d）は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり）。
 - Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）を自動enqueue（重複抑制あり）。
 - Current: capsule_refresh は Episode保存後の既定ジョブとして自動enqueue（`limit=5`）。
 - Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic/capsule）も実施できる（固定値: 30秒ごとに判定）。
@@ -70,7 +70,7 @@
 
 cron が無い環境向けに、Worker（jobs処理ループ）内で定期的に jobs を enqueue する。
 
-- enqueue 対象: `relationship_summary` / `person_summary_refresh` / `topic_summary_refresh` / `capsule_refresh`
+- enqueue 対象: `bond_summary` / `person_summary_refresh` / `topic_summary_refresh` / `capsule_refresh`
 - 重複抑制: queued/running の同種ジョブがあれば enqueue しない
 - クールダウン: summary/capsule の更新頻度を抑制（デフォルト: 30秒ごとに判定）
 
@@ -91,7 +91,7 @@ python -X utf8 run.py
 ## Weekly Summary の保存（推奨）
 
 - `payload_summary.summary_text` は注入用のプレーンテキスト
-- `payload_summary.summary_json` に LLM 出力JSON（`summary_text/key_events/relationship_state`）を丸ごと保存する
+- `payload_summary.summary_json` に LLM 出力JSON（`summary_text/key_events/bond_state`）を丸ごと保存する
 
 ## Workerループ（実装指針）
 
