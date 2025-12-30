@@ -9,6 +9,7 @@ uvicornアクセスログからの特定パス除外などを行う。
 from __future__ import annotations
 
 import logging
+from logging.handlers import RotatingFileHandler
 import pathlib
 
 
@@ -66,7 +67,13 @@ def setup_logging(
     if log_file_enabled:
         log_path = pathlib.Path(log_file_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        # ファイルログは最大1MBでローテーションしてサイズ超過を防ぐ。
+        file_handler = RotatingFileHandler(
+            log_path,
+            maxBytes=1_000_000,
+            backupCount=1,
+            encoding="utf-8",
+        )
         handlers.append(file_handler)
 
     logging.basicConfig(
