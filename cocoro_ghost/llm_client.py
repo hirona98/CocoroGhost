@@ -818,31 +818,31 @@ class LlmClient:
                 )
             raise
 
-        # レスポンス形式に応じてベクトルを抽出
+        # レスポンス形式に応じて埋め込みベクトルを取り出す。
         try:
             out = [item["embedding"] for item in resp["data"]]
-            if llm_log_level != "OFF":
-                elapsed_ms = int((time.perf_counter() - start) * 1000)
-                self._log_llm_info(
-                    "LLM response received %s kind=embedding model=%s count=%s ms=%s",
-                    purpose_label,
-                    self.embedding_model,
-                    len(out),
-                    elapsed_ms,
-                )
-            return out
         except Exception:  # noqa: BLE001
             out = [item.embedding for item in resp.data]
-            if llm_log_level != "OFF":
-                elapsed_ms = int((time.perf_counter() - start) * 1000)
-                self._log_llm_info(
-                    "LLM response received %s kind=embedding model=%s count=%s ms=%s",
-                    purpose_label,
-                    self.embedding_model,
-                    len(out),
-                    elapsed_ms,
+
+        # 受信の事実だけはINFO/DEBUGで明示する（内容は出さない）。
+        if llm_log_level != "OFF":
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            self._log_llm_info(
+                "LLM response received %s kind=embedding model=%s count=%s ms=%s",
+                purpose_label,
+                self.embedding_model,
+                len(out),
+                elapsed_ms,
+            )
+            if llm_log_level == "DEBUG":
+                self.io_console_logger.debug(
+                    "LLM response received kind=embedding (payload omitted)",
                 )
-            return out
+                if self._is_log_file_enabled():
+                    self.io_file_logger.debug(
+                        "LLM response received kind=embedding (payload omitted)",
+                    )
+        return out
 
     def generate_image_summary(self, images: List[bytes], purpose: str) -> List[str]:
         """
