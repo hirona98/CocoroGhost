@@ -25,7 +25,7 @@ from cocoro_ghost import models
 from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope, settings_session_scope, sync_unit_vector_metadata
 from cocoro_ghost.event_stream import publish as publish_event
-from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 from cocoro_ghost.partner_mood import PARTNER_AFFECT_TRAILER_MARKER, clamp01
 from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
@@ -359,7 +359,7 @@ class MemoryManager:
         )
 
 
-    def _summarize_images(self, images: Sequence[Dict[str, str]] | None) -> List[str]:
+    def _summarize_images(self, images: Sequence[Dict[str, str]] | None, *, purpose: str) -> List[str]:
         if not images:
             return []
         blobs: List[bytes] = []
@@ -374,7 +374,7 @@ class MemoryManager:
         if not blobs:
             return []
         try:
-            return [s.strip() for s in self.llm_client.generate_image_summary(blobs)]
+            return [s.strip() for s in self.llm_client.generate_image_summary(blobs, purpose=purpose)]
         except Exception as exc:  # noqa: BLE001
             logger.warning("画像要約に失敗しました", exc_info=exc)
             return ["画像要約に失敗しました"]
@@ -531,7 +531,7 @@ class MemoryManager:
             image_timeout_seconds=cfg.image_timeout_seconds,
         )
 
-        image_summaries = self._summarize_images(request.images)
+        image_summaries = self._summarize_images(request.images, purpose=LlmRequestPurpose.IMAGE_SUMMARY_CHAT)
 
         conversation: List[Dict[str, str]] = []
         memory_pack = ""
@@ -581,10 +581,13 @@ class MemoryManager:
         system_prompt = "\n\n".join([p for p in parts if p])
         conversation = [*conversation, {"role": "user", "content": request.user_text}]
 
+        # LLM呼び出しの処理目的をログで区別できるようにする。
+        purpose = LlmRequestPurpose.CONVERSATION
         try:
             resp_stream = self.llm_client.generate_reply_response(
                 system_prompt=system_prompt,
                 conversation=conversation,
+                purpose=purpose,
                 stream=True,
             )
         except Exception as exc:  # noqa: BLE001
@@ -659,7 +662,8 @@ class MemoryManager:
         file_max_value_chars = _get_llm_log_file_value_max_chars_from_store(self.config_store)
         if llm_log_level != "OFF":
             io_console_logger.info(
-                "LLM response received kind=chat model=%s stream=%s reply_chars=%s trailer_chars=%s",
+                "LLM response received %s kind=chat model=%s stream=%s reply_chars=%s trailer_chars=%s",
+                purpose,
                 cfg.llm_model,
                 True,
                 len(reply_text or ""),
@@ -667,7 +671,8 @@ class MemoryManager:
             )
             if log_file_enabled:
                 io_file_logger.info(
-                    "LLM response received kind=chat model=%s stream=%s reply_chars=%s trailer_chars=%s",
+                    "LLM response received %s kind=chat model=%s stream=%s reply_chars=%s trailer_chars=%s",
+                    purpose,
                     cfg.llm_model,
                     True,
                     len(reply_text or ""),
@@ -792,7 +797,7 @@ class MemoryManager:
         lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
-        image_summaries = self._summarize_images(list(images))
+        image_summaries = self._summarize_images(list(images), purpose=LlmRequestPurpose.IMAGE_SUMMARY_NOTIFICATION)
         image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
 
         notification_user_text = "\n".join(
@@ -853,6 +858,7 @@ class MemoryManager:
             resp = self.llm_client.generate_reply_response(
                 system_prompt=system_prompt,
                 conversation=conversation,
+                purpose=LlmRequestPurpose.NOTIFICATION,
                 stream=False,
             )
             message = (self.llm_client.response_content(resp) or "").strip()
@@ -936,7 +942,7 @@ class MemoryManager:
         lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
-        image_summaries = self._summarize_images(list(images))
+        image_summaries = self._summarize_images(list(images), purpose=LlmRequestPurpose.IMAGE_SUMMARY_META_REQUEST)
         image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
 
         # instruction/payload は永続化しない（生成にのみ利用）
@@ -1000,6 +1006,7 @@ class MemoryManager:
             resp = self.llm_client.generate_reply_response(
                 system_prompt=system_prompt,
                 conversation=conversation,
+                purpose=LlmRequestPurpose.META_REQUEST,
                 stream=False,
             )
             message = (self.llm_client.response_content(resp) or "").strip()
@@ -1041,7 +1048,10 @@ class MemoryManager:
 
         image_bytes = _decode_base64_image(request.image_base64)
         try:
-            image_summary = self.llm_client.generate_image_summary([image_bytes])[0]
+            image_summary = self.llm_client.generate_image_summary(
+                [image_bytes],
+                purpose=LlmRequestPurpose.IMAGE_SUMMARY_CAPTURE,
+            )[0]
         except Exception as exc:  # noqa: BLE001
             logger.warning("画像要約に失敗しました", exc_info=exc)
             image_summary = "画像要約に失敗しました"

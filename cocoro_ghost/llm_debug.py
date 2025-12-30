@@ -25,14 +25,23 @@ from typing import Any, Iterable
 # ここにあるキーは、入出力のデバッグ時に値をマスクする。
 # NOTE: 完全ではないが、誤ってログに出してしまう事故を減らす。
 _DEFAULT_REDACT_KEYS = {
-    "api_key",
     "openai_api_key",
     "anthropic_api_key",
     "token",
     "access_token",
     "refresh_token",
-    "authorization",
     "x-api-key",
+}
+
+# ログに出さないキー（実送信/受信でも表示しない方針）
+_DEFAULT_DROP_KEYS = {
+    "api_key",
+    "authorization",
+    "model",
+    "max_tokens",
+    "response_format",
+    "stream",
+    "temperature",
 }
 
 
@@ -199,12 +208,14 @@ def redact_secrets(
     obj: Any,
     *,
     redact_keys: Iterable[str] | None = None,
+    drop_keys: Iterable[str] | None = None,
     placeholder: str = "***",
     max_depth: int = 12,
 ) -> Any:
     """dict/listを再帰的に走査して、秘匿情報っぽい値をマスクする。"""
 
     keys = {k.lower() for k in (redact_keys or _DEFAULT_REDACT_KEYS)}
+    drop = {k.lower() for k in (drop_keys or _DEFAULT_DROP_KEYS)}
 
     def _walk(v: Any, depth: int) -> Any:
         if depth <= 0:
@@ -214,6 +225,9 @@ def redact_secrets(
             out: dict[str, Any] = {}
             for k, vv in v.items():
                 lk = str(k).lower()
+                # 指定キーはログから完全に除外する
+                if lk in drop:
+                    continue
                 if lk in keys:
                     out[str(k)] = placeholder
                 else:
@@ -226,11 +240,11 @@ def redact_secrets(
         if isinstance(v, tuple):
             return tuple(_walk(x, depth - 1) for x in v)
 
-        # 文字列のAuthorization: Bearer ... 等は丸ごとマスク
+        # 文字列のAuthorization: Bearer ... 等はログから除外する
         if isinstance(v, str):
             s = v
             if re.search(r"\bBearer\s+\S+", s, re.IGNORECASE):
-                return re.sub(r"\bBearer\s+\S+", "Bearer ***", s, flags=re.IGNORECASE)
+                return "(authorization omitted)"
             return s
 
         return v
