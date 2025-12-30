@@ -64,7 +64,7 @@ def setup_logging(level: str = "INFO") -> None:
         ("LiteLLM", logging.INFO),
         ("litellm", logging.INFO),
         ("openai", logging.INFO),
-        ("cocoro_ghost.llm_client", logging.DEBUG),
+        # NOTE: アプリ側（cocoro_ghost.*）のログレベルは root(level) に従わせる。
         ("httpcore", logging.WARNING),
         ("httpx", logging.WARNING),
     ]:

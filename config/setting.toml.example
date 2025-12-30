@@ -1,3 +1,6 @@
 # cocoro_ghost 起動設定
 token = "cocoro_token"
 log_level = "INFO"
+
+# LLM送受信ログレベル: DEBUG=内容表示, INFO=送受信事実のみ, OFF=出力なし
+llm_log_level = "INFO"

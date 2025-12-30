@@ -295,17 +295,29 @@ def format_debug_payload(
     return _truncate_for_log(str(serializable), max_chars)
 
 
+def normalize_llm_log_level(llm_log_level: str | None) -> str:
+    """LLM送受信ログレベルを正規化する。"""
+    if _truthy_env("COCORO_LLM_IO_DEBUG"):
+        return "DEBUG"
+    level = (llm_log_level or "INFO").upper()
+    if level not in {"DEBUG", "INFO", "OFF"}:
+        return "INFO"
+    return level
+
+
 def log_llm_payload(
     logger: Any,
     label: str,
     payload: Any,
     *,
+    llm_log_level: str = "INFO",
     max_chars: int = 8000,
 ) -> None:
-    """LLMの送受信payloadをlogger.debugで出す。
+    """LLMの送受信payloadをログ出力する。
 
-    - COCORO_LLM_IO_DEBUG=1 なら強制的に出力
-    - それ以外は logger が DEBUG のときだけ出す
+    - DEBUG: 内容を整形して出力
+    - INFO/OFF: 内容は出さない
+    - COCORO_LLM_IO_DEBUG=1 なら強制的にDEBUGで出力
 
     loggerは標準loggingのLogger互換（debug/info等）を想定。
     """
@@ -313,20 +325,13 @@ def log_llm_payload(
     if logger is None:
         return
 
-    force = _truthy_env("COCORO_LLM_IO_DEBUG")
-    enabled_by_level = False
-    try:
-        enabled_by_level = bool(getattr(logger, "isEnabledFor")(10))  # logging.DEBUG == 10
-    except Exception:
-        # logger互換でなくても落とさない
-        enabled_by_level = False
-
-    if not (force or enabled_by_level):
+    level = normalize_llm_log_level(llm_log_level)
+    if level != "DEBUG":
         return
 
     text = format_debug_payload(payload, max_chars=max_chars)
     try:
-        logger.debug("%s: %s", label, text)
+        logger.info("%s: %s", label, text)
     except Exception:
         # 最後の砦
         print(f"{label}: {text}")

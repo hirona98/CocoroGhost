@@ -13,9 +13,12 @@ import base64
 import json
 import logging
 import re
+import time
 from typing import Any, Dict, Generator, Iterable, List, Optional
 
 import litellm
+
+from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 
 
 def _truncate_for_log(text: str, limit: int) -> str:
@@ -80,6 +83,72 @@ def _delta_content(resp: Any) -> str:
         return str(content)
     except Exception:  # noqa: BLE001
         return ""
+
+
+_DATA_IMAGE_URL_RE = re.compile(r"\bdata:image/[^;]+;base64,\S+", re.IGNORECASE)
+
+
+def _mask_data_image_urls(text: str) -> str:
+    """data:image/...;base64,... をログから除外する。"""
+    if not text:
+        return ""
+
+    def _repl(m: re.Match) -> str:
+        matched = m.group(0)
+        return f"(data-image-url omitted, chars={len(matched)})"
+
+    return _DATA_IMAGE_URL_RE.sub(_repl, text)
+
+
+def _sanitize_for_llm_log(obj: Any, *, max_depth: int = 8) -> Any:
+    """LLM送受信ログ向けに payload を軽くサニタイズする。"""
+    if max_depth <= 0:
+        return "..."
+
+    if obj is None:
+        return None
+
+    if isinstance(obj, str):
+        return _mask_data_image_urls(obj)
+
+    if isinstance(obj, (bytes, bytearray)):
+        return {"__bytes__": True, "len": len(obj)}
+
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}
+        for k, v in obj.items():
+            out[str(k)] = _sanitize_for_llm_log(v, max_depth=max_depth - 1)
+        return out
+
+    if isinstance(obj, list):
+        return [_sanitize_for_llm_log(v, max_depth=max_depth - 1) for v in obj]
+
+    if isinstance(obj, tuple):
+        return tuple(_sanitize_for_llm_log(v, max_depth=max_depth - 1) for v in obj)
+
+    # pydantic / dataclass 等は文字列化（ログ用途なので落とさない）
+    try:
+        return str(obj)
+    except Exception:  # noqa: BLE001
+        return "(unserializable)"
+
+
+def _estimate_text_chars(obj: Any) -> int:
+    """INFOログ用の「おおまかな文字量」を見積もる。"""
+    if obj is None:
+        return 0
+    if isinstance(obj, str):
+        return len(obj)
+    if isinstance(obj, (bytes, bytearray)):
+        return len(obj)
+    if isinstance(obj, dict):
+        return sum(_estimate_text_chars(v) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return sum(_estimate_text_chars(v) for v in obj)
+    try:
+        return len(str(obj))
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 # コードフェンス検出用正規表現
@@ -266,6 +335,8 @@ class LlmClient:
             image_timeout_seconds: 画像処理タイムアウト秒数
         """
         self.logger = logging.getLogger(__name__)
+        # NOTE: LLM送受信ログは専用ロガーに分離する。
+        self.io_logger = logging.getLogger("cocoro_ghost.llm_io")
         self.model = model
         self.embedding_model = embedding_model
         self.image_model = image_model
@@ -279,6 +350,15 @@ class LlmClient:
         self.max_tokens = max_tokens
         self.max_tokens_vision = max_tokens_vision
         self.image_timeout_seconds = image_timeout_seconds
+
+    def _get_llm_log_level(self) -> str:
+        """設定から llm_log_level を取得する。"""
+        try:
+            from cocoro_ghost.config import get_config_store
+
+            return get_config_store().toml_config.llm_log_level
+        except Exception:  # noqa: BLE001
+            return "INFO"
 
     def _build_completion_kwargs(
         self,
@@ -348,7 +428,8 @@ class LlmClient:
         for m in conversation:
             messages.append({"role": m["role"], "content": m["content"]})
 
-        self.logger.info("LLM reply", extra={"model": self.model, "stream": stream})
+        llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
+        start = time.perf_counter()
 
         kwargs = self._build_completion_kwargs(
             model=self.model,
@@ -360,7 +441,69 @@ class LlmClient:
             stream=stream,
         )
 
-        resp = litellm.completion(**kwargs)
+        msg_count = len(messages)
+        approx_chars = _estimate_text_chars(messages)
+        if llm_log_level != "OFF":
+            self.io_logger.info(
+                "LLM request sent kind=chat model=%s stream=%s messages=%s approx_chars=%s",
+                self.model,
+                bool(stream),
+                msg_count,
+                approx_chars,
+            )
+        log_llm_payload(
+            self.io_logger,
+            "LLM request (chat)",
+            _sanitize_for_llm_log(kwargs),
+            max_chars=self._DEBUG_PREVIEW_CHARS,
+            llm_log_level=llm_log_level,
+        )
+
+        try:
+            resp = litellm.completion(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if llm_log_level != "OFF":
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+                self.io_logger.error(
+                    "LLM request failed kind=chat model=%s stream=%s messages=%s ms=%s error=%s",
+                    self.model,
+                    bool(stream),
+                    msg_count,
+                    elapsed_ms,
+                    str(exc),
+                    exc_info=exc,
+                )
+            raise
+
+        # ストリームは呼び出し側が受信するため、ここでは受信ログを出さない。
+        if stream:
+            return resp
+
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        content = _first_choice_content(resp)
+        finish_reason = _finish_reason(resp)
+        if llm_log_level != "OFF":
+            self.io_logger.info(
+                "LLM response received kind=chat model=%s stream=%s finish_reason=%s chars=%s ms=%s",
+                self.model,
+                False,
+                finish_reason,
+                len(content or ""),
+                elapsed_ms,
+            )
+        log_llm_payload(
+            self.io_logger,
+            "LLM response (chat)",
+            _sanitize_for_llm_log(
+                {
+                    "model": self.model,
+                    "finish_reason": finish_reason,
+                    "content": content,
+                }
+            ),
+            max_chars=self._DEBUG_PREVIEW_CHARS,
+            llm_log_level=llm_log_level,
+        )
         return resp
 
     def generate_reflection_response(
@@ -383,7 +526,8 @@ class LlmClient:
             {"role": "user", "content": context_block},
         ]
 
-        self.logger.info("LLM reflection", extra={"model": self.model})
+        llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
+        start = time.perf_counter()
 
         kwargs = self._build_completion_kwargs(
             model=self.model,
@@ -395,7 +539,55 @@ class LlmClient:
             response_format={"type": "json_object"},
         )
 
-        return litellm.completion(**kwargs)
+        if llm_log_level != "OFF":
+            self.io_logger.info(
+                "LLM request sent kind=reflection model=%s stream=%s messages=%s approx_chars=%s",
+                self.model,
+                False,
+                len(messages),
+                _estimate_text_chars(messages),
+            )
+        log_llm_payload(
+            self.io_logger,
+            "LLM request (reflection)",
+            _sanitize_for_llm_log(kwargs),
+            max_chars=self._DEBUG_PREVIEW_CHARS,
+            llm_log_level=llm_log_level,
+        )
+
+        try:
+            resp = litellm.completion(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if llm_log_level != "OFF":
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+                self.io_logger.error(
+                    "LLM request failed kind=reflection model=%s ms=%s error=%s",
+                    self.model,
+                    elapsed_ms,
+                    str(exc),
+                    exc_info=exc,
+                )
+            raise
+
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        content = _first_choice_content(resp)
+        finish_reason = _finish_reason(resp)
+        if llm_log_level != "OFF":
+            self.io_logger.info(
+                "LLM response received kind=reflection model=%s finish_reason=%s chars=%s ms=%s",
+                self.model,
+                finish_reason,
+                len(content or ""),
+                elapsed_ms,
+            )
+        log_llm_payload(
+            self.io_logger,
+            "LLM response (reflection)",
+            _sanitize_for_llm_log({"finish_reason": finish_reason, "content": content}),
+            max_chars=self._DEBUG_PREVIEW_CHARS,
+            llm_log_level=llm_log_level,
+        )
+        return resp
 
     def generate_json_response(
         self,
@@ -405,14 +597,18 @@ class LlmClient:
         temperature: float = 0.1,
         max_tokens: Optional[int] = None,
     ):
-        """
-        JSON（json_object）を生成する（Responseオブジェクト）。
-        構造化データの抽出や分析結果の出力に使用する。
+        """JSON（json_object）を生成する（Responseオブジェクト）。
+
+        INFO: 送受信した事実（メタ情報）のみ
+        DEBUG: 内容も出す（マスク＋トリミング）
         """
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
         ]
+
+        llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
+        start = time.perf_counter()
 
         requested_max_tokens = max_tokens or self.max_tokens
         kwargs = self._build_completion_kwargs(
@@ -425,7 +621,54 @@ class LlmClient:
             response_format={"type": "json_object"},
         )
 
-        resp = litellm.completion(**kwargs)
+        if llm_log_level != "OFF":
+            self.io_logger.info(
+                "LLM request sent kind=json model=%s stream=%s messages=%s approx_chars=%s",
+                self.model,
+                False,
+                len(messages),
+                _estimate_text_chars(messages),
+            )
+        log_llm_payload(
+            self.io_logger,
+            "LLM request (json)",
+            _sanitize_for_llm_log(kwargs),
+            max_chars=self._DEBUG_PREVIEW_CHARS,
+            llm_log_level=llm_log_level,
+        )
+
+        try:
+            resp = litellm.completion(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if llm_log_level != "OFF":
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+                self.io_logger.error(
+                    "LLM request failed kind=json model=%s ms=%s error=%s",
+                    self.model,
+                    elapsed_ms,
+                    str(exc),
+                    exc_info=exc,
+                )
+            raise
+
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        content = _first_choice_content(resp)
+        finish_reason = _finish_reason(resp)
+        if llm_log_level != "OFF":
+            self.io_logger.info(
+                "LLM response received kind=json model=%s finish_reason=%s chars=%s ms=%s",
+                self.model,
+                finish_reason,
+                len(content or ""),
+                elapsed_ms,
+            )
+        log_llm_payload(
+            self.io_logger,
+            "LLM response (json)",
+            _sanitize_for_llm_log({"finish_reason": finish_reason, "content": content}),
+            max_chars=self._DEBUG_PREVIEW_CHARS,
+            llm_log_level=llm_log_level,
+        )
         return resp
 
     def generate_embedding(
@@ -437,9 +680,22 @@ class LlmClient:
         テキストの埋め込みベクトルを生成する。
         複数テキストを一括処理し、各テキストに対応するベクトルを返す。
         """
-        self.logger.info(
-            "LLM embedding",
-            extra={"model": self.embedding_model, "count": len(texts)},
+        llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
+        start = time.perf_counter()
+        if llm_log_level != "OFF":
+            self.io_logger.info(
+                "LLM request sent kind=embedding model=%s count=%s approx_chars=%s",
+                self.embedding_model,
+                len(texts),
+                sum(len(t or "") for t in texts),
+            )
+        # NOTE: embedding入力は漏洩しやすいので、DEBUGでもトリミングされる前提で出す。
+        log_llm_payload(
+            self.io_logger,
+            "LLM request (embedding)",
+            _sanitize_for_llm_log({"model": self.embedding_model, "input": texts, "count": len(texts)}),
+            max_chars=self._DEBUG_PREVIEW_CHARS,
+            llm_log_level=llm_log_level,
         )
 
         kwargs = {
@@ -451,21 +707,60 @@ class LlmClient:
         if self.embedding_base_url:
             kwargs["api_base"] = self.embedding_base_url
 
-        resp = litellm.embedding(**kwargs)
+        try:
+            resp = litellm.embedding(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if llm_log_level != "OFF":
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+                self.io_logger.error(
+                    "LLM request failed kind=embedding model=%s count=%s ms=%s error=%s",
+                    self.embedding_model,
+                    len(texts),
+                    elapsed_ms,
+                    str(exc),
+                    exc_info=exc,
+                )
+            raise
 
         # レスポンス形式に応じてベクトルを抽出
         try:
-            return [item["embedding"] for item in resp["data"]]
+            out = [item["embedding"] for item in resp["data"]]
+            if llm_log_level != "OFF":
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+                self.io_logger.info(
+                    "LLM response received kind=embedding model=%s count=%s ms=%s",
+                    self.embedding_model,
+                    len(out),
+                    elapsed_ms,
+                )
+            return out
         except Exception:  # noqa: BLE001
-            return [item.embedding for item in resp.data]
+            out = [item.embedding for item in resp.data]
+            if llm_log_level != "OFF":
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+                self.io_logger.info(
+                    "LLM response received kind=embedding model=%s count=%s ms=%s",
+                    self.embedding_model,
+                    len(out),
+                    elapsed_ms,
+                )
+            return out
 
     def generate_image_summary(self, images: List[bytes]) -> List[str]:
         """
         画像の要約を生成する。
         各画像をVision LLMで解析し、日本語で説明テキストを返す。
         """
+        llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
         summaries: List[str] = []
         for image_bytes in images:
+            start = time.perf_counter()
+            if llm_log_level != "OFF":
+                self.io_logger.info(
+                    "LLM request sent kind=vision model=%s image_bytes=%s",
+                    self.image_model,
+                    len(image_bytes),
+                )
             # 画像をbase64エンコード
             b64 = base64.b64encode(image_bytes).decode("ascii")
             messages = [
@@ -489,8 +784,45 @@ class LlmClient:
                 timeout=self.image_timeout_seconds,
             )
 
-            resp = litellm.completion(**kwargs)
-            summaries.append(_first_choice_content(resp))
+            log_llm_payload(
+                self.io_logger,
+                "LLM request (vision)",
+                _sanitize_for_llm_log(kwargs),
+                max_chars=self._INFO_PREVIEW_CHARS,
+                llm_log_level=llm_log_level,
+            )
+
+            try:
+                resp = litellm.completion(**kwargs)
+            except Exception as exc:  # noqa: BLE001
+                if llm_log_level != "OFF":
+                    elapsed_ms = int((time.perf_counter() - start) * 1000)
+                    self.io_logger.error(
+                        "LLM request failed kind=vision model=%s image_bytes=%s ms=%s error=%s",
+                        self.image_model,
+                        len(image_bytes),
+                        elapsed_ms,
+                        str(exc),
+                        exc_info=exc,
+                    )
+                raise
+            content = _first_choice_content(resp)
+            summaries.append(content)
+            if llm_log_level != "OFF":
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+                self.io_logger.info(
+                    "LLM response received kind=vision model=%s chars=%s ms=%s",
+                    self.image_model,
+                    len(content or ""),
+                    elapsed_ms,
+                )
+            log_llm_payload(
+                self.io_logger,
+                "LLM response (vision)",
+                _sanitize_for_llm_log({"content": content, "finish_reason": _finish_reason(resp)}),
+                max_chars=self._DEBUG_PREVIEW_CHARS,
+                llm_log_level=llm_log_level,
+            )
 
         return summaries
 

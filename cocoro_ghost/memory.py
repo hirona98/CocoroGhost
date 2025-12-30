@@ -26,6 +26,7 @@ from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope, settings_session_scope, sync_unit_vector_metadata
 from cocoro_ghost.event_stream import publish as publish_event
 from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 from cocoro_ghost.partner_mood import PARTNER_AFFECT_TRAILER_MARKER, clamp01
 from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
 from cocoro_ghost.retriever import Retriever
@@ -37,6 +38,7 @@ from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_js
 
 
 logger = logging.getLogger(__name__)
+io_logger = logging.getLogger("cocoro_ghost.llm_io")
 
 _memory_locks: dict[str, threading.Lock] = {}
 
@@ -198,6 +200,14 @@ def _decode_base64_image(base64_str: str) -> bytes:
 def _json_dumps(payload: Any) -> str:
     """DB保存向けにJSONを安定した形式でダンプする（日本語保持）。"""
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _get_llm_log_level_from_store(config_store: ConfigStore) -> str:
+    """ConfigStoreからLLM送受信ログレベルを取得する。"""
+    try:
+        return normalize_llm_log_level(config_store.toml_config.llm_log_level)
+    except Exception:  # noqa: BLE001
+        return "INFO"
 
 
 class MemoryManager:
@@ -607,6 +617,28 @@ class MemoryManager:
             return
 
         reflection_obj = _parse_internal_json_text(internal_trailer)
+
+        llm_log_level = _get_llm_log_level_from_store(self.config_store)
+        if llm_log_level != "OFF":
+            io_logger.info(
+                "LLM response received kind=chat model=%s stream=%s reply_chars=%s trailer_chars=%s",
+                cfg.llm_model,
+                True,
+                len(reply_text or ""),
+                len(internal_trailer or ""),
+            )
+        log_llm_payload(
+            io_logger,
+            "LLM response (chat stream)",
+            {
+                "model": cfg.llm_model,
+                "reply_text": reply_text,
+                "internal_trailer": internal_trailer,
+                "internal_trailer_parsed": reflection_obj,
+            },
+            max_chars=8000,
+            llm_log_level=llm_log_level,
+        )
 
         image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
         context_note = _json_dumps(request.client_context) if request.client_context else None

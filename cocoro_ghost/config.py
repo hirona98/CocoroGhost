@@ -31,8 +31,9 @@ class Config:
     TOML起動設定（起動時のみ使用、変更不可）。
     認証トークンとログレベルのみを保持する最小限の設定。
     """
-    token: str       # API認証用トークン
-    log_level: str   # ログレベル（DEBUG, INFO, WARNING, ERROR）
+    token: str           # API認証用トークン
+    log_level: str       # ログレベル（DEBUG, INFO, WARNING, ERROR）
+    llm_log_level: str   # LLM送受信ログレベル（DEBUG, INFO, OFF）
 
 
 @dataclass
@@ -106,7 +107,7 @@ class ConfigStore:
 
     @property
     def toml_config(self) -> Config:
-        """起動時に読み込んだTOML設定（token/log_level）を返す。"""
+        """起動時に読み込んだTOML設定（token/log_level/llm_log_level）を返す。"""
         return self._toml
 
     @property
@@ -154,16 +155,17 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
         data = tomli.load(f)
 
     # 許可されたキーのみを受け付ける
-    allowed_keys = {"token", "log_level"}
+    allowed_keys = {"token", "log_level", "llm_log_level"}
     unknown_keys = sorted(set(data.keys()) - allowed_keys)
     if unknown_keys:
         keys = ", ".join(repr(k) for k in unknown_keys)
-        raise ValueError(f"unknown config key(s): {keys} (allowed: 'token', 'log_level')")
+        raise ValueError(f"unknown config key(s): {keys} (allowed: {allowed_keys})")
 
     # Configオブジェクトを構築
     config = Config(
         token=_require(data, "token"),
         log_level=_require(data, "log_level"),
+        llm_log_level=data.get("llm_log_level", "INFO"),
     )
     return config
 
