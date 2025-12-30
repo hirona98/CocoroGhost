@@ -287,7 +287,7 @@ class LlmClient:
     LiteLLMを使用してLLM APIを呼び出し、会話応答やJSON生成を行う。
     """
 
-    # ログ出力時のプレビュー文字数
+    # ログ出力時のプレビュー文字数（デフォルト）
     _INFO_PREVIEW_CHARS = 300
     _DEBUG_PREVIEW_CHARS = 5000
 
@@ -350,6 +350,15 @@ class LlmClient:
             return get_config_store().toml_config.llm_log_level
         except Exception:  # noqa: BLE001
             return "INFO"
+
+    def _get_llm_log_max_chars(self) -> int:
+        """設定から llm_log_max_chars を取得する。"""
+        try:
+            from cocoro_ghost.config import get_config_store
+
+            return int(get_config_store().toml_config.llm_log_max_chars)
+        except Exception:  # noqa: BLE001
+            return self._DEBUG_PREVIEW_CHARS
 
     def _build_completion_kwargs(
         self,
@@ -446,7 +455,7 @@ class LlmClient:
             self.io_logger,
             "LLM request (chat)",
             _sanitize_for_llm_log(kwargs),
-            max_chars=self._DEBUG_PREVIEW_CHARS,
+            max_chars=self._get_llm_log_max_chars(),
             llm_log_level=llm_log_level,
         )
 
@@ -492,7 +501,7 @@ class LlmClient:
                     "content": content,
                 }
             ),
-            max_chars=self._DEBUG_PREVIEW_CHARS,
+            max_chars=self._get_llm_log_max_chars(),
             llm_log_level=llm_log_level,
         )
         return resp
@@ -542,7 +551,7 @@ class LlmClient:
             self.io_logger,
             "LLM request (reflection)",
             _sanitize_for_llm_log(kwargs),
-            max_chars=self._DEBUG_PREVIEW_CHARS,
+            max_chars=self._get_llm_log_max_chars(),
             llm_log_level=llm_log_level,
         )
 
@@ -575,7 +584,7 @@ class LlmClient:
             self.io_logger,
             "LLM response (reflection)",
             _sanitize_for_llm_log({"finish_reason": finish_reason, "content": content}),
-            max_chars=self._DEBUG_PREVIEW_CHARS,
+            max_chars=self._get_llm_log_max_chars(),
             llm_log_level=llm_log_level,
         )
         return resp
@@ -624,7 +633,7 @@ class LlmClient:
             self.io_logger,
             "LLM request (json)",
             _sanitize_for_llm_log(kwargs),
-            max_chars=self._DEBUG_PREVIEW_CHARS,
+            max_chars=self._get_llm_log_max_chars(),
             llm_log_level=llm_log_level,
         )
 
@@ -657,7 +666,7 @@ class LlmClient:
             self.io_logger,
             "LLM response (json)",
             _sanitize_for_llm_log({"finish_reason": finish_reason, "content": content}),
-            max_chars=self._DEBUG_PREVIEW_CHARS,
+            max_chars=self._get_llm_log_max_chars(),
             llm_log_level=llm_log_level,
         )
         return resp
@@ -685,7 +694,7 @@ class LlmClient:
             self.io_logger,
             "LLM request (embedding)",
             _sanitize_for_llm_log({"model": self.embedding_model, "input": texts, "count": len(texts)}),
-            max_chars=self._DEBUG_PREVIEW_CHARS,
+            max_chars=self._get_llm_log_max_chars(),
             llm_log_level=llm_log_level,
         )
 
@@ -779,7 +788,7 @@ class LlmClient:
                 self.io_logger,
                 "LLM request (vision)",
                 _sanitize_for_llm_log(kwargs),
-                max_chars=self._INFO_PREVIEW_CHARS,
+                max_chars=self._get_llm_log_max_chars(),
                 llm_log_level=llm_log_level,
             )
 
@@ -811,7 +820,7 @@ class LlmClient:
                 self.io_logger,
                 "LLM response (vision)",
                 _sanitize_for_llm_log({"content": content, "finish_reason": _finish_reason(resp)}),
-                max_chars=self._DEBUG_PREVIEW_CHARS,
+                max_chars=self._get_llm_log_max_chars(),
                 llm_log_level=llm_log_level,
             )
 

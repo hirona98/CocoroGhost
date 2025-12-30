@@ -210,6 +210,14 @@ def _get_llm_log_level_from_store(config_store: ConfigStore) -> str:
         return "INFO"
 
 
+def _get_llm_log_max_chars_from_store(config_store: ConfigStore) -> int:
+    """ConfigStoreからLLM送受信ログの最大文字数を取得する。"""
+    try:
+        return int(config_store.toml_config.llm_log_max_chars)
+    except Exception:  # noqa: BLE001
+        return 8000
+
+
 class MemoryManager:
     """会話/通知/メタ要求/キャプチャをEpisodeとして扱い、DB保存と後処理を統括する。"""
 
@@ -619,6 +627,7 @@ class MemoryManager:
         reflection_obj = _parse_internal_json_text(internal_trailer)
 
         llm_log_level = _get_llm_log_level_from_store(self.config_store)
+        llm_log_max_chars = _get_llm_log_max_chars_from_store(self.config_store)
         if llm_log_level != "OFF":
             io_logger.info(
                 "LLM response received kind=chat model=%s stream=%s reply_chars=%s trailer_chars=%s",
@@ -636,7 +645,7 @@ class MemoryManager:
                 "internal_trailer": internal_trailer,
                 "internal_trailer_parsed": reflection_obj,
             },
-            max_chars=8000,
+            max_chars=llm_log_max_chars,
             llm_log_level=llm_log_level,
         )
 
