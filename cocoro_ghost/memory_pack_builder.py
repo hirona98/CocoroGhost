@@ -2,7 +2,7 @@
 MemoryPack生成（取得計画器）
 
 会話に注入する「内部コンテキスト（MemoryPack）」を組み立てる。
-Persona、Facts、Summary、Loops、Episode証拠、Capsule、partner_mood_state等を
+Facts、Summary、Loops、Episode証拠、Capsule、partner_mood_state等を
 トークン予算内で優先順位に従って構築する。
 """
 
@@ -222,8 +222,6 @@ def should_inject_episodes(relevant_episodes: Sequence["RankedEpisode"]) -> bool
 def build_memory_pack(
     *,
     db: Session,
-    persona_text: str | None,
-    addon_text: str | None,
     user_text: str,
     image_summaries: Sequence[str] | None,
     client_context: Dict[str, Any] | None,
@@ -237,15 +235,13 @@ def build_memory_pack(
     """
     MemoryPackを組み立てる。
 
-    Persona、Facts、Summary、Loops、Episode証拠、Capsule等を
+    Facts、Summary、Loops、Episode証拠、Capsule等を
     トークン予算内で優先順位に従って組み立て、文字列として返す。
     予算超過時はEpisode証拠→Loops→Summary→Factsの順に削減する。
     """
     max_chars = _token_budget_to_char_budget(max_inject_tokens)
     # 一旦「注入（引き出し）」を無制限にする（SECRETまで許可）。
     sensitivity_max = int(Sensitivity.SECRET)
-    persona_text = (persona_text or "").strip() or None
-    addon_text = (addon_text or "").strip() or None
 
     capsule_json: Optional[str] = None
     cap_row = (
@@ -605,14 +601,6 @@ def build_memory_pack(
     ) -> str:
         """各セクションを結合してMemoryPack全体を生成する。"""
         parts: List[str] = []
-        persona_lines: List[str] = []
-        if persona_text:
-            persona_lines.append(persona_text.strip())
-        if addon_text:
-            if persona_lines:
-                persona_lines.append("")
-            persona_lines.append(addon_text.strip())
-        parts.append(section("PERSONA_ANCHOR", persona_lines))
         parts.append(section("CONTEXT_CAPSULE", capsule_lines))
         parts.append(section("STABLE_FACTS", facts))
         parts.append(section("SHARED_NARRATIVE", summaries))

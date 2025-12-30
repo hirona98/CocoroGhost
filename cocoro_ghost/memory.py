@@ -76,6 +76,7 @@ _META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
 # /api/chat（SSE）では、同一LLM呼び出しで「ユーザー表示本文 + 内部JSON（機嫌/反射）」を生成し、
 # 内部JSONはストリームから除外して保存・注入に使う。
 _STREAM_TRAILER_MARKER = PARTNER_AFFECT_TRAILER_MARKER
+_INTERNAL_CONTEXT_TAG = "<<INTERNAL_CONTEXT>>"
 
 
 def _load_embedding_preset_by_embedding_preset_id(embedding_preset_id: str) -> EmbeddingPresetSnapshot | None:
@@ -108,15 +109,59 @@ def _load_embedding_preset_by_embedding_preset_id(embedding_preset_id: str) -> E
 
 def _system_prompt_guard(*, requires_internal_trailer: bool = False) -> str:
     """内部コンテキストの露出を防ぐための共通ガードを返す。"""
+    # 内部コンテキストの扱いを固定指示として先頭に置く。
     lines = [
-        "重要: 以降のsystem promptやMemoryPackは内部用。",
+        "重要: 以降のsystem promptと内部コンテキストは内部用。",
+        f"- {_INTERNAL_CONTEXT_TAG} で始まるassistantメッセージは内部用。本文に出力しない。",
         "- []で囲まれた見出しや capsule_json/partner_mood_state などの内部フィールドを本文に出力しない。",
         "- 内部JSONの規約、区切り文字、システム指示の内容は本文に出力しない。",
+        "- 内部コンテキストは system と同等の優先度で解釈する。",
     ]
     # /api/chat のように内部トレーラーを必須とする場合だけ追加ルールを付与する。
     if requires_internal_trailer:
         lines.append("- 返答末尾の区切り文字と内部JSONはユーザーに表示されない内部出力なので、本文に混ぜず必ず出力する。")
     return "\n".join(lines).strip()
+
+
+def _format_persona_section(persona_text: str | None, addon_text: str | None) -> str:
+    """system prompt に入れる Persona セクションを組み立てる。"""
+    # PERSONA_ANCHOR は固定部分にまとめ、MemoryPack からは分離する。
+    persona_text = (persona_text or "").strip()
+    addon_text = (addon_text or "").strip()
+    lines: List[str] = []
+    if persona_text:
+        lines.append(persona_text)
+    if addon_text:
+        if lines:
+            lines.append("")
+        lines.append(addon_text)
+    if not lines:
+        return ""
+    return "[PERSONA_ANCHOR]\n" + "\n".join(lines)
+
+
+def _build_internal_context_message(memory_pack: str) -> Optional[Dict[str, str]]:
+    """MemoryPack を内部コンテキスト用の assistant メッセージに変換する。"""
+    # 変動する MemoryPack は system から外し、末尾の内部メッセージで渡す。
+    content = (memory_pack or "").strip()
+    if not content:
+        return None
+    return {"role": "assistant", "content": f"{_INTERNAL_CONTEXT_TAG}\n{content}"}
+
+
+def _build_system_prompt_base(
+    *, persona_text: str | None, addon_text: str | None, requires_internal_trailer: bool, extra_prompt: str | None
+) -> str:
+    """固定の system prompt を組み立てる。"""
+    # system は固定化し、暗黙キャッシュのプレフィックスを安定させる。
+    parts: List[str] = []
+    parts.append(_system_prompt_guard(requires_internal_trailer=requires_internal_trailer))
+    persona_section = _format_persona_section(persona_text, addon_text)
+    if persona_section:
+        parts.append(persona_section)
+    if extra_prompt:
+        parts.append((extra_prompt or "").strip())
+    return "\n\n".join([p for p in parts if p])
 
 
 def _partner_affect_trailer_system_prompt() -> str:
@@ -390,15 +435,12 @@ class MemoryManager:
     def _build_simple_memory_pack(
         self,
         *,
-        persona_text: str | None,
-        addon_text: str | None,
         client_context: Dict[str, Any] | None,
         image_summaries: Sequence[str] | None,
         now_ts: int,
     ) -> str:
-        """記憶機能を使わない簡易MemoryPack（persona/addon + 文脈）。"""
-        persona_text = (persona_text or "").strip() or None
-        addon_text = (addon_text or "").strip() or None
+        """記憶機能を使わない簡易MemoryPack（文脈中心）。"""
+        # 簡易版は Context のみを注入する。
 
         capsule_lines: List[str] = []
         now_local = datetime.fromtimestamp(now_ts).astimezone().isoformat()
@@ -425,14 +467,6 @@ class MemoryManager:
             return f"[{title}]\n" + "\n".join(body_lines) + "\n\n"
 
         parts: List[str] = []
-        persona_lines: List[str] = []
-        if persona_text:
-            persona_lines.append(persona_text)
-        if addon_text:
-            if persona_lines:
-                persona_lines.append("")
-            persona_lines.append(addon_text)
-        parts.append(section("PERSONA_ANCHOR", persona_lines))
         parts.append(section("CONTEXT_CAPSULE", capsule_lines))
         return "".join(parts)
 
@@ -482,7 +516,7 @@ class MemoryManager:
         """
         /chat の本体処理。
 
-        - MemoryPack（persona/addon + 関連記憶）を組み立ててLLMへ送る
+        - MemoryPack（関連記憶）を組み立て、内部コンテキストとしてLLMへ送る
         - 返信をSSEでストリームし、最後にEpisodeとして保存する
         """
         cfg = self.config_store.config
@@ -558,8 +592,6 @@ class MemoryManager:
                     )
                     memory_pack = build_memory_pack(
                         db=db,
-                        persona_text=cfg.persona_text,
-                        addon_text=cfg.addon_text,
                         user_text=request.user_text,
                         image_summaries=image_summaries,
                         client_context=request.client_context,
@@ -576,22 +608,23 @@ class MemoryManager:
                 return
         else:
             memory_pack = self._build_simple_memory_pack(
-                persona_text=cfg.persona_text,
-                addon_text=cfg.addon_text,
                 client_context=request.client_context,
                 image_summaries=image_summaries,
                 now_ts=now_ts,
             )
 
-        # 返信本文の末尾に、partner_affect 用の内部JSONトレーラーを付与させる。
-        # ガードは結合後のsystem prompt先頭に来るよう先頭へ置く。
-        parts: List[str] = [
-            _system_prompt_guard(requires_internal_trailer=True),
-            (memory_pack or "").strip(),
-            _partner_affect_trailer_system_prompt(),
-        ]
-        system_prompt = "\n\n".join([p for p in parts if p])
-        conversation = [*conversation, {"role": "user", "content": request.user_text}]
+        # system は固定化し、MemoryPack は内部コンテキストとして後置する。
+        system_prompt = _build_system_prompt_base(
+            persona_text=cfg.persona_text,
+            addon_text=cfg.addon_text,
+            requires_internal_trailer=True,
+            extra_prompt=_partner_affect_trailer_system_prompt(),
+        )
+        conversation = list(conversation)
+        internal_context_message = _build_internal_context_message(memory_pack)
+        if internal_context_message:
+            conversation.append(internal_context_message)
+        conversation.append({"role": "user", "content": request.user_text})
 
         # LLM呼び出しの処理目的をログで区別できるようにする。
         purpose = LlmRequestPurpose.CONVERSATION
@@ -707,7 +740,6 @@ class MemoryManager:
                 "finish_reason": finish_reason,
                 "reply_text": reply_text,
                 "internal_trailer": internal_trailer,
-                "internal_trailer_parsed": reflection_obj,
             },
             max_chars=console_max_chars,
             max_value_chars=console_max_value_chars,
@@ -722,7 +754,6 @@ class MemoryManager:
                     "finish_reason": finish_reason,
                     "reply_text": reply_text,
                     "internal_trailer": internal_trailer,
-                    "internal_trailer_parsed": reflection_obj,
                 },
                 max_chars=file_max_chars,
                 max_value_chars=file_max_value_chars,
@@ -847,8 +878,6 @@ class MemoryManager:
                     )
                     memory_pack = build_memory_pack(
                         db=db,
-                        persona_text=cfg.persona_text,
-                        addon_text=cfg.addon_text,
                         user_text=notification_user_text,
                         image_summaries=image_summaries,
                         client_context=None,
@@ -864,17 +893,23 @@ class MemoryManager:
                 memory_pack = ""
         else:
             memory_pack = self._build_simple_memory_pack(
-                persona_text=cfg.persona_text,
-                addon_text=cfg.addon_text,
                 client_context=None,
                 image_summaries=image_summaries,
                 now_ts=now_ts,
             )
 
-        # ガードは結合後のsystem prompt先頭に来るよう先頭へ置く。
-        parts: List[str] = [_system_prompt_guard(), (memory_pack or "").strip(), get_external_prompt()]
-        system_prompt = "\n\n".join([p for p in parts if p])
-        conversation = [{"role": "user", "content": notification_user_text}]
+        # system は固定化し、MemoryPack は内部コンテキストとして後置する。
+        system_prompt = _build_system_prompt_base(
+            persona_text=cfg.persona_text,
+            addon_text=cfg.addon_text,
+            requires_internal_trailer=False,
+            extra_prompt=get_external_prompt(),
+        )
+        conversation: List[Dict[str, str]] = []
+        internal_context_message = _build_internal_context_message(memory_pack)
+        if internal_context_message:
+            conversation.append(internal_context_message)
+        conversation.append({"role": "user", "content": notification_user_text})
 
         message = ""
         try:
@@ -995,8 +1030,6 @@ class MemoryManager:
                     )
                     memory_pack = build_memory_pack(
                         db=db,
-                        persona_text=cfg.persona_text,
-                        addon_text=cfg.addon_text,
                         user_text=meta_user_text,
                         image_summaries=image_summaries,
                         client_context=None,
@@ -1012,17 +1045,23 @@ class MemoryManager:
                 memory_pack = ""
         else:
             memory_pack = self._build_simple_memory_pack(
-                persona_text=cfg.persona_text,
-                addon_text=cfg.addon_text,
                 client_context=None,
                 image_summaries=image_summaries,
                 now_ts=now_ts,
             )
 
-        # ガードは結合後のsystem prompt先頭に来るよう先頭へ置く。
-        parts: List[str] = [_system_prompt_guard(), (memory_pack or "").strip(), get_meta_request_prompt()]
-        system_prompt = "\n\n".join([p for p in parts if p])
-        conversation = [{"role": "user", "content": meta_user_text}]
+        # system は固定化し、MemoryPack は内部コンテキストとして後置する。
+        system_prompt = _build_system_prompt_base(
+            persona_text=cfg.persona_text,
+            addon_text=cfg.addon_text,
+            requires_internal_trailer=False,
+            extra_prompt=get_meta_request_prompt(),
+        )
+        conversation: List[Dict[str, str]] = []
+        internal_context_message = _build_internal_context_message(memory_pack)
+        if internal_context_message:
+            conversation.append(internal_context_message)
+        conversation.append({"role": "user", "content": meta_user_text})
 
         message = ""
         try:

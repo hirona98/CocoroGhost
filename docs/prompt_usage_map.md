@@ -39,9 +39,9 @@ flowchart TD
     IMGN --> PACKN["MemoryPack Builder: build_memory_pack()"]
     IMGM --> PACKM["MemoryPack Builder: build_memory_pack()"]
 
-    PACK --> SYS_CHAT["system = MemoryPack + PARTNER_AFFECT_TRAILER_PROMPT"]
-    PACKN --> SYS_NOTIF["system = MemoryPack + EXTERNAL_SYSTEM_PROMPT"]
-    PACKM --> SYS_META["system = MemoryPack + META_PROACTIVE_MESSAGE_SYSTEM_PROMPT"]
+    PACK --> SYS_CHAT["system = guard + persona + PARTNER_AFFECT_TRAILER_PROMPT\nMemoryPack -> internal context message"]
+    PACKN --> SYS_NOTIF["system = guard + persona + EXTERNAL_SYSTEM_PROMPT\nMemoryPack -> internal context message"]
+    PACKM --> SYS_META["system = guard + persona + META_PROACTIVE_MESSAGE_SYSTEM_PROMPT\nMemoryPack -> internal context message"]
 
     SYS_CHAT --> LLM_CHAT["LLM: generate reply (stream)"]
     SYS_NOTIF --> LLM_NOTIF["LLM: generate reply (non-stream)"]
@@ -90,7 +90,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  IN["inputs: user_text / image_summaries / client_context / relevant_episodes / persona/addon"] --> CAPDB["load capsule_json (latest, not expired)"]
+  IN["inputs: user_text / image_summaries / client_context / relevant_episodes"] --> CAPDB["load capsule_json (latest, not expired)"]
   IN --> ENT["resolve entities from text\n(alias/name substring match)"]
   ENT -->|no match & fallback| ENTFB["LLM fallback: ENTITY_NAMES_ONLY_SYSTEM_PROMPT\n(names only)"]
   ENT --> FACTS["select stable facts\n(pinned OR related entities OR subject is null)"]
@@ -100,7 +100,7 @@ flowchart TD
   REL["relevant_episodes"] --> DEC{"inject episode evidence\nhigh one or more\nor medium two or more"}
   DEC -->|yes| EVI["build episode evidence\n(strategy: quote/summarize/full)"]
   DEC -->|no| ASM
-  CAPDB --> ASM["assemble sections\nPERSONA/ADDON/CAPSULE/FACTS/SUMMARY/LOOPS/EVIDENCE"]
+  CAPDB --> ASM["assemble sections\nCAPSULE/FACTS/SUMMARY/LOOPS/EVIDENCE"]
   FACTS --> ASM
   LOOPS --> ASM
   SUM --> ASM
@@ -112,8 +112,7 @@ flowchart TD
 
 ### セクション別の中身（実際に入るもの）
 
-- `[PERSONA_ANCHOR]`: `persona_text`（空ならセクションだけ残す）
-- `addon_text` は `[PERSONA_ANCHOR]` の末尾に「追加オプション（任意）」として追記される（空なら何も追記しない）
+- `PERSONA_ANCHOR` は system prompt 側に固定注入する（MemoryPackには含めない）
 - `[CONTEXT_CAPSULE]`:
   - DBの `capsule_json`（最新かつ未expireがあれば先頭に1つ）
   - `now_local: <ISO8601>`
@@ -155,7 +154,7 @@ flowchart TD
 
 ## 3) 同期フロー（chat）：MemoryPack の位置づけ
 
-`/api/chat` では、ユーザー編集可能な `persona/addon` を **MemoryPackの先頭セクション**として注入します。
+`/api/chat` では、ユーザー編集可能な `persona/addon` を **system prompt に固定注入**し、MemoryPackは内部コンテキストとして別メッセージで注入します。
 
 ```mermaid
 sequenceDiagram
@@ -173,9 +172,9 @@ sequenceDiagram
   API->>VIS: generate_image_summary(images?)
   API->>RET: retrieve(user_text, recent_conversation)
   RET-->>API: relevant_episodes[]
-  API->>SCH: build_memory_pack(persona, addon, facts, loops, evidence...)
-  SCH-->>API: MemoryPack ([PERSONA_ANCHOR] / [SHARED_NARRATIVE] / ...)
-  Note over API: system = MemoryPack + PARTNER_AFFECT_TRAILER_PROMPT
+  API->>SCH: build_memory_pack(facts, loops, evidence...)
+  SCH-->>API: MemoryPack ([CONTEXT_CAPSULE] / [SHARED_NARRATIVE] / ...)
+  Note over API: system = guard + persona + PARTNER_AFFECT_TRAILER_PROMPT\nMemoryPackはinternal contextとして別メッセージで注入
   API->>LLM: chat(system, conversation, user_text)\n(stream)
   LLM-->>API: streamed tokens
   API-->>UI: SSE stream
@@ -271,7 +270,7 @@ flowchart LR
   - デバッグ用途: `PUT /api/partner_mood` による in-memory ランタイム状態が有効な場合、更新される `partner_mood_state` は適用後の値になる。
 - Notification: `# notification ...` 形式に整形したテキスト（+ 画像要約）を `conversation=[{"role":"user","content":...}]` として渡す（`cocoro_ghost/memory.py`）。
 - Meta request: `# meta_request ...` 形式に整形したテキスト（instruction + payload + 画像要約）を渡す（`cocoro_ghost/memory.py`）。
-- Persona/Addon: settings の active preset から読み込まれ、MemoryPack Builderが persona を `[PERSONA_ANCHOR]` に注入し、addon はその末尾へ「追加オプション（任意）」として追記する（`cocoro_ghost/config.py` / `cocoro_ghost/memory_pack_builder.py`）。
+- Persona/Addon: settings の active preset から読み込み、system prompt に固定注入する（MemoryPackには含めない）。
 - Partner affect trailer（chatのみ）: 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_PARTNER_AFFECT_JSON_v1>>>` + 内部JSON（Reflectionスキーマ準拠）を付加する。サーバ側は区切り以降をSSEに流さず回収し、`units.partner_affect_* / salience / confidence / topic_tags` と `payload_episode.reflection_json` に即時反映する（`cocoro_ghost/memory.py`）。これにより「その発言で反応する」を同ターンで実現しつつ、Workerの `reflect_episode` は冪等にスキップ可能になる。
 - Person summary: `person_summary_refresh` は注入用の `summary_text` に加えて、`favorability_score`（パートナーAI→人物の好感度 0..1）を `summary_json` に保存する。Schedulerは現状 `summary_text` を注入するため、好感度は `summary_text` 先頭に1行で含める運用（`cocoro_ghost/worker.py::_handle_person_summary_refresh`）。
 - 画像要約（vision）: `images[].base64` を画像として渡し、「短い日本語で要約」したテキストを得る（`cocoro_ghost/llm_client.py::LlmClient.generate_image_summary`）。chat/notification/meta_request/capture の `payload_episode.image_summary` に保存される。

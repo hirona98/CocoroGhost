@@ -13,16 +13,12 @@
 - `now_utc`（epoch sec。MemoryPack の `[CONTEXT_CAPSULE]` に `now_local` として注入される。`now_local` はサーバのローカル時刻）
 - `client_context`（任意）
 - `max_inject_tokens`（プリセット）
-- `persona_text` / `addon_text`（settings の active preset。addon は任意の追加オプション）
 
 ## 出力：MemoryPack（注入テキスト）
 
 以下の見出し順で構成（LLMの挙動が安定する）
 
 ```text
-[PERSONA_ANCHOR]
-...
-
 [CONTEXT_CAPSULE]
 ...
 
@@ -45,16 +41,17 @@ Partner: 「...」
 ```
 
 補足:
-- MemoryPack は `memorypack` を system に注入し、conversation に直近会話（max_turns_window）+ user_text を渡す形で LLM に渡される（仕様: `docs/api.md`）。
-- MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（ユーザー設定の prompt に書かせず、コード側でガードするのが推奨。例: `cocoro_ghost/memory.py`）。
+- MemoryPack は system には入れず、`<<INTERNAL_CONTEXT>>` で始まる assistant メッセージとして conversation に注入する（仕様: `docs/api.md`）。
+- Persona/Addon は system prompt 側に固定注入する（MemoryPackには含めない）。
+- MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（コード側でガードする。例: `cocoro_ghost/memory.py`）。
 - `[CONTEXT_CAPSULE]` には `now_local` / `client_context` 等に加え、`partner_mood_state: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/partner_mood.py`）。
    - デバッグ用途: `PUT /api/partner_mood` による in-memory ランタイム状態が有効な場合、注入される `partner_mood_state` は適用後の値になる。
 
 ## 取得手順（規定）
 
 1. **常時注入（検索しない）**
-   - active persona（`settings.db` の `active_persona_preset_id`）
-   - active addon（`settings.db` の `active_addon_preset_id`）
+   - active persona（`settings.db` の `active_persona_preset_id`）は system prompt 側で固定注入
+   - active addon（`settings.db` の `active_addon_preset_id`）も同様
 2. **Contextual Memory Retrieval（Retriever・LLMレス）**
    - 固定クエリ → Hybrid Search（Vector + BM25）→ ヒューリスティック Rerank（`docs/retrieval.md`）
    - relevant episodes（最大5件）を高速に取得する
@@ -94,4 +91,4 @@ Partner: 「...」
   2. OPEN_LOOPS（件数削減）
   3. SHARED_NARRATIVE（段落短縮）
   4. STABLE_FACTS（低スコアを削る）
-  5. PERSONA/ADDON は原則維持（人格崩壊の原因になるため）
+  5. PERSONA/ADDON は system 側固定のため budget 対象外

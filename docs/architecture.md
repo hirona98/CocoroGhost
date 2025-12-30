@@ -54,7 +54,7 @@ flowchart LR
 - （任意）画像要約（Vision）
 - Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 - MemoryPack Builderで **MemoryPack** を生成（capsule/facts/summaries/loops + relevant episodes）
-- LLMへ `memorypack` を system に注入し、会話履歴（max_turns_window）+ user_text を conversation として渡す（MemoryPack内に persona/addon を含む）
+- LLMへ system（guard + persona/addon + 固定プロンプト）を渡し、conversation は会話履歴（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ user_text を渡す
 - 返答をSSEで配信
 - `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 - Worker用ジョブを enqueue（reflection/extraction/embedding等）
