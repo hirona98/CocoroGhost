@@ -4,8 +4,10 @@ log_level = "INFO"
 
 # LLM送受信ログレベル: DEBUG=内容表示, INFO=送受信事実のみ, OFF=出力なし
 llm_log_level = "INFO"
-# LLM送受信ログの最大文字数（DEBUG用の上限）
-llm_log_max_chars = 8000
+# LLM送受信ログの最大文字数（ターミナル/ファイル）
+llm_log_console_max_chars = 2000
+llm_log_file_max_chars = 8000
+
 
 # ログのファイル出力
 log_file_enabled = false

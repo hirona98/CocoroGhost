@@ -59,17 +59,22 @@ def setup_logging(
 
     標準loggingのフォーマット設定と、外部ライブラリのログレベル調整を行う。
     """
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    root_level = getattr(logging, level.upper(), logging.INFO)
+    console_handler = logging.StreamHandler()
+    handlers: list[logging.Handler] = [console_handler]
+    file_handler: logging.Handler | None = None
     if log_file_enabled:
         log_path = pathlib.Path(log_file_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(log_path, encoding="utf-8"))
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        handlers.append(file_handler)
 
     logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
+        level=root_level,
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
         handlers=handlers or None,
     )
+    _setup_llm_io_loggers(root_level, console_handler, file_handler)
     # 外部ライブラリの冗長なログを抑制
     for name, lib_level in [
         # Windows環境で asyncio が出す "Using proactor: IocpProactor" などのDEBUGを抑制する
@@ -82,3 +87,25 @@ def setup_logging(
         ("httpx", logging.WARNING),
     ]:
         logging.getLogger(name).setLevel(lib_level)
+
+
+def _setup_llm_io_loggers(
+    root_level: int,
+    console_handler: logging.Handler,
+    file_handler: logging.Handler | None,
+) -> None:
+    """LLM送受信ログ用のロガーを出力先ごとに初期化する。"""
+    console_logger = logging.getLogger("cocoro_ghost.llm_io.console")
+    console_logger.handlers.clear()
+    console_logger.addHandler(console_handler)
+    console_logger.setLevel(root_level)
+    console_logger.propagate = False
+
+    file_logger = logging.getLogger("cocoro_ghost.llm_io.file")
+    file_logger.handlers.clear()
+    if file_handler is None:
+        file_logger.addHandler(logging.NullHandler())
+    else:
+        file_logger.addHandler(file_handler)
+    file_logger.setLevel(root_level)
+    file_logger.propagate = False

@@ -38,7 +38,8 @@ from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_js
 
 
 logger = logging.getLogger(__name__)
-io_logger = logging.getLogger("cocoro_ghost.llm_io")
+io_console_logger = logging.getLogger("cocoro_ghost.llm_io.console")
+io_file_logger = logging.getLogger("cocoro_ghost.llm_io.file")
 
 _memory_locks: dict[str, threading.Lock] = {}
 
@@ -210,10 +211,18 @@ def _get_llm_log_level_from_store(config_store: ConfigStore) -> str:
         return "INFO"
 
 
-def _get_llm_log_max_chars_from_store(config_store: ConfigStore) -> int:
-    """ConfigStoreからLLM送受信ログの最大文字数を取得する。"""
+def _get_llm_log_console_max_chars_from_store(config_store: ConfigStore) -> int:
+    """ConfigStoreからLLM送受信ログの最大文字数（ターミナル）を取得する。"""
     try:
-        return int(config_store.toml_config.llm_log_max_chars)
+        return int(config_store.toml_config.llm_log_console_max_chars)
+    except Exception:  # noqa: BLE001
+        return 4000
+
+
+def _get_llm_log_file_max_chars_from_store(config_store: ConfigStore) -> int:
+    """ConfigStoreからLLM送受信ログの最大文字数（ファイル）を取得する。"""
+    try:
+        return int(config_store.toml_config.llm_log_file_max_chars)
     except Exception:  # noqa: BLE001
         return 8000
 
@@ -627,17 +636,27 @@ class MemoryManager:
         reflection_obj = _parse_internal_json_text(internal_trailer)
 
         llm_log_level = _get_llm_log_level_from_store(self.config_store)
-        llm_log_max_chars = _get_llm_log_max_chars_from_store(self.config_store)
+        log_file_enabled = bool(self.config_store.toml_config.log_file_enabled)
+        console_max_chars = _get_llm_log_console_max_chars_from_store(self.config_store)
+        file_max_chars = _get_llm_log_file_max_chars_from_store(self.config_store)
         if llm_log_level != "OFF":
-            io_logger.info(
+            io_console_logger.info(
                 "LLM response received kind=chat model=%s stream=%s reply_chars=%s trailer_chars=%s",
                 cfg.llm_model,
                 True,
                 len(reply_text or ""),
                 len(internal_trailer or ""),
             )
+            if log_file_enabled:
+                io_file_logger.info(
+                    "LLM response received kind=chat model=%s stream=%s reply_chars=%s trailer_chars=%s",
+                    cfg.llm_model,
+                    True,
+                    len(reply_text or ""),
+                    len(internal_trailer or ""),
+                )
         log_llm_payload(
-            io_logger,
+            io_console_logger,
             "LLM response (chat stream)",
             {
                 "model": cfg.llm_model,
@@ -645,9 +664,22 @@ class MemoryManager:
                 "internal_trailer": internal_trailer,
                 "internal_trailer_parsed": reflection_obj,
             },
-            max_chars=llm_log_max_chars,
+            max_chars=console_max_chars,
             llm_log_level=llm_log_level,
         )
+        if log_file_enabled:
+            log_llm_payload(
+                io_file_logger,
+                "LLM response (chat stream)",
+                {
+                    "model": cfg.llm_model,
+                    "reply_text": reply_text,
+                    "internal_trailer": internal_trailer,
+                    "internal_trailer_parsed": reflection_obj,
+                },
+                max_chars=file_max_chars,
+                llm_log_level=llm_log_level,
+            )
 
         image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
         context_note = _json_dumps(request.client_context) if request.client_context else None

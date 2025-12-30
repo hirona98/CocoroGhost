@@ -29,14 +29,15 @@ if TYPE_CHECKING:
 class Config:
     """
     TOML起動設定（起動時のみ使用、変更不可）。
-    認証トークンとログレベルのみを保持する最小限の設定。
+    起動時に固定されるログや認証の設定を保持する。
     """
     token: str           # API認証用トークン
     log_level: str       # ログレベル（DEBUG, INFO, WARNING, ERROR）
     llm_log_level: str   # LLM送受信ログレベル（DEBUG, INFO, OFF）
     log_file_enabled: bool  # ファイルログ有効/無効
     log_file_path: str      # ファイルログの保存先パス
-    llm_log_max_chars: int  # LLM送受信ログの最大文字数
+    llm_log_console_max_chars: int  # LLM送受信ログの最大文字数（ターミナル）
+    llm_log_file_max_chars: int     # LLM送受信ログの最大文字数（ファイル）
 
 
 @dataclass
@@ -158,7 +159,15 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
         data = tomli.load(f)
 
     # 許可されたキーのみを受け付ける
-    allowed_keys = {"token", "log_level", "llm_log_level", "log_file_enabled", "log_file_path", "llm_log_max_chars"}
+    allowed_keys = {
+        "token",
+        "log_level",
+        "llm_log_level",
+        "log_file_enabled",
+        "log_file_path",
+        "llm_log_console_max_chars",
+        "llm_log_file_max_chars",
+    }
     unknown_keys = sorted(set(data.keys()) - allowed_keys)
     if unknown_keys:
         keys = ", ".join(repr(k) for k in unknown_keys)
@@ -171,7 +180,8 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
         llm_log_level=data.get("llm_log_level", "INFO"),
         log_file_enabled=bool(data.get("log_file_enabled", False)),
         log_file_path=str(data.get("log_file_path", "logs/cocoro_ghost.log")),
-        llm_log_max_chars=int(data.get("llm_log_max_chars", 8000)),
+        llm_log_console_max_chars=int(data.get("llm_log_console_max_chars", 2000)),
+        llm_log_file_max_chars=int(data.get("llm_log_file_max_chars", 8000)),
     )
     return config
 
