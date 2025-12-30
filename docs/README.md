@@ -53,3 +53,22 @@
 - **Preset（settings）**: `settings.db` に永続化する切替単位。
   - LLM/Embeddingの接続情報・検索予算に加え、Persona/Addon をプリセットとして保持し、`active_*_preset_id` でアクティブを選ぶ（`docs/settings_db.md`）。
 - **memory_id**: 記憶DBファイル名を選ぶための識別子。`EmbeddingPreset.id`（UUID）を `memory_id` として扱い、`memory_<memory_id>.db` を開く（`docs/settings_db.md` / `docs/api.md`）。
+
+## LLMの構造化出力について（採用しない理由）
+
+※忘れないためのメモ（設計判断）。
+
+本プロジェクトでは「本文（ユーザー表示） + 内部メタ（反射/機嫌など）」を **1回のLLM呼び出し**で取得しつつ、
+`/api/chat` の **SSEストリーミング（本文の逐次送信）** を維持したい。
+この前提のもとで、以下理由より Structured Outputs / tool call を採用するのは現状見送っている。
+
+- tool call（function calling）
+  - `LiteLLM + Gemini` の組み合わせで1回目で呼ばれる呼ばれないケースがある。（ほぼ呼ばれない）
+  - 複雑なJSONが扱えない。
+- Structured Outputs
+  - 出力全体がJSONになるため、本文を自然文のままストリームし続けるには「ストリーム中のJSONを壊さずに部分抽出する専用パーサ」が必要になる
+  - 本文末尾につけてJSONが壊れないのであればメリットがない。
+
+なお、履歴のノイズ化・入力トークン増・プロンプトキャッシュの当たり悪化を避けるため、内部JSONは次ターンの会話履歴に入れない。
+
+具体仕様は `docs/prompts.md` の「chat（SSE）: 返答末尾の内部JSON（partner_affect trailer）」を参照
