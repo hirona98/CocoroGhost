@@ -37,6 +37,23 @@ if TYPE_CHECKING:
     from cocoro_ghost.retriever import RankedEpisode
 
 
+# MemoryPackの見出しは日常会話で衝突しにくい形式に統一する。
+MEMORY_PACK_SECTION_PREFIX = "<<<COCORO_GHOST_SECTION:"
+MEMORY_PACK_SECTION_SUFFIX = ">>>"
+
+
+def format_memory_pack_section(title: str, body_lines: Sequence[str]) -> str:
+    """
+    MemoryPackのセクションを整形する。
+
+    ユーザー本文と混ざらない見出し形式で返す。
+    """
+    header = f"{MEMORY_PACK_SECTION_PREFIX}{title}{MEMORY_PACK_SECTION_SUFFIX}"
+    if not body_lines:
+        return f"{header}\n\n"
+    return f"{header}\n" + "\n".join(body_lines) + "\n\n"
+
+
 def now_utc_ts() -> int:
     """
     現在時刻をUNIX秒で返す。
@@ -585,12 +602,6 @@ def build_memory_pack(
     except Exception:  # noqa: BLE001
         pass
 
-    def section(title: str, body_lines: Sequence[str]) -> str:
-        """MemoryPackの1セクション（[TITLE] ...）を組み立てる。"""
-        if not body_lines:
-            return f"[{title}]\n\n"
-        return f"[{title}]\n" + "\n".join(body_lines) + "\n\n"
-
     def assemble(
         *,
         capsule_lines: Sequence[str],
@@ -601,11 +612,11 @@ def build_memory_pack(
     ) -> str:
         """各セクションを結合してMemoryPack全体を生成する。"""
         parts: List[str] = []
-        parts.append(section("CONTEXT_CAPSULE", capsule_lines))
-        parts.append(section("STABLE_FACTS", facts))
-        parts.append(section("SHARED_NARRATIVE", summaries))
-        parts.append(section("OPEN_LOOPS", loops))
-        parts.append(section("EPISODE_EVIDENCE", evidence))
+        parts.append(format_memory_pack_section("CONTEXT_CAPSULE", capsule_lines))
+        parts.append(format_memory_pack_section("STABLE_FACTS", facts))
+        parts.append(format_memory_pack_section("SHARED_NARRATIVE", summaries))
+        parts.append(format_memory_pack_section("OPEN_LOOPS", loops))
+        parts.append(format_memory_pack_section("EPISODE_EVIDENCE", evidence))
         return "".join(parts)
 
     # NOTE:

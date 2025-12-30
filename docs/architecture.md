@@ -19,7 +19,7 @@
 - **MemoryPack Builder（取得計画器）**
   - 検索結果の生注入ではなく、**MemoryPack** を編成して注入
   - 注入予算（token budget）で階層的に収集・圧縮
-  - Retriever の結果（relevant episodes）を `[EPISODE_EVIDENCE]` に整形して注入する
+  - Retriever の結果（relevant episodes）を `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` に整形して注入する
 - **Worker（非同期ジョブ）**
   - Reflection / Entities / Facts / Summaries / Loops / Embedding upsert を担当
   - APIプロセスと分離（推奨）
@@ -66,7 +66,7 @@ Retriever は「暗黙参照」や「会話の流れ」を取り込み、現在�
 - Phase 1: 固定クエリ生成（LLMレス。user_text / context+user_text の2本）
 - Phase 2: Hybrid Search（vec0 + FTS5）→ RRFマージ
 - Phase 3: ヒューリスティック Rerank（LLMレス。RRF + 文字n-gram類似度 + recency で軽量スコアリング）
-- MemoryPack Builder は relevant episodes を受け取り、ルール（例: high>=1 or medium>=2）と予算で `[EPISODE_EVIDENCE]` を注入する（満たさない場合は省略）
+- MemoryPack Builder は relevant episodes を受け取り、ルール（例: high>=1 or medium>=2）と予算で `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` を注入する（満たさない場合は省略）
 
 ```mermaid
 sequenceDiagram

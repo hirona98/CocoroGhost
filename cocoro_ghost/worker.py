@@ -1432,7 +1432,11 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
         rt = rt[:220]
         lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
 
-    input_text = f"scope_key: {scope_key}\nrange_start: {range_start}\nrange_end: {range_end}\n\n[EPISODES]\n" + "\n".join(lines)
+    input_text = (
+        f"scope_key: {scope_key}\nrange_start: {range_start}\nrange_end: {range_end}\n\n"
+        "<<<COCORO_GHOST_SECTION:EPISODES>>>\n"
+        + "\n".join(lines)
+    )
 
     system_prompt = _wrap_prompt_with_persona(prompts.get_bond_summary_prompt())
     resp = llm_client.generate_json_response(
@@ -1575,7 +1579,7 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
 
 
 def _build_summary_payload_input(*, header_lines: list[str], episode_lines: list[str]) -> str:
-    parts = [*header_lines, "", "[EPISODES]", *episode_lines]
+    parts = [*header_lines, "", "<<<COCORO_GHOST_SECTION:EPISODES>>>", *episode_lines]
     return "\n".join([p for p in parts if p is not None]).strip()
 
 

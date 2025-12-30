@@ -274,7 +274,7 @@ reason = f"heuristic rerank: score={final:.3f} rrf={rrf_norm:.3f} lex={lex:.3f} 
 ### EPISODE_EVIDENCE セクション
 
 ```
-[EPISODE_EVIDENCE]
+<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>
 以下は現在の会話に関連する過去のやりとりです。
 
 [2024-12-01] プロジェクトXの進捗について

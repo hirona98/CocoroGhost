@@ -296,7 +296,7 @@ create index if not exists idx_summary_scope on payload_summary(scope_label, sco
     - bond: `rolling:7d`（直近7日ローリング）
     - person: `person:<entity_id>`
     - topic: `topic:<normalized>`
-- `summary_text` は注入用のプレーンテキスト（Schedulerが `[SHARED_NARRATIVE]` に入れる）。
+- `summary_text` は注入用のプレーンテキスト（Schedulerが `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>` に入れる）。
 - `summary_json` はLLM出力を丸ごと保存（key_events等の構造化）。
 
 ### Capsule（短期状態：会話テンポのため）
@@ -331,7 +331,7 @@ create index if not exists idx_loop_status_due on payload_loop(status, due_at);
 
 #### 使い方（Loop）
 
-- `status=OPEN` のものが `[OPEN_LOOPS]` に注入される。
+- `status=OPEN` のものが `<<<COCORO_GHOST_SECTION:OPEN_LOOPS>>>` に注入される。
 - `due_at` は再提起の優先度（期限が近いものを先に）。
 
 ## Jobテーブル（Worker用：SQLiteで永続化）

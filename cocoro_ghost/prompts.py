@@ -290,7 +290,7 @@ def wrap_prompt_with_persona(
             persona_lines.append("")
         persona_lines.append(addon_text)
     if persona_lines:
-        parts.append("[PERSONA_ANCHOR]\n" + "\n".join(persona_lines))
+        parts.append("<<<COCORO_GHOST_SECTION:PERSONA_ANCHOR>>>\n" + "\n".join(persona_lines))
     parts.append(base_prompt)
     return "\n\n".join(parts)
 

@@ -10,7 +10,7 @@
 
 - `user_text`
 - `embedding_preset_id`（対象の記憶DB）
-- `now_utc`（epoch sec。MemoryPack の `[CONTEXT_CAPSULE]` に `now_local` として注入される。`now_local` はサーバのローカル時刻）
+- `now_utc`（epoch sec。MemoryPack の `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` に `now_local` として注入される。`now_local` はサーバのローカル時刻）
 - `client_context`（任意）
 - `max_inject_tokens`（プリセット）
 
@@ -19,19 +19,19 @@
 以下の見出し順で構成（LLMの挙動が安定する）
 
 ```text
-[CONTEXT_CAPSULE]
+<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>
 ...
 
-[STABLE_FACTS]
+<<<COCORO_GHOST_SECTION:STABLE_FACTS>>>
 - ...
 
-[SHARED_NARRATIVE]
+<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>
 - ...
 
-[OPEN_LOOPS]
+<<<COCORO_GHOST_SECTION:OPEN_LOOPS>>>
 - ...
 
-[EPISODE_EVIDENCE]
+<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>
 以下は現在の会話に関連する過去のやりとりです。
 
 [YYYY-MM-DD] タイトル（任意）
@@ -44,7 +44,7 @@ Partner: 「...」
 - MemoryPack は system には入れず、`<<INTERNAL_CONTEXT>>` で始まる assistant メッセージとして conversation に注入する（仕様: `docs/api.md`）。
 - Persona/Addon は system prompt 側に固定注入する（MemoryPackには含めない）。
 - MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（コード側でガードする。例: `cocoro_ghost/memory.py`）。
-- `[CONTEXT_CAPSULE]` には `now_local` / `client_context` 等に加え、`partner_mood_state: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/partner_mood.py`）。
+- `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` には `now_local` / `client_context` 等に加え、`partner_mood_state: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/partner_mood.py`）。
    - デバッグ用途: `PUT /api/partner_mood` による in-memory ランタイム状態が有効な場合、注入される `partner_mood_state` は適用後の値になる。
 
 ## 取得手順（規定）
@@ -67,7 +67,7 @@ Partner: 「...」
 6. **OpenLoops取得**
    - openのみ、due順、entity一致を優先
 7. **Episode evidence 注入**
-   - `should_inject_episodes(relevant_episodes)` が true のときだけ `[EPISODE_EVIDENCE]` を組み込む
+   - `should_inject_episodes(relevant_episodes)` が true のときだけ `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` を組み込む
    - `injection_strategy`（quote_key_parts/summarize/full）に応じて整形する
    - Current: Retrieverは `quote_key_parts` 固定
 8. **圧縮**

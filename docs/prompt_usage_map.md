@@ -113,26 +113,26 @@ flowchart TD
 ### セクション別の中身（実際に入るもの）
 
 - `PERSONA_ANCHOR` は system prompt 側に固定注入する（MemoryPackには含めない）
-- `[CONTEXT_CAPSULE]`:
+- `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>`:
   - DBの `capsule_json`（最新かつ未expireがあれば先頭に1つ）
   - `now_local: <ISO8601>`
   - `active_app` / `window_title` / `locale`（あれば）
   - `[ユーザーが今送った画像の内容] <image_summary>`（今回の画像ぶん）
-- `[STABLE_FACTS]`:
+- `<<<COCORO_GHOST_SECTION:STABLE_FACTS>>>`:
   - 対象: `Unit(kind=FACT)`（最大12件）
   - 絞り込み（entity が取れている場合）: `pin=1` または subject/object がその entity に関連、または subject が `null` のもの
   - 絞り込み（entity が取れない場合）: 直近200件 + pin=1 を混ぜてからスコアで上位
   - スコア: `confidence/salience/recency/pin` を合成して降順
   - 形式: `- SUBJECT predicate OBJECT`（entity_idが引けると名前に置換、subject未指定は `USER`）
-- `[SHARED_NARRATIVE]`:
+- `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>`:
   - `scope_key=rolling:7d` の bond summary（無ければ latest をfallback）
   - 今回マッチした entity に応じて追加:
     - roles に `person` を含む: `scope_label=person, scope_key=person:<entity_id>`
     - roles に `topic` を含む: `scope_label=topic, scope_key=topic:<normalized-or-name-lower>`
-- `[OPEN_LOOPS]`:
+- `<<<COCORO_GHOST_SECTION:OPEN_LOOPS>>>`:
   - 対象: `Unit(kind=LOOP, status=open)`（最大8件）
   - entity が取れている場合: まず entity 関連（`unit_entities` 経由）を優先し、足りなければ全体から補充
-- `[EPISODE_EVIDENCE]`:
+- `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>`:
   - `should_inject_episodes()` が True のときだけ注入（`high>=1` or `medium>=2`）
   - `injection_strategy`:
     - `quote_key_parts`（既定）: user/reply を短く引用
@@ -142,11 +142,11 @@ flowchart TD
 
 ### 予算超過時の削り順（優先度）
 
-1. `[EPISODE_EVIDENCE]` を丸ごと落とす
-2. `[OPEN_LOOPS]` を末尾から減らす
-3. `[SHARED_NARRATIVE]` を1件に絞り、まだ超過なら本文を短縮
-4. `[STABLE_FACTS]` を末尾から減らす
-5. `[CONTEXT_CAPSULE]` を末尾から減らす（最後の手段）
+1. `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` を丸ごと落とす
+2. `<<<COCORO_GHOST_SECTION:OPEN_LOOPS>>>` を末尾から減らす
+3. `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>` を1件に絞り、まだ超過なら本文を短縮
+4. `<<<COCORO_GHOST_SECTION:STABLE_FACTS>>>` を末尾から減らす
+5. `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` を末尾から減らす（最後の手段）
 
 補足:
 - `build_memory_pack()` は一旦 `Sensitivity.SECRET` までを注入対象として扱います（`sensitivity_max=SECRET`）。
@@ -173,7 +173,7 @@ sequenceDiagram
   API->>RET: retrieve(user_text, recent_conversation)
   RET-->>API: relevant_episodes[]
   API->>SCH: build_memory_pack(facts, loops, evidence...)
-  SCH-->>API: MemoryPack ([CONTEXT_CAPSULE] / [SHARED_NARRATIVE] / ...)
+  SCH-->>API: MemoryPack (<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>> / <<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>> / ...)
   Note over API: system = guard + persona + PARTNER_AFFECT_TRAILER_PROMPT\nMemoryPackはinternal contextとして別メッセージで注入
   API->>LLM: chat(system, conversation, user_text)\n(stream)
   LLM-->>API: streamed tokens
