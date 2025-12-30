@@ -327,9 +327,12 @@ def limit_json_value_lengths(obj: Any, *, max_value_chars: int, max_depth: int =
             return tuple(_walk(x, depth - 1) for x in v)
 
         if isinstance(v, str):
-            if len(v) <= max_value_chars:
+            # 先頭/末尾を残し、中間を省略する。
+            if len(v) <= max_value_chars * 2:
                 return v
-            return v[:max_value_chars] + f"...(Cut, {len(v)})"
+            head = v[:max_value_chars]
+            tail = v[-max_value_chars:]
+            return head + f"...(Cut, {len(v)})..." + tail
 
         return v
 
