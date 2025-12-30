@@ -166,6 +166,81 @@ def _repair_json_like_text(text: str) -> str:
     return s
 
 
+def _try_parse_json_text(text: str) -> tuple[bool, Any]:
+    """
+    文字列がJSON単体ならパースする。
+
+    JSON以外のテキストはそのまま扱う。
+    """
+    # 空文字は対象外
+    if not text:
+        return False, text
+
+    # コードフェンスを除去して判定する
+    stripped = _strip_code_fences(text).strip()
+    if not stripped:
+        return False, text
+
+    # 先頭/末尾がJSONっぽくない場合は除外する
+    starts_obj = stripped.startswith("{") and stripped.endswith("}")
+    starts_arr = stripped.startswith("[") and stripped.endswith("]")
+    if not (starts_obj or starts_arr):
+        return False, text
+
+    # 先頭のJSON値を取り出し、全文一致ならJSONとみなす
+    candidate = _extract_first_json_value(stripped)
+    if not candidate:
+        return False, text
+    if candidate.strip() != stripped:
+        return False, text
+
+    # JSONとしてパースする（必要なら最低限の修復を試す）
+    try:
+        return True, json.loads(candidate)
+    except json.JSONDecodeError:
+        repaired = _repair_json_like_text(candidate)
+        try:
+            return True, json.loads(repaired)
+        except json.JSONDecodeError:
+            return False, text
+
+
+def _parse_embedded_json_strings(obj: Any, *, max_depth: int = 6) -> Any:
+    """
+    dict/list内のJSON文字列を再帰的にパースする。
+
+    ログ表示用に、人間が読める構造へ整形する目的。
+    """
+    # 深さ制限で無限再帰を回避する
+    if max_depth <= 0:
+        return obj
+
+    # dictは各値を再帰的に処理する
+    if isinstance(obj, dict):
+        parsed: dict[str, Any] = {}
+        for k, v in obj.items():
+            parsed[str(k)] = _parse_embedded_json_strings(v, max_depth=max_depth - 1)
+        return parsed
+
+    # listは各要素を再帰的に処理する
+    if isinstance(obj, list):
+        return [_parse_embedded_json_strings(v, max_depth=max_depth - 1) for v in obj]
+
+    # tupleはtupleのまま再帰処理する
+    if isinstance(obj, tuple):
+        return tuple(_parse_embedded_json_strings(v, max_depth=max_depth - 1) for v in obj)
+
+    # 文字列はJSONとして解釈できるなら構造化する
+    if isinstance(obj, str):
+        parsed, value = _try_parse_json_text(obj)
+        if parsed:
+            return _parse_embedded_json_strings(value, max_depth=max_depth - 1)
+        return obj
+
+    # それ以外はそのまま返す
+    return obj
+
+
 def _to_serializable(obj: Any) -> Any:
     """json.dumpsできる形に寄せる（失敗しても落とさない）。"""
     if obj is None:
@@ -260,8 +335,13 @@ def format_debug_payload(
     try_parse_json_string: bool = True,
 ) -> str:
     """payloadをデバッグ向けに文字列化する（JSONなら見やすく整形）。"""
-
-    serializable = redact_secrets(payload)
+    # まずシリアライズ可能な形に変換する
+    serializable = _to_serializable(payload)
+    # 文字列中のJSONを構造化して読みやすくする
+    serializable = _parse_embedded_json_strings(serializable)
+    # 秘匿情報をマスクする
+    serializable = redact_secrets(serializable)
+    # Value長を制限してログの肥大化を抑える
     serializable = limit_json_value_lengths(serializable, max_value_chars=max_value_chars)
 
     # dict/list ならそのまま pretty JSON
