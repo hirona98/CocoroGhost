@@ -338,7 +338,7 @@ def commit_settings(
         active_addon,
     )
     try:
-        init_memory_db(runtime_config.memory_id, runtime_config.embedding_dimension)
+        init_memory_db(runtime_config.embedding_preset_id, runtime_config.embedding_dimension)
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         raise HTTPException(status_code=400, detail=f"memory DB init failed: {exc}") from exc
@@ -358,14 +358,14 @@ def commit_settings(
     )
     reset_memory_manager()
 
-    # 内蔵Workerが有効なら、設定変更に追従させる（LLMプリセット/memory_id切替など）。
+    # 内蔵Workerが有効なら、設定変更に追従させる（LLMプリセット/embedding_preset_id切替など）。
     # 重い処理（join等）になる可能性があるため、レスポンス後に実行する。
     try:
         from cocoro_ghost.internal_worker import request_restart_async
 
         background_tasks.add_task(
             request_restart_async,
-            memory_id=runtime_config.memory_id,
+            embedding_preset_id=runtime_config.embedding_preset_id,
             embedding_dimension=runtime_config.embedding_dimension,
         )
     except Exception:  # noqa: BLE001

@@ -7,7 +7,7 @@
 
 ## Jobテーブル
 
-`jobs` テーブルは `memory_<memory_id>.db` に永続化する（DDLは `docs/db_schema.md`）。
+`jobs` テーブルは `memory_<embedding_preset_id>.db` に永続化する（DDLは `docs/db_schema.md`）。
 
 ### status
 
@@ -23,7 +23,7 @@
 - `extract_facts(unit_id)`
 - `extract_loops(unit_id)`
 - `upsert_embeddings(unit_id)`（episode/fact/summary/loop…必要種別）
-- `bond_summary(scope_key=rolling:7d)`（定期 / `memory_id` は Worker が扱うDBで暗黙）
+- `bond_summary(scope_key=rolling:7d)`（定期 / `embedding_preset_id` は Worker が扱うDBで暗黙）
 - `person_summary_refresh(entity_id)`（人物サマリ更新）
 - `topic_summary_refresh(entity_id)`（トピックサマリ更新）
 - `capsule_refresh(limit, partner_mood_scan_limit)`（任意 / `limit` は直近件数、既定5。`partner_mood_scan_limit` は機嫌集約用の走査件数、既定500）
@@ -38,7 +38,7 @@
 - Current: capsule_refresh は Episode保存後の既定ジョブとして自動enqueue（`limit=5`）。
 - Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic/capsule）も実施できる（固定値: 30秒ごとに判定）。
 - Current: 起動コマンドは `run.py` のみ（内蔵Workerがバックグラウンドで動作）。
-- Current: `/api/settings` で active preset / memory_id を切り替えると、内蔵Workerは自動で再起動して追従する。
+- Current: `/api/settings` で active preset / embedding_preset_id を切り替えると、内蔵Workerは自動で再起動して追従する。
 - Non-goal: uvicorn multi-worker 等の多重起動は未対応（内蔵Workerが重複実行されうるため）。`workers=1` 前提で運用する。
 
 ## 冪等性ルール
@@ -61,10 +61,10 @@
 - JSONを正規化（キー順ソート等）した文字列のhash（例: SHA-256）を推奨
 - 同一hashなら再実行しても「更新なし」として扱う
 
-## 複数 memory_id の運用
+## 複数 embedding_preset_id の運用
 
-- 内蔵Workerは **アクティブな `memory_id`（= `active_embedding_preset_id`）1つ**を処理対象にする
-- 別 `memory_id` を扱いたい場合は `/api/settings` で切り替える（切替後、内蔵Workerが自動再起動して追従する）
+- 内蔵Workerは **アクティブな `embedding_preset_id`（= `active_embedding_preset_id`）1つ**を処理対象にする
+- 別 `embedding_preset_id` を扱いたい場合は `/api/settings` で切り替える（切替後、内蔵Workerが自動再起動して追従する）
 
 ## 定期実行（cron無し）
 

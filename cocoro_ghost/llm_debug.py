@@ -7,7 +7,6 @@ LLMクライアント実装から独立しており、任意の箇所に差し�
 主な機能:
 - JSONっぽい文字列の補正とパース（フェンス除去、末尾カンマ修正等）
 - 秘匿情報（api_key、token等）のマスク
-- 環境変数 COCORO_LLM_IO_DEBUG=1 で強制出力
 
 使い方例:
     from cocoro_ghost.llm_debug import log_llm_payload
@@ -18,7 +17,6 @@ LLMクライアント実装から独立しており、任意の箇所に差し�
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import asdict, is_dataclass
 from typing import Any, Iterable
@@ -27,30 +25,24 @@ from typing import Any, Iterable
 # ここにあるキーは、入出力のデバッグ時に値をマスクする。
 # NOTE: 完全ではないが、誤ってログに出してしまう事故を減らす。
 _DEFAULT_REDACT_KEYS = {
-    "api_key",
     "openai_api_key",
     "anthropic_api_key",
     "token",
     "access_token",
     "refresh_token",
-    "authorization",
     "x-api-key",
 }
 
-
-def _truthy_env(name: str) -> bool:
-    """環境変数の真偽値っぽい値を解釈する。"""
-    v = (os.getenv(name) or "").strip().lower()
-    return v in {"1", "true", "yes", "on"}
-
-
-def _truncate_for_log(text: str, limit: int) -> str:
-    """ログ向けに文字数を制限する。"""
-    if limit <= 0:
-        return ""
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "...(truncated)"
+# ログに出さないキー（実送信/受信でも表示しない方針）
+_DEFAULT_DROP_KEYS = {
+    "api_key",
+    "authorization",
+    "model",
+    "max_tokens",
+    "response_format",
+    "stream",
+    "temperature",
+}
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
@@ -216,12 +208,14 @@ def redact_secrets(
     obj: Any,
     *,
     redact_keys: Iterable[str] | None = None,
+    drop_keys: Iterable[str] | None = None,
     placeholder: str = "***",
     max_depth: int = 12,
 ) -> Any:
     """dict/listを再帰的に走査して、秘匿情報っぽい値をマスクする。"""
 
     keys = {k.lower() for k in (redact_keys or _DEFAULT_REDACT_KEYS)}
+    drop = {k.lower() for k in (drop_keys or _DEFAULT_DROP_KEYS)}
 
     def _walk(v: Any, depth: int) -> Any:
         if depth <= 0:
@@ -231,6 +225,9 @@ def redact_secrets(
             out: dict[str, Any] = {}
             for k, vv in v.items():
                 lk = str(k).lower()
+                # 指定キーはログから完全に除外する
+                if lk in drop:
+                    continue
                 if lk in keys:
                     out[str(k)] = placeholder
                 else:
@@ -243,11 +240,11 @@ def redact_secrets(
         if isinstance(v, tuple):
             return tuple(_walk(x, depth - 1) for x in v)
 
-        # 文字列のAuthorization: Bearer ... 等は丸ごとマスク
+        # 文字列のAuthorization: Bearer ... 等はログから除外する
         if isinstance(v, str):
             s = v
             if re.search(r"\bBearer\s+\S+", s, re.IGNORECASE):
-                return re.sub(r"\bBearer\s+\S+", "Bearer ***", s, flags=re.IGNORECASE)
+                return "(authorization omitted)"
             return s
 
         return v
@@ -259,20 +256,22 @@ def format_debug_payload(
     payload: Any,
     *,
     max_chars: int = 8000,
+    max_value_chars: int = 0,
     try_parse_json_string: bool = True,
 ) -> str:
     """payloadをデバッグ向けに文字列化する（JSONなら見やすく整形）。"""
 
     serializable = redact_secrets(payload)
+    serializable = limit_json_value_lengths(serializable, max_value_chars=max_value_chars)
 
     # dict/list ならそのまま pretty JSON
     if isinstance(serializable, (dict, list)):
         try:
             s = json.dumps(serializable, ensure_ascii=False, indent=2, sort_keys=True)
-            return _truncate_for_log(s, max_chars)
+            return truncate_for_log(s, max_chars)
         except Exception:
             # フォールバック
-            return _truncate_for_log(str(serializable), max_chars)
+            return truncate_for_log(str(serializable), max_chars)
 
     # 文字列（JSONっぽいなら抽出→補正→パース→pretty）
     if isinstance(serializable, str) and try_parse_json_string:
@@ -281,18 +280,71 @@ def format_debug_payload(
             try:
                 parsed = json.loads(candidate)
                 masked = redact_secrets(parsed)
-                return _truncate_for_log(json.dumps(masked, ensure_ascii=False, indent=2, sort_keys=True), max_chars)
+                masked = limit_json_value_lengths(masked, max_value_chars=max_value_chars)
+                return truncate_for_log(json.dumps(masked, ensure_ascii=False, indent=2, sort_keys=True), max_chars)
             except Exception:
                 repaired = _repair_json_like_text(candidate)
                 try:
                     parsed = json.loads(repaired)
                     masked = redact_secrets(parsed)
-                    return _truncate_for_log(json.dumps(masked, ensure_ascii=False, indent=2, sort_keys=True), max_chars)
+                    masked = limit_json_value_lengths(masked, max_value_chars=max_value_chars)
+                    return truncate_for_log(json.dumps(masked, ensure_ascii=False, indent=2, sort_keys=True), max_chars)
                 except Exception:
                     pass
-        return _truncate_for_log(serializable, max_chars)
+        return truncate_for_log(serializable, max_chars)
 
-    return _truncate_for_log(str(serializable), max_chars)
+    return truncate_for_log(str(serializable), max_chars)
+
+
+def truncate_for_log(text: str, limit: int) -> str:
+    """ログ出力用にテキストを切り詰める。"""
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...(Cut)"
+
+
+def limit_json_value_lengths(obj: Any, *, max_value_chars: int, max_depth: int = 12) -> Any:
+    """JSON相当のオブジェクトで、各Value（文字列）の最大長を制限する。"""
+    if max_value_chars <= 0:
+        return obj
+
+    def _walk(v: Any, depth: int) -> Any:
+        if depth <= 0:
+            return "..."
+
+        if isinstance(v, dict):
+            out: dict[str, Any] = {}
+            for k, vv in v.items():
+                out[str(k)] = _walk(vv, depth - 1)
+            return out
+
+        if isinstance(v, list):
+            return [_walk(x, depth - 1) for x in v]
+
+        if isinstance(v, tuple):
+            return tuple(_walk(x, depth - 1) for x in v)
+
+        if isinstance(v, str):
+            # 先頭/末尾を残し、中間を省略する。
+            if len(v) <= max_value_chars * 2:
+                return v
+            head = v[:max_value_chars]
+            tail = v[-max_value_chars:]
+            return head + f"...(Cut, {len(v)})..." + tail
+
+        return v
+
+    return _walk(obj, max_depth)
+
+
+def normalize_llm_log_level(llm_log_level: str | None) -> str:
+    """LLM送受信ログレベルを正規化する。"""
+    level = (llm_log_level or "INFO").upper()
+    if level not in {"DEBUG", "INFO", "OFF"}:
+        return "INFO"
+    return level
 
 
 def log_llm_payload(
@@ -300,12 +352,14 @@ def log_llm_payload(
     label: str,
     payload: Any,
     *,
+    llm_log_level: str = "INFO",
     max_chars: int = 8000,
+    max_value_chars: int = 0,
 ) -> None:
-    """LLMの送受信payloadをlogger.debugで出す。
+    """LLMの送受信payloadをログ出力する。
 
-    - COCORO_LLM_IO_DEBUG=1 なら強制的に出力
-    - それ以外は logger が DEBUG のときだけ出す
+    - DEBUG: 内容を整形して出力
+    - INFO/OFF: 内容は出さない
 
     loggerは標準loggingのLogger互換（debug/info等）を想定。
     """
@@ -313,18 +367,11 @@ def log_llm_payload(
     if logger is None:
         return
 
-    force = _truthy_env("COCORO_LLM_IO_DEBUG")
-    enabled_by_level = False
-    try:
-        enabled_by_level = bool(getattr(logger, "isEnabledFor")(10))  # logging.DEBUG == 10
-    except Exception:
-        # logger互換でなくても落とさない
-        enabled_by_level = False
-
-    if not (force or enabled_by_level):
+    level = normalize_llm_log_level(llm_log_level)
+    if level != "DEBUG":
         return
 
-    text = format_debug_payload(payload, max_chars=max_chars)
+    text = format_debug_payload(payload, max_chars=max_chars, max_value_chars=max_value_chars)
     try:
         logger.debug("%s: %s", label, text)
     except Exception:

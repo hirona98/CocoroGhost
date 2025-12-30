@@ -3,15 +3,15 @@
 ## 目的
 
 - アプリ起動に必要な最小設定（token / log_level）と、運用中に切替えるプリセット（LLM/Embedding）を永続化する
-- 記憶DB（`memory_<memory_id>.db`）とは分離する
+- 記憶DB（`memory_<embedding_preset_id>.db`）とは分離する
 
 ## 使い方（運用）
 
 - 起動時に `settings.db` が無ければ自動作成され、`global_settings` と各種 `*_presets` の初期値が投入される（`docs/bootstrap.md` も参照）。
 - UIは原則 `/api/settings`（GET/PUT）を通して読み書きする。
 - `active_*_preset_id` を切り替えることで、LLM/Embedding/Persona/Addon（任意追加オプション）を運用中に切替できる。
-- **EmbeddingPreset.id はそのまま `memory_id` として使う**ため、`active_embedding_preset_id` の切替は「参照する記憶DBファイルが変わる」ことを意味する。
-- 内蔵Worker運用のため、`/api/settings` 更新後は内蔵Workerが自動再起動して設定変更に追従する（LLM接続・memory_id など）。
+- **EmbeddingPreset.id はそのまま `embedding_preset_id` として使う**ため、`active_embedding_preset_id` の切替は「参照する記憶DBファイルが変わる」ことを意味する。
+- 内蔵Worker運用のため、`/api/settings` 更新後は内蔵Workerが自動再起動して設定変更に追従する（LLM接続・embedding_preset_id など）。
 
 ## テーブル
 
@@ -27,7 +27,7 @@
 - `memory_enabled`（INTEGER: 0/1）
 - `reminders_enabled`（INTEGER: 0/1）
 - `active_llm_preset_id`（TEXT: UUID）
-- `active_embedding_preset_id`（TEXT: UUID / `memory_id`）
+- `active_embedding_preset_id`（TEXT: UUID / `embedding_preset_id`）
 - `active_persona_preset_id`（TEXT: UUID）
 - `active_addon_preset_id`（TEXT: UUID）: addon用
 - `created_at`（DATETIME）
@@ -69,7 +69,7 @@ Embedding/検索パラメータの切替単位。
 
 #### カラム（実装準拠）
 
-- `id`（TEXT: UUID）: **memory_id としても使う**
+- `id`（TEXT: UUID）: **embedding_preset_id としても使う**
 - `name`（TEXT: 表示名）
 - `archived`（INTEGER: 0/1）
 - `embedding_model`（TEXT）

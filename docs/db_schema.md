@@ -60,7 +60,7 @@
   - SQLiteの比較・index最適化のため
 - JSON文字列は `TEXT` で保持（必要なら `json_extract` 等で参照する）
 
-## DDL（memory_<memory_id>.db）
+## DDL（memory_<embedding_preset_id>.db）
 
 ### `units`（共通メタ）
 

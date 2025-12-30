@@ -14,6 +14,7 @@ import logging
 import re
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional, Sequence
 
@@ -24,7 +25,8 @@ from cocoro_ghost import models
 from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope, settings_session_scope, sync_unit_vector_metadata
 from cocoro_ghost.event_stream import publish as publish_event
-from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
+from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 from cocoro_ghost.partner_mood import PARTNER_AFFECT_TRAILER_MARKER, clamp01
 from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
 from cocoro_ghost.retriever import Retriever
@@ -36,12 +38,26 @@ from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_js
 
 
 logger = logging.getLogger(__name__)
+io_console_logger = logging.getLogger("cocoro_ghost.llm_io.console")
+io_file_logger = logging.getLogger("cocoro_ghost.llm_io.file")
 
 _memory_locks: dict[str, threading.Lock] = {}
 
 _REGEX_META_CHARS = re.compile(r"[.^$*+?{}\[\]\\|()]")
 _SUMMARY_REFRESH_INTERVAL_SECONDS = 6 * 3600
 _BOND_SUMMARY_SCOPE_KEY = "rolling:7d"
+
+
+@dataclass(frozen=True)
+class EmbeddingPresetSnapshot:
+    """セッション外でも使えるEmbeddingPresetのスナップショット。"""
+
+    embedding_model: str
+    embedding_api_key: str | None
+    embedding_base_url: str | None
+    embedding_dimension: int
+    similar_episodes_limit: int
+    max_inject_tokens: int
 
 
 def _matches_exclude_keyword(pattern: str, text: str) -> bool:
@@ -62,19 +78,31 @@ _META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
 _STREAM_TRAILER_MARKER = PARTNER_AFFECT_TRAILER_MARKER
 
 
-def _load_embedding_preset_by_memory_id(memory_id: str) -> models.EmbeddingPreset | None:
-    """memory_id（= embedding_presets.id）からEmbeddingPresetを取得する。
+def _load_embedding_preset_by_embedding_preset_id(embedding_preset_id: str) -> EmbeddingPresetSnapshot | None:
+    """embedding_preset_id（= embedding_presets.id）からEmbeddingPresetスナップショットを取得する。
 
-    /api/chat で memory_id を指定できる設計のため、アクティブpreset以外も参照できるようにする。
+    /api/chat で embedding_preset_id を指定できる設計のため、
+    アクティブpreset以外も参照できるようにする。
     """
-    mid = str(memory_id or "").strip()
-    if not mid:
+    pid = str(embedding_preset_id or "").strip()
+    if not pid:
         return None
     with settings_session_scope() as session:
-        return (
+        preset = (
             session.query(models.EmbeddingPreset)
-            .filter_by(id=mid, archived=False)
+            .filter_by(id=pid, archived=False)
             .first()
+        )
+        if preset is None:
+            return None
+        # セッション終了後も安全に使えるようスナップショット化する。
+        return EmbeddingPresetSnapshot(
+            embedding_model=str(preset.embedding_model),
+            embedding_api_key=preset.embedding_api_key,
+            embedding_base_url=preset.embedding_base_url,
+            embedding_dimension=int(preset.embedding_dimension),
+            similar_episodes_limit=int(preset.similar_episodes_limit),
+            max_inject_tokens=int(preset.max_inject_tokens),
         )
 
 
@@ -156,12 +184,12 @@ def _now_utc_ts() -> int:
     return int(time.time())
 
 
-def _get_memory_lock(memory_id: str) -> threading.Lock:
-    """memory_idごとの排他ロックを取得（同一DBへの同時書き込みを抑制）。"""
-    lock = _memory_locks.get(memory_id)
+def _get_memory_lock(embedding_preset_id: str) -> threading.Lock:
+    """embedding_preset_idごとの排他ロックを取得（同一DBへの同時書き込みを抑制）。"""
+    lock = _memory_locks.get(embedding_preset_id)
     if lock is None:
         lock = threading.Lock()
-        _memory_locks[memory_id] = lock
+        _memory_locks[embedding_preset_id] = lock
     return lock
 
 
@@ -173,6 +201,46 @@ def _decode_base64_image(base64_str: str) -> bytes:
 def _json_dumps(payload: Any) -> str:
     """DB保存向けにJSONを安定した形式でダンプする（日本語保持）。"""
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _get_llm_log_level_from_store(config_store: ConfigStore) -> str:
+    """ConfigStoreからLLM送受信ログレベルを取得する。"""
+    try:
+        return normalize_llm_log_level(config_store.toml_config.llm_log_level)
+    except Exception:  # noqa: BLE001
+        return "INFO"
+
+
+def _get_llm_log_console_max_chars_from_store(config_store: ConfigStore) -> int:
+    """ConfigStoreからLLM送受信ログの最大文字数（ターミナル）を取得する。"""
+    try:
+        return int(config_store.toml_config.llm_log_console_max_chars)
+    except Exception:  # noqa: BLE001
+        return 4000
+
+
+def _get_llm_log_file_max_chars_from_store(config_store: ConfigStore) -> int:
+    """ConfigStoreからLLM送受信ログの最大文字数（ファイル）を取得する。"""
+    try:
+        return int(config_store.toml_config.llm_log_file_max_chars)
+    except Exception:  # noqa: BLE001
+        return 8000
+
+
+def _get_llm_log_console_value_max_chars_from_store(config_store: ConfigStore) -> int:
+    """ConfigStoreからLLM送受信ログのValue最大文字数（ターミナル）を取得する。"""
+    try:
+        return int(config_store.toml_config.llm_log_console_value_max_chars)
+    except Exception:  # noqa: BLE001
+        return 100
+
+
+def _get_llm_log_file_value_max_chars_from_store(config_store: ConfigStore) -> int:
+    """ConfigStoreからLLM送受信ログのValue最大文字数（ファイル）を取得する。"""
+    try:
+        return int(config_store.toml_config.llm_log_file_value_max_chars)
+    except Exception:  # noqa: BLE001
+        return 6000
 
 
 class MemoryManager:
@@ -291,7 +359,7 @@ class MemoryManager:
         )
 
 
-    def _summarize_images(self, images: Sequence[Dict[str, str]] | None) -> List[str]:
+    def _summarize_images(self, images: Sequence[Dict[str, str]] | None, *, purpose: str) -> List[str]:
         if not images:
             return []
         blobs: List[bytes] = []
@@ -306,7 +374,7 @@ class MemoryManager:
         if not blobs:
             return []
         try:
-            return [s.strip() for s in self.llm_client.generate_image_summary(blobs)]
+            return [s.strip() for s in self.llm_client.generate_image_summary(blobs, purpose=purpose)]
         except Exception as exc:  # noqa: BLE001
             logger.warning("画像要約に失敗しました", exc_info=exc)
             return ["画像要約に失敗しました"]
@@ -411,50 +479,50 @@ class MemoryManager:
         """
         cfg = self.config_store.config
 
-        # 運用前のため、/api/chat は memory_id 指定を必須とする。
-        # memory_id は embedding_presets.id（UUID）を想定。
-        memory_id = (request.memory_id or "").strip()
-        if not memory_id:
+        # 運用前のため、/api/chat は embedding_preset_id 指定を必須とする。
+        # embedding_preset_id は embedding_presets.id（UUID）を想定。
+        embedding_preset_id = (request.embedding_preset_id or "").strip()
+        if not embedding_preset_id:
             yield self._sse(
                 "error",
                 {
-                    "message": "memory_id is required",
-                    "code": "missing_memory_id",
+                    "message": "embedding_preset_id is required",
+                    "code": "missing_embedding_preset_id",
                 },
             )
             return
 
-        lock = _get_memory_lock(memory_id)
+        lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
         memory_enabled = self.config_store.memory_enabled
 
-        # 指定された memory_id の embedding preset を settings.db から解決し、
+        # 指定された embedding_preset_id の embedding preset を settings.db から解決し、
         # 次元・検索上限・注入予算・embeddingモデルを per-request で適用する。
-        preset = _load_embedding_preset_by_memory_id(memory_id)
-        if preset is None:
+        preset_snapshot = _load_embedding_preset_by_embedding_preset_id(embedding_preset_id)
+        if preset_snapshot is None:
             yield self._sse(
                 "error",
                 {
-                    "message": "unknown memory_id (embedding preset not found or archived)",
-                    "code": "invalid_memory_id",
+                    "message": "unknown embedding_preset_id (embedding preset not found or archived)",
+                    "code": "invalid_embedding_preset_id",
                 },
             )
             return
 
-        embedding_dimension = int(preset.embedding_dimension)
-        similar_episodes_limit = int(preset.similar_episodes_limit)
-        max_inject_tokens = int(preset.max_inject_tokens)
+        embedding_dimension = int(preset_snapshot.embedding_dimension)
+        similar_episodes_limit = int(preset_snapshot.similar_episodes_limit)
+        max_inject_tokens = int(preset_snapshot.max_inject_tokens)
 
         # 埋め込みモデルだけを差し替えた LlmClient を作り、Retriever用に使う。
         # chat/image側は現行設定（アクティブLLMプリセット）に従う。
         embedding_llm_client = LlmClient(
             model=cfg.llm_model,
-            embedding_model=preset.embedding_model,
+            embedding_model=preset_snapshot.embedding_model,
             image_model=cfg.image_model,
             api_key=cfg.llm_api_key,
-            embedding_api_key=preset.embedding_api_key,
+            embedding_api_key=preset_snapshot.embedding_api_key,
             llm_base_url=cfg.llm_base_url,
-            embedding_base_url=preset.embedding_base_url,
+            embedding_base_url=preset_snapshot.embedding_base_url,
             image_llm_base_url=cfg.image_llm_base_url,
             image_model_api_key=cfg.image_model_api_key,
             reasoning_effort=cfg.reasoning_effort,
@@ -463,13 +531,13 @@ class MemoryManager:
             image_timeout_seconds=cfg.image_timeout_seconds,
         )
 
-        image_summaries = self._summarize_images(request.images)
+        image_summaries = self._summarize_images(request.images, purpose=LlmRequestPurpose.IMAGE_SUMMARY_CHAT)
 
         conversation: List[Dict[str, str]] = []
         memory_pack = ""
         if memory_enabled:
             try:
-                with lock, memory_session_scope(memory_id, embedding_dimension) as db:
+                with lock, memory_session_scope(embedding_preset_id, embedding_dimension) as db:
                     recent_conversation = self._load_recent_conversation(db, turns=3)
                     llm_turns_window = int(getattr(cfg, "max_turns_window", 0) or 0)
                     if llm_turns_window > 0:
@@ -513,10 +581,13 @@ class MemoryManager:
         system_prompt = "\n\n".join([p for p in parts if p])
         conversation = [*conversation, {"role": "user", "content": request.user_text}]
 
+        # LLM呼び出しの処理目的をログで区別できるようにする。
+        purpose = LlmRequestPurpose.CONVERSATION
         try:
             resp_stream = self.llm_client.generate_reply_response(
                 system_prompt=system_prompt,
                 conversation=conversation,
+                purpose=purpose,
                 stream=True,
             )
         except Exception as exc:  # noqa: BLE001
@@ -583,11 +654,63 @@ class MemoryManager:
 
         reflection_obj = _parse_internal_json_text(internal_trailer)
 
+        llm_log_level = _get_llm_log_level_from_store(self.config_store)
+        log_file_enabled = bool(self.config_store.toml_config.log_file_enabled)
+        console_max_chars = _get_llm_log_console_max_chars_from_store(self.config_store)
+        file_max_chars = _get_llm_log_file_max_chars_from_store(self.config_store)
+        console_max_value_chars = _get_llm_log_console_value_max_chars_from_store(self.config_store)
+        file_max_value_chars = _get_llm_log_file_value_max_chars_from_store(self.config_store)
+        if llm_log_level != "OFF":
+            io_console_logger.info(
+                "LLM response received %s kind=chat model=%s stream=%s reply_chars=%s trailer_chars=%s",
+                purpose,
+                cfg.llm_model,
+                True,
+                len(reply_text or ""),
+                len(internal_trailer or ""),
+            )
+            if log_file_enabled:
+                io_file_logger.info(
+                    "LLM response received %s kind=chat model=%s stream=%s reply_chars=%s trailer_chars=%s",
+                    purpose,
+                    cfg.llm_model,
+                    True,
+                    len(reply_text or ""),
+                    len(internal_trailer or ""),
+                )
+        log_llm_payload(
+            io_console_logger,
+            "LLM response (chat stream)",
+            {
+                "model": cfg.llm_model,
+                "reply_text": reply_text,
+                "internal_trailer": internal_trailer,
+                "internal_trailer_parsed": reflection_obj,
+            },
+            max_chars=console_max_chars,
+            max_value_chars=console_max_value_chars,
+            llm_log_level=llm_log_level,
+        )
+        if log_file_enabled:
+            log_llm_payload(
+                io_file_logger,
+                "LLM response (chat stream)",
+                {
+                    "model": cfg.llm_model,
+                    "reply_text": reply_text,
+                    "internal_trailer": internal_trailer,
+                    "internal_trailer_parsed": reflection_obj,
+                },
+                max_chars=file_max_chars,
+                max_value_chars=file_max_value_chars,
+                llm_log_level=llm_log_level,
+            )
+
         image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
         context_note = _json_dumps(request.client_context) if request.client_context else None
 
         try:
-            with lock, memory_session_scope(memory_id, embedding_dimension) as db:
+            with lock, memory_session_scope(embedding_preset_id, embedding_dimension) as db:
                 episode_unit_id = self._create_episode_unit(
                     db,
                     now_ts=now_ts,
@@ -621,14 +744,14 @@ class MemoryManager:
         background_tasks: Optional[BackgroundTasks] = None,
     ) -> schemas.NotificationResponse:
         """外部システムからの通知をEpisodeとして保存し、必要なジョブをenqueueする。"""
-        memory_id = self.config_store.memory_id
-        lock = _get_memory_lock(memory_id)
+        embedding_preset_id = self.config_store.embedding_preset_id
+        lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
         system_text = f"[{request.source_system}] {request.text}".strip()
         context_note = _json_dumps({"source_system": request.source_system, "text": request.text})
 
-        with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
             unit_id = self._create_episode_unit(
                 db,
                 now_ts=now_ts,
@@ -643,7 +766,7 @@ class MemoryManager:
         if background_tasks is not None:
             background_tasks.add_task(
                 self._process_notification_async,
-                memory_id=memory_id,
+                embedding_preset_id=embedding_preset_id,
                 unit_id=int(unit_id),
                 source_system=request.source_system,
                 text=request.text,
@@ -652,7 +775,7 @@ class MemoryManager:
             )
         else:
             self._process_notification_async(
-                memory_id=memory_id,
+                embedding_preset_id=embedding_preset_id,
                 unit_id=int(unit_id),
                 source_system=request.source_system,
                 text=request.text,
@@ -664,17 +787,17 @@ class MemoryManager:
     def _process_notification_async(
         self,
         *,
-        memory_id: str,
+        embedding_preset_id: str,
         unit_id: int,
         source_system: str,
         text: str,
         images: Sequence[Dict[str, str]],
         system_text: str,
     ) -> None:
-        lock = _get_memory_lock(memory_id)
+        lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
-        image_summaries = self._summarize_images(list(images))
+        image_summaries = self._summarize_images(list(images), purpose=LlmRequestPurpose.IMAGE_SUMMARY_NOTIFICATION)
         image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
 
         notification_user_text = "\n".join(
@@ -691,7 +814,7 @@ class MemoryManager:
         memory_pack = ""
         if memory_enabled:
             try:
-                with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+                with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
                     recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
                     retriever = Retriever(llm_client=self.llm_client, db=db)
                     relevant_episodes = retriever.retrieve(
@@ -735,6 +858,7 @@ class MemoryManager:
             resp = self.llm_client.generate_reply_response(
                 system_prompt=system_prompt,
                 conversation=conversation,
+                purpose=LlmRequestPurpose.NOTIFICATION,
                 stream=False,
             )
             message = (self.llm_client.response_content(resp) or "").strip()
@@ -742,7 +866,7 @@ class MemoryManager:
             logger.error("notification reply generation failed", exc_info=exc)
             message = ""
 
-        with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
             self._update_episode_unit(
                 db,
                 now_ts=now_ts,
@@ -755,7 +879,7 @@ class MemoryManager:
 
         publish_event(
             type="notification",
-            memory_id=memory_id,
+            embedding_preset_id=embedding_preset_id,
             unit_id=unit_id,
             data={"system_text": system_text, "message": message},
         )
@@ -771,11 +895,11 @@ class MemoryManager:
 
         background_tasks があれば非同期実行し、結果はevent_streamで通知する。
         """
-        memory_id = request.memory_id or self.config_store.memory_id
-        lock = _get_memory_lock(memory_id)
+        embedding_preset_id = request.embedding_preset_id or self.config_store.embedding_preset_id
+        lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
-        with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
             unit_id = self._create_episode_unit(
                 db,
                 now_ts=now_ts,
@@ -790,7 +914,7 @@ class MemoryManager:
         if background_tasks is not None:
             background_tasks.add_task(
                 self._process_meta_request_async,
-                memory_id=memory_id,
+                embedding_preset_id=embedding_preset_id,
                 unit_id=int(unit_id),
                 instruction=request.instruction,
                 payload_text=request.payload_text,
@@ -798,7 +922,7 @@ class MemoryManager:
             )
         else:
             self._process_meta_request_async(
-                memory_id=memory_id,
+                embedding_preset_id=embedding_preset_id,
                 unit_id=int(unit_id),
                 instruction=request.instruction,
                 payload_text=request.payload_text,
@@ -809,16 +933,16 @@ class MemoryManager:
     def _process_meta_request_async(
         self,
         *,
-        memory_id: str,
+        embedding_preset_id: str,
         unit_id: int,
         instruction: str,
         payload_text: str,
         images: Sequence[Dict[str, str]],
     ) -> None:
-        lock = _get_memory_lock(memory_id)
+        lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
-        image_summaries = self._summarize_images(list(images))
+        image_summaries = self._summarize_images(list(images), purpose=LlmRequestPurpose.IMAGE_SUMMARY_META_REQUEST)
         image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
 
         # instruction/payload は永続化しない（生成にのみ利用）
@@ -838,7 +962,7 @@ class MemoryManager:
         memory_pack = ""
         if memory_enabled:
             try:
-                with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+                with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
                     recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
                     retriever = Retriever(llm_client=self.llm_client, db=db)
                     relevant_episodes = retriever.retrieve(
@@ -882,6 +1006,7 @@ class MemoryManager:
             resp = self.llm_client.generate_reply_response(
                 system_prompt=system_prompt,
                 conversation=conversation,
+                purpose=LlmRequestPurpose.META_REQUEST,
                 stream=False,
             )
             message = (self.llm_client.response_content(resp) or "").strip()
@@ -889,7 +1014,7 @@ class MemoryManager:
             logger.error("meta_request document generation failed", exc_info=exc)
             message = ""
 
-        with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
             self._update_episode_unit(
                 db,
                 now_ts=now_ts,
@@ -903,7 +1028,7 @@ class MemoryManager:
 
         publish_event(
             type="meta_request",
-            memory_id=memory_id,
+            embedding_preset_id=embedding_preset_id,
             unit_id=unit_id,
             data={"message": message},
         )
@@ -911,8 +1036,8 @@ class MemoryManager:
     def handle_capture(self, request: schemas.CaptureRequest) -> schemas.CaptureResponse:
         """スクリーンショット/カメラ画像を要約してEpisodeとして保存する。"""
         cfg = self.config_store.config
-        memory_id = self.config_store.memory_id
-        lock = _get_memory_lock(memory_id)
+        embedding_preset_id = self.config_store.embedding_preset_id
+        lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
         text_to_check = request.context_text or ""
@@ -923,13 +1048,16 @@ class MemoryManager:
 
         image_bytes = _decode_base64_image(request.image_base64)
         try:
-            image_summary = self.llm_client.generate_image_summary([image_bytes])[0]
+            image_summary = self.llm_client.generate_image_summary(
+                [image_bytes],
+                purpose=LlmRequestPurpose.IMAGE_SUMMARY_CAPTURE,
+            )[0]
         except Exception as exc:  # noqa: BLE001
             logger.warning("画像要約に失敗しました", exc_info=exc)
             image_summary = "画像要約に失敗しました"
 
         source = "desktop_capture" if request.capture_type == "desktop" else "camera_capture"
-        with lock, memory_session_scope(memory_id, self.config_store.embedding_dimension) as db:
+        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
             unit_id = self._create_episode_unit(
                 db,
                 now_ts=now_ts,

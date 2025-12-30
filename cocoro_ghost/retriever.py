@@ -31,7 +31,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from cocoro_ghost.db import EPISODE_FTS_TABLE_NAME, search_similar_unit_ids
-from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.unit_enums import Sensitivity, UnitKind
 from cocoro_ghost.unit_models import PayloadEpisode, Unit
 
@@ -267,7 +267,10 @@ class Retriever:
 
         try:
             # ベクトル検索用の埋め込みを一括生成する（クエリ数ぶん）。
-            embeddings = self.llm_client.generate_embedding(all_queries)
+            embeddings = self.llm_client.generate_embedding(
+                all_queries,
+                purpose=LlmRequestPurpose.RETRIEVAL_QUERY_EMBEDDING,
+            )
         except Exception as exc:  # noqa: BLE001
             self.logger.debug("embedding failed", exc_info=exc)
             return []

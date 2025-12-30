@@ -29,10 +29,17 @@ if TYPE_CHECKING:
 class Config:
     """
     TOML起動設定（起動時のみ使用、変更不可）。
-    認証トークンとログレベルのみを保持する最小限の設定。
+    起動時に固定されるログや認証の設定を保持する。
     """
-    token: str       # API認証用トークン
-    log_level: str   # ログレベル（DEBUG, INFO, WARNING, ERROR）
+    token: str           # API認証用トークン
+    log_level: str       # ログレベル（DEBUG, INFO, WARNING, ERROR）
+    llm_log_level: str   # LLM送受信ログレベル（DEBUG, INFO, OFF）
+    log_file_enabled: bool  # ファイルログ有効/無効
+    log_file_path: str      # ファイルログの保存先パス
+    llm_log_console_max_chars: int  # LLM送受信ログの最大文字数（ターミナル）
+    llm_log_file_max_chars: int     # LLM送受信ログの最大文字数（ファイル）
+    llm_log_console_value_max_chars: int  # LLM送受信ログのValue最大文字数（ターミナル, JSON向け）
+    llm_log_file_value_max_chars: int     # LLM送受信ログのValue最大文字数（ファイル, JSON向け）
 
 
 @dataclass
@@ -66,7 +73,7 @@ class RuntimeConfig:
 
     # EmbeddingPreset由来（埋め込みベクトル設定）
     embedding_preset_name: str    # Embeddingプリセット名
-    memory_id: str                # 記憶DBのID
+    embedding_preset_id: str      # 記憶DBのID（= EmbeddingPreset.id）
     embedding_model: str          # 埋め込みモデル名
     embedding_api_key: Optional[str]    # Embedding APIキー
     embedding_base_url: Optional[str]   # Embedding APIエンドポイント
@@ -106,13 +113,13 @@ class ConfigStore:
 
     @property
     def toml_config(self) -> Config:
-        """起動時に読み込んだTOML設定（token/log_level）を返す。"""
+        """起動時に読み込んだTOML設定を返す。"""
         return self._toml
 
     @property
-    def memory_id(self) -> str:
-        """アクティブな記憶DBのID（embedding preset由来）。"""
-        return self._runtime.memory_id
+    def embedding_preset_id(self) -> str:
+        """アクティブなEmbeddingPresetのID（= 記憶DBファイルを選ぶためのID）。"""
+        return self._runtime.embedding_preset_id
 
     @property
     def embedding_dimension(self) -> int:
@@ -154,16 +161,33 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
         data = tomli.load(f)
 
     # 許可されたキーのみを受け付ける
-    allowed_keys = {"token", "log_level"}
+    allowed_keys = {
+        "token",
+        "log_level",
+        "llm_log_level",
+        "log_file_enabled",
+        "log_file_path",
+        "llm_log_console_max_chars",
+        "llm_log_file_max_chars",
+        "llm_log_console_value_max_chars",
+        "llm_log_file_value_max_chars",
+    }
     unknown_keys = sorted(set(data.keys()) - allowed_keys)
     if unknown_keys:
         keys = ", ".join(repr(k) for k in unknown_keys)
-        raise ValueError(f"unknown config key(s): {keys} (allowed: 'token', 'log_level')")
+        raise ValueError(f"unknown config key(s): {keys} (allowed: {allowed_keys})")
 
     # Configオブジェクトを構築
     config = Config(
         token=_require(data, "token"),
         log_level=_require(data, "log_level"),
+        llm_log_level=data.get("llm_log_level", "INFO"),
+        log_file_enabled=bool(data.get("log_file_enabled", False)),
+        log_file_path=str(data.get("log_file_path", "logs/cocoro_ghost.log")),
+        llm_log_console_max_chars=int(data.get("llm_log_console_max_chars", 2000)),
+        llm_log_file_max_chars=int(data.get("llm_log_file_max_chars", 8000)),
+        llm_log_console_value_max_chars=int(data.get("llm_log_console_value_max_chars", 100)),
+        llm_log_file_value_max_chars=int(data.get("llm_log_file_value_max_chars", 6000)),
     )
     return config
 
@@ -211,7 +235,7 @@ def build_runtime_config(
         image_timeout_seconds=llm_preset.image_timeout_seconds,
         # EmbeddingPreset由来
         embedding_preset_name=embedding_preset.name,
-        memory_id=str(embedding_preset.id),
+        embedding_preset_id=str(embedding_preset.id),
         embedding_model=embedding_preset.embedding_model,
         embedding_api_key=embedding_preset.embedding_api_key,
         embedding_base_url=embedding_preset.embedding_base_url,

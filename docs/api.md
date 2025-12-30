@@ -16,7 +16,7 @@
 
 ```json
 {
-  "memory_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "user_text": "string",
   "images": [
     {"type": "desktop_capture", "base64": "..."},
@@ -30,9 +30,9 @@
 }
 ```
 
-- `memory_id` は必須
-- `memory_id` は embedding_presets.id（UUID）を想定。埋め込み次元が一致しないDBは初期化に失敗するため、次元一致を前提に指定する
-- 注意: `jobs` は `memory_<memory_id>.db` に作られるが、内蔵Workerの処理対象は `active_embedding_preset_id`（アクティブな `memory_id`）のみ。非アクティブ `memory_id` のジョブは処理されない。
+- `embedding_preset_id` は必須
+- `embedding_preset_id` は embedding_presets.id（UUID）を想定。埋め込み次元が一致しないDBは初期化に失敗するため、次元一致を前提に指定する
+- 注意: `jobs` は `memory_<embedding_preset_id>.db` に作られるが、内蔵Workerの処理対象は `active_embedding_preset_id`（アクティブな `embedding_preset_id`）のみ。非アクティブ `embedding_preset_id` のジョブは処理されない。
 - `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
 - `client_context` は省略可能（指定時は `payload_episode.context_note` にJSON文字列として保存される）
 
@@ -244,20 +244,20 @@ Invoke-RestMethod -Method Post `
 以下を提供する。
 
 - **閲覧**
-  - `GET /api/memories/{memory_id}/units?kind=&state=&limit=&offset=`
-  - `GET /api/memories/{memory_id}/units/{unit_id}`
+  - `GET /api/memories/{embedding_preset_id}/units?kind=&state=&limit=&offset=`
+  - `GET /api/memories/{embedding_preset_id}/units/{unit_id}`
 - **メタ更新（版管理）**
-  - `PATCH /api/memories/{memory_id}/units/{unit_id}`（`pin/sensitivity/state/topic_tags/confidence/salience` など）
+  - `PATCH /api/memories/{embedding_preset_id}/units/{unit_id}`（`pin/sensitivity/state/topic_tags/confidence/salience` など）
 
 ### `topic_tags` の表現
 
 - `topic_tags` は **JSON array文字列**（例: `["仕事","読書"]`）
 - 保存時に正規化（NFKC + 重複除去 + ソート）して `payload_hash` を安定させる
 
-### Worker と `memory_id`
+### Worker と `embedding_preset_id`
 
-- `jobs` は `memory_<memory_id>.db` に保存されるため、Worker は **アクティブな `memory_id`（= `active_embedding_preset_id`）** を対象に処理する（内蔵Worker）。
-- persona/addon は **settings 側のプロンプトプリセット**として管理し、`memory_id`（記憶DB）とは独立する（切替は `/api/settings`）
+- `jobs` は `memory_<embedding_preset_id>.db` に保存されるため、Worker は **アクティブな `embedding_preset_id`（= `active_embedding_preset_id`）** を対象に処理する（内蔵Worker）。
+- persona/addon は **settings 側のプロンプトプリセット**として管理し、`embedding_preset_id`（記憶DB）とは独立する（切替は `/api/settings`）
 
 補足:
 - `jobs` は内部用のキューであり、外部から任意のジョブを投入する汎用APIは提供しない。
@@ -420,7 +420,7 @@ UI向けの「全設定」取得/更新。
 - `reminders` は **全置き換え**（既存は削除されIDは作り直される）
 - 各配列内で `*_preset_id` が重複している場合は `400`
 - `active_*_preset_id` は **対応する配列に含まれるID**である必要がある（未存在/アーカイブは `400`）
-- `active_embedding_preset_id` は `memory_id` 扱いで、変更時はメモリDB初期化を検証する（失敗時 `400`）
+- `active_embedding_preset_id` は記憶DB識別子（= `embedding_preset_id`）で、変更時はメモリDB初期化を検証する（失敗時 `400`）
 - `max_inject_tokens` / `similar_limit_by_kind` 等の詳細パラメータは現状API外
 
 ## `/api/capture`

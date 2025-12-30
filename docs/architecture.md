@@ -6,7 +6,7 @@
   - `/api/chat`（SSE）
   - `/api/v1/notification`
   - `/api/v1/meta_request`
-- **Memory Store（SQLite: `memory_<memory_id>.db`）**
+- **Memory Store（SQLite: `memory_<embedding_preset_id>.db`）**
   - `units` + `payload_*` による Unit化
   - 版管理（`unit_versions`）と来歴/信頼度を保持
 - **Vector Index（sqlite-vec / vec0）**
@@ -129,7 +129,7 @@ sequenceDiagram
 - **派生物はすべてUnitとして永続化**：facts/summaries/loops/entities/edges/vec_units など、後段のSchedulerが参照する「注入材料」を増やす
 - **冪等（再実行可能）を前提に設計**：同じ `unit_id` に対する同種ジョブは何度走っても整合が崩れないよう upsert + 版管理で扱う
 - **失敗はリトライ**：一時的なLLM失敗や拡張ロード失敗でも、`tries` と `run_after` を使ってバックオフし、上限回数で `failed` に落とす
-- **DB境界**：Workerは `memory_<memory_id>.db` を対象に動作し、原則「1DB=1 Workerプロセス」でジョブキューを直列に捌く
+- **DB境界**：Workerは `memory_<embedding_preset_id>.db` を対象に動作し、原則「1DB=1 Workerプロセス」でジョブキューを直列に捌く
 
 ```mermaid
 sequenceDiagram
@@ -137,7 +137,7 @@ sequenceDiagram
   participant API as FastAPI
   participant DB as Memory DB (SQLite)
   participant Q as jobs table
-  participant W as Worker (per memory_id)
+  participant W as Worker (per embedding_preset_id)
   participant LLM as LLM (JSON tasks)
   participant EMB as Embedding API
   participant VEC as vec_units (vec0)
@@ -170,7 +170,7 @@ sequenceDiagram
 
 - 設定は `settings.db`
   - token / active preset / persona・addon / 注入予算 等
-- 記憶は `memory_<memory_id>.db`
+- 記憶は `memory_<embedding_preset_id>.db`
   - `units` + `payload_*` + `entities` 等
   - `vec_units`（sqlite-vec 仮想テーブル）
 

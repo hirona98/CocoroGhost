@@ -49,7 +49,7 @@ class _MemorySessionEntry:
     embedding_dimension: int
 
 
-# 記憶DBセッションのキャッシュ（memory_id -> sessionmaker）
+# 記憶DBセッションのキャッシュ（embedding_preset_id -> sessionmaker）
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
@@ -68,9 +68,9 @@ def get_settings_db_path() -> str:
     return f"sqlite:///{get_data_dir() / 'settings.db'}"
 
 
-def get_memory_db_path(memory_id: str) -> str:
-    """記憶DBのパスを取得。memory_idごとに別ファイルとなる。"""
-    return f"sqlite:///{get_data_dir() / f'memory_{memory_id}.db'}"
+def get_memory_db_path(embedding_preset_id: str) -> str:
+    """記憶DBのパスを取得。embedding_preset_idごとに別ファイルとなる。"""
+    return f"sqlite:///{get_data_dir() / f'memory_{embedding_preset_id}.db'}"
 
 
 def _create_engine_with_vec_support(db_url: str):
@@ -321,24 +321,24 @@ def settings_session_scope() -> Iterator[Session]:
 # --- 記憶DB ---
 
 
-def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
+def init_memory_db(embedding_preset_id: str, embedding_dimension: int) -> sessionmaker:
     """
-    指定されたmemory_idの記憶DBを初期化し、sessionmakerを返す。
+    指定されたembedding_preset_idの記憶DBを初期化し、sessionmakerを返す。
     既に初期化済みの場合はキャッシュから返す。
     """
     # キャッシュ確認
-    entry = _memory_sessions.get(memory_id)
+    entry = _memory_sessions.get(embedding_preset_id)
     if entry is not None:
         # 次元数の一致確認
         if int(entry.embedding_dimension) != int(embedding_dimension):
             raise RuntimeError(
-                f"memory_id={memory_id} は既に embedding_dimension={entry.embedding_dimension} で初期化済みです。"
+                f"embedding_preset_id={embedding_preset_id} は既に embedding_dimension={entry.embedding_dimension} で初期化済みです。"
                 f"要求された embedding_dimension={embedding_dimension} とは一致しません。"
-                "次元数を変える場合は別memory_idを使うかDBを再構築してください。"
+                "次元数を変える場合は別embedding_preset_idを使うかDBを再構築してください。"
             )
         return entry.session_factory
 
-    db_url = get_memory_db_path(memory_id)
+    db_url = get_memory_db_path(embedding_preset_id)
     engine = _create_engine_with_vec_support(db_url)
 
     # パフォーマンス設定を適用
@@ -357,14 +357,17 @@ def init_memory_db(memory_id: str, embedding_dimension: int) -> sessionmaker:
 
     # セッションファクトリをキャッシュ
     session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
-    _memory_sessions[memory_id] = _MemorySessionEntry(session_factory=session_factory, embedding_dimension=int(embedding_dimension))
+    _memory_sessions[embedding_preset_id] = _MemorySessionEntry(
+        session_factory=session_factory,
+        embedding_dimension=int(embedding_dimension),
+    )
     logger.info(f"記憶DB初期化完了: {db_url}")
     return session_factory
 
 
-def get_memory_session(memory_id: str, embedding_dimension: int) -> Session:
-    """指定されたmemory_idの記憶DBセッションを取得する。"""
-    session_factory = init_memory_db(memory_id, embedding_dimension)
+def get_memory_session(embedding_preset_id: str, embedding_dimension: int) -> Session:
+    """指定されたembedding_preset_idの記憶DBセッションを取得する。"""
+    session_factory = init_memory_db(embedding_preset_id, embedding_dimension)
     return session_factory()
 
 
@@ -399,12 +402,12 @@ def upsert_edges(session: Session, *, rows: list[dict]) -> None:
 
 
 @contextlib.contextmanager
-def memory_session_scope(memory_id: str, embedding_dimension: int) -> Iterator[Session]:
+def memory_session_scope(embedding_preset_id: str, embedding_dimension: int) -> Iterator[Session]:
     """
     記憶DBのセッションスコープ（with文用）。
     正常終了時はコミット、例外時はロールバックする。
     """
-    session = get_memory_session(memory_id, embedding_dimension)
+    session = get_memory_session(embedding_preset_id, embedding_dimension)
     try:
         yield session
         session.commit()

@@ -1,10 +1,10 @@
 # 初期化
 
-DBは `settings.db` と `memory_<memory_id>.db` を新規作成し、スキーマを初期化する。
+DBは `settings.db` と `memory_<embedding_preset_id>.db` を新規作成し、スキーマを初期化する。
 
 ## 手順
 
-1. `settings.db` と `memory_<memory_id>.db` を初期化する
+1. `settings.db` と `memory_<embedding_preset_id>.db` を初期化する
    - DDL: `docs/db_schema.md`
    - vec0: `docs/sqlite_vec.md`
 2. 必要なら最低限の seed を入れる

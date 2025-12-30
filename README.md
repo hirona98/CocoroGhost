@@ -61,7 +61,7 @@ setup.bat
    - `token`: API認証トークン
    - `log_level`: ログレベル
 
-   ※ DBファイルは `data/settings.db` と `data/memory_<memory_id>.db` に自動作成されます
+   ※ DBファイルは `data/settings.db` と `data/memory_<embedding_preset_id>.db` に自動作成されます
 
 ## 起動方法
 

@@ -159,9 +159,9 @@ class EmbeddingPreset(Base):
 
     __tablename__ = "embedding_presets"
 
-    # 主キー（UUID文字列、これがmemory_idとしても使用される）
+    # 主キー（UUID文字列、これが embedding_preset_id としても使用される）
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
-    # name は表示名（memory_id ではない）
+    # name は表示名（embedding_preset_id ではない）
     name: Mapped[str] = mapped_column(String, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 

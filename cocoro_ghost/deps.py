@@ -94,11 +94,11 @@ def get_memory_db_dep() -> Iterator[Session]:
     """
     記憶DBセッションをFastAPI依存性注入で取得する。
 
-    現在のmemory_idに対応するDBファイルへのセッションを提供する。
+    現在のembedding_preset_idに対応するDBファイルへのセッションを提供する。
     リクエスト終了時に自動でセッションがクローズされる。
     """
     config_store = get_config_store()
-    session = get_memory_session(config_store.memory_id, config_store.embedding_dimension)
+    session = get_memory_session(config_store.embedding_preset_id, config_store.embedding_dimension)
     try:
         yield session
     finally:

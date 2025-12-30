@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 from cocoro_ghost import prompts
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.db import get_memory_session, sync_unit_vector_metadata, upsert_edges, upsert_unit_vector
-from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.unit_enums import (
     EntityRole,
     JobStatus,
@@ -256,7 +256,7 @@ def process_job(
 
 def process_due_jobs(
     *,
-    memory_id: str,
+    embedding_preset_id: str,
     embedding_dimension: int,
     llm_client: LlmClient,
     max_jobs: int = 10,
@@ -267,7 +267,7 @@ def process_due_jobs(
     processed = 0
     for _ in range(max_jobs):
         now_ts = _now_utc_ts()
-        session = get_memory_session(memory_id, embedding_dimension)
+        session = get_memory_session(embedding_preset_id, embedding_dimension)
         try:
             job_id = claim_next_job(session, now_ts=now_ts)
         finally:
@@ -277,7 +277,7 @@ def process_due_jobs(
                 time.sleep(sleep_when_empty)
             break
 
-        session = get_memory_session(memory_id, embedding_dimension)
+        session = get_memory_session(embedding_preset_id, embedding_dimension)
         try:
             ok = process_job(session=session, llm_client=llm_client, job_id=job_id, now_ts=now_ts, max_tries=max_tries)
             if ok:
@@ -290,7 +290,7 @@ def process_due_jobs(
 
 def run_forever(
     *,
-    memory_id: str,
+    embedding_preset_id: str,
     embedding_dimension: int,
     llm_client: LlmClient,
     poll_interval_seconds: float = 1.0,
@@ -299,7 +299,7 @@ def run_forever(
     stop_event: threading.Event | None = None,
 ) -> None:
     """Workerのメインループ。ジョブ処理と定期enqueueを同一プロセス内で回す。"""
-    logger.info("worker start", extra={"memory_id": memory_id})
+    logger.info("worker start", extra={"embedding_preset_id": embedding_preset_id})
     last_periodic_at: float = 0.0
     while True:
         if stop_event is not None and stop_event.is_set():
@@ -309,22 +309,22 @@ def run_forever(
             now_s = time.time()
             if (now_s - last_periodic_at) >= float(periodic_interval_seconds):
                 last_periodic_at = now_s
-                session = get_memory_session(memory_id, embedding_dimension)
+                session = get_memory_session(embedding_preset_id, embedding_dimension)
                 try:
                     from cocoro_ghost.periodic import enqueue_periodic_jobs
 
                     stats = enqueue_periodic_jobs(session, now_ts=int(now_s))
                     session.commit()
                     if any(int(v) > 0 for v in stats.values()):
-                        logger.info("periodic enqueued", extra={"memory_id": memory_id, **stats})
+                        logger.info("periodic enqueued", extra={"embedding_preset_id": embedding_preset_id, **stats})
                 except Exception:  # noqa: BLE001
                     session.rollback()
-                    logger.exception("periodic enqueue failed", extra={"memory_id": memory_id})
+                    logger.exception("periodic enqueue failed", extra={"embedding_preset_id": embedding_preset_id})
                 finally:
                     session.close()
 
         processed = process_due_jobs(
-            memory_id=memory_id,
+            embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             llm_client=llm_client,
             max_jobs=max_jobs_per_tick,
@@ -364,7 +364,11 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     context_text = "\n".join(ctx_parts)
 
     system_prompt = _wrap_prompt_with_persona(prompts.get_reflection_prompt())
-    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=context_text)
+    resp = llm_client.generate_json_response(
+        system_prompt=system_prompt,
+        user_text=context_text,
+        purpose=LlmRequestPurpose.INTERNAL_THOUGHT,
+    )
     raw_text = llm_client.response_content(resp)
     raw_json = raw_text
     data = json.loads(raw_text)
@@ -572,7 +576,11 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
     if not text_in.strip():
         return
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_entity_extract_prompt(), user_text=text_in)
+    resp = llm_client.generate_json_response(
+        system_prompt=prompts.get_entity_extract_prompt(),
+        user_text=text_in,
+        purpose=LlmRequestPurpose.ENTITY_EXTRACT,
+    )
     data = json.loads(llm_client.response_content(resp))
     entities = data.get("entities") or []
     if not isinstance(entities, list):
@@ -775,7 +783,7 @@ def _handle_upsert_embeddings(
     else:
         return
 
-    embedding = llm_client.generate_embedding([text_to_embed])[0]
+    embedding = llm_client.generate_embedding([text_to_embed], purpose=LlmRequestPurpose.UNIT_EMBEDDING)[0]
     upsert_unit_vector(
         session,
         unit_id=unit_id,
@@ -869,7 +877,11 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
     if not text_in.strip():
         return
 
-    resp = llm_client.generate_json_response(system_prompt=prompts.get_fact_extract_prompt(), user_text=text_in)
+    resp = llm_client.generate_json_response(
+        system_prompt=prompts.get_fact_extract_prompt(),
+        user_text=text_in,
+        purpose=LlmRequestPurpose.FACT_EXTRACT,
+    )
     data = json.loads(llm_client.response_content(resp))
     facts = data.get("facts") or []
     if not isinstance(facts, list):
@@ -1078,7 +1090,11 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
         return
 
     system_prompt = _wrap_prompt_with_persona(prompts.get_loop_extract_prompt())
-    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=text_in)
+    resp = llm_client.generate_json_response(
+        system_prompt=system_prompt,
+        user_text=text_in,
+        purpose=LlmRequestPurpose.LOOP_EXTRACT,
+    )
     data = json.loads(llm_client.response_content(resp))
     loops = data.get("loops") or []
     if not isinstance(loops, list):
@@ -1419,7 +1435,11 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
     input_text = f"scope_key: {scope_key}\nrange_start: {range_start}\nrange_end: {range_end}\n\n[EPISODES]\n" + "\n".join(lines)
 
     system_prompt = _wrap_prompt_with_persona(prompts.get_bond_summary_prompt())
-    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
+    resp = llm_client.generate_json_response(
+        system_prompt=system_prompt,
+        user_text=input_text,
+        purpose=LlmRequestPurpose.BOND_SUMMARY,
+    )
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
@@ -1713,7 +1733,11 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
     )
 
     system_prompt = _wrap_prompt_with_persona(prompts.get_person_summary_prompt())
-    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
+    resp = llm_client.generate_json_response(
+        system_prompt=system_prompt,
+        user_text=input_text,
+        purpose=LlmRequestPurpose.PERSON_SUMMARY,
+    )
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
@@ -1828,7 +1852,11 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
     )
 
     system_prompt = _wrap_prompt_with_persona(prompts.get_topic_summary_prompt())
-    resp = llm_client.generate_json_response(system_prompt=system_prompt, user_text=input_text)
+    resp = llm_client.generate_json_response(
+        system_prompt=system_prompt,
+        user_text=input_text,
+        purpose=LlmRequestPurpose.TOPIC_SUMMARY,
+    )
     data = json.loads(llm_client.response_content(resp))
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
