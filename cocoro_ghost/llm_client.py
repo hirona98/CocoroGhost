@@ -364,6 +364,19 @@ class LlmClient:
         except Exception:  # noqa: BLE001
             return (self._DEBUG_PREVIEW_CHARS, self._DEBUG_PREVIEW_CHARS)
 
+    def _get_llm_log_value_max_chars(self) -> tuple[int, int]:
+        """設定から LLM送受信ログのValue最大文字数を取得する。"""
+        try:
+            from cocoro_ghost.config import get_config_store
+
+            toml_config = get_config_store().toml_config
+            return (
+                int(toml_config.llm_log_console_value_max_chars),
+                int(toml_config.llm_log_file_value_max_chars),
+            )
+        except Exception:  # noqa: BLE001
+            return (500, 2000)
+
     def _is_log_file_enabled(self) -> bool:
         """ファイルログの有効/無効を取得する。"""
         try:
@@ -394,11 +407,13 @@ class LlmClient:
     ) -> None:
         """LLM送受信のpayloadログを出力する。"""
         console_max_chars, file_max_chars = self._get_llm_log_max_chars()
+        console_max_value_chars, file_max_value_chars = self._get_llm_log_value_max_chars()
         log_llm_payload(
             self.io_console_logger,
             label,
             payload,
             max_chars=console_max_chars,
+            max_value_chars=console_max_value_chars,
             llm_log_level=llm_log_level,
         )
         if self._is_log_file_enabled():
@@ -407,6 +422,7 @@ class LlmClient:
                 label,
                 payload,
                 max_chars=file_max_chars,
+                max_value_chars=file_max_value_chars,
                 llm_log_level=llm_log_level,
             )
 

@@ -7,7 +7,6 @@ LLMクライアント実装から独立しており、任意の箇所に差し�
 主な機能:
 - JSONっぽい文字列の補正とパース（フェンス除去、末尾カンマ修正等）
 - 秘匿情報（api_key、token等）のマスク
-- 環境変数 COCORO_LLM_IO_DEBUG=1 で強制出力
 
 使い方例:
     from cocoro_ghost.llm_debug import log_llm_payload
@@ -18,7 +17,6 @@ LLMクライアント実装から独立しており、任意の箇所に差し�
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import asdict, is_dataclass
 from typing import Any, Iterable
@@ -36,12 +34,6 @@ _DEFAULT_REDACT_KEYS = {
     "authorization",
     "x-api-key",
 }
-
-
-def _truthy_env(name: str) -> bool:
-    """環境変数の真偽値っぽい値を解釈する。"""
-    v = (os.getenv(name) or "").strip().lower()
-    return v in {"1", "true", "yes", "on"}
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
@@ -250,11 +242,13 @@ def format_debug_payload(
     payload: Any,
     *,
     max_chars: int = 8000,
+    max_value_chars: int = 0,
     try_parse_json_string: bool = True,
 ) -> str:
     """payloadをデバッグ向けに文字列化する（JSONなら見やすく整形）。"""
 
     serializable = redact_secrets(payload)
+    serializable = limit_json_value_lengths(serializable, max_value_chars=max_value_chars)
 
     # dict/list ならそのまま pretty JSON
     if isinstance(serializable, (dict, list)):
@@ -272,12 +266,14 @@ def format_debug_payload(
             try:
                 parsed = json.loads(candidate)
                 masked = redact_secrets(parsed)
+                masked = limit_json_value_lengths(masked, max_value_chars=max_value_chars)
                 return truncate_for_log(json.dumps(masked, ensure_ascii=False, indent=2, sort_keys=True), max_chars)
             except Exception:
                 repaired = _repair_json_like_text(candidate)
                 try:
                     parsed = json.loads(repaired)
                     masked = redact_secrets(parsed)
+                    masked = limit_json_value_lengths(masked, max_value_chars=max_value_chars)
                     return truncate_for_log(json.dumps(masked, ensure_ascii=False, indent=2, sort_keys=True), max_chars)
                 except Exception:
                     pass
@@ -292,13 +288,42 @@ def truncate_for_log(text: str, limit: int) -> str:
         return ""
     if len(text) <= limit:
         return text
-    return text[:limit] + "...(truncated)"
+    return text[:limit] + "...(Cut)"
+
+
+def limit_json_value_lengths(obj: Any, *, max_value_chars: int, max_depth: int = 12) -> Any:
+    """JSON相当のオブジェクトで、各Value（文字列）の最大長を制限する。"""
+    if max_value_chars <= 0:
+        return obj
+
+    def _walk(v: Any, depth: int) -> Any:
+        if depth <= 0:
+            return "..."
+
+        if isinstance(v, dict):
+            out: dict[str, Any] = {}
+            for k, vv in v.items():
+                out[str(k)] = _walk(vv, depth - 1)
+            return out
+
+        if isinstance(v, list):
+            return [_walk(x, depth - 1) for x in v]
+
+        if isinstance(v, tuple):
+            return tuple(_walk(x, depth - 1) for x in v)
+
+        if isinstance(v, str):
+            if len(v) <= max_value_chars:
+                return v
+            return v[:max_value_chars] + f"...(Cut, {len(v)})"
+
+        return v
+
+    return _walk(obj, max_depth)
 
 
 def normalize_llm_log_level(llm_log_level: str | None) -> str:
     """LLM送受信ログレベルを正規化する。"""
-    if _truthy_env("COCORO_LLM_IO_DEBUG"):
-        return "DEBUG"
     level = (llm_log_level or "INFO").upper()
     if level not in {"DEBUG", "INFO", "OFF"}:
         return "INFO"
@@ -312,12 +337,12 @@ def log_llm_payload(
     *,
     llm_log_level: str = "INFO",
     max_chars: int = 8000,
+    max_value_chars: int = 0,
 ) -> None:
     """LLMの送受信payloadをログ出力する。
 
     - DEBUG: 内容を整形して出力
     - INFO/OFF: 内容は出さない
-    - COCORO_LLM_IO_DEBUG=1 なら強制的にDEBUGで出力
 
     loggerは標準loggingのLogger互換（debug/info等）を想定。
     """
@@ -329,9 +354,9 @@ def log_llm_payload(
     if level != "DEBUG":
         return
 
-    text = format_debug_payload(payload, max_chars=max_chars)
+    text = format_debug_payload(payload, max_chars=max_chars, max_value_chars=max_value_chars)
     try:
-        logger.info("%s: %s", label, text)
+        logger.debug("%s: %s", label, text)
     except Exception:
         # 最後の砦
         print(f"{label}: {text}")
