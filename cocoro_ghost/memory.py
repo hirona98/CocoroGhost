@@ -609,6 +609,7 @@ class MemoryManager:
 
         reply_text = ""
         internal_trailer = ""
+        finish_reason = ""
         try:
             marker = _STREAM_TRAILER_MARKER
             keep = max(8, len(marker) - 1)
@@ -622,8 +623,14 @@ class MemoryManager:
                     return
                 visible_parts.append(text_)
 
-            for delta in self.llm_client.stream_delta_chunks(resp_stream):
-                buf += delta
+            for chunk in self.llm_client.stream_delta_chunks(resp_stream):
+                # finish_reason は最終チャンクで届くことがあるため、見つけたら保持する。
+                if chunk.finish_reason:
+                    finish_reason = chunk.finish_reason
+                # テキスト差分がないチャンクはスキップする。
+                if not chunk.text:
+                    continue
+                buf += chunk.text
                 while True:
                     if not in_trailer:
                         idx = buf.find(marker)
@@ -674,19 +681,21 @@ class MemoryManager:
         file_max_value_chars = _get_llm_log_file_value_max_chars_from_store(self.config_store)
         if llm_log_level != "OFF":
             io_console_logger.info(
-                "LLM response received %s kind=chat model=%s stream=%s reply_chars=%s trailer_chars=%s",
+                "LLM response received %s kind=chat model=%s stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
                 purpose,
                 cfg.llm_model,
                 True,
+                finish_reason,
                 len(reply_text or ""),
                 len(internal_trailer or ""),
             )
             if log_file_enabled:
                 io_file_logger.info(
-                    "LLM response received %s kind=chat model=%s stream=%s reply_chars=%s trailer_chars=%s",
+                    "LLM response received %s kind=chat model=%s stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
                     purpose,
                     cfg.llm_model,
                     True,
+                    finish_reason,
                     len(reply_text or ""),
                     len(internal_trailer or ""),
                 )
@@ -695,6 +704,7 @@ class MemoryManager:
             "LLM response (chat stream)",
             {
                 "model": cfg.llm_model,
+                "finish_reason": finish_reason,
                 "reply_text": reply_text,
                 "internal_trailer": internal_trailer,
                 "internal_trailer_parsed": reflection_obj,
@@ -709,6 +719,7 @@ class MemoryManager:
                 "LLM response (chat stream)",
                 {
                     "model": cfg.llm_model,
+                    "finish_reason": finish_reason,
                     "reply_text": reply_text,
                     "internal_trailer": internal_trailer,
                     "internal_trailer_parsed": reflection_obj,

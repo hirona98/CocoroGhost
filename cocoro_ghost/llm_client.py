@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, Generator, Iterable, List, Optional
 
 import litellm
@@ -279,6 +280,14 @@ def _finish_reason(resp: Any) -> str:
         return str(finish_reason or "")
     except Exception:  # noqa: BLE001
         return ""
+
+
+@dataclass(frozen=True)
+class StreamDelta:
+    """ストリーミングの差分テキストとfinish_reasonをまとめたデータ。"""
+
+    text: str
+    finish_reason: Optional[str] = None
 
 
 class LlmRequestPurpose:
@@ -962,17 +971,18 @@ class LlmClient:
                 self.logger.debug("response_json repaired: %s", truncate_for_log(repaired, self._DEBUG_PREVIEW_CHARS))
                 raise
 
-    def stream_delta_chunks(self, resp_stream: Iterable[Any]) -> Generator[str, None, None]:
+    def stream_delta_chunks(self, resp_stream: Iterable[Any]) -> Generator[StreamDelta, None, None]:
         """
         LiteLLMのstreaming Responseからdelta.contentを逐次抽出する。
-        ストリーミング応答をリアルタイムで処理するジェネレータ。
+        ストリーミング応答をリアルタイムで処理し、finish_reasonも返すジェネレータ。
         """
-        parts: List[str] = []
+        # ストリームの各チャンクから差分テキストとfinish_reasonを拾う。
         for chunk in resp_stream:
-            delta = _delta_content(chunk)
-            if delta:
-                parts.append(delta)
-                yield delta
+            delta_text = _delta_content(chunk)
+            finish_reason = _finish_reason(chunk) or None
+            if not delta_text and not finish_reason:
+                continue
+            yield StreamDelta(text=delta_text, finish_reason=finish_reason)
 
     def generate_reflection(
         self,
