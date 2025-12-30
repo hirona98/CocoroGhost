@@ -18,16 +18,7 @@ from typing import Any, Dict, Generator, Iterable, List, Optional
 
 import litellm
 
-from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
-
-
-def _truncate_for_log(text: str, limit: int) -> str:
-    """ログ出力用にテキストを切り詰める。"""
-    if limit <= 0:
-        return ""
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "...(truncated)"
+from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level, truncate_for_log
 
 
 def _response_to_dict(resp: Any) -> Dict[str, Any]:
@@ -861,9 +852,9 @@ class LlmClient:
             except json.JSONDecodeError as exc:
                 # 失敗時はデバッグ用に内容を残す
                 self.logger.debug("response_json parse failed: %s", exc)
-                self.logger.debug("response_json content (raw): %s", _truncate_for_log(content, self._DEBUG_PREVIEW_CHARS))
-                self.logger.debug("response_json candidate: %s", _truncate_for_log(candidate, self._DEBUG_PREVIEW_CHARS))
-                self.logger.debug("response_json repaired: %s", _truncate_for_log(repaired, self._DEBUG_PREVIEW_CHARS))
+                self.logger.debug("response_json content (raw): %s", truncate_for_log(content, self._DEBUG_PREVIEW_CHARS))
+                self.logger.debug("response_json candidate: %s", truncate_for_log(candidate, self._DEBUG_PREVIEW_CHARS))
+                self.logger.debug("response_json repaired: %s", truncate_for_log(repaired, self._DEBUG_PREVIEW_CHARS))
                 raise
 
     def stream_delta_chunks(self, resp_stream: Iterable[Any]) -> Generator[str, None, None]:

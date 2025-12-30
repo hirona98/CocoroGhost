@@ -44,15 +44,6 @@ def _truthy_env(name: str) -> bool:
     return v in {"1", "true", "yes", "on"}
 
 
-def _truncate_for_log(text: str, limit: int) -> str:
-    """ログ向けに文字数を制限する。"""
-    if limit <= 0:
-        return ""
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "...(truncated)"
-
-
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
 
 
@@ -269,10 +260,10 @@ def format_debug_payload(
     if isinstance(serializable, (dict, list)):
         try:
             s = json.dumps(serializable, ensure_ascii=False, indent=2, sort_keys=True)
-            return _truncate_for_log(s, max_chars)
+            return truncate_for_log(s, max_chars)
         except Exception:
             # フォールバック
-            return _truncate_for_log(str(serializable), max_chars)
+            return truncate_for_log(str(serializable), max_chars)
 
     # 文字列（JSONっぽいなら抽出→補正→パース→pretty）
     if isinstance(serializable, str) and try_parse_json_string:
@@ -281,18 +272,27 @@ def format_debug_payload(
             try:
                 parsed = json.loads(candidate)
                 masked = redact_secrets(parsed)
-                return _truncate_for_log(json.dumps(masked, ensure_ascii=False, indent=2, sort_keys=True), max_chars)
+                return truncate_for_log(json.dumps(masked, ensure_ascii=False, indent=2, sort_keys=True), max_chars)
             except Exception:
                 repaired = _repair_json_like_text(candidate)
                 try:
                     parsed = json.loads(repaired)
                     masked = redact_secrets(parsed)
-                    return _truncate_for_log(json.dumps(masked, ensure_ascii=False, indent=2, sort_keys=True), max_chars)
+                    return truncate_for_log(json.dumps(masked, ensure_ascii=False, indent=2, sort_keys=True), max_chars)
                 except Exception:
                     pass
-        return _truncate_for_log(serializable, max_chars)
+        return truncate_for_log(serializable, max_chars)
 
-    return _truncate_for_log(str(serializable), max_chars)
+    return truncate_for_log(str(serializable), max_chars)
+
+
+def truncate_for_log(text: str, limit: int) -> str:
+    """ログ出力用にテキストを切り詰める。"""
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...(truncated)"
 
 
 def normalize_llm_log_level(llm_log_level: str | None) -> str:

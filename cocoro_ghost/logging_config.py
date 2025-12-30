@@ -9,6 +9,7 @@ uvicornアクセスログからの特定パス除外などを行う。
 from __future__ import annotations
 
 import logging
+import pathlib
 
 
 class _UvicornAccessPathFilter(logging.Filter):
@@ -47,15 +48,27 @@ def suppress_uvicorn_access_log_paths(*paths: str) -> None:
     logger.addFilter(_UvicornAccessPathFilter(set(paths)))
 
 
-def setup_logging(level: str = "INFO") -> None:
+def setup_logging(
+    level: str = "INFO",
+    *,
+    log_file_enabled: bool = False,
+    log_file_path: str = "logs/cocoro_ghost.log",
+) -> None:
     """
     ロギングを初期化する。
 
     標準loggingのフォーマット設定と、外部ライブラリのログレベル調整を行う。
     """
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_file_enabled:
+        log_path = pathlib.Path(log_file_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_path, encoding="utf-8"))
+
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+        handlers=handlers or None,
     )
     # 外部ライブラリの冗長なログを抑制
     for name, lib_level in [
