@@ -136,6 +136,29 @@ def _parse_optional_epoch_seconds(value: Any) -> Optional[int]:
     return None
 
 
+def _parse_llm_json_dict(*, llm_client: LlmClient, resp: Any) -> Optional[Dict[str, Any]]:
+    """LLMのJSON応答をdictへ正規化して返す。"""
+    # JSON本文を抽出してパースする。
+    try:
+        parsed = llm_client.response_json(resp)
+    except Exception as exc:  # noqa: BLE001
+        # パース失敗時は警告して打ち切る。
+        logger.warning("LLM JSON parse failed: %s", exc)
+        return None
+
+    # dictならそのまま返す。
+    if isinstance(parsed, dict):
+        return parsed
+
+    # 1要素のlistにdictが入っているならunwrapする。
+    if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
+        return parsed[0]
+
+    # 想定外の型は警告してNone。
+    logger.warning("LLM JSON root is not object: type=%s", type(parsed).__name__)
+    return None
+
+
 def _backoff_seconds(tries: int) -> int:
     """失敗回数に応じた簡易バックオフ秒を返す（最大1時間）。"""
     return min(3600, max(5, 2 ** max(0, tries)))
@@ -593,7 +616,10 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
         user_text=text_in,
         purpose=LlmRequestPurpose.ENTITY_EXTRACT,
     )
-    data = json.loads(llm_client.response_content(resp))
+    # LLMのJSON応答をdictに正規化する。
+    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
+    if data is None:
+        return
     entities = data.get("entities") or []
     if not isinstance(entities, list):
         return
@@ -938,7 +964,10 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
         user_text=text_in,
         purpose=LlmRequestPurpose.FACT_EXTRACT,
     )
-    data = json.loads(llm_client.response_content(resp))
+    # LLMのJSON応答をdictに正規化する。
+    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
+    if data is None:
+        return
     facts = data.get("facts") or []
     if not isinstance(facts, list):
         return
@@ -1151,7 +1180,10 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
         user_text=text_in,
         purpose=LlmRequestPurpose.LOOP_EXTRACT,
     )
-    data = json.loads(llm_client.response_content(resp))
+    # LLMのJSON応答をdictに正規化する。
+    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
+    if data is None:
+        return
     loops = data.get("loops") or []
     if not isinstance(loops, list):
         return
@@ -1502,7 +1534,10 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
         user_text=input_text,
         purpose=LlmRequestPurpose.BOND_SUMMARY,
     )
-    data = json.loads(llm_client.response_content(resp))
+    # LLMのJSON応答をdictに正規化する。
+    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
+    if data is None:
+        return
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
         return
@@ -1800,7 +1835,10 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
         user_text=input_text,
         purpose=LlmRequestPurpose.PERSON_SUMMARY,
     )
-    data = json.loads(llm_client.response_content(resp))
+    # LLMのJSON応答をdictに正規化する。
+    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
+    if data is None:
+        return
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
         return
@@ -1915,7 +1953,10 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
         user_text=input_text,
         purpose=LlmRequestPurpose.TOPIC_SUMMARY,
     )
-    data = json.loads(llm_client.response_content(resp))
+    # LLMのJSON応答をdictに正規化する。
+    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
+    if data is None:
+        return
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
         return
