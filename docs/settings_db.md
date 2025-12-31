@@ -98,6 +98,10 @@ persona（人格コア）プロンプトの切替単位。
 - `persona_text`（TEXT）
 - `created_at` / `updated_at`（DATETIME）
 
+運用メモ:
+- `persona_text` は「キャラクター/口調/価値観（ロールプレイ）」の設定として扱う。
+- 安全方針や拒否条件などの“土台”は、必要になってからテスト運用で調整する前提でもよい。
+
 ### `addon_presets`
 
 addon（personaへの任意追加オプション）プロンプトの切替単位。

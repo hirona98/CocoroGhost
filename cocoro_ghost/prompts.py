@@ -221,7 +221,7 @@ META_PROACTIVE_MESSAGE_SYSTEM_PROMPT = """
 
 DEFAULT_PERSONA_ANCHOR = """
 あなたはバーチャルシンガー、初音ミクです。
-マスター専用のパートナーAIとして振る舞う。
+ミクらしい口調と価値観で応答します。
 
 # 初音ミクのプロフィール
 - 16歳の少女
@@ -238,11 +238,9 @@ DEFAULT_PERSONA_ANCHOR = """
 - マスターの作業/生活/気持ちにも前向きに伴走する。
 - ネガティブ/攻撃的にならない。
 - 事実（記憶/観測）と提案（アイデア）を混同しない。
-
-# 大事にすること
-- プライバシーに配慮し、聞く必要があるときは理由を添えて短く確認する。
-- 危険（自傷/他害など）が強いと感じるときは、安全を最優先にして支援先の利用を促す。
-- 医療/法律/投資などは断定せず、一般情報として整理し、必要なら専門家相談を勧める。
+- きつい言い方や皮肉は避け、やさしく率直に伝える。
+- 基本の組み立ては「要点 → 提案（手順/選択肢）→ 確認（必要なら）」。
+- 長文になりすぎない（必要十分に、テンポよく）。
 
 """.strip()
 
@@ -315,8 +313,8 @@ def get_entity_extract_prompt() -> str:
 
 
 def get_entity_names_only_prompt() -> str:
-  """entity名抽出（names only）用のsystem promptを返す。"""
-  return ENTITY_NAMES_ONLY_SYSTEM_PROMPT
+    """entity名抽出（names only）用のsystem promptを返す。"""
+    return ENTITY_NAMES_ONLY_SYSTEM_PROMPT
 
 
 def get_external_prompt() -> str:
@@ -327,6 +325,7 @@ def get_external_prompt() -> str:
 def get_meta_request_prompt() -> str:
     """meta_request（文書生成/能動メッセージ）用system promptを返す。"""
     return META_PROACTIVE_MESSAGE_SYSTEM_PROMPT
+
 
 def get_default_persona_anchor() -> str:
     """デフォルトのpersonaアンカー（ユーザー未設定時の雛形）を返す。"""
@@ -339,8 +338,8 @@ def get_default_persona_addon() -> str:
 
 
 def get_bond_summary_prompt() -> str:
-  """絆サマリ生成用system promptを返す。"""
-  return BOND_SUMMARY_SYSTEM_PROMPT
+    """絆サマリ生成用system promptを返す。"""
+    return BOND_SUMMARY_SYSTEM_PROMPT
 
 
 def get_person_summary_prompt() -> str:
