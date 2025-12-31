@@ -148,14 +148,16 @@ def _resolve_entity_ids_from_text(
     text: str,
     *,
     llm_client: "LlmClient | None" = None,
-    fallback: bool = False,
 ) -> set[int]:
     t = (text or "").strip()
     if not t:
         return set()
 
-    ids: set[int] = set()
-    normalized_text = _normalize_text(t)
+    # LLMが無ければエンティティ抽出は行えない。
+    if not llm_client:
+        return set()
+
+    # 既存エンティティの alias/name を正規化して保持する。
     alias_rows: list[tuple[int, str]] = []
 
     for entity_id, alias in db.query(EntityAlias.entity_id, EntityAlias.alias).all():
@@ -163,27 +165,20 @@ def _resolve_entity_ids_from_text(
         if not a:
             continue
         alias_rows.append((int(entity_id), a))
-        if a in normalized_text:
-            ids.add(int(entity_id))
 
     for entity_id, name in db.query(Entity.id, Entity.name).all():
         n = _normalize_text(name)
         if not n:
             continue
         alias_rows.append((int(entity_id), n))
-        if n in normalized_text:
-            ids.add(int(entity_id))
 
-    # 一致が無く、LLMが使えるときだけフォールバックする。
-    if ids or not (fallback and llm_client):
-        return ids
-    # 短文はノイズになりやすいのでLLMフォールバックを避ける。
-    if len(normalized_text) < 8:
-        return ids
-
+    # LLMで候補名だけを抽出する。
     candidate_names = _extract_entity_names_with_llm(llm_client, t)
     if not candidate_names:
-        return ids
+        return set()
+
+    # 抽出名と alias/name を突合して entity_id を解決する。
+    ids: set[int] = set()
     for name in candidate_names:
         nn = _normalize_text(name)
         if not nn:
@@ -247,7 +242,6 @@ def build_memory_pack(
     relevant_episodes: Sequence["RankedEpisode"],
     injection_strategy: str | None = None,
     llm_client: "LlmClient | None" = None,
-    entity_fallback: bool = False,
 ) -> str:
     """
     MemoryPackを組み立てる。
@@ -310,7 +304,6 @@ def build_memory_pack(
         db,
         entity_text,
         llm_client=llm_client,
-        fallback=entity_fallback,
     )
     user_entity_id = _get_user_entity_id(db)
     fact_entity_ids = set(matched_entity_ids)

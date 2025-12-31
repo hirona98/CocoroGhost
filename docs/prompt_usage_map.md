@@ -84,15 +84,15 @@ flowchart TD
 - `client_context`: `active_app` / `window_title` / `locale` など（任意）
 - `relevant_episodes`: Retriever が返した関連エピソード（rank済み + reason付き）
 - `max_inject_tokens`: 注入予算（内部では `max_chars = max_inject_tokens * 4` に近似）
-- `llm_client` + `entity_fallback`: Entity文字列一致で取れない場合のLLMフォールバック用（任意）
+- `llm_client`: Entity名抽出（LLM）に使用
 
 ### 生成手順（概略）
 
 ```mermaid
 flowchart TD
   IN["inputs: user_text / image_summaries / client_context / relevant_episodes"] --> CAPDB["load capsule_json (latest, not expired)"]
-  IN --> ENT["resolve entities from text\n(alias/name substring match)"]
-  ENT -->|no match & fallback| ENTFB["LLM fallback: ENTITY_NAMES_ONLY_SYSTEM_PROMPT\n(names only)"]
+  IN --> ENT["resolve entities with LLM\n(names only)"]
+  ENT --> ENTFB["ENTITY_NAMES_ONLY_SYSTEM_PROMPT\n(names only)"]
   ENT --> FACTS["select stable facts\n(pinned OR related entities OR subject is null)"]
   ENT --> LOOPS["select open loops\n(related entities first; then global)"]
   ENT --> SUM["select summaries\nbond weekly + person/topic by roles"]
@@ -150,7 +150,7 @@ flowchart TD
 
 補足:
 - `build_memory_pack()` は一旦 `Sensitivity.SECRET` までを注入対象として扱います（`sensitivity_max=SECRET`）。
-- Entity の LLM フォールバックは「一致が0件」かつ「短文（正規化後8文字未満）ではない」ときだけ実行します（ノイズ回避）。
+- Entity 名抽出は常に LLM（names only）で実行し、抽出名を alias/name に突合して解決します。
 
 ## 3) 同期フロー（chat）：MemoryPack の位置づけ
 
@@ -275,6 +275,6 @@ flowchart LR
 - Person summary: `person_summary_refresh` は注入用の `summary_text` に加えて、`favorability_score`（パートナーAI→人物の好感度 0..1）を `summary_json` に保存する。Schedulerは現状 `summary_text` を注入するため、好感度は `summary_text` 先頭に1行で含める運用（`cocoro_ghost/worker.py::_handle_person_summary_refresh`）。
 - 画像要約（vision）: `images[].base64` を画像として渡し、「短い日本語で要約」したテキストを得る（`cocoro_ghost/llm_client.py::LlmClient.generate_image_summary`）。chat/notification/meta_request/capture の `payload_episode.image_summary` に保存される。
 
-## 6) 例外：Scheduler内での Entity 抽出（LLMフォールバック）
+## 6) Scheduler内での Entity 抽出（LLM）
 
-MemoryPack の fact/summaries を「今の話題（entity）に寄せる」ため、文字列一致で entity が取れないときだけ、MemoryPack Builderが `ENTITY_NAMES_ONLY_SYSTEM_PROMPT` を使って **候補名だけ** 抽出するフォールバックがあります（`cocoro_ghost/memory_pack_builder.py::_extract_entity_names_with_llm`）。
+MemoryPack の fact/summaries を「今の話題（entity）に寄せる」ため、MemoryPack Builderが `ENTITY_NAMES_ONLY_SYSTEM_PROMPT` を使って **候補名だけ** 抽出します（`cocoro_ghost/memory_pack_builder.py::_extract_entity_names_with_llm`）。

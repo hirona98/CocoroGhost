@@ -161,7 +161,7 @@ create index if not exists idx_edges_dst on edges(dst_entity_id);
 #### 使い方（Entity解決）
 
 - `entities` は「人物/トピックなどの正規エンティティ」。
-- `entity_aliases` は表記揺れ・別名・略称などを追加するテーブル（Schedulerの文字列一致に使う）。
+- `entity_aliases` は表記揺れ・別名・略称などを追加するテーブル（Schedulerの LLM抽出名との突合に使う）。
 - `unit_entities` は Episode/Fact/Summary 等の Unit に「どのEntityが出たか」を紐付ける（検索・サマリ更新・関係推定に使う）。
 - `edges` は Entity間の軽量な関係グラフ（名寄せ/関係推定の材料）。
 

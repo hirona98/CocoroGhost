@@ -56,9 +56,9 @@ Partner: 「...」
    - 固定クエリ → Hybrid Search（Vector + BM25）→ ヒューリスティック Rerank（`docs/retrieval.md`）
    - relevant episodes（最大5件）を高速に取得する
 3. **Entity解決**
-   - 文字列から alias 参照（`entities` + `entity_aliases`）
-   - 足りなければLLM抽出（Workerでも可、同期が重い場合は後回し）
-   - Current: MemoryPack Builderは alias/name の文字列一致 + 一致が無い場合のみLLMフォールバック
+   - LLMで名前候補のみ抽出（`ENTITY_NAMES_ONLY_SYSTEM_PROMPT`）
+   - 抽出名を alias/name と突合して entity_id を解決
+   - Current: MemoryPack Builderは LLM抽出のみ（文字列一致の直接判定は行わない）
 4. **Facts優先取得**
    - 関連entityのfactを信頼度・鮮度・pinでスコアリング
 5. **Summaries取得**

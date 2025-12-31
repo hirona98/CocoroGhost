@@ -648,7 +648,6 @@ class MemoryManager:
                         relevant_episodes=relevant_episodes,
                         injection_strategy=retriever.last_injection_strategy,
                         llm_client=self.llm_client,
-                        entity_fallback=True,
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.error("MemoryPack生成に失敗しました", exc_info=exc)
@@ -955,7 +954,6 @@ class MemoryManager:
                         relevant_episodes=relevant_episodes,
                         injection_strategy=retriever.last_injection_strategy,
                         llm_client=self.llm_client,
-                        entity_fallback=True,
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.error("MemoryPack生成に失敗しました(notification)", exc_info=exc)
@@ -1107,7 +1105,6 @@ class MemoryManager:
                         relevant_episodes=relevant_episodes,
                         injection_strategy=retriever.last_injection_strategy,
                         llm_client=self.llm_client,
-                        entity_fallback=True,
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.error("MemoryPack生成に失敗しました(meta_request)", exc_info=exc)
