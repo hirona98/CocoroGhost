@@ -28,6 +28,9 @@
 <<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>
 - ...
 
+<<<COCORO_GHOST_SECTION:RELATIONSHIP_STATE>>>
+- ...
+
 <<<COCORO_GHOST_SECTION:OPEN_LOOPS>>>
 - ...
 
@@ -51,6 +54,10 @@ Partner: 「...」
    - 週次の bond summary（`scope_key=rolling:7d`。無ければ最新）を1本入れる。
    - 今回の entity に応じて、人物サマリ（`scope_label=person`）やトピックサマリ（`scope_label=topic`）を追加する。
    - 目的は「関係性や背景の継続性」を保ち、会話の一貫性を補強すること。
+- `<<<COCORO_GHOST_SECTION:RELATIONSHIP_STATE>>>` は「関係性の数値サマリ」を注入するセクション。
+   - 今回のユーザー発話から LLM で抽出された entity のうち、`roles=person` の人物のみを対象とする。
+   - 各人物の最新の person summary JSON から `favorability_score` を取り出し、最大5件まで注入する。
+   - 目的は「人物ごとの好感度などの数値状態」を会話に反映すること。
 
 ## 取得手順（規定）
 
@@ -92,8 +99,9 @@ Partner: 「...」
 
 - `max_inject_tokens` を上限としてセクションごとに「予算枠」を持つ
 - 予算超過時は、以下の優先順位で落とす
-  1. EPISODE_EVIDENCE（まず削る）
-  2. OPEN_LOOPS（件数削減）
+ 1. EPISODE_EVIDENCE（まず削る）
+ 2. OPEN_LOOPS（件数削減）
   3. SHARED_NARRATIVE（段落短縮）
-  4. STABLE_FACTS（低スコアを削る）
-  5. PERSONA/ADDON は system 側固定のため budget 対象外
+  4. RELATIONSHIP_STATE（丸ごと削除）
+  5. STABLE_FACTS（低スコアを削る）
+  6. PERSONA/ADDON は system 側固定のため budget 対象外

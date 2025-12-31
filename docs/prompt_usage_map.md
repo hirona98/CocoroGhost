@@ -100,7 +100,7 @@ flowchart TD
   REL["relevant_episodes"] --> DEC{"inject episode evidence\nhigh one or more\nor medium two or more"}
   DEC -->|yes| EVI["build episode evidence\n(strategy: quote/summarize/full)"]
   DEC -->|no| ASM
-  CAPDB --> ASM["assemble sections\nCAPSULE/FACTS/SUMMARY/LOOPS/EVIDENCE"]
+  CAPDB --> ASM["assemble sections\nCAPSULE/FACTS/SUMMARY/RELATIONSHIP/LOOPS/EVIDENCE"]
   FACTS --> ASM
   LOOPS --> ASM
   SUM --> ASM
@@ -130,6 +130,11 @@ flowchart TD
   - 今回マッチした entity に応じて追加:
     - roles に `person` を含む: `scope_label=person, scope_key=person:<entity_id>`
     - roles に `topic` を含む: `scope_label=topic, scope_key=topic:<normalized-or-name-lower>`
+- `<<<COCORO_GHOST_SECTION:RELATIONSHIP_STATE>>>`:
+  - 会話に出た人物の「数値的な関係性状態」を注入するセクション
+  - 対象人物: 今回の LLM 名抽出でマッチした entity のうち `roles=person` のみ
+  - 参照元: 各人物の最新 `person` summary JSON の `favorability_score`
+  - 形式: `- person_id=... name=... favorability_score=...`（最大5件）
 - `<<<COCORO_GHOST_SECTION:OPEN_LOOPS>>>`:
   - 対象: `Unit(kind=LOOP, status=open)`（最大8件）
   - entity が取れている場合: まず entity 関連（`unit_entities` 経由）を優先し、足りなければ全体から補充
@@ -146,8 +151,9 @@ flowchart TD
 1. `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` を丸ごと落とす
 2. `<<<COCORO_GHOST_SECTION:OPEN_LOOPS>>>` を末尾から減らす
 3. `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>` を1件に絞り、まだ超過なら本文を短縮
-4. `<<<COCORO_GHOST_SECTION:STABLE_FACTS>>>` を末尾から減らす
-5. `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` を末尾から減らす（最後の手段）
+4. `<<<COCORO_GHOST_SECTION:RELATIONSHIP_STATE>>>` を丸ごと落とす
+5. `<<<COCORO_GHOST_SECTION:STABLE_FACTS>>>` を末尾から減らす
+6. `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` を末尾から減らす（最後の手段）
 
 補足:
 - `build_memory_pack()` は一旦 `Sensitivity.SECRET` までを注入対象として扱います（`sensitivity_max=SECRET`）。

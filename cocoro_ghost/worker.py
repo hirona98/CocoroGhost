@@ -1787,10 +1787,6 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
             if why:
                 favorability_reasons.append({"unit_id": unit_id, "why": why})
 
-    # 注入テキストは Scheduler が summary_text しか使わないため、好感度も summary_text 先頭に出す。
-    if "AI好感度:" not in summary_text:
-        summary_text = f"AI好感度: {favorability_score:.2f}（0..1。0.5=中立）\n{summary_text}"
-
     key_events_raw = data.get("key_events") or []
     key_events: list[dict[str, Any]] = []
     if isinstance(key_events_raw, list):

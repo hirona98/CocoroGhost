@@ -402,6 +402,7 @@ def build_memory_pack(
 
     rolling_scope_key = "rolling:7d"
     summary_texts: List[str] = []
+    relationship_lines: List[str] = []
     scopes = ["bond", "person", "topic"]
 
     def add_summary(scope_label: str, scope_key: Optional[str], *, fallback_latest: bool = False) -> None:
@@ -437,15 +438,63 @@ def build_memory_pack(
         add_summary("bond", rolling_scope_key, fallback_latest=True)
 
     if matched_entity_ids and ("person" in scopes or "topic" in scopes):
+        # LLMで抽出されたentity名に一致するものだけを扱う（余計な人物は入れない）。
         ents = db.query(Entity).filter(Entity.id.in_(sorted(matched_entity_ids))).all()
+        person_ids: list[int] = []
+        entity_name_by_id: dict[int, str] = {}
         for e in ents:
+            entity_name_by_id[int(e.id)] = e.name
             roles = _entity_roles(e)
+            # 会話で触れている人物だけ person summary を注入する。
             if "person" in scopes and "person" in roles:
+                person_ids.append(int(e.id))
                 add_summary("person", f"person:{int(e.id)}")
+            # topic summary も同様に会話に出た話題のみ注入する。
             if "topic" in scopes and "topic" in roles:
                 key = (e.normalized or e.name or "").strip().lower()
                 if key:
                     add_summary("topic", f"topic:{key}")
+
+        # 関係性は person summary JSON の favorability_score をそのまま注入する。
+        if person_ids:
+            rows = (
+                db.query(Unit, PayloadSummary)
+                .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
+                .filter(
+                    Unit.kind == int(UnitKind.SUMMARY),
+                    Unit.state.in_([0, 1, 2]),
+                    Unit.sensitivity <= sensitivity_max,
+                    PayloadSummary.scope_label == "person",
+                    PayloadSummary.scope_key.in_([f"person:{pid}" for pid in person_ids]),
+                )
+                .order_by(Unit.created_at.desc(), Unit.id.desc())
+                .all()
+            )
+            latest_by_person: dict[int, PayloadSummary] = {}
+            for _u, ps in rows:
+                scope_key = str(ps.scope_key or "")
+                if not scope_key.startswith("person:"):
+                    continue
+                try:
+                    pid = int(scope_key.split("person:", 1)[1])
+                except Exception:  # noqa: BLE001
+                    continue
+                if pid in latest_by_person:
+                    continue
+                latest_by_person[pid] = ps
+            # 直近の更新順で最大5件まで注入する。
+            for pid, ps in list(latest_by_person.items())[:5]:
+                try:
+                    summary_obj = json.loads(ps.summary_json or "{}")
+                except Exception:  # noqa: BLE001
+                    continue
+                score_raw = summary_obj.get("favorability_score")
+                try:
+                    score = float(score_raw)
+                except Exception:  # noqa: BLE001
+                    continue
+                name = entity_name_by_id.get(pid, f"person:{pid}")
+                relationship_lines.append(f"- person_id={pid} name={name} favorability_score={score:.2f}")
 
     loop_lines: List[str] = []
     loop_base = (
@@ -649,6 +698,7 @@ def build_memory_pack(
         capsule_lines: Sequence[str],
         facts: Sequence[str],
         summaries: Sequence[str],
+        relationship: Sequence[str],
         loops: Sequence[str],
         evidence: Sequence[str],
     ) -> str:
@@ -657,6 +707,7 @@ def build_memory_pack(
         parts.append(format_memory_pack_section("CONTEXT_CAPSULE", capsule_lines))
         parts.append(format_memory_pack_section("STABLE_FACTS", facts))
         parts.append(format_memory_pack_section("SHARED_NARRATIVE", summaries))
+        parts.append(format_memory_pack_section("RELATIONSHIP_STATE", relationship))
         parts.append(format_memory_pack_section("OPEN_LOOPS", loops))
         parts.append(format_memory_pack_section("EPISODE_EVIDENCE", evidence))
         return "".join(parts)
@@ -668,6 +719,7 @@ def build_memory_pack(
 
     facts = list(fact_lines)
     summaries = list(summary_texts)
+    relationship = list(relationship_lines)
 
     # 怒りが強いときは「関係性サマリ（大好き等）」が口調を上書きしやすい。
     # ここでは短期状態（partner_mood_state）を優先し、SharedNarrativeを注入しない。
@@ -675,31 +727,60 @@ def build_memory_pack(
         if isinstance(partner_mood_state, dict):
             if str(partner_mood_state.get("label") or "") == "anger" and float(partner_mood_state.get("intensity") or 0.0) >= 0.6:
                 summaries = []
+                relationship = []
     except Exception:  # noqa: BLE001
         pass
     loops = list(loop_lines)
     evidence = list(evidence_lines)
 
-    pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
+    pack = assemble(
+        capsule_lines=capsule_lines,
+        facts=facts,
+        summaries=summaries,
+        relationship=relationship,
+        loops=loops,
+        evidence=evidence,
+    )
     if len(pack) <= max_chars:
         return pack
 
     # budget超過時は優先順に落とす（仕様: docs/memory_pack_builder.md）
     evidence = []
-    pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
+    pack = assemble(
+        capsule_lines=capsule_lines,
+        facts=facts,
+        summaries=summaries,
+        relationship=relationship,
+        loops=loops,
+        evidence=evidence,
+    )
     if len(pack) <= max_chars:
         return pack
 
     while loops and len(pack) > max_chars:
         loops = loops[:-1]
-        pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
+        pack = assemble(
+            capsule_lines=capsule_lines,
+            facts=facts,
+            summaries=summaries,
+            relationship=relationship,
+            loops=loops,
+            evidence=evidence,
+        )
     if len(pack) <= max_chars:
         return pack
 
     if summaries:
         # まず数を絞る（bondを優先）
         summaries = summaries[:1]
-        pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
+        pack = assemble(
+            capsule_lines=capsule_lines,
+            facts=facts,
+            summaries=summaries,
+            relationship=relationship,
+            loops=loops,
+            evidence=evidence,
+        )
         if len(pack) > max_chars:
             # 次に本文を短縮
             s0 = summaries[0]
@@ -707,20 +788,53 @@ def build_memory_pack(
             if len(s0) > budget:
                 summaries = [s0[: budget].rstrip() + "…"]
                 pack = assemble(
-                    capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence
+                    capsule_lines=capsule_lines,
+                    facts=facts,
+                    summaries=summaries,
+                    relationship=relationship,
+                    loops=loops,
+                    evidence=evidence,
                 )
+    if len(pack) <= max_chars:
+        return pack
+
+    # RelationshipState を落としても足りない場合は他の要素を削る。
+    if relationship:
+        relationship = []
+        pack = assemble(
+            capsule_lines=capsule_lines,
+            facts=facts,
+            summaries=summaries,
+            relationship=relationship,
+            loops=loops,
+            evidence=evidence,
+        )
     if len(pack) <= max_chars:
         return pack
 
     while facts and len(pack) > max_chars:
         facts = facts[:-1]
-        pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
+        pack = assemble(
+            capsule_lines=capsule_lines,
+            facts=facts,
+            summaries=summaries,
+            relationship=relationship,
+            loops=loops,
+            evidence=evidence,
+        )
     if len(pack) <= max_chars:
         return pack
 
     while capsule_lines and len(pack) > max_chars:
         capsule_lines = capsule_lines[:-1]
-        pack = assemble(capsule_lines=capsule_lines, facts=facts, summaries=summaries, loops=loops, evidence=evidence)
+        pack = assemble(
+            capsule_lines=capsule_lines,
+            facts=facts,
+            summaries=summaries,
+            relationship=relationship,
+            loops=loops,
+            evidence=evidence,
+        )
     if len(pack) <= max_chars:
         return pack
 
