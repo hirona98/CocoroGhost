@@ -10,7 +10,7 @@
 |---|---|---|---|---|
 | `REFLECTION_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | エピソードから内的メモ（感情/話題/重要度）をJSON抽出 | `cocoro_ghost/worker.py::_handle_reflect_episode` | 非同期（Worker Job） |
 | `ENTITY_EXTRACT_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 固有名と関係（任意）をJSON抽出 | `cocoro_ghost/worker.py::_handle_extract_entities` | 非同期（Worker Job） |
-| `ENTITY_NAMES_ONLY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | MemoryPack補助: entity名だけをJSON抽出（names only） | `cocoro_ghost/memory_pack_builder.py::_extract_entity_names_with_llm` | 同期（MemoryPack補助） |
+| `ENTITY_NAMES_ONLY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | MemoryPack補助: entity名だけをJSON抽出（names only） | `cocoro_ghost/memory.py`（前処理: `extract_entity_names_with_llm`） | 同期（MemoryPack補助） |
 | `FACT_EXTRACT_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 長期保持すべき安定知識（facts）をJSON抽出 | `cocoro_ghost/worker.py::_handle_extract_facts` | 非同期（Worker Job） |
 | `LOOP_EXTRACT_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 未完了事項（open loops）をJSON抽出 | `cocoro_ghost/worker.py::_handle_extract_loops` | 非同期（Worker Job） |
 | `PERSON_SUMMARY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 人物の会話注入用サマリをJSON生成 | `cocoro_ghost/worker.py::_handle_person_summary_refresh` | 非同期（Worker Job） |
@@ -78,29 +78,29 @@ flowchart TD
 
 ### 入力
 
-- `persona_text` / `addon_text`: settings の現在値（未設定なら空）
 - `user_text`: 今回のユーザー発話
 - `image_summaries`: 今回の画像要約（vision の結果）
 - `client_context`: `active_app` / `window_title` / `locale` など（任意）
 - `relevant_episodes`: Retriever が返した関連エピソード（rank済み + reason付き）
+- `matched_entity_ids`: LLMの names only 抽出＋alias突合で解決した entity_id 群
 - `max_inject_tokens`: 注入予算（内部では `max_chars = max_inject_tokens * 4` に近似）
-- `llm_client`: Entity名抽出（LLM）に使用
 
 ### 生成手順（概略）
 
 ```mermaid
 flowchart TD
-  IN["inputs: user_text / image_summaries / client_context / relevant_episodes"] --> CAPDB["load capsule_json (latest, not expired)"]
-  IN --> ENT["resolve entities with LLM\n(names only)"]
+  IN["inputs: user_text / image_summaries / client_context"] --> ENT["resolve entities with LLM\n(names only)"]
   ENT --> ENTFB["ENTITY_NAMES_ONLY_SYSTEM_PROMPT\n(names only)"]
+  IN --> RET["Retriever\n(vector + BM25)"]
+  RET --> REL["relevant_episodes"]
   ENT --> FACTS["select stable facts\n(pinned OR related entities OR subject is null)"]
   ENT --> LOOPS["select open loops\n(related entities first; then global)"]
   ENT --> SUM["select summaries\nbond weekly + person/topic by roles"]
   IN --> CC["build context capsule\n(now_local + client_context + image_summaries)"]
-  REL["relevant_episodes"] --> DEC{"inject episode evidence\nhigh one or more\nor medium two or more"}
+  REL --> DEC{"inject episode evidence\nhigh one or more\nor medium two or more"}
   DEC -->|yes| EVI["build episode evidence\n(strategy: quote/summarize/full)"]
   DEC -->|no| ASM
-  CAPDB --> ASM["assemble sections\nCAPSULE/FACTS/SUMMARY/RELATIONSHIP/LOOPS/EVIDENCE"]
+  CAPDB["load capsule_json (latest, not expired)"] --> ASM["assemble sections\nCAPSULE/FACTS/SUMMARY/RELATIONSHIP/LOOPS/EVIDENCE"]
   FACTS --> ASM
   LOOPS --> ASM
   SUM --> ASM
@@ -285,4 +285,4 @@ flowchart LR
 
 ## 6) Scheduler内での Entity 抽出（LLM）
 
-MemoryPack の fact/summaries を「今の話題（entity）に寄せる」ため、MemoryPack Builderが `ENTITY_NAMES_ONLY_SYSTEM_PROMPT` を使って **候補名だけ** 抽出します（`cocoro_ghost/memory_pack_builder.py::_extract_entity_names_with_llm`）。
+MemoryPack の fact/summaries を「今の話題（entity）に寄せる」ため、前処理で `ENTITY_NAMES_ONLY_SYSTEM_PROMPT` を使って **候補名だけ** 抽出し、build_memory_pack に `matched_entity_ids` を渡します（実装: `cocoro_ghost/memory.py`）。

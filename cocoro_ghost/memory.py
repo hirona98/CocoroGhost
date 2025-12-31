@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,7 +31,13 @@ from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 from cocoro_ghost.partner_mood import PARTNER_AFFECT_TRAILER_MARKER, clamp01
 from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
 from cocoro_ghost.retriever import Retriever
-from cocoro_ghost.memory_pack_builder import build_memory_pack, format_memory_pack_section
+from cocoro_ghost.memory_pack_builder import (
+    build_memory_pack,
+    collect_entity_alias_rows,
+    extract_entity_names_with_llm,
+    format_memory_pack_section,
+    match_entity_ids,
+)
 from cocoro_ghost.unit_enums import JobStatus, Sensitivity, UnitKind, UnitState
 from cocoro_ghost.unit_models import Job, PayloadEpisode, PayloadSummary, Unit
 from cocoro_ghost.versioning import record_unit_version
@@ -625,32 +632,45 @@ class MemoryManager:
 
         image_summaries = self._summarize_images(request.images, purpose=LlmRequestPurpose.IMAGE_SUMMARY_CHAT)
 
+        # entity抽出の入力はユーザー発話＋画像要約に限定する。
+        entity_text = "\n".join(filter(None, [request.user_text, *(image_summaries or [])])).strip()
+
         conversation: List[Dict[str, str]] = []
         memory_pack = ""
         if memory_enabled:
             try:
-                with lock, memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-                    recent_conversation = self._load_recent_conversation(db, turns=3)
-                    llm_turns_window = int(getattr(cfg, "max_turns_window", 0) or 0)
-                    if llm_turns_window > 0:
-                        conversation = self._load_recent_conversation(db, turns=llm_turns_window)
-                    retriever = Retriever(llm_client=embedding_llm_client, db=db)
-                    relevant_episodes = retriever.retrieve(
-                        request.user_text,
-                        recent_conversation,
-                        max_results=int(similar_episodes_limit),
-                    )
-                    memory_pack = build_memory_pack(
-                        db=db,
-                        user_text=request.user_text,
-                        image_summaries=image_summaries,
-                        client_context=request.client_context,
-                        now_ts=now_ts,
-                        max_inject_tokens=int(max_inject_tokens),
-                        relevant_episodes=relevant_episodes,
-                        injection_strategy=retriever.last_injection_strategy,
-                        llm_client=self.llm_client,
-                    )
+                # entity名抽出（LLM）を先に走らせ、Retriever検索と並列化する。
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    entity_future = None
+                    if entity_text:
+                        entity_future = executor.submit(extract_entity_names_with_llm, self.llm_client, entity_text)
+                    # DBアクセスはロック内でまとめて行う。
+                    with lock, memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                        recent_conversation = self._load_recent_conversation(db, turns=3)
+                        llm_turns_window = int(getattr(cfg, "max_turns_window", 0) or 0)
+                        if llm_turns_window > 0:
+                            conversation = self._load_recent_conversation(db, turns=llm_turns_window)
+                        retriever = Retriever(llm_client=embedding_llm_client, db=db)
+                        relevant_episodes = retriever.retrieve(
+                            request.user_text,
+                            recent_conversation,
+                            max_results=int(similar_episodes_limit),
+                        )
+                        # entity名の突合はDB内のalias/name一覧で行う。
+                        alias_rows = collect_entity_alias_rows(db)
+                        candidate_names = entity_future.result() if entity_future else []
+                        matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
+                        memory_pack = build_memory_pack(
+                            db=db,
+                            user_text=request.user_text,
+                            image_summaries=image_summaries,
+                            client_context=request.client_context,
+                            now_ts=now_ts,
+                            max_inject_tokens=int(max_inject_tokens),
+                            relevant_episodes=relevant_episodes,
+                            matched_entity_ids=matched_entity_ids,
+                            injection_strategy=retriever.last_injection_strategy,
+                        )
             except Exception as exc:  # noqa: BLE001
                 logger.error("MemoryPack生成に失敗しました", exc_info=exc)
                 _log_client_timing(request_id=request_id, event="クライアント要求エラー", start_perf=start_perf)
@@ -931,28 +951,41 @@ class MemoryManager:
         cfg = self.config_store.config
         memory_enabled = self.config_store.memory_enabled
 
+        # entity抽出の入力は通知文＋画像要約に限定する。
+        entity_text = "\n".join(filter(None, [notification_user_text, *(image_summaries or [])])).strip()
+
         memory_pack = ""
         if memory_enabled:
             try:
-                with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-                    recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
-                    retriever = Retriever(llm_client=self.llm_client, db=db)
-                    relevant_episodes = retriever.retrieve(
-                        notification_user_text,
-                        recent_conversation,
-                        max_results=int(cfg.similar_episodes_limit or 5),
-                    )
-                    memory_pack = build_memory_pack(
-                        db=db,
-                        user_text=notification_user_text,
-                        image_summaries=image_summaries,
-                        client_context=None,
-                        now_ts=now_ts,
-                        max_inject_tokens=int(cfg.max_inject_tokens),
-                        relevant_episodes=relevant_episodes,
-                        injection_strategy=retriever.last_injection_strategy,
-                        llm_client=self.llm_client,
-                    )
+                # entity名抽出（LLM）を先に走らせ、Retriever検索と並列化する。
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    entity_future = None
+                    if entity_text:
+                        entity_future = executor.submit(extract_entity_names_with_llm, self.llm_client, entity_text)
+                    # DBアクセスはロック内でまとめて行う。
+                    with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
+                        recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
+                        retriever = Retriever(llm_client=self.llm_client, db=db)
+                        relevant_episodes = retriever.retrieve(
+                            notification_user_text,
+                            recent_conversation,
+                            max_results=int(cfg.similar_episodes_limit or 5),
+                        )
+                        # entity名の突合はDB内のalias/name一覧で行う。
+                        alias_rows = collect_entity_alias_rows(db)
+                        candidate_names = entity_future.result() if entity_future else []
+                        matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
+                        memory_pack = build_memory_pack(
+                            db=db,
+                            user_text=notification_user_text,
+                            image_summaries=image_summaries,
+                            client_context=None,
+                            now_ts=now_ts,
+                            max_inject_tokens=int(cfg.max_inject_tokens),
+                            relevant_episodes=relevant_episodes,
+                            matched_entity_ids=matched_entity_ids,
+                            injection_strategy=retriever.last_injection_strategy,
+                        )
             except Exception as exc:  # noqa: BLE001
                 logger.error("MemoryPack生成に失敗しました(notification)", exc_info=exc)
                 memory_pack = ""
@@ -1082,28 +1115,41 @@ class MemoryManager:
         cfg = self.config_store.config
         memory_enabled = self.config_store.memory_enabled
 
+        # entity抽出の入力はinstruction/payload＋画像要約に限定する。
+        entity_text = "\n".join(filter(None, [meta_user_text, *(image_summaries or [])])).strip()
+
         memory_pack = ""
         if memory_enabled:
             try:
-                with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-                    recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
-                    retriever = Retriever(llm_client=self.llm_client, db=db)
-                    relevant_episodes = retriever.retrieve(
-                        meta_user_text,
-                        recent_conversation,
-                        max_results=int(cfg.similar_episodes_limit or 5),
-                    )
-                    memory_pack = build_memory_pack(
-                        db=db,
-                        user_text=meta_user_text,
-                        image_summaries=image_summaries,
-                        client_context=None,
-                        now_ts=now_ts,
-                        max_inject_tokens=int(cfg.max_inject_tokens),
-                        relevant_episodes=relevant_episodes,
-                        injection_strategy=retriever.last_injection_strategy,
-                        llm_client=self.llm_client,
-                    )
+                # entity名抽出（LLM）を先に走らせ、Retriever検索と並列化する。
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    entity_future = None
+                    if entity_text:
+                        entity_future = executor.submit(extract_entity_names_with_llm, self.llm_client, entity_text)
+                    # DBアクセスはロック内でまとめて行う。
+                    with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
+                        recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
+                        retriever = Retriever(llm_client=self.llm_client, db=db)
+                        relevant_episodes = retriever.retrieve(
+                            meta_user_text,
+                            recent_conversation,
+                            max_results=int(cfg.similar_episodes_limit or 5),
+                        )
+                        # entity名の突合はDB内のalias/name一覧で行う。
+                        alias_rows = collect_entity_alias_rows(db)
+                        candidate_names = entity_future.result() if entity_future else []
+                        matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
+                        memory_pack = build_memory_pack(
+                            db=db,
+                            user_text=meta_user_text,
+                            image_summaries=image_summaries,
+                            client_context=None,
+                            now_ts=now_ts,
+                            max_inject_tokens=int(cfg.max_inject_tokens),
+                            relevant_episodes=relevant_episodes,
+                            matched_entity_ids=matched_entity_ids,
+                            injection_strategy=retriever.last_injection_strategy,
+                        )
             except Exception as exc:  # noqa: BLE001
                 logger.error("MemoryPack生成に失敗しました(meta_request)", exc_info=exc)
                 memory_pack = ""

@@ -9,9 +9,11 @@
 ## 入力
 
 - `user_text`
-- `embedding_preset_id`（対象の記憶DB）
-- `now_utc`（epoch sec。MemoryPack の `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` に `now_local` として注入される。`now_local` はサーバのローカル時刻）
+- `image_summaries`（任意）
 - `client_context`（任意）
+- `relevant_episodes`（Retrieverの検索結果）
+- `matched_entity_ids`（LLMのnames only抽出＋alias突合で解決したentity_id群）
+- `now_utc`（epoch sec。MemoryPack の `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` に `now_local` として注入される。`now_local` はサーバのローカル時刻）
 - `max_inject_tokens`（プリセット）
 
 ## 出力：MemoryPack（注入テキスト）
@@ -67,10 +69,10 @@ Partner: 「...」
 2. **Contextual Memory Retrieval（Retriever・LLMレス）**
    - 固定クエリ → Hybrid Search（Vector + BM25）→ ヒューリスティック Rerank（`docs/retrieval.md`）
    - relevant episodes（最大5件）を高速に取得する
-3. **Entity解決**
+3. **Entity解決（前処理）**
    - LLMで名前候補のみ抽出（`ENTITY_NAMES_ONLY_SYSTEM_PROMPT`）
    - 抽出名を alias/name と突合して entity_id を解決
-   - Current: MemoryPack Builderは LLM抽出のみ（文字列一致の直接判定は行わない）
+   - `build_memory_pack()` には解決済みの `matched_entity_ids` を渡す
 4. **Facts優先取得**
    - 関連entityのfactを信頼度・鮮度・pinでスコアリング
 5. **Summaries取得**

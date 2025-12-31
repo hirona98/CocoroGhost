@@ -163,7 +163,12 @@ def _fact_score(now: int, unit: Unit) -> float:
     return 0.45 * float(unit.confidence or 0.0) + 0.25 * float(unit.salience or 0.0) + 0.20 * rec + 0.10 * pin_boost
 
 
-def _extract_entity_names_with_llm(llm_client: "LlmClient", text: str) -> list[str]:
+def extract_entity_names_with_llm(llm_client: "LlmClient", text: str) -> list[str]:
+    """
+    LLMでentity名だけを抽出する（names only）。
+
+    失敗時は空配列を返す。
+    """
     from cocoro_ghost import prompts
     from cocoro_ghost.llm_client import LlmRequestPurpose
 
@@ -190,50 +195,40 @@ def _extract_entity_names_with_llm(llm_client: "LlmClient", text: str) -> list[s
     return names
 
 
-def _resolve_entity_ids_from_text(
-    db: Session,
-    text: str,
-    *,
-    llm_client: "LlmClient | None" = None,
-) -> set[int]:
-    t = (text or "").strip()
-    if not t:
-        return set()
-
-    # LLMが無ければエンティティ抽出は行えない。
-    if not llm_client:
-        return set()
-
-    # 既存エンティティの alias/name を正規化して保持する。
-    alias_rows: list[tuple[int, str]] = []
-
+def collect_entity_alias_rows(db: Session) -> list[tuple[int, str]]:
+    """
+    Entityのalias/nameを正規化して収集する。
+    """
+    rows: list[tuple[int, str]] = []
+    # aliasの正規化一覧を先に作る。
     for entity_id, alias in db.query(EntityAlias.entity_id, EntityAlias.alias).all():
         a = _normalize_text(alias)
         if not a:
             continue
-        alias_rows.append((int(entity_id), a))
-
+        rows.append((int(entity_id), a))
+    # nameの正規化一覧も混ぜる。
     for entity_id, name in db.query(Entity.id, Entity.name).all():
         n = _normalize_text(name)
         if not n:
             continue
-        alias_rows.append((int(entity_id), n))
+        rows.append((int(entity_id), n))
+    return rows
 
-    # LLMで候補名だけを抽出する。
-    candidate_names = _extract_entity_names_with_llm(llm_client, t)
-    if not candidate_names:
+
+def match_entity_ids(candidate_names: Sequence[str], alias_rows: Sequence[tuple[int, str]]) -> set[int]:
+    """
+    LLM抽出名とalias/nameを突合し、entity_idを解決する。
+    """
+    if not candidate_names or not alias_rows:
         return set()
-
-    # 抽出名と alias/name を突合して entity_id を解決する。
     ids: set[int] = set()
     for name in candidate_names:
-        nn = _normalize_text(name)
+        nn = _normalize_text(str(name))
         if not nn:
             continue
         for entity_id, alias in alias_rows:
             if nn in alias or alias in nn:
                 ids.add(int(entity_id))
-
     return ids
 
 
@@ -287,8 +282,8 @@ def build_memory_pack(
     now_ts: int,
     max_inject_tokens: int,
     relevant_episodes: Sequence["RankedEpisode"],
+    matched_entity_ids: Sequence[int],
     injection_strategy: str | None = None,
-    llm_client: "LlmClient | None" = None,
 ) -> str:
     """
     MemoryPackを組み立てる。
@@ -346,12 +341,7 @@ def build_memory_pack(
         return None
 
     # Facts（intent→entity解決→スコアで上位）
-    entity_text = "\n".join(filter(None, [user_text, *(image_summaries or [])]))
-    matched_entity_ids = _resolve_entity_ids_from_text(
-        db,
-        entity_text,
-        llm_client=llm_client,
-    )
+    matched_entity_ids = {int(eid) for eid in matched_entity_ids if eid is not None}
     user_entity_id = _get_user_entity_id(db)
     fact_entity_ids = set(matched_entity_ids)
     if user_entity_id is not None:
