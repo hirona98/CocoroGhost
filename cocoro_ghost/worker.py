@@ -584,7 +584,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
     if row is None:
         return
     _u, pe = row
-    text_in = "\n".join(filter(None, [pe.user_text, pe.reply_text, pe.image_summary]))
+    text_in = _build_recent_context_input(session=session, unit_id=unit_id, payload=pe, now_ts=now_ts)
     if not text_in.strip():
         return
 
@@ -744,6 +744,48 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
     upsert_edges(session, rows=list(edge_rows_by_key.values()))
 
 
+def _build_recent_context_input(*, session: Session, unit_id: int, payload: PayloadEpisode, now_ts: int) -> str:
+    """
+    抽出処理向けに、直近2ターン（User/Partner）を補助文脈として付与した入力を作る。
+
+    目的は指示語/省略の解決であり、会話全体は送らない。
+    """
+    parts: list[str] = []
+    # まず対象エピソードの本文を先頭に置く。
+    main_text = "\n".join(filter(None, [payload.user_text, payload.reply_text, payload.image_summary]))
+    if main_text.strip():
+        parts.append(main_text.strip())
+
+    # 直近2ターン分の補助文脈を集める（対象unitは除外）。
+    rows = (
+        session.query(Unit, PayloadEpisode)
+        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
+        .filter(
+            Unit.kind == int(UnitKind.EPISODE),
+            Unit.state.in_([0, 1, 2]),
+            Unit.sensitivity <= int(Sensitivity.SECRET),
+            Unit.id != unit_id,
+        )
+        .order_by(Unit.occurred_at.desc().nulls_last(), Unit.id.desc())
+        .limit(2)
+        .all()
+    )
+    if rows:
+        lines: list[str] = []
+        for _u, pe in rows:
+            ut = (pe.user_text or "").strip().replace("\n", " ")
+            rt = (pe.reply_text or "").strip().replace("\n", " ")
+            if ut:
+                lines.append(f"User: {ut}")
+            if rt:
+                lines.append(f"Partner: {rt}")
+        if lines:
+            parts.append("（参考: 直近の会話）")
+            parts.extend(lines)
+
+    return "\n".join([p for p in parts if p]).strip()
+
+
 def _handle_upsert_embeddings(
     *, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int
 ) -> None:
@@ -775,12 +817,15 @@ def _handle_upsert_embeddings(
         subject = subject_name or (str(pf.subject_entity_id) if pf.subject_entity_id is not None else None)
         obj = object_name or (pf.object_text or "").strip() or None
         predicate = (pf.predicate or "").strip()
-        # FACTは自然文に整形し、述語は括弧で補足する。
-        if subject and obj:
-            suffix = f"（{predicate}）" if predicate else ""
-            text_to_embed = f"{subject}は{obj}。{suffix}"
-        else:
-            text_to_embed = "\n".join(filter(None, [subject, predicate, obj]))
+        # FACTは構造化のまま埋め込み、述語の意味を変形しない。
+        parts: list[str] = []
+        if subject:
+            parts.append(f"subject={subject}")
+        if predicate:
+            parts.append(f"predicate={predicate}")
+        if obj:
+            parts.append(f"object={obj}")
+        text_to_embed = " ".join(parts) if parts else ""
     elif unit.kind == int(UnitKind.LOOP):
         pl = session.query(PayloadLoop).filter(PayloadLoop.unit_id == unit_id).one_or_none()
         if pl is None:
@@ -884,7 +929,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
     if row is None:
         return
     src_unit, pe = row
-    text_in = "\n".join(filter(None, [pe.user_text, pe.reply_text, pe.image_summary]))
+    text_in = _build_recent_context_input(session=session, unit_id=unit_id, payload=pe, now_ts=now_ts)
     if not text_in.strip():
         return
 
@@ -1096,7 +1141,7 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
     if row is None:
         return
     src_unit, pe = row
-    text_in = "\n".join(filter(None, [pe.user_text, pe.reply_text, pe.image_summary]))
+    text_in = _build_recent_context_input(session=session, unit_id=unit_id, payload=pe, now_ts=now_ts)
     if not text_in.strip():
         return
 
