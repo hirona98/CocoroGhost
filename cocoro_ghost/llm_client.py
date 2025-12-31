@@ -305,7 +305,7 @@ class LlmRequestPurpose:
     BOND_SUMMARY = "<< 絆サマリ生成 >>"
     PERSON_SUMMARY = "<< 人物サマリ生成 >>"
     TOPIC_SUMMARY = "<< トピックサマリ生成 >>"
-    RETRIEVAL_QUERY_EMBEDDING = "<< 記憶検索クエリ埋め込み >>"
+    RETRIEVAL_QUERY_EMBEDDING = "<< 記憶検索用クエリの埋め込み取得 >>"
     UNIT_EMBEDDING = "<< ユニット埋め込み >>"
     IMAGE_SUMMARY_CHAT = "<< 画像要約（会話） >>"
     IMAGE_SUMMARY_NOTIFICATION = "<< 画像要約（通知） >>"
@@ -552,7 +552,7 @@ class LlmClient:
         approx_chars = _estimate_text_chars(messages)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=chat model=%s stream=%s temperature=%s messages=%s approx_chars=%s",
+                "LLM request sent %s kind=chat model=%s stream=%s temperature=%s messages=%s 文字数=%s",
                 purpose_label,
                 self.model,
                 bool(stream),
@@ -648,7 +648,7 @@ class LlmClient:
 
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=reflection model=%s stream=%s temperature=%s messages=%s approx_chars=%s",
+                "LLM request sent %s kind=reflection model=%s stream=%s temperature=%s messages=%s 文字数=%s",
                 purpose_label,
                 self.model,
                 False,
@@ -729,7 +729,7 @@ class LlmClient:
 
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=json model=%s stream=%s temperature=%s messages=%s approx_chars=%s",
+                "LLM request sent %s kind=json model=%s stream=%s temperature=%s messages=%s 文字数=%s",
                 purpose_label,
                 self.model,
                 False,
@@ -789,16 +789,16 @@ class LlmClient:
         start = time.perf_counter()
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=embedding model=%s count=%s approx_chars=%s",
+                "LLM request sent %s kind=embedding model=%s 文字数=%s",
                 purpose_label,
                 self.embedding_model,
-                len(texts),
                 sum(len(t or "") for t in texts),
             )
         # NOTE: embedding入力は漏洩しやすいので、DEBUGでもトリミングされる前提で出す。
+        # inputキーは持たせず、配列のままログに出す。
         self._log_llm_payload(
             "LLM request (embedding)",
-            _sanitize_for_llm_log({"model": self.embedding_model, "input": texts, "count": len(texts)}),
+            _sanitize_for_llm_log(texts),
             llm_log_level=llm_log_level,
         )
 
@@ -817,10 +817,9 @@ class LlmClient:
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
                 self._log_llm_error(
-                    "LLM request failed %s kind=embedding model=%s count=%s ms=%s error=%s",
+                    "LLM request failed %s kind=embedding model=%s ms=%s error=%s",
                     purpose_label,
                     self.embedding_model,
-                    len(texts),
                     elapsed_ms,
                     str(exc),
                     exc_info=exc,
@@ -837,10 +836,9 @@ class LlmClient:
         if llm_log_level != "OFF":
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             self._log_llm_info(
-                "LLM response received %s kind=embedding model=%s count=%s ms=%s",
+                "LLM response received %s kind=embedding model=%s ms=%s",
                 purpose_label,
                 self.embedding_model,
-                len(out),
                 elapsed_ms,
             )
             if llm_log_level == "DEBUG":

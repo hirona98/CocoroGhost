@@ -41,8 +41,11 @@ logger = logging.getLogger(__name__)
 io_console_logger = logging.getLogger("cocoro_ghost.llm_io.console")
 io_file_logger = logging.getLogger("cocoro_ghost.llm_io.file")
 timing_logger = logging.getLogger("cocoro_ghost.timing")
+llm_timing_logger = logging.getLogger("cocoro_ghost.llm_timing")
 
 _memory_locks: dict[str, threading.Lock] = {}
+_request_id_lock = threading.Lock()
+_request_id_seq = 0
 
 _REGEX_META_CHARS = re.compile(r"[.^$*+?{}\[\]\\|()]")
 _SUMMARY_REFRESH_INTERVAL_SECONDS = 6 * 3600
@@ -80,9 +83,9 @@ _STREAM_TRAILER_MARKER = PARTNER_AFFECT_TRAILER_MARKER
 _INTERNAL_CONTEXT_TAG = "<<INTERNAL_CONTEXT>>"
 
 
-def _log_timing(*, request_id: str, event: str, start_perf: float) -> None:
+def _log_client_timing(*, request_id: str, event: str, start_perf: float) -> None:
     """
-    タイミング観測用のイベントログを出力する。
+    クライアント⇔アプリ間のタイミングログを出力する。
 
     ペイロードは出力せず、時系列と順序だけを記録する。
     """
@@ -93,6 +96,35 @@ def _log_timing(*, request_id: str, event: str, start_perf: float) -> None:
         request_id,
         elapsed_ms,
     )
+
+
+def _log_llm_timing(*, request_id: str, event: str, start_perf: float) -> None:
+    """
+    アプリ⇔LLM間のタイミングログを出力する。
+
+    ペイロードは出力せず、時系列と順序だけを記録する。
+    """
+    elapsed_ms = int((time.perf_counter() - start_perf) * 1000)
+    llm_timing_logger.info(
+        "【LLM通信】%s request_id=%s 経過ms=%s",
+        event,
+        request_id,
+        elapsed_ms,
+    )
+
+
+def _next_request_id(prefix: str) -> str:
+    """
+    リクエスト識別子を生成する。
+
+    同一スレッドでの連続呼び出しでも衝突しないよう、連番を付与する。
+    """
+    # 時刻と連番を組み合わせて衝突を避ける。
+    global _request_id_seq
+    with _request_id_lock:
+        _request_id_seq = (_request_id_seq + 1) % 1_000_000_000
+        seq = _request_id_seq
+    return f"{seq:06d}"
 
 
 def _load_embedding_preset_by_embedding_preset_id(embedding_preset_id: str) -> EmbeddingPresetSnapshot | None:
@@ -531,15 +563,15 @@ class MemoryManager:
         - 返信をSSEでストリームし、最後にEpisodeとして保存する
         """
         start_perf = time.perf_counter()
-        request_id = f"chat-{int(time.time() * 1000)}-{threading.get_ident()}"
-        _log_timing(request_id=request_id, event="クライアント受信", start_perf=start_perf)
+        request_id = _next_request_id("chat")
+        _log_client_timing(request_id=request_id, event="クライアント受信", start_perf=start_perf)
         cfg = self.config_store.config
 
         # 運用前のため、/api/chat は embedding_preset_id 指定を必須とする。
         # embedding_preset_id は embedding_presets.id（UUID）を想定。
         embedding_preset_id = (request.embedding_preset_id or "").strip()
         if not embedding_preset_id:
-            _log_timing(request_id=request_id, event="クライアント不正リクエスト", start_perf=start_perf)
+            _log_client_timing(request_id=request_id, event="クライアント不正リクエスト", start_perf=start_perf)
             yield self._sse(
                 "error",
                 {
@@ -557,7 +589,7 @@ class MemoryManager:
         # 次元・検索上限・注入予算・embeddingモデルを per-request で適用する。
         preset_snapshot = _load_embedding_preset_by_embedding_preset_id(embedding_preset_id)
         if preset_snapshot is None:
-            _log_timing(request_id=request_id, event="クライアント不正リクエスト", start_perf=start_perf)
+            _log_client_timing(request_id=request_id, event="クライアント不正リクエスト", start_perf=start_perf)
             yield self._sse(
                 "error",
                 {
@@ -620,7 +652,7 @@ class MemoryManager:
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.error("MemoryPack生成に失敗しました", exc_info=exc)
-                _log_timing(request_id=request_id, event="クライアント要求エラー", start_perf=start_perf)
+                _log_client_timing(request_id=request_id, event="クライアント要求エラー", start_perf=start_perf)
                 yield self._sse("error", {"message": str(exc), "code": "memory_pack_failed"})
                 return
         else:
@@ -646,17 +678,17 @@ class MemoryManager:
         # LLM呼び出しの処理目的をログで区別できるようにする。
         purpose = LlmRequestPurpose.CONVERSATION
         try:
-            _log_timing(request_id=request_id, event="LLM送信開始", start_perf=start_perf)
+            _log_llm_timing(request_id=request_id, event="送信開始", start_perf=start_perf)
             resp_stream = self.llm_client.generate_reply_response(
                 system_prompt=system_prompt,
                 conversation=conversation,
                 purpose=purpose,
                 stream=True,
             )
-            _log_timing(request_id=request_id, event="LLM送信完了", start_perf=start_perf)
+            _log_llm_timing(request_id=request_id, event="送信完了", start_perf=start_perf)
         except Exception as exc:  # noqa: BLE001
             logger.error("stream chat start failed", exc_info=exc)
-            _log_timing(request_id=request_id, event="LLM送信エラー", start_perf=start_perf)
+            _log_llm_timing(request_id=request_id, event="送信エラー", start_perf=start_perf)
             yield self._sse("error", {"message": str(exc), "code": "llm_start_failed"})
             return
 
@@ -682,7 +714,7 @@ class MemoryManager:
                 if stream_started:
                     return
                 stream_started = True
-                _log_timing(request_id=request_id, event="クライアント送信開始", start_perf=start_perf)
+                _log_client_timing(request_id=request_id, event="クライアント送信開始", start_perf=start_perf)
 
             for chunk in self.llm_client.stream_delta_chunks(resp_stream):
                 # finish_reason は最終チャンクで届くことがあるため、見つけたら保持する。
@@ -730,10 +762,10 @@ class MemoryManager:
 
             reply_text = "".join(visible_parts)
             internal_trailer = "".join(trailer_parts)
-            _log_timing(request_id=request_id, event="LLMストリーム終了", start_perf=start_perf)
+            _log_llm_timing(request_id=request_id, event="ストリーム終了", start_perf=start_perf)
         except Exception as exc:  # noqa: BLE001
             logger.error("stream chat failed", exc_info=exc)
-            _log_timing(request_id=request_id, event="LLMストリームエラー", start_perf=start_perf)
+            _log_llm_timing(request_id=request_id, event="ストリームエラー", start_perf=start_perf)
             yield self._sse("error", {"message": str(exc), "code": "llm_stream_failed"})
             return
 
@@ -819,13 +851,13 @@ class MemoryManager:
                 self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
         except Exception as exc:  # noqa: BLE001
             logger.error("episode保存に失敗しました", exc_info=exc)
-            _log_timing(request_id=request_id, event="クライアント応答エラー", start_perf=start_perf)
+            _log_client_timing(request_id=request_id, event="クライアント応答エラー", start_perf=start_perf)
             yield self._sse("error", {"message": str(exc), "code": "db_write_failed"})
             return
 
         if not stream_started:
-            _log_timing(request_id=request_id, event="クライアント送信開始", start_perf=start_perf)
-        _log_timing(request_id=request_id, event="クライアント送信終了", start_perf=start_perf)
+            _log_client_timing(request_id=request_id, event="クライアント送信開始", start_perf=start_perf)
+        _log_client_timing(request_id=request_id, event="クライアント送信終了", start_perf=start_perf)
         yield self._sse("done", {"episode_unit_id": episode_unit_id, "reply_text": reply_text, "usage": {}})
 
     def handle_notification(

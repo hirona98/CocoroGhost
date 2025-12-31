@@ -343,6 +343,9 @@ def format_debug_payload(
     serializable = redact_secrets(serializable)
     # Value長を制限してログの肥大化を抑える
     serializable = limit_json_value_lengths(serializable, max_value_chars=max_value_chars)
+    # 要素が1つだけのdictは中身だけを出力する（ログ簡素化）。
+    if isinstance(serializable, dict) and len(serializable) == 1:
+        serializable = next(iter(serializable.values()))
 
     # dict/list ならそのまま pretty JSON
     if isinstance(serializable, (dict, list)):
