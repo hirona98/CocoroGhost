@@ -125,6 +125,7 @@ flowchart TD
   - スコア: `confidence/salience/recency/pin` を合成して降順
   - 形式: `- SUBJECT predicate OBJECT`（entity_idが引けると名前に置換、subject未指定は `USER`）
 - `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>`:
+  - 会話の「共有された物語（継続する関係性や背景）」を短く注入するセクション
   - `scope_key=rolling:7d` の bond summary（無ければ latest をfallback）
   - 今回マッチした entity に応じて追加:
     - roles に `person` を含む: `scope_label=person, scope_key=person:<entity_id>`

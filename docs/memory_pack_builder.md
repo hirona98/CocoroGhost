@@ -47,6 +47,10 @@ Partner: 「...」
 - `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` には `now_local` / `client_context` 等に加え、`partner_mood_state: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/partner_mood.py`）。
    - デバッグ用途: `PUT /api/partner_mood` による in-memory ランタイム状態が有効な場合、注入される `partner_mood_state` は適用後の値になる。
    - LLMに渡す時刻はローカル時刻に変換して注入する（now_local/episode日付/partner_mood_state/capsule_json内の時刻）。
+- `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>` は「共有された物語」を注入するセクション。
+   - 週次の bond summary（`scope_key=rolling:7d`。無ければ最新）を1本入れる。
+   - 今回の entity に応じて、人物サマリ（`scope_label=person`）やトピックサマリ（`scope_label=topic`）を追加する。
+   - 目的は「関係性や背景の継続性」を保ち、会話の一貫性を補強すること。
 
 ## 取得手順（規定）
 
