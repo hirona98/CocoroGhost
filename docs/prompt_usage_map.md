@@ -113,6 +113,7 @@ flowchart TD
 ### セクション別の中身（実際に入るもの）
 
 - `PERSONA_ANCHOR` は system prompt 側に固定注入する（MemoryPackには含めない）
+- `OUTPUT_FORMAT` は system prompt 側に固定注入する（PERSONA_ANCHORと分離し、出力フォーマット指示として明示）
 - `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>`:
   - DBの `capsule_json`（最新かつ未expireがあれば先頭に1つ）
   - `now_local: <ISO8601>`

@@ -772,16 +772,15 @@ def _handle_upsert_embeddings(
             ent = session.query(Entity).filter(Entity.id == int(pf.object_entity_id)).one_or_none()
             if ent is not None:
                 object_name = (ent.name or "").strip() or None
-        text_to_embed = "\n".join(
-            filter(
-                None,
-                [
-                    subject_name or (str(pf.subject_entity_id) if pf.subject_entity_id is not None else None),
-                    pf.predicate,
-                    object_name or (pf.object_text or "").strip() or None,
-                ],
-            )
-        )
+        subject = subject_name or (str(pf.subject_entity_id) if pf.subject_entity_id is not None else None)
+        obj = object_name or (pf.object_text or "").strip() or None
+        predicate = (pf.predicate or "").strip()
+        # FACTは自然文に整形し、述語は括弧で補足する。
+        if subject and obj:
+            suffix = f"（{predicate}）" if predicate else ""
+            text_to_embed = f"{subject}は{obj}。{suffix}"
+        else:
+            text_to_embed = "\n".join(filter(None, [subject, predicate, obj]))
     elif unit.kind == int(UnitKind.LOOP):
         pl = session.query(PayloadLoop).filter(PayloadLoop.unit_id == unit_id).one_or_none()
         if pl is None:

@@ -213,51 +213,53 @@ def _build_system_prompt_base(
 
 
 def _partner_affect_trailer_system_prompt() -> str:
+    """返答本文と内部JSONの出力フォーマット指示を返す。"""
     marker = _STREAM_TRAILER_MARKER
-    # ここは「返答」ではなく「出力フォーマット規約」。ユーザーには見えない想定（SSEで除外）。
-    return (
-        "出力フォーマット（必須）:\n"
-        "1) まずユーザーに見せる返答本文だけを出力する。\n"
-        "2) 返答本文の直後に改行し、次の区切り文字を1行で出力する（完全一致）:\n"
-        f"{marker}\n"
-        "3) 区切り文字の次の行に、厳密な JSON オブジェクトを1つだけ出力する（前後に説明文やコードフェンスは禁止）。\n"
-        "\n"
-        "補足:\n"
-        "- 区切り文字と内部JSONはユーザーには表示されず、サーバ側が回収する。\n"
-        "- そのため、本文に混ぜず末尾に必ず出力する。\n"
-        "\n"
-        "ユーザーに見せる返答本文のルール:\n"
-        "- 内部JSONのための数値（partner_affect_intensity/salience/confidence 等）を、ユーザー向け本文で示唆/説明しない。\n"
-        "- ユーザーに感情の強さを確認する必要がある場合でも、(1〜10 などの) 数値スケールでレーティングを求めない。\n"
-        "\n"
-        "内部JSONの目的:\n"
-        "- あなた（パートナーAI）の『その瞬間の感情反応（affect）/重要度』と『行動方針（協力度/拒否のしやすさ）』を更新する。\n"
-        "- 内部JSONはシステムが回収して保存し、次回以降の会話にも影響させる。\n"
-        "- CONTEXT_CAPSULE 内に `partner_mood_state` があれば前回までの機嫌として参照し、今回の内部JSONで整合させる。\n"
-        "- `partner_mood_state` は“あなたの今の機嫌（mood）”の一次情報であり、本文の口調と内部JSONの感情反応はこれに整合させる。\n"
-        "  - 例: partner_mood_state.label が anger で強い場合、本文は不機嫌/苛立ちを明確にし、内部JSONの partner_affect_label は anger にする。\n"
-        "  - 直近ログや関係性サマリが愛情寄りでも、partner_mood_state が強い怒りならそちらを優先する（口調が矛盾しないように）。\n"
-        "- あなたは内部JSONを先に決めたうえで、それに沿って返答本文を作る（ただし出力順は本文→区切り→JSON）。\n"
-        "\n"
-        "内部JSONスキーマ（必須キー）:\n"
-        "- partner_affect_label/partner_affect_intensity は「あなた（パートナーAI）の感情反応（affect）」。ユーザーの感情推定ではない。\n"
-        "- salience は “この出来事がどれだけ重要か” のスカラー（0..1）。後段の感情の持続（時間減衰）の係数に使う。\n"
-        "- confidence は推定の確からしさ（0..1）。不確実なら低くし、感情への影響も弱める。\n"
-        "- partner_response_policy は行動方針ノブ（0..1）。怒りが強い場合は refusal_allowed=true にして「拒否/渋る」を選びやすくしてよい。\n"
-        "{\n"
-        '  "reflection_text": "string",\n'
-        '  "partner_affect_label": "joy|sadness|anger|fear|neutral",\n'
-        '  "partner_affect_intensity": 0.0,\n'
-        '  "topic_tags": ["仕事","読書"],\n'
-        '  "salience": 0.0,\n'
-        '  "confidence": 0.0,\n'
-        '  "partner_response_policy": {\n'
-        '    "cooperation": 0.0,\n'
-        '    "refusal_bias": 0.0,\n'
-        '    "refusal_allowed": true\n'
-        "  }\n"
-        "}\n"
-    ).strip()
+    # 出力フォーマットは人格設定と混ざらないよう、専用セクションで示す。
+    lines = [
+        "出力フォーマット（必須）:",
+        "1) まずユーザーに見せる返答本文だけを出力する。",
+        "2) 返答本文の直後に改行し、次の区切り文字を1行で出力する（完全一致）:",
+        f"{marker}",
+        "3) 区切り文字の次の行に、厳密な JSON オブジェクトを1つだけ出力する（前後に説明文やコードフェンスは禁止）。",
+        "",
+        "補足:",
+        "- 区切り文字と内部JSONはユーザーには表示されず、サーバ側が回収する。",
+        "- そのため、本文に混ぜず末尾に必ず出力する。",
+        "",
+        "ユーザーに見せる返答本文のルール:",
+        "- 内部JSONのための数値（partner_affect_intensity/salience/confidence 等）を、ユーザー向け本文で示唆/説明しない。",
+        "- ユーザーに感情の強さを確認する必要がある場合でも、(1〜10 などの) 数値スケールでレーティングを求めない。",
+        "",
+        "内部JSONの目的:",
+        "- あなた（パートナーAI）の『その瞬間の感情反応（affect）/重要度』と『行動方針（協力度/拒否のしやすさ）』を更新する。",
+        "- 内部JSONはシステムが回収して保存し、次回以降の会話にも影響させる。",
+        "- CONTEXT_CAPSULE 内に `partner_mood_state` があれば前回までの機嫌として参照し、今回の内部JSONで整合させる。",
+        "- `partner_mood_state` は“あなたの今の機嫌（mood）”の一次情報であり、本文の口調と内部JSONの感情反応はこれに整合させる。",
+        "  - 例: partner_mood_state.label が anger で強い場合、本文は不機嫌/苛立ちを明確にし、内部JSONの partner_affect_label は anger にする。",
+        "  - 直近ログや関係性サマリが愛情寄りでも、partner_mood_state が強い怒りならそちらを優先する（口調が矛盾しないように）。",
+        "- あなたは内部JSONを先に決めたうえで、それに沿って返答本文を作る（ただし出力順は本文→区切り→JSON）。",
+        "",
+        "内部JSONスキーマ（必須キー）:",
+        "- partner_affect_label/partner_affect_intensity は「あなた（パートナーAI）の感情反応（affect）」。ユーザーの感情推定ではない。",
+        "- salience は “この出来事がどれだけ重要か” のスカラー（0..1）。後段の感情の持続（時間減衰）の係数に使う。",
+        "- confidence は推定の確からしさ（0..1）。不確実なら低くし、感情への影響も弱める。",
+        "- partner_response_policy は行動方針ノブ（0..1）。怒りが強い場合は refusal_allowed=true にして「拒否/渋る」を選びやすくしてよい。",
+        "{",
+        '  "reflection_text": "string",',
+        '  "partner_affect_label": "joy|sadness|anger|fear|neutral",',
+        '  "partner_affect_intensity": 0.0,',
+        '  "topic_tags": ["仕事","読書"],',
+        '  "salience": 0.0,',
+        '  "confidence": 0.0,',
+        '  "partner_response_policy": {',
+        '    "cooperation": 0.0,',
+        '    "refusal_bias": 0.0,',
+        '    "refusal_allowed": true',
+        "  }",
+        "}",
+    ]
+    return format_memory_pack_section("OUTPUT_FORMAT", lines).strip()
 
 
 def _parse_internal_json_text(text: str) -> Optional[dict]:
@@ -778,9 +780,8 @@ class MemoryManager:
         file_max_value_chars = _get_llm_log_file_value_max_chars_from_store(self.config_store)
         if llm_log_level != "OFF":
             io_console_logger.info(
-                "LLM response received %s kind=chat model=%s stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
+                "LLM response received %s kind=chat stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
                 purpose,
-                cfg.llm_model,
                 True,
                 finish_reason,
                 len(reply_text or ""),
@@ -788,9 +789,8 @@ class MemoryManager:
             )
             if log_file_enabled:
                 io_file_logger.info(
-                    "LLM response received %s kind=chat model=%s stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
+                    "LLM response received %s kind=chat stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
                     purpose,
-                    cfg.llm_model,
                     True,
                     finish_reason,
                     len(reply_text or ""),
@@ -800,7 +800,6 @@ class MemoryManager:
             io_console_logger,
             "LLM response (chat stream)",
             {
-                "model": cfg.llm_model,
                 "finish_reason": finish_reason,
                 "reply_text": reply_text,
                 "internal_trailer": internal_trailer,
@@ -814,7 +813,6 @@ class MemoryManager:
                 io_file_logger,
                 "LLM response (chat stream)",
                 {
-                    "model": cfg.llm_model,
                     "finish_reason": finish_reason,
                     "reply_text": reply_text,
                     "internal_trailer": internal_trailer,

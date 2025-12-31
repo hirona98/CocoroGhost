@@ -294,7 +294,7 @@ class LlmRequestPurpose:
     """LLM呼び出しの処理目的（ログ用途のラベル）。"""
 
     # docs/prompt_usage_map.md のフローに対応した日本語ラベル
-    CONVERSATION = "<< 会話返答 >>"
+    CONVERSATION = "<< 会話応答作成 >>"
     NOTIFICATION = "<< 通知返答 >>"
     META_REQUEST = "<< メタ要求対応 >>"
     INTERNAL_THOUGHT = "<< 内的思考（反射） >>"
@@ -552,9 +552,8 @@ class LlmClient:
         approx_chars = _estimate_text_chars(messages)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=chat model=%s stream=%s temperature=%s messages=%s 文字数=%s",
+                "LLM request sent %s kind=chat stream=%s temperature=%s messages=%s 文字数=%s",
                 purpose_label,
-                self.model,
                 bool(stream),
                 temperature,
                 msg_count,
@@ -568,9 +567,8 @@ class LlmClient:
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
                 self._log_llm_error(
-                    "LLM request failed %s kind=chat model=%s stream=%s messages=%s ms=%s error=%s",
+                    "LLM request failed %s kind=chat stream=%s messages=%s ms=%s error=%s",
                     purpose_label,
-                    self.model,
                     bool(stream),
                     msg_count,
                     elapsed_ms,
@@ -588,9 +586,8 @@ class LlmClient:
         finish_reason = _finish_reason(resp)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM response received %s kind=chat model=%s stream=%s finish_reason=%s chars=%s ms=%s",
+                "LLM response received %s kind=chat stream=%s finish_reason=%s chars=%s ms=%s",
                 purpose_label,
-                self.model,
                 False,
                 finish_reason,
                 len(content or ""),
@@ -648,9 +645,8 @@ class LlmClient:
 
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=reflection model=%s stream=%s temperature=%s messages=%s 文字数=%s",
+                "LLM request sent %s kind=reflection stream=%s temperature=%s messages=%s 文字数=%s",
                 purpose_label,
-                self.model,
                 False,
                 reflection_temp,
                 len(messages),
@@ -664,9 +660,8 @@ class LlmClient:
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
                 self._log_llm_error(
-                    "LLM request failed %s kind=reflection model=%s ms=%s error=%s",
+                    "LLM request failed %s kind=reflection ms=%s error=%s",
                     purpose_label,
-                    self.model,
                     elapsed_ms,
                     str(exc),
                     exc_info=exc,
@@ -678,9 +673,8 @@ class LlmClient:
         finish_reason = _finish_reason(resp)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM response received %s kind=reflection model=%s finish_reason=%s chars=%s ms=%s",
+                "LLM response received %s kind=reflection finish_reason=%s chars=%s ms=%s",
                 purpose_label,
-                self.model,
                 finish_reason,
                 len(content or ""),
                 elapsed_ms,
@@ -729,9 +723,8 @@ class LlmClient:
 
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=json model=%s stream=%s temperature=%s messages=%s 文字数=%s",
+                "LLM request sent %s kind=json stream=%s temperature=%s messages=%s 文字数=%s",
                 purpose_label,
-                self.model,
                 False,
                 temperature,
                 len(messages),
@@ -745,9 +738,8 @@ class LlmClient:
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
                 self._log_llm_error(
-                    "LLM request failed %s kind=json model=%s ms=%s error=%s",
+                    "LLM request failed %s kind=json ms=%s error=%s",
                     purpose_label,
-                    self.model,
                     elapsed_ms,
                     str(exc),
                     exc_info=exc,
@@ -759,9 +751,8 @@ class LlmClient:
         finish_reason = _finish_reason(resp)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM response received %s kind=json model=%s finish_reason=%s chars=%s ms=%s",
+                "LLM response received %s kind=json finish_reason=%s chars=%s ms=%s",
                 purpose_label,
-                self.model,
                 finish_reason,
                 len(content or ""),
                 elapsed_ms,
@@ -789,9 +780,8 @@ class LlmClient:
         start = time.perf_counter()
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=embedding model=%s 文字数=%s",
+                "LLM request sent %s kind=embedding 文字数=%s",
                 purpose_label,
-                self.embedding_model,
                 sum(len(t or "") for t in texts),
             )
         # NOTE: embedding入力は漏洩しやすいので、DEBUGでもトリミングされる前提で出す。
@@ -817,9 +807,8 @@ class LlmClient:
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
                 self._log_llm_error(
-                    "LLM request failed %s kind=embedding model=%s ms=%s error=%s",
+                    "LLM request failed %s kind=embedding ms=%s error=%s",
                     purpose_label,
-                    self.embedding_model,
                     elapsed_ms,
                     str(exc),
                     exc_info=exc,
@@ -836,9 +825,8 @@ class LlmClient:
         if llm_log_level != "OFF":
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             self._log_llm_info(
-                "LLM response received %s kind=embedding model=%s ms=%s",
+                "LLM response received %s kind=embedding ms=%s",
                 purpose_label,
-                self.embedding_model,
                 elapsed_ms,
             )
             if llm_log_level == "DEBUG":
@@ -864,9 +852,8 @@ class LlmClient:
             start = time.perf_counter()
             if llm_log_level != "OFF":
                 self._log_llm_info(
-                    "LLM request sent %s kind=vision model=%s temperature=%s image_bytes=%s",
+                    "LLM request sent %s kind=vision temperature=%s image_bytes=%s",
                     purpose_label,
-                    self.image_model,
                     0.3,
                     len(image_bytes),
                 )
@@ -901,9 +888,8 @@ class LlmClient:
                 if llm_log_level != "OFF":
                     elapsed_ms = int((time.perf_counter() - start) * 1000)
                     self._log_llm_error(
-                        "LLM request failed %s kind=vision model=%s image_bytes=%s ms=%s error=%s",
+                        "LLM request failed %s kind=vision image_bytes=%s ms=%s error=%s",
                         purpose_label,
-                        self.image_model,
                         len(image_bytes),
                         elapsed_ms,
                         str(exc),
@@ -915,9 +901,8 @@ class LlmClient:
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
                 self._log_llm_info(
-                    "LLM response received %s kind=vision model=%s chars=%s ms=%s",
+                    "LLM response received %s kind=vision chars=%s ms=%s",
                     purpose_label,
-                    self.image_model,
                     len(content or ""),
                     elapsed_ms,
                 )
