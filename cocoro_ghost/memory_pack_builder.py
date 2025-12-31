@@ -12,7 +12,7 @@ import json
 import math
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 from sqlalchemy.orm import Session
@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 # MemoryPackの見出しは日常会話で衝突しにくい形式に統一する。
 MEMORY_PACK_SECTION_PREFIX = "<<<COCORO_GHOST_SECTION:"
 MEMORY_PACK_SECTION_SUFFIX = ">>>"
+_TIME_KEYS_FOR_LLM = {"generated_at", "occurred_at", "created_at", "expires_at", "now_ts"}
 
 
 def format_memory_pack_section(title: str, body_lines: Sequence[str]) -> str:
@@ -52,6 +53,52 @@ def format_memory_pack_section(title: str, body_lines: Sequence[str]) -> str:
     if not body_lines:
         return f"{header}\n\n"
     return f"{header}\n" + "\n".join(body_lines) + "\n\n"
+
+
+def _to_local_iso(ts: int | float | None) -> str | None:
+    """
+    UNIX秒をローカル時刻のISO文字列に変換する。
+    """
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(ts)).astimezone().isoformat()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _convert_time_fields_for_llm(obj: Any) -> Any:
+    """
+    LLMに渡す前提で、既知の時刻キーだけローカル時刻へ変換する。
+    """
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}
+        for k, v in obj.items():
+            if k in _TIME_KEYS_FOR_LLM and isinstance(v, (int, float)):
+                out[k] = _to_local_iso(v) or v
+                continue
+            out[k] = _convert_time_fields_for_llm(v)
+        return out
+    if isinstance(obj, list):
+        return [_convert_time_fields_for_llm(v) for v in obj]
+    return obj
+
+
+def _convert_capsule_json_for_llm(capsule_json: str | None) -> str | None:
+    """
+    capsule_json内の時刻をローカル時刻に変換してから返す。
+    """
+    if not capsule_json:
+        return None
+    try:
+        obj = json.loads(capsule_json)
+    except Exception:  # noqa: BLE001
+        return capsule_json
+    converted = _convert_time_fields_for_llm(obj)
+    try:
+        return json.dumps(converted, ensure_ascii=False, separators=(",", ":"))
+    except Exception:  # noqa: BLE001
+        return capsule_json
 
 
 def now_utc_ts() -> int:
@@ -473,8 +520,9 @@ def build_memory_pack(
         evidence_lines.append("")
         for e in relevant_episodes:
             ts = int(e.occurred_at)
-            date_s = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
-            evidence_lines.append(f"[{date_s}]")
+            date_s = _to_local_iso(ts) or ""
+            if date_s:
+                evidence_lines.append(f"[{date_s}]")
 
             ut = _truncate(e.user_text, user_limit)
             rt = _truncate(e.reply_text, reply_limit)
@@ -496,8 +544,9 @@ def build_memory_pack(
     # Context capsule（軽量）
     capsule_parts: List[str] = []
     if capsule_json:
-        # 最新の短期カプセルをそのまま注入する。
-        capsule_parts.append(f"capsule_json: {capsule_json}")
+        # LLM向けに時刻だけローカルへ変換する。
+        capsule_local = _convert_capsule_json_for_llm(capsule_json)
+        capsule_parts.append(f"capsule_json: {capsule_local}")
     now_local = datetime.fromtimestamp(now_ts).astimezone().isoformat()
     capsule_parts.append(f"now_local: {now_local}")
     if client_context:
@@ -573,7 +622,7 @@ def build_memory_pack(
             "intensity": partner_mood_state.get("intensity"),
             "components": partner_mood_state.get("components"),
             "response_policy": partner_mood_state.get("response_policy"),
-            "now_ts": partner_mood_state.get("now_ts"),
+            "now_local": _to_local_iso(now_ts),
         }
         # UI向け: 前回チャットで使った値（注入した値）を保存する。
         # ここでの値が、次のチャットの直前状態として扱われる。

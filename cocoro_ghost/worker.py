@@ -141,6 +141,18 @@ def _backoff_seconds(tries: int) -> int:
     return min(3600, max(5, 2 ** max(0, tries)))
 
 
+def _format_local_datetime(ts: int | float | None) -> str:
+    """
+    UNIX秒をローカル時刻の文字列へ変換する。
+    """
+    if ts is None:
+        return ""
+    try:
+        return datetime.fromtimestamp(float(ts)).astimezone().isoformat()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _has_pending_job_with_payload(session: Session, *, kind: str, payload_key: str, payload_value: Any) -> bool:
     """同種ジョブの重複enqueueを避けるための簡易判定（queued/runningのみ）。"""
     rows = (
@@ -1405,6 +1417,8 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
     window_days = 7
     range_end = int(now_ts)
     range_start = range_end - window_days * 86400
+    range_start_local = _format_local_datetime(range_start)
+    range_end_local = _format_local_datetime(range_end)
 
     ep_rows = (
         session.query(Unit, PayloadEpisode)
@@ -1433,7 +1447,7 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
         lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
 
     input_text = (
-        f"scope_key: {scope_key}\nrange_start: {range_start}\nrange_end: {range_end}\n\n"
+        f"scope_key: {scope_key}\nrange_start: {range_start_local}\nrange_end: {range_end_local}\n\n"
         "<<<COCORO_GHOST_SECTION:EPISODES>>>\n"
         + "\n".join(lines)
     )

@@ -34,7 +34,7 @@
 <<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>
 以下は現在の会話に関連する過去のやりとりです。
 
-[YYYY-MM-DD] タイトル（任意）
+[YYYY-MM-DDTHH:MM:SS±TZ] タイトル（任意）
 User: 「...」
 Partner: 「...」
 → 関連: （短い理由）
@@ -46,6 +46,7 @@ Partner: 「...」
 - MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（コード側でガードする。例: `cocoro_ghost/memory.py`）。
 - `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` には `now_local` / `client_context` 等に加え、`partner_mood_state: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/partner_mood.py`）。
    - デバッグ用途: `PUT /api/partner_mood` による in-memory ランタイム状態が有効な場合、注入される `partner_mood_state` は適用後の値になる。
+   - LLMに渡す時刻はローカル時刻に変換して注入する（now_local/episode日付/partner_mood_state/capsule_json内の時刻）。
 
 ## 取得手順（規定）
 

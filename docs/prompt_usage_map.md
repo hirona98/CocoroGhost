@@ -135,9 +135,9 @@ flowchart TD
 - `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>`:
   - `should_inject_episodes()` が True のときだけ注入（`high>=1` or `medium>=2`）
   - `injection_strategy`:
-    - `quote_key_parts`（既定）: user/reply を短く引用
-    - `summarize`: 1行「要点: ...」に寄せる
-    - `full`: 長めに引用
+  - `quote_key_parts`（既定）: user/reply を短く引用
+  - `summarize`: 1行「要点: ...」に寄せる
+  - `full`: 長めに引用
   - 各項目に `→ 関連: <reason>` を添える
 
 ### 予算超過時の削り順（優先度）
