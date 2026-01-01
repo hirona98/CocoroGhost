@@ -80,8 +80,8 @@ def _create_engine_with_vec_support(db_url: str):
     """
     import sqlite_vec
 
-    # SQLiteの場合はスレッドチェックを無効化し、短い待機でロック解消を待つ。
-    connect_args = {"check_same_thread": False, "timeout": 1.0} if db_url.startswith("sqlite") else {}
+    # SQLiteの場合はスレッドチェックを無効化し、ロック解消を待つ。
+    connect_args = {"check_same_thread": False, "timeout": 10.0} if db_url.startswith("sqlite") else {}
     engine = create_engine(db_url, future=True, connect_args=connect_args)
 
     if db_url.startswith("sqlite"):
@@ -279,7 +279,7 @@ def init_settings_db() -> None:
 
     db_url = get_settings_db_path()
     # SQLiteのロック待ちは短いタイムアウトで十分。
-    connect_args = {"check_same_thread": False, "timeout": 1.0}
+    connect_args = {"check_same_thread": False, "timeout": 10.0}
     engine = create_engine(db_url, future=True, connect_args=connect_args)
     SettingsSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     Base.metadata.create_all(bind=engine)
