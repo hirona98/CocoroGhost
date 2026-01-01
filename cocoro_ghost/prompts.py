@@ -213,6 +213,7 @@ META_PROACTIVE_MESSAGE_SYSTEM_PROMPT = """
 想定:
 - instruction は「こういう想定で話しかけて」「こういう振る舞いで誘導して」等の指示です。
 - payload は、そのメッセージに必要な材料（状況/前提/観測/断片）です。
+- images は、ユーザーに見えません。
 
 ルール:
 - 口調・一人称・呼び方・価値観は PERSONA_ANCHOR に従う
