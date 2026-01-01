@@ -32,6 +32,13 @@ from cocoro_ghost.unit_models import (
     UnitEntity,
 )
 from cocoro_ghost.partner_mood_runtime import apply_partner_mood_state_override, set_last_used
+from cocoro_ghost.fact_policy import (
+    canonicalize_fact_predicate,
+    effective_fact_ts,
+    fact_identity_key,
+    is_event_predicate,
+    is_exclusive_predicate,
+)
 
 if TYPE_CHECKING:
     from cocoro_ghost.llm_client import LlmClient
@@ -146,6 +153,13 @@ def _format_fact_line(
     predicate: str,
     obj_text: Optional[str],
 ) -> str:
+    """
+    FactをMemoryPack注入用の1行に整形する。
+
+    NOTE:
+    - predicate は制御語彙（正規形）を想定する。
+    - obj_text は表示のための補助であり、同一性判定には別ロジックを使う。
+    """
     s = subject or "USER"
     o = obj_text or ""
     o = o.strip()
@@ -165,6 +179,172 @@ def _fact_score(now: int, unit: Unit) -> float:
     pin_boost = 1.0 if unit.pin else 0.0
     rec = _recency_score(now, unit.occurred_at, tau_days=45.0)
     return 0.45 * float(unit.confidence or 0.0) + 0.25 * float(unit.salience or 0.0) + 0.20 * rec + 0.10 * pin_boost
+
+
+def _is_fact_currently_valid(*, now_ts: int, valid_from: Optional[int], valid_to: Optional[int]) -> bool:
+    """
+    Factが「いま有効」かを判定する。
+
+    - valid_from が未来なら未発効扱い
+    - valid_to が過去なら期限切れ扱い
+    - それ以外は有効
+    """
+    if isinstance(valid_from, int) and valid_from > int(now_ts):
+        return False
+    if isinstance(valid_to, int) and valid_to < int(now_ts):
+        return False
+    return True
+
+
+def _pick_stable_facts_for_injection(
+    *,
+    now_ts: int,
+    fact_rows: list[tuple[Unit, PayloadFact]],
+    max_items: int,
+) -> list[tuple[Unit, PayloadFact, str]]:
+    """
+    STABLE_FACTSへ注入するFactを選別する。
+
+    方針:
+    - predicate を制御語彙へ正規化し、未知predicateは注入しない
+    - valid_from/valid_to により「現在有効」を優先（pinは例外として残す）
+    - 同一三つ組は重複排除
+    - exclusive は subject+predicate ごとに最新1件のみ
+    - event は subject+predicate ごとに最初（最古）を優先
+    - set は predicateごとに上限Kで偏りを防ぐ
+    """
+    # --- パラメータ（ここは“人間模倣・ドメイン非依存”のため小さく固定） ---
+    per_predicate_cap = 3
+
+    # --- 事前: スコア順（高いほど優先） ---
+    fact_rows_sorted = sorted(fact_rows, key=lambda r: _fact_score(now_ts, r[0]), reverse=True)
+
+    # --- 収集用 ---
+    chosen: list[tuple[Unit, PayloadFact, str]] = []
+    seen_triples: set[tuple[Optional[int], str, Optional[int], Optional[str]]] = set()
+    exclusive_seen: dict[tuple[Optional[int], str], int] = {}
+    event_best: dict[tuple[Optional[int], str], tuple[int, Unit, PayloadFact, str]] = {}
+    per_predicate_counts: dict[str, int] = {}
+
+    # --- 1) pin（最優先） ---
+    for u, f in fact_rows_sorted:
+        if not u.pin:
+            continue
+        canon = canonicalize_fact_predicate(f.predicate)
+        if canon is None:
+            continue
+        # pinは選別の優先度を上げるが、期限切れ/未発効は注入しない（矛盾・誤誘導を避ける）。
+        if not _is_fact_currently_valid(now_ts=now_ts, valid_from=f.valid_from, valid_to=f.valid_to):
+            continue
+        triple = fact_identity_key(
+            subject_entity_id=int(f.subject_entity_id) if f.subject_entity_id is not None else None,
+            predicate=canon,
+            object_entity_id=int(f.object_entity_id) if f.object_entity_id is not None else None,
+            object_text=f.object_text,
+        )
+        if triple in seen_triples:
+            continue
+        seen_triples.add(triple)
+        chosen.append((u, f, canon))
+        if len(chosen) >= max_items:
+            return chosen[:max_items]
+
+    # --- 2) event（履歴: 最初を優先して後で差し込む） ---
+    for u, f in fact_rows_sorted:
+        canon = canonicalize_fact_predicate(f.predicate)
+        if canon is None or not is_event_predicate(canon):
+            continue
+        if not _is_fact_currently_valid(now_ts=now_ts, valid_from=f.valid_from, valid_to=f.valid_to):
+            # eventの期限切れは基本落とす（pinがあれば上で残る）
+            continue
+        key = (int(f.subject_entity_id) if f.subject_entity_id is not None else None, canon)
+        ts = effective_fact_ts(occurred_at=u.occurred_at, created_at=u.created_at, valid_from=f.valid_from)
+        if key in event_best and ts >= event_best[key][0]:
+            continue
+        event_best[key] = (ts, u, f, canon)
+
+    # --- 3) 通常（exclusive/set） ---
+    for u, f in fact_rows_sorted:
+        if len(chosen) >= max_items:
+            break
+        canon = canonicalize_fact_predicate(f.predicate)
+        if canon is None:
+            continue
+        if u.pin:
+            # pinは上で処理済み
+            continue
+        if is_event_predicate(canon):
+            # eventは後で差し込む
+            continue
+        if not _is_fact_currently_valid(now_ts=now_ts, valid_from=f.valid_from, valid_to=f.valid_to):
+            continue
+
+        # setの偏り抑制
+        per_predicate_counts.setdefault(canon, 0)
+        if not is_exclusive_predicate(canon) and per_predicate_counts[canon] >= per_predicate_cap:
+            continue
+
+        subj_id = int(f.subject_entity_id) if f.subject_entity_id is not None else None
+        obj_eid = int(f.object_entity_id) if f.object_entity_id is not None else None
+        triple = fact_identity_key(
+            subject_entity_id=subj_id,
+            predicate=canon,
+            object_entity_id=obj_eid,
+            object_text=f.object_text,
+        )
+        if triple in seen_triples:
+            continue
+
+        # exclusive は subject+predicate で最新のみ
+        if is_exclusive_predicate(canon):
+            sp_key = (subj_id, canon)
+            ts = effective_fact_ts(occurred_at=u.occurred_at, created_at=u.created_at, valid_from=f.valid_from)
+            prev_ts = exclusive_seen.get(sp_key)
+            if prev_ts is not None and ts <= prev_ts:
+                continue
+            exclusive_seen[sp_key] = ts
+
+            # すでに同じ sp_key を入れていたら差し替える（より新しいものに更新）
+            replaced = False
+            for i, (_u0, f0, c0) in enumerate(list(chosen)):
+                # pinはユーザー意思として最優先のため、exclusiveでも差し替えない。
+                if getattr(_u0, "pin", 0):
+                    continue
+                if c0 != canon:
+                    continue
+                subj0 = int(f0.subject_entity_id) if f0.subject_entity_id is not None else None
+                if subj0 != subj_id:
+                    continue
+                chosen[i] = (u, f, canon)
+                replaced = True
+                break
+            if replaced:
+                # triple重複抑制のため、古いtripleはseenに残る（問題ない）
+                seen_triples.add(triple)
+                continue
+
+        seen_triples.add(triple)
+        chosen.append((u, f, canon))
+        per_predicate_counts[canon] += 1
+
+    # --- 4) event を最後に差し込む（枠があれば） ---
+    if len(chosen) < max_items and event_best:
+        # eventは“最初”が価値なので、時刻の古い順で安定的に並べる。
+        for _ts, u, f, canon in sorted(event_best.values(), key=lambda x: x[0]):
+            if len(chosen) >= max_items:
+                break
+            triple = fact_identity_key(
+                subject_entity_id=int(f.subject_entity_id) if f.subject_entity_id is not None else None,
+                predicate=canon,
+                object_entity_id=int(f.object_entity_id) if f.object_entity_id is not None else None,
+                object_text=f.object_text,
+            )
+            if triple in seen_triples:
+                continue
+            seen_triples.add(triple)
+            chosen.append((u, f, canon))
+
+    return chosen[:max_items]
 
 
 def extract_entity_names_with_llm(llm_client: "LlmClient", text: str) -> list[str]:
@@ -374,12 +554,13 @@ def build_memory_pack(
         fact_rows = list(by_id.values())
 
     fact_rows.sort(key=lambda r: _fact_score(now_ts, r[0]), reverse=True)
-    fact_rows = fact_rows[: min(12, len(fact_rows))]
+    # 注入は「重複排除」「期限」「競合解決（exclusive/event）」を反映してから上限を適用する。
+    picked = _pick_stable_facts_for_injection(now_ts=now_ts, fact_rows=fact_rows, max_items=12)
 
     entity_by_id: Dict[int, str] = {}
-    if fact_rows:
+    if picked:
         entity_ids: set[int] = set()
-        for _u, f in fact_rows:
+        for _u, f, _canon in picked:
             if f.subject_entity_id:
                 entity_ids.add(int(f.subject_entity_id))
             if f.object_entity_id:
@@ -389,10 +570,10 @@ def build_memory_pack(
                 entity_by_id[int(e.id)] = e.name
 
     fact_lines: List[str] = []
-    for _u, f in fact_rows:
+    for _u, f, canon in picked:
         subject = entity_by_id.get(int(f.subject_entity_id)) if f.subject_entity_id else None
         obj = entity_by_id.get(int(f.object_entity_id)) if f.object_entity_id else f.object_text
-        fact_lines.append(_format_fact_line(subject=subject, predicate=f.predicate, obj_text=obj))
+        fact_lines.append(_format_fact_line(subject=subject, predicate=canon, obj_text=obj))
 
     rolling_scope_key = "rolling:7d"
     summary_texts: List[str] = []

@@ -51,7 +51,6 @@ REFLECTION_SYSTEM_PROMPT = """
 """.strip()
 
 
-# ペルソナとは組み合わせない想定
 FACT_EXTRACT_SYSTEM_PROMPT = """
 あなたは「fact抽出」モジュールです。
 入力テキストから、長期的に保持すべき安定知識（好み/設定/関係/習慣）を抽出して JSON で出力してください。
@@ -61,8 +60,21 @@ FACT_EXTRACT_SYSTEM_PROMPT = """
 - 不確実なら confidence を低くする
 - confidence は 0.0〜1.0
 - 個数は多すぎない（最大5件）
+- predicate は必ず次のいずれかのみを使用する（それ以外は出力しない）:
+  - name_is
+  - is_addressed_as
+  - likes | dislikes | prefers | avoids | values | interested_in | habit
+  - uses | owns
+  - role_is | affiliated_with | located_in
+  - operates_on | timezone_is | locale_is | preferred_language_is | preferred_input_style_is
+  - goal_is | constraint_is
+  - first_met_at
+- 似た意味の述語を勝手に新規作成しない（例: has_name/is_named/is_called/uses_application 等は禁止）
 - 目的語（object）が「固有名（人物/組織/作品/プロジェクト等）」として扱える場合は、可能なら object を {type_label,name} で出す
   - object_text は「文章としての表現」を残したいときに使う（どちらか片方でもよい）
+- 変化し得る事実は validity で範囲を付与できると望ましい:
+  - 「今は/現在/最近」など現在状態が明示される場合は to=null を基本にする
+  - 「以前は/もう〜していない」など過去が明示される場合は to に過去時刻（推定でよい）を入れる
 
 {
   "facts": [
@@ -98,7 +110,6 @@ LOOP_EXTRACT_SYSTEM_PROMPT = """
 """.strip()
 
 
-# ペルソナとは組み合わせない想定
 ENTITY_EXTRACT_SYSTEM_PROMPT = """
 あなたは「entity抽出」モジュールです。
 入力テキストから、登場する固有名（人物/場所/プロジェクト/組織/話題）を抽出して JSON で出力してください。
@@ -109,7 +120,8 @@ ENTITY_EXTRACT_SYSTEM_PROMPT = """
 - confidence は 0.0〜1.0
 - 個数は多すぎない（最大10件）
 - relations は必要なときだけ出す（最大10件）
-- relation は自由ラベル（推奨: friend|family|colleague|partner|likes|dislikes|related|other）
+- relation は自由ラベルだが、なるべく次のいずれかに寄せる（語彙爆発を避ける）:
+  - friend | family | colleague | partner | other
 - type_label は自由（例: PERSON/TOPIC/ORG/PROJECT/...）。固定Enumに縛られない。
   - 出力は大文字推奨（内部でも大文字に正規化して保存する）
 - roles は用途のための“役割”で、基本は次のどれか（必要なときだけ付与）:

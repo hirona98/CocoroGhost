@@ -39,6 +39,13 @@ from sqlalchemy.orm import Session
 from cocoro_ghost import prompts
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.db import delete_unit_vector, get_memory_session, sync_unit_vector_metadata, upsert_edges, upsert_unit_vector
+from cocoro_ghost.fact_policy import (
+    canonicalize_fact_predicate,
+    effective_fact_ts,
+    is_event_predicate,
+    is_exclusive_predicate,
+    normalize_object_text_for_key,
+)
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.unit_enums import (
     EntityRole,
@@ -1011,9 +1018,15 @@ def _find_existing_fact_unit_id(
     predicate: str,
     object_text: Optional[str],
     object_entity_id: Optional[int],
-    evidence_unit_id: int,
 ) -> Optional[int]:
-    # まず object_entity_id で一致するものを探す（Entity化できたFactを優先的に集約する）
+    """
+    既存Factの unit_id を探す（同一三つ組のupsert用）。
+
+    NOTE:
+    - ここでは evidence_unit_id はキーに含めない（別エピソード由来の同一Factは統合する）
+    - predicate は canonical（制御語彙）を想定する
+    """
+    # --- まず object_entity_id で一致するものを探す（Entity化できたFactを優先） ---
     if object_entity_id is not None:
         row = session.execute(
             text(
@@ -1025,9 +1038,6 @@ def _find_existing_fact_unit_id(
                   AND pf.subject_entity_id IS :subject_entity_id
                   AND pf.predicate = :predicate
                   AND pf.object_entity_id = :object_entity_id
-                  AND EXISTS (
-                    SELECT 1 FROM json_each(pf.evidence_unit_ids_json) WHERE value = :evidence_unit_id
-                  )
                 LIMIT 1
                 """
             ),
@@ -1036,13 +1046,12 @@ def _find_existing_fact_unit_id(
                 "subject_entity_id": subject_entity_id,
                 "predicate": predicate,
                 "object_entity_id": int(object_entity_id),
-                "evidence_unit_id": evidence_unit_id,
             },
         ).fetchone()
         if row is not None:
             return int(row[0])
 
-    # フォールバック: object_entity_id が未設定のFactも対象にし、object_text で一致を取る
+    # --- フォールバック: object_entity_id が未設定のFactは object_text で一致 ---
     row = session.execute(
         text(
             """
@@ -1054,9 +1063,6 @@ def _find_existing_fact_unit_id(
               AND pf.predicate = :predicate
               AND pf.object_entity_id IS NULL
               AND pf.object_text IS :object_text
-              AND EXISTS (
-                SELECT 1 FROM json_each(pf.evidence_unit_ids_json) WHERE value = :evidence_unit_id
-              )
             LIMIT 1
             """
         ),
@@ -1065,7 +1071,6 @@ def _find_existing_fact_unit_id(
             "subject_entity_id": subject_entity_id,
             "predicate": predicate,
             "object_text": object_text,
-            "evidence_unit_id": evidence_unit_id,
         },
     ).fetchone()
     return int(row[0]) if row is not None else None
@@ -1099,15 +1104,101 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
     if not isinstance(facts, list):
         return
 
+    def _merge_evidence_unit_id(*, pf: PayloadFact, evidence_unit_id: int) -> bool:
+        """
+        evidence_unit_ids_json に根拠episodeの unit_id を追記する（集合として扱う）。
+
+        変更があった場合は True を返す。
+        """
+        try:
+            loaded = json.loads(pf.evidence_unit_ids_json or "[]")
+        except Exception:  # noqa: BLE001
+            loaded = []
+        ids = loaded if isinstance(loaded, list) else []
+        seen: set[int] = set()
+        merged: list[int] = []
+        for x in ids:
+            try:
+                xi = int(x)
+            except Exception:  # noqa: BLE001
+                continue
+            if xi in seen:
+                continue
+            seen.add(xi)
+            merged.append(xi)
+        ev = int(evidence_unit_id)
+        if ev not in seen:
+            merged.append(ev)
+            pf.evidence_unit_ids_json = _json_dumps(merged)
+            return True
+        return False
+
+    def _close_exclusive_conflicts(
+        *,
+        subject_entity_id: Optional[int],
+        predicate: str,
+        keep_unit_id: Optional[int],
+        close_ts: int,
+    ) -> None:
+        """
+        exclusive predicate の競合Factを valid_to で閉じる。
+
+        - keep_unit_id（採用するFact）は閉じない
+        - pin はユーザー意思として優先し、閉じない
+        """
+        rows = (
+            session.query(Unit, PayloadFact)
+            .join(PayloadFact, PayloadFact.unit_id == Unit.id)
+            .filter(
+                Unit.kind == int(UnitKind.FACT),
+                PayloadFact.subject_entity_id.is_(subject_entity_id),
+                PayloadFact.predicate == str(predicate),
+                Unit.pin == 0,
+                (PayloadFact.valid_to.is_(None) | (PayloadFact.valid_to > int(close_ts))),
+            )
+            .order_by(Unit.id.desc())
+            .all()
+        )
+        for u0, pf0 in rows:
+            if keep_unit_id is not None and int(u0.id) == int(keep_unit_id):
+                continue
+            # すでに十分古く閉じられている場合は触らない。
+            if pf0.valid_to is not None and int(pf0.valid_to) <= int(close_ts):
+                continue
+            # 範囲が逆転する閉じ方はしない（データを壊さない）。
+            if pf0.valid_from is not None and int(pf0.valid_from) >= int(close_ts):
+                continue
+            pf0.valid_to = int(close_ts)
+            u0.updated_at = int(now_ts)
+            session.add(u0)
+            session.add(pf0)
+            record_unit_version(
+                session,
+                unit_id=int(u0.id),
+                payload_obj={
+                    "subject_entity_id": pf0.subject_entity_id,
+                    "predicate": pf0.predicate,
+                    "object_text": pf0.object_text,
+                    "object_entity_id": pf0.object_entity_id,
+                    "valid_from": pf0.valid_from,
+                    "valid_to": pf0.valid_to,
+                    "evidence_unit_ids": json.loads(pf0.evidence_unit_ids_json or "[]"),
+                },
+                patch_reason="extract_facts_close_exclusive",
+                now_ts=int(now_ts),
+            )
+
     for f in facts:
         if not isinstance(f, dict):
             continue
-        predicate = str(f.get("predicate") or "").strip()
-        obj_text_raw = f.get("object_text")
-        obj_text = str(obj_text_raw).strip() if obj_text_raw is not None else None
-        confidence = _parse_clamped01(f.get("confidence"), 0.0)
-        if not predicate:
+        predicate_raw = str(f.get("predicate") or "").strip()
+        predicate = canonicalize_fact_predicate(predicate_raw)
+        # 制御語彙に無いpredicateは採用しない（プロンプト逸脱・ノイズを遮断する）。
+        if predicate is None:
             continue
+        obj_text_raw = f.get("object_text")
+        obj_text = normalize_object_text_for_key(str(obj_text_raw) if obj_text_raw is not None else None)
+        confidence = _parse_clamped01(f.get("confidence"), 0.0)
 
         validity = f.get("validity")
         valid_from = None
@@ -1162,15 +1253,54 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
                 )
                 object_entity_id = int(obj_ent.id)
                 if not obj_text:
-                    obj_text = obj_name
+                    obj_text = normalize_object_text_for_key(obj_name)
+
+        # event（例: first_met_at）は「最初だけ」残せばよいので、既存があるなら新規作成しない。
+        # （正確な最古判定は注入側でも行うため、ここはDB増殖抑止を優先）
+        if is_event_predicate(predicate):
+            existing_event = (
+                session.query(PayloadFact.unit_id)
+                .join(Unit, Unit.id == PayloadFact.unit_id)
+                .filter(
+                    Unit.kind == int(UnitKind.FACT),
+                    PayloadFact.subject_entity_id.is_(subject_entity_id),
+                    PayloadFact.predicate == str(predicate),
+                )
+                .order_by(Unit.id.asc())
+                .limit(1)
+                .scalar()
+            )
+            if existing_event is not None:
+                pf = session.query(PayloadFact).filter(PayloadFact.unit_id == int(existing_event)).one_or_none()
+                if pf is not None and _merge_evidence_unit_id(pf=pf, evidence_unit_id=unit_id):
+                    u = session.query(Unit).filter(Unit.id == int(existing_event)).one_or_none()
+                    if u is not None:
+                        u.updated_at = int(now_ts)
+                        session.add(u)
+                        session.add(pf)
+                        record_unit_version(
+                            session,
+                            unit_id=int(existing_event),
+                            payload_obj={
+                                "subject_entity_id": pf.subject_entity_id,
+                                "predicate": pf.predicate,
+                                "object_text": pf.object_text,
+                                "object_entity_id": pf.object_entity_id,
+                                "valid_from": pf.valid_from,
+                                "valid_to": pf.valid_to,
+                                "evidence_unit_ids": json.loads(pf.evidence_unit_ids_json or "[]"),
+                            },
+                            patch_reason="extract_facts_event_merge_evidence",
+                            now_ts=int(now_ts),
+                        )
+                continue
 
         existing_fact_unit_id = _find_existing_fact_unit_id(
             session,
             subject_entity_id=subject_entity_id,
-            predicate=predicate,
+            predicate=str(predicate),
             object_text=obj_text,
             object_entity_id=object_entity_id,
-            evidence_unit_id=unit_id,
         )
         if existing_fact_unit_id is not None:
             existing = (
@@ -1183,6 +1313,13 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
                 continue
             fact_unit, pf = existing
             changed = False
+            # evidenceは別エピソードでも統合する（同一Factの増殖を止める）。
+            if _merge_evidence_unit_id(pf=pf, evidence_unit_id=unit_id):
+                changed = True
+            # predicateは正規形で保存する（プロンプト逸脱対策）。
+            if pf.predicate != str(predicate):
+                pf.predicate = str(predicate)
+                changed = True
             if valid_from is not None and pf.valid_from != valid_from:
                 pf.valid_from = valid_from
                 changed = True
@@ -1191,6 +1328,9 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
                 changed = True
             if object_entity_id is not None and pf.object_entity_id != object_entity_id:
                 pf.object_entity_id = int(object_entity_id)
+                changed = True
+            if obj_text and (pf.object_text is None or not str(pf.object_text).strip()):
+                pf.object_text = obj_text
                 changed = True
             if confidence and float(fact_unit.confidence or 0.0) != float(confidence):
                 fact_unit.confidence = float(confidence)
@@ -1214,7 +1354,34 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
                     patch_reason="extract_facts_update",
                     now_ts=now_ts,
                 )
+                # exclusiveは「現在状態が1つ」であることが重要なので、競合を閉じる。
+                if is_exclusive_predicate(str(predicate)):
+                    close_ts = effective_fact_ts(
+                        occurred_at=src_unit.occurred_at,
+                        created_at=now_ts,
+                        valid_from=valid_from,
+                    )
+                    _close_exclusive_conflicts(
+                        subject_entity_id=subject_entity_id,
+                        predicate=str(predicate),
+                        keep_unit_id=int(fact_unit.id),
+                        close_ts=int(close_ts),
+                    )
             continue
+
+        # exclusiveは新規作成前に競合を閉じる（DB増殖/注入矛盾を抑える）。
+        if is_exclusive_predicate(str(predicate)):
+            close_ts = effective_fact_ts(
+                occurred_at=src_unit.occurred_at,
+                created_at=now_ts,
+                valid_from=valid_from,
+            )
+            _close_exclusive_conflicts(
+                subject_entity_id=subject_entity_id,
+                predicate=str(predicate),
+                keep_unit_id=None,
+                close_ts=int(close_ts),
+            )
 
         fact_unit = Unit(
             kind=int(UnitKind.FACT),
@@ -1235,7 +1402,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
         session.flush()
         fact_payload = {
             "subject_entity_id": subject_entity_id,
-            "predicate": predicate,
+            "predicate": str(predicate),
             "object_text": obj_text,
             "object_entity_id": object_entity_id,
             "valid_from": valid_from,
@@ -1246,7 +1413,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
             PayloadFact(
                 unit_id=fact_unit.id,
                 subject_entity_id=subject_entity_id,
-                predicate=predicate,
+                predicate=str(predicate),
                 object_text=obj_text,
                 object_entity_id=object_entity_id,
                 valid_from=valid_from,

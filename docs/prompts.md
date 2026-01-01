@@ -112,6 +112,7 @@
 
 - 保存は `units(kind=FACT)` + `payload_fact`
 - `payload_fact.evidence_unit_ids_json` に元 episode の `unit_id` を必ず含める
+- `predicate` は語彙爆発を避けるため制御語彙に寄せる（例: `name_is`, `is_addressed_as`, `likes`, `prefers`, `uses`, `owns`, `affiliated_with`, `located_in`, `operates_on`, `goal_is`, `first_met_at` など）
 
 ## OpenLoops抽出
 
