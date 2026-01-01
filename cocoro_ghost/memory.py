@@ -513,10 +513,15 @@ class MemoryManager:
             if locale:
                 capsule_lines.append(f"locale: {locale}")
         if image_summaries:
-            for summary in image_summaries:
+            for idx, summary in enumerate(image_summaries, start=1):
                 s = (summary or "").strip()
-                if s:
-                    capsule_lines.append(f"[ユーザーが今送った画像の内容] {s}")
+                if not s:
+                    continue
+                capsule_lines.append(f"[画像 #{idx}]")
+                capsule_lines.append("---IMAGE_SUMMARY_START---")
+                capsule_lines.extend(s.splitlines())
+                capsule_lines.append("---IMAGE_SUMMARY_END---")
+                capsule_lines.append("")
 
         parts: List[str] = []
         parts.append(format_memory_pack_section("CONTEXT_CAPSULE", capsule_lines))

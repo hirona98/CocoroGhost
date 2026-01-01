@@ -599,10 +599,15 @@ def build_memory_pack(
         if locale:
             capsule_parts.append(f"locale: {locale}")
     if image_summaries:
-        for s in image_summaries:
+        for idx, s in enumerate(image_summaries, start=1):
             s = (s or "").strip()
-            if s:
-                capsule_parts.append(f"[ユーザーが今送った画像の内容] {s}")
+            if not s:
+                continue
+            capsule_parts.append(f"[画像 #{idx}]")
+            capsule_parts.append("---IMAGE_SUMMARY_START---")
+            capsule_parts.extend(s.splitlines())
+            capsule_parts.append("---IMAGE_SUMMARY_END---")
+            capsule_parts.append("")
 
     # パートナーの感情（重要度×時間減衰）を同期計算して注入する。
     #
