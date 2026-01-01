@@ -137,6 +137,25 @@ def _parse_optional_epoch_seconds(value: Any) -> Optional[int]:
     return None
 
 
+def _parse_clamped01(value: Any, default: float) -> float:
+    """
+    任意の値を 0..1 の float として保守的に解釈し、範囲外は丸める。
+
+    LLM出力の確信度/強度/重要度などは「確率スケール（0..1）」として扱う設計のため、
+    ここで型崩れや範囲逸脱を吸収する。
+    """
+    # None/Boolはスコアとして扱わない（defaultへフォールバック）
+    if value is None:
+        return float(default)
+    if isinstance(value, bool):
+        return float(default)
+    # 数値変換できるなら clamp01
+    try:
+        return clamp01(float(value))
+    except Exception:  # noqa: BLE001
+        return float(default)
+
+
 def _parse_llm_json_dict(*, llm_client: LlmClient, resp: Any) -> Optional[Dict[str, Any]]:
     """LLMのJSON応答をdictへ正規化して返す。"""
     # JSON本文を抽出してパースする。
@@ -455,17 +474,6 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     raw_json = raw_text
     data = json.loads(raw_text)
 
-    def _parse_clamped01(value: Any, default: float) -> float:
-        """0..1 の float として保守的に解釈し、範囲外は丸める。"""
-        if value is None:
-            return float(default)
-        if isinstance(value, bool):
-            return float(default)
-        try:
-            return clamp01(float(value))
-        except Exception:  # noqa: BLE001
-            return float(default)
-
     unit.partner_affect_label = str(data.get("partner_affect_label") or "")
     unit.partner_affect_intensity = _parse_clamped01(data.get("partner_affect_intensity"), 0.0)
     unit.salience = _parse_clamped01(data.get("salience"), 0.0)
@@ -683,7 +691,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
             aliases_raw = []
         aliases = [str(a) for a in aliases_raw if str(a).strip()]
         roles = _normalize_roles(e.get("roles"), type_label=type_label)
-        confidence = float(e.get("confidence") or 0.0)
+        confidence = _parse_clamped01(e.get("confidence"), 0.0)
         ent = _get_or_create_entity(
             session,
             name=name,
@@ -1025,7 +1033,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
         predicate = str(f.get("predicate") or "").strip()
         obj_text_raw = f.get("object_text")
         obj_text = str(obj_text_raw).strip() if obj_text_raw is not None else None
-        confidence = float(f.get("confidence") or 0.0)
+        confidence = _parse_clamped01(f.get("confidence"), 0.0)
         if not predicate:
             continue
 
@@ -1244,6 +1252,7 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
         status_raw = str(l.get("status") or "open").strip().lower()
         status = int(LoopStatus.CLOSED) if status_raw in ("closed", "close") else int(LoopStatus.OPEN)
         due_at = _parse_optional_epoch_seconds(l.get("due_at"))
+        confidence = _parse_clamped01(l.get("confidence"), 0.0)
 
         if status == int(LoopStatus.CLOSED):
             existing = (
@@ -1292,8 +1301,8 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
                 if due_at is not None and pl.due_at != due_at:
                     pl.due_at = due_at
                     changed = True
-                if float(l.get("confidence") or 0.0) and float(unit.confidence or 0.0) != float(l.get("confidence") or 0.0):
-                    unit.confidence = float(l.get("confidence") or 0.0)
+                if confidence and float(unit.confidence or 0.0) != float(confidence):
+                    unit.confidence = float(confidence)
                     changed = True
                 if changed:
                     unit.updated_at = now_ts
@@ -1315,7 +1324,7 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
             updated_at=now_ts,
             source="extract_loops",
             state=int(UnitState.RAW),
-            confidence=float(l.get("confidence") or 0.0),
+            confidence=float(confidence),
             salience=0.0,
             sensitivity=int(src_unit.sensitivity),
             pin=0,

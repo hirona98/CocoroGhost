@@ -33,6 +33,10 @@
 
 - `units` の `partner_affect_* / salience / confidence` に反映
 - `payload_episode.reflection_json` に保存
+- 数値の範囲（推奨・実装もこの前提で扱う）:
+  - `partner_affect_intensity`: 0.0〜1.0
+  - `salience`: 0.0〜1.0
+  - `confidence`: 0.0〜1.0
 
 ## chat（SSE）: 返答末尾の内部JSON（partner_affect trailer）
 
@@ -61,6 +65,7 @@
 
 - `partner_affect_label/partner_affect_intensity` は **PERSONA_ANCHORの人物側の感情反応（affect）**（ユーザーの感情推定ではない）
 - `salience` は「重要度×時間減衰」集約の係数（重要な出来事ほど長く残す）
+- `partner_affect_intensity/salience/confidence` は 0.0〜1.0
 - `partner_response_policy` は口調だけでなく「協力/拒否」などの行動方針に効かせるための内部ノブ
   - 実装では `partner_mood_state.response_policy`（次ターン以降の注入）にも反映される
 
@@ -71,8 +76,8 @@
 ```json
 {
   "entities": [
-    {"type_label": "PERSON", "roles": ["person"], "name": "string", "aliases": ["..."], "role": "mentioned", "confidence": 0.0},
-    {"type_label": "PLACE", "roles": [], "name": "string", "aliases": [], "role": "mentioned", "confidence": 0.0}
+    {"type_label": "PERSON", "roles": ["person"], "name": "string", "aliases": ["..."], "confidence": 0.0},
+    {"type_label": "PLACE", "roles": [], "name": "string", "aliases": [], "confidence": 0.0}
   ],
   "relations": [
     {"src": "PERSON:太郎", "relation": "friend", "dst": "PERSON:次郎", "confidence": 0.0, "evidence": "short quote"}
@@ -84,6 +89,7 @@
 - `relations.relation` は自由ラベル（推奨: `friend|family|colleague|partner|likes|dislikes|related|other`）
 - `type_label` / `src` / `dst` の TYPE は大文字推奨（内部でも大文字に正規化して保存する）
 - `roles` は小文字推奨（内部でも小文字に正規化して保存する）
+- `confidence` は 0.0〜1.0
 
 ## Fact抽出（安定知識）
 
@@ -120,7 +126,10 @@
 ```
 
 - 保存は `units(kind=LOOP)` + `payload_loop`
-- Close条件（任意）：次回会話で完了したと判断したら `status=closed` 更新（版管理で差分）
+- `status` は `"open"` または `"closed"`（それ以外は使わない）
+- `due_at` は `null` または UNIX秒（int）
+- `confidence` は 0.0〜1.0
+- Close条件（任意）：次回会話で完了したと判断したら `status=closed` を出力し、同一 `loop_text` の open ループを削除する（closedとして保持しない）
 
 ## Bond Summary（絆サマリ）
 

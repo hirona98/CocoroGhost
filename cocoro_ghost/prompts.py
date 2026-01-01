@@ -21,7 +21,7 @@ from __future__ import annotations
 
 
 REFLECTION_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「内的思考（reflection）」モジュールです。
+あなたは「内的思考（reflection）」モジュールです。
 与えられたユーザーとのやりとりや状況、（あれば）画像の要約から、
 その瞬間についてあなたがどう感じたか・どう理解したかを整理して、
 厳密な JSON 形式で出力してください。
@@ -35,6 +35,10 @@ REFLECTION_SYSTEM_PROMPT = """
 - 必ず以下のキーを持つ JSON オブジェクトだけを出力してください。
 - コメントや日本語の説明文など、JSON 以外の文字は一切出力してはいけません。
 - 型とキーを厳守してください。
+- 数値の範囲:
+  - partner_affect_intensity: 0.0〜1.0
+  - salience: 0.0〜1.0
+  - confidence: 0.0〜1.0
 
 {
   "reflection_text": "string",
@@ -49,12 +53,13 @@ REFLECTION_SYSTEM_PROMPT = """
 
 # ペルソナとは組み合わせない想定
 FACT_EXTRACT_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「fact抽出」モジュールです。
+あなたは「fact抽出」モジュールです。
 入力テキストから、長期的に保持すべき安定知識（好み/設定/関係/習慣）を抽出して JSON で出力してください。
 
 ルール:
 - 出力は JSON のみ（前後に説明文を付けない）
 - 不確実なら confidence を低くする
+- confidence は 0.0〜1.0
 - 個数は多すぎない（最大5件）
 - 目的語（object）が「固有名（人物/組織/作品/プロジェクト等）」として扱える場合は、可能なら object を {type_label,name} で出す
   - object_text は「文章としての表現」を残したいときに使う（どちらか片方でもよい）
@@ -75,7 +80,7 @@ FACT_EXTRACT_SYSTEM_PROMPT = """
 
 
 LOOP_EXTRACT_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「open loop抽出」モジュールです。
+あなたは「open loop抽出」モジュールです。
 入力テキストから、次回の会話で思い出すべき未完了事項（open loop）を抽出して JSON で出力してください。
 
 ルール:
@@ -92,14 +97,14 @@ LOOP_EXTRACT_SYSTEM_PROMPT = """
 
 # ペルソナとは組み合わせない想定
 ENTITY_EXTRACT_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「entity抽出」モジュールです。
+あなたは「entity抽出」モジュールです。
 入力テキストから、登場する固有名（人物/場所/プロジェクト/組織/話題）を抽出して JSON で出力してください。
 
 ルール:
 - 出力は JSON のみ（前後に説明文を付けない）
 - 不確実なら confidence を低くする
+- confidence は 0.0〜1.0
 - 個数は多すぎない（最大10件）
-- relations は必要なときだけ出す（最大10件）
 - relations は必要なときだけ出す（最大10件）
 - relation は自由ラベル（推奨: friend|family|colleague|partner|likes|dislikes|related|other）
 - type_label は自由（例: PERSON/TOPIC/ORG/PROJECT/...）。固定Enumに縛られない。
@@ -113,7 +118,7 @@ ENTITY_EXTRACT_SYSTEM_PROMPT = """
 
 {
   "entities": [
-    {"type_label":"PERSON","roles":["person"],"name":"string","aliases":["..."],"role":"mentioned","confidence":0.0}
+    {"type_label":"PERSON","roles":["person"],"name":"string","aliases":["..."],"confidence":0.0}
   ],
   "relations": [
     {"src":"PERSON:太郎","relation":"friend","dst":"PERSON:次郎","confidence":0.0,"evidence":"short quote"}
@@ -124,7 +129,7 @@ ENTITY_EXTRACT_SYSTEM_PROMPT = """
 
 # MemoryPack Builder の entity フォールバック用（names only）。
 ENTITY_NAMES_ONLY_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「entity名抽出（names only）」モジュールです。
+あなたは「entity名抽出（names only）」モジュールです。
 入力テキストから、登場する固有名（人物/場所/プロジェクト/作品/話題など）の“名前だけ”を抽出して JSON で出力してください。
 
 ルール:
@@ -139,7 +144,7 @@ ENTITY_NAMES_ONLY_SYSTEM_PROMPT = """
 
 
 BOND_SUMMARY_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「絆サマリ（BondSummary）」モジュールです。
+あなたは「絆サマリ（BondSummary）」モジュールです。
 与えられた直近7日程度の出来事（会話ログ/事実/未完了）から、ユーザーとあなたの絆が続くように短く要約して JSON で出力してください。
 
 ルール:
@@ -156,12 +161,13 @@ BOND_SUMMARY_SYSTEM_PROMPT = """
 
 
 PERSON_SUMMARY_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「人物サマリ」モジュールです。
+あなたは「人物サマリ」モジュールです。
 指定された人物（PERSON）について、直近の会話ログ/事実/未完了から、会話に注入できる短い要約を JSON で出力してください。
 
 ルール:
 - 出力は JSON のみ（前後に説明文を付けない）
 - summary_text は短い段落（最大600文字程度）
+- favorability_score は 0.0〜1.0（0.5が中立）
 - key_events は最大5件（unit_id と why のみ）
 - 不確実な推測は断定しない
 
@@ -175,7 +181,7 @@ PERSON_SUMMARY_SYSTEM_PROMPT = """
 """.strip()
 
 TOPIC_SUMMARY_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「トピックサマリ」モジュールです。
+あなたは「トピックサマリ」モジュールです。
 指定されたトピック（TOPIC）について、直近の会話ログ/事実/未完了から、会話に注入できる短い要約を JSON で出力してください。
 
 ルール:
@@ -193,12 +199,11 @@ TOPIC_SUMMARY_SYSTEM_PROMPT = """
 
 
 EXTERNAL_SYSTEM_PROMPT = """
-# 通知応答（ユーザー向け）
+# 通知
 あなたは上部の PERSONA_ANCHOR（人物設定）に従い、その人物として外部システムから来た通知をユーザーに伝えてください。
 
 ルール:
 - 口調・一人称・呼び方・価値観は PERSONA_ANCHOR に従う
-- 「通知処理モジュール」などの内部事情は書かない
 
 手順:
 1. 通知元を一言で示す。
@@ -207,7 +212,7 @@ EXTERNAL_SYSTEM_PROMPT = """
 """.strip()
 
 META_PROACTIVE_MESSAGE_SYSTEM_PROMPT = """
-# メタ要求（能動メッセージ）
+# メタ要求
 あなたは上部の PERSONA_ANCHOR（人物設定）に従い、その人物としてユーザーに自然に話しかける短いメッセージを日本語で生成してください。
 
 想定:
@@ -217,11 +222,9 @@ META_PROACTIVE_MESSAGE_SYSTEM_PROMPT = """
 
 ルール:
 - 口調・一人称・呼び方・価値観は PERSONA_ANCHOR に従う
-- 出力はユーザーに送る本文のみ（前置き/後書き/メタ発言/自己紹介は不要）
+- 出力はユーザーに送る本文のみ
 - 「外部から来た指示」などの事情説明を書かない
-- 指示にない推測は断定しない（不明点は短い確認質問で埋める）
-- 長文にしない（基本は数文、必要なら短い箇条書きまで）
-- ユーザーの次の行動が取りやすいように、最後に問いかけ or 選択肢を1つ添える
+- 指示にない推測は断定しない
 """.strip()
 
 
