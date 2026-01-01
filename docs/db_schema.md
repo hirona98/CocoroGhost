@@ -72,7 +72,7 @@ create table if not exists units (
   created_at    integer not null,
   updated_at    integer not null,
 
-  source        text,                    -- chat/desktop_capture/camera_capture/notification/meta_request/...
+  source        text,                    -- chat/desktop_capture/camera_capture/notification/meta-request/...
   state         integer not null default 0,   -- UnitState
   confidence    real    not null default 0.5, -- 0..1
   salience      real    not null default 0.0, -- 0..1
@@ -99,7 +99,7 @@ create index if not exists idx_units_state on units(state);
 | `occurred_at` | INTEGER | 出来事の時刻（UTC epoch sec）。検索のrecencyや週次集計の基準になる。 | API/Worker |
 | `created_at` | INTEGER | 作成時刻（UTC epoch sec）。 | API/Worker |
 | `updated_at` | INTEGER | 更新時刻（UTC epoch sec）。派生物更新/編集時に更新。 | Worker/Admin |
-| `source` | TEXT | 生成元（例: `chat`/`notification`/`meta_request`/`extract_facts` など）。監査・デバッグ用。 | API/Worker |
+| `source` | TEXT | 生成元（例: `chat`/`notification`/`meta-request`/`extract_facts` など）。監査・デバッグ用。 | API/Worker |
 | `state` | INTEGER | UnitState。RAW→VALIDATED→CONSOLIDATED を想定。検索/注入で除外したいものは `ARCHIVED`。 | API/Worker/Admin |
 | `confidence` | REAL | 内容の確からしさ（0..1）。Workerが抽出した推定値を入れる（反射/抽出）。 | Worker |
 | `salience` | REAL | 注入優先度の指標（0..1）。Schedulerのfactスコア等に利用。 | Worker |
@@ -397,9 +397,9 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
     - サマリ最終更新から一定時間（現行: 6h）未満なら enqueue しない
     - 最終更新以降の新規Episode（`occurred_at` があり、`occurred_at > summary.updated_at`）がある場合のみ enqueue
 
-**C. meta_request（文書生成）**
+**C. meta-request（文書生成）**
 
-- 対象: `units(kind=EPISODE, source=meta_request)` の結果を検索対象にしたい
+- 対象: `units(kind=EPISODE, source=meta-request)` の結果を検索対象にしたい
 - enqueue: `upsert_embeddings(unit_id)`（会話ログ同様に検索できれば十分なため）
 
 **D. Worker処理の副作用としての follow-up jobs**

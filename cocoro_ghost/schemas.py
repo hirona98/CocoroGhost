@@ -95,7 +95,7 @@ class NotificationResponse(BaseModel):
 
 class MetaRequestRequest(BaseModel):
     """
-    /meta_request 用リクエスト（内部形式）。
+    /meta-request 用リクエスト（内部形式）。
     システムからパートナーへの指示を伝える。
     """
     embedding_preset_id: Optional[str] = None
@@ -106,7 +106,7 @@ class MetaRequestRequest(BaseModel):
 
 class MetaRequestV1Request(BaseModel):
     """
-    /meta_request/v1 用リクエスト。
+    /meta-request/v1 用リクエスト。
     data URI形式の画像を受け付けるバージョン。
     """
     instruction: str                     # パートナーへの指示

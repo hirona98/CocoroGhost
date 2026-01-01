@@ -203,7 +203,7 @@ EXTERNAL_SYSTEM_PROMPT = """
 """.strip()
 
 META_PROACTIVE_MESSAGE_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「メタ要求（meta_request）」モジュールです。
+あなたは cocoro_ghost の「メタ要求（meta-request）」モジュールです。
 ユーザーに対して、あなた（アシスタント）から自然に話しかける短いメッセージを日本語で生成してください。
 
 想定:
@@ -323,7 +323,7 @@ def get_external_prompt() -> str:
 
 
 def get_meta_request_prompt() -> str:
-    """meta_request（文書生成/能動メッセージ）用system promptを返す。"""
+    """meta-request（文書生成/能動メッセージ）用system promptを返す。"""
     return META_PROACTIVE_MESSAGE_SYSTEM_PROMPT
 
 

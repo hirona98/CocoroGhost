@@ -82,7 +82,7 @@ def _matches_exclude_keyword(pattern: str, text: str) -> bool:
             return pattern in text
     return pattern in text
 
-_META_REQUEST_REDACTED_USER_TEXT = "[meta_request] 文書生成"
+_META_REQUEST_REDACTED_USER_TEXT = "[meta-request] 文書生成"
 
 # /api/chat（SSE）では、同一LLM呼び出しで「ユーザー表示本文 + 内部JSON（機嫌/反射）」を生成し、
 # 内部JSONはストリームから除外して保存・注入に使う。
@@ -1052,7 +1052,7 @@ class MemoryManager:
         background_tasks: Optional[BackgroundTasks] = None,
     ) -> schemas.MetaRequestResponse:
         """
-        文書生成（meta_request）をEpisodeとして扱い、生成結果をreply_textに保存する。
+        文書生成（meta-request）をEpisodeとして扱い、生成結果をreply_textに保存する。
 
         background_tasks があれば非同期実行し、結果はevent_streamで通知する。
         """
@@ -1064,11 +1064,11 @@ class MemoryManager:
             unit_id = self._create_episode_unit(
                 db,
                 now_ts=now_ts,
-                source="meta_request",
+                source="meta-request",
                 user_text=_META_REQUEST_REDACTED_USER_TEXT,
                 reply_text=None,
                 image_summary=None,
-                context_note=_json_dumps({"kind": "meta_request", "redacted": True}),
+                context_note=_json_dumps({"kind": "meta-request", "redacted": True}),
                 sensitivity=int(Sensitivity.NORMAL),
             )
 
@@ -1156,7 +1156,7 @@ class MemoryManager:
                             injection_strategy=retriever.last_injection_strategy,
                         )
             except Exception as exc:  # noqa: BLE001
-                logger.error("MemoryPack生成に失敗しました(meta_request)", exc_info=exc)
+                logger.error("MemoryPack生成に失敗しました(meta-request)", exc_info=exc)
                 memory_pack = ""
         else:
             memory_pack = self._build_simple_memory_pack(
@@ -1188,7 +1188,7 @@ class MemoryManager:
             )
             message = (self.llm_client.response_content(resp) or "").strip()
         except Exception as exc:  # noqa: BLE001
-            logger.error("meta_request document generation failed", exc_info=exc)
+            logger.error("meta-request document generation failed", exc_info=exc)
             message = ""
 
         with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
@@ -1204,7 +1204,7 @@ class MemoryManager:
             self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
 
         publish_event(
-            type="meta_request",
+            type="meta-request",
             embedding_preset_id=embedding_preset_id,
             unit_id=unit_id,
             data={"message": message},

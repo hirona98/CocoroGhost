@@ -1,5 +1,5 @@
 """
-/v1/meta_request エンドポイント
+/v1/meta-request エンドポイント
 
 システムからの指示（instruction）とペイロードを受け取り、
 パートナーAIに能動的なメッセージを生成させる。
@@ -18,7 +18,7 @@ from cocoro_ghost.memory import MemoryManager
 router = APIRouter()
 
 
-@router.post("/v1/meta_request", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/v1/meta-request", status_code=status.HTTP_204_NO_CONTENT)
 def meta_request_v1(
     request: schemas.MetaRequestV1Request,
     background_tasks: BackgroundTasks,

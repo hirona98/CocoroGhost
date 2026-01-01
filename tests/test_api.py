@@ -308,10 +308,10 @@ def test_notification():
 
 def test_meta_request():
     """
-    POST /v1/meta_request - メタ要求テスト
+    POST /v1/meta-request - メタ要求テスト
     システムからの指示をパートナーに伝達できるかを確認する。
     """
-    print("\n=== POST /v1/meta_request ===")
+    print("\n=== POST /v1/meta-request ===")
     base64_data = load_test_image_base64("test_image_3.png")
 
     # メタ要求ペイロード構築
@@ -325,7 +325,7 @@ def test_meta_request():
         payload["images"] = []
 
     try:
-        r = httpx.post(f"{BASE_URL}/v1/meta_request", headers=get_headers(), json=payload, timeout=30)
+        r = httpx.post(f"{BASE_URL}/v1/meta-request", headers=get_headers(), json=payload, timeout=30)
         print(f"  Status: {r.status_code}")
         if r.status_code == 204:
             print("  [OK] メタ要求成功")
@@ -355,7 +355,7 @@ def main():
     results["chat"] = test_chat()
     results["chat_image"] = test_chat_with_image()
     results["notification"] = test_notification()
-    results["meta_request"] = test_meta_request()
+    results["meta-request"] = test_meta_request()
 
     # 結果サマリー
     print("\n" + "=" * 50)

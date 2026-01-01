@@ -5,7 +5,7 @@
 - **API Server（FastAPI）**
   - `/api/chat`（SSE）
   - `/api/v1/notification`
-  - `/api/v1/meta_request`
+  - `/api/v1/meta-request`
 - **Memory Store（SQLite: `memory_<embedding_preset_id>.db`）**
   - `units` + `payload_*` による Unit化
   - 版管理（`unit_versions`）と来歴/信頼度を保持
@@ -207,7 +207,7 @@ sequenceDiagram
   MM-->>WS: publish {unit_id,type,data{system_text,message}}
 ```
 
-## `/api/v1/meta_request` の処理シーケンス
+## `/api/v1/meta-request` の処理シーケンス
 
 ```mermaid
 sequenceDiagram
@@ -222,9 +222,9 @@ sequenceDiagram
   participant Q as Jobs (DB)
   participant WS as /api/events/stream (WebSocket)
 
-  UI->>API: POST /api/v1/meta_request\n{instruction,payload_text?,images?}
+  UI->>API: POST /api/v1/meta-request\n{instruction,payload_text?,images?}
   API->>MM: handle_meta_request(request)\n(create placeholder unit)
-  MM->>DB: save Unit(kind=EPISODE, source=meta_request)\nuser_text=[redacted], reply_text=null
+  MM->>DB: save Unit(kind=EPISODE, source=meta-request)\nuser_text=[redacted], reply_text=null
   API-->>UI: 204 No Content
   Note over API,MM: BackgroundTasks (after response)
   MM->>LLM: (optional) summarize images
@@ -233,7 +233,7 @@ sequenceDiagram
   MM->>SCH: build MemoryPack\n(relevant episodes)
   SCH->>DB: read units/entities/summaries
   SCH-->>MM: MemoryPack
-  MM->>LLM: generate partner message\n(meta_request prompt)
+  MM->>LLM: generate partner message\n(meta-request prompt)
   MM->>DB: update payload_episode.reply_text/image_summary
   MM->>Q: enqueue embeddings job
   MM-->>WS: publish {unit_id,type,data{message}}

@@ -194,7 +194,7 @@ Invoke-RestMethod -Method Post `
 - `images` がある場合は `payload_episode.image_summary` に要約を保存する
 
 
-## `/api/v1/meta_request`
+## `/api/v1/meta-request`
 
 ### Request（JSON）
 
@@ -219,7 +219,7 @@ Invoke-RestMethod -Method Post `
 ### 例（cURL）
 
 ```bash
-curl -X POST http://127.0.0.1:55601/api/v1/meta_request \
+curl -X POST http://127.0.0.1:55601/api/v1/meta-request \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
@@ -229,7 +229,7 @@ curl -X POST http://127.0.0.1:55601/api/v1/meta_request \
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:55601/api/v1/meta_request" `
+  -Uri "http://127.0.0.1:55601/api/v1/meta-request" `
   -ContentType "application/json; charset=utf-8" `
   -Headers @{ Authorization = "Bearer <TOKEN>" } `
   -Body '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
@@ -237,7 +237,7 @@ Invoke-RestMethod -Method Post `
 
 - HTTPレスポンスは先に返り、パートナーのセリフ（`data.message`）は `/api/events/stream` で後から届く
 - `instruction` / `payload_text` は **永続化しない**（生成にのみ利用）
-- 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=meta_request)` の `payload_episode.reply_text` に保存する
+- 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=meta-request)` の `payload_episode.reply_text` に保存する
 
 ## 管理API
 
@@ -269,7 +269,7 @@ Invoke-RestMethod -Method Post `
 - `/api/capture`（desktop/camera のキャプチャ保存）
 - `/api/settings`（UI向けの設定取得/更新）
 - `/api/logs/stream`（WebSocketログ購読）
-- `/api/events/stream`（WebSocketイベント購読: notification/meta_request）
+- `/api/events/stream`（WebSocketイベント購読: notification/meta-request）
 
 ## `/api/settings`
 
@@ -475,7 +475,7 @@ UI向けの「全設定」取得/更新。
 
 - URL: `ws(s)://<host>/api/events/stream`
 - 認証: `Authorization: Bearer <TOKEN>`
-- 目的: `POST /api/v1/notification` / `POST /api/v1/meta_request` を受信したとき、接続中クライアントへ即時にイベントを配信する
+- 目的: `POST /api/v1/notification` / `POST /api/v1/meta-request` を受信したとき、接続中クライアントへ即時にイベントを配信する
 - 挙動: 接続直後に最大200件のバッファ済みイベントを送信し、その後は新規イベントをリアルタイムでpushする
 
 ### Event payload（JSON text）
@@ -485,7 +485,7 @@ UI向けの「全設定」取得/更新。
 ```json
 {
   "unit_id": 12345,
-  "type": "notification|meta_request",
+  "type": "notification|meta-request",
   "data": {
     "system_text": "string",
     "message": "string"
@@ -506,7 +506,7 @@ UI向けの「全設定」取得/更新。
 
 {
   "unit_id": 12345,
-  "type": "meta_request",
+  "type": "meta-request",
   "data": {
     "message": "AIパートナーのセリフ"
   }
