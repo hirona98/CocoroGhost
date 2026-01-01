@@ -9,6 +9,7 @@ Facts、Summary、Loops、Episode証拠、Capsule、partner_mood_state等を
 from __future__ import annotations
 
 import json
+import logging
 import math
 import time
 import unicodedata
@@ -36,6 +37,9 @@ if TYPE_CHECKING:
     from cocoro_ghost.llm_client import LlmClient
     from cocoro_ghost.retriever import RankedEpisode
 
+
+# ロガー（MemoryPackの組み立て品質劣化など、アプリ側の警告を出す）
+logger = logging.getLogger(__name__)
 
 # MemoryPackの見出しは日常会話で衝突しにくい形式に統一する。
 MEMORY_PACK_SECTION_PREFIX = "<<<COCORO_GHOST_SECTION:"
@@ -728,6 +732,31 @@ def build_memory_pack(
     loops = list(loop_lines)
     evidence = list(evidence_lines)
 
+    # 予算超過時の警告は「削減が発生した場合のみ」1回だけ出す。
+    # NOTE: ここでは token 計測ではなく文字数（max_inject_tokens*4近似）を使う。
+    trim_steps: list[str] = []
+    original_pack_chars: int | None = None
+
+    def _return_with_budget_warning(final_pack: str) -> str:
+        """
+        MemoryPackの注入予算超過により削減した場合のWARNINGを出して返す。
+
+        - 1回だけログを出す前提（呼び出し側が超過時にのみ呼ぶ）。
+        - 末尾にユーザー指定の文言を必ず付与する。
+        """
+        try:
+            logger.warning(
+                "MemoryPackがトークン予算を超過したため内容を削減しました: max_inject_tokens=%s max_chars=%s original_chars=%s final_chars=%s steps=%s。最大トークンを増やすか会話履歴数を減らしてください",
+                int(max_inject_tokens),
+                int(max_chars),
+                int(original_pack_chars or 0),
+                int(len(final_pack or "")),
+                ",".join(trim_steps) if trim_steps else "(no_steps)",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return final_pack
+
     pack = assemble(
         capsule_lines=capsule_lines,
         facts=facts,
@@ -736,11 +765,13 @@ def build_memory_pack(
         loops=loops,
         evidence=evidence,
     )
+    original_pack_chars = len(pack)
     if len(pack) <= max_chars:
         return pack
 
     # budget超過時は優先順に落とす（仕様: docs/memory_pack_builder.md）
     evidence = []
+    trim_steps.append("EPISODE_EVIDENCE削除")
     pack = assemble(
         capsule_lines=capsule_lines,
         facts=facts,
@@ -750,10 +781,12 @@ def build_memory_pack(
         evidence=evidence,
     )
     if len(pack) <= max_chars:
-        return pack
+        return _return_with_budget_warning(pack)
 
     while loops and len(pack) > max_chars:
         loops = loops[:-1]
+        if not trim_steps or not trim_steps[-1].startswith("OPEN_LOOPS削減"):
+            trim_steps.append("OPEN_LOOPS削減")
         pack = assemble(
             capsule_lines=capsule_lines,
             facts=facts,
@@ -763,11 +796,12 @@ def build_memory_pack(
             evidence=evidence,
         )
     if len(pack) <= max_chars:
-        return pack
+        return _return_with_budget_warning(pack)
 
     if summaries:
         # まず数を絞る（bondを優先）
         summaries = summaries[:1]
+        trim_steps.append("SHARED_NARRATIVE件数削減")
         pack = assemble(
             capsule_lines=capsule_lines,
             facts=facts,
@@ -782,6 +816,7 @@ def build_memory_pack(
             budget = max(120, min(600, max_chars // 3))
             if len(s0) > budget:
                 summaries = [s0[: budget].rstrip() + "…"]
+                trim_steps.append("SHARED_NARRATIVE本文短縮")
                 pack = assemble(
                     capsule_lines=capsule_lines,
                     facts=facts,
@@ -791,11 +826,12 @@ def build_memory_pack(
                     evidence=evidence,
                 )
     if len(pack) <= max_chars:
-        return pack
+        return _return_with_budget_warning(pack)
 
     # RelationshipState を落としても足りない場合は他の要素を削る。
     if relationship:
         relationship = []
+        trim_steps.append("RELATIONSHIP_STATE削除")
         pack = assemble(
             capsule_lines=capsule_lines,
             facts=facts,
@@ -805,10 +841,12 @@ def build_memory_pack(
             evidence=evidence,
         )
     if len(pack) <= max_chars:
-        return pack
+        return _return_with_budget_warning(pack)
 
     while facts and len(pack) > max_chars:
         facts = facts[:-1]
+        if not trim_steps or not trim_steps[-1].startswith("STABLE_FACTS削減"):
+            trim_steps.append("STABLE_FACTS削減")
         pack = assemble(
             capsule_lines=capsule_lines,
             facts=facts,
@@ -818,10 +856,12 @@ def build_memory_pack(
             evidence=evidence,
         )
     if len(pack) <= max_chars:
-        return pack
+        return _return_with_budget_warning(pack)
 
     while capsule_lines and len(pack) > max_chars:
         capsule_lines = capsule_lines[:-1]
+        if not trim_steps or not trim_steps[-1].startswith("CONTEXT_CAPSULE削減"):
+            trim_steps.append("CONTEXT_CAPSULE削減")
         pack = assemble(
             capsule_lines=capsule_lines,
             facts=facts,
@@ -831,8 +871,10 @@ def build_memory_pack(
             evidence=evidence,
         )
     if len(pack) <= max_chars:
-        return pack
+        return _return_with_budget_warning(pack)
 
     if max_chars <= 0:
-        return ""
-    return pack[: max(0, max_chars - 1)] + "\n"
+        trim_steps.append("最終切り捨て(max_chars<=0)")
+        return _return_with_budget_warning("")
+    trim_steps.append("最終切り捨て")
+    return _return_with_budget_warning(pack[: max(0, max_chars - 1)] + "\n")

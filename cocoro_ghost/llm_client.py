@@ -437,6 +437,72 @@ class LlmClient:
         if self._is_log_file_enabled():
             self.io_file_logger.error(message, *args, **kwargs)
 
+    # NOTE:
+    # - LLM側の「コンテキスト長（入力トークン）超過」は運用上の頻出トラブルなので、
+    #   例外種別やメッセージから判定し、原因が一目で分かる日本語ログを残す。
+    # - 末尾文言はユーザー指定に合わせて固定で付与する。
+    def _is_context_window_exceeded(self, exc: Exception) -> bool:
+        """
+        例外が「コンテキスト長超過（入力トークン過多）」由来かを判定する。
+
+        LiteLLMはプロバイダ差分を吸収するため、例外型が揺れる可能性がある。
+        そのため、型判定＋メッセージ判定の両方で検出する。
+        """
+        # まず LiteLLM の専用例外を優先する。
+        try:
+            from litellm import exceptions as litellm_exceptions
+
+            if isinstance(exc, litellm_exceptions.ContextWindowExceededError):
+                return True
+            if isinstance(exc, litellm_exceptions.BadRequestError):
+                msg = str(exc).lower()
+                if "context window" in msg or "maximum context length" in msg or "context length" in msg:
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+
+        # フォールバック: メッセージ内容で検出する（プロバイダ/SDK差分対策）。
+        msg = str(exc).lower()
+        keywords = (
+            "context_window_exceeded",
+            "context window",
+            "maximum context length",
+            "context length",
+            "too many tokens",
+            "prompt is too long",
+            "input is too long",
+        )
+        return any(k in msg for k in keywords)
+
+    def _log_context_window_exceeded_error(
+        self,
+        *,
+        purpose_label: str,
+        kind: str,
+        elapsed_ms: int,
+        approx_chars: int | None,
+        messages_count: int | None,
+        stream: bool | None,
+        exc: Exception,
+    ) -> None:
+        """
+        コンテキスト長超過（入力トークン過多）に特化したERRORログを出力する。
+
+        目的:
+        - 通常の「LLM request failed」よりも原因を明確にし、運用で探しやすくする。
+        """
+        self._log_llm_error(
+            "トークン予算（コンテキスト長）を超過したため、LLMリクエストに失敗しました: purpose=%s kind=%s stream=%s messages=%s approx_chars=%s ms=%s error=%s。最大トークンを増やすか会話履歴数を減らしてください",
+            purpose_label,
+            str(kind),
+            stream,
+            messages_count,
+            approx_chars,
+            int(elapsed_ms),
+            str(exc),
+            exc_info=exc,
+        )
+
     def _log_llm_payload(
         self,
         label: str,
@@ -552,15 +618,27 @@ class LlmClient:
         except Exception as exc:  # noqa: BLE001
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
-                self._log_llm_error(
-                    "LLM request failed %s kind=chat stream=%s messages=%s ms=%s error=%s",
-                    purpose_label,
-                    bool(stream),
-                    msg_count,
-                    elapsed_ms,
-                    str(exc),
-                    exc_info=exc,
-                )
+                # コンテキスト長超過は原因を明確に区別する（ERROR）。
+                if self._is_context_window_exceeded(exc):
+                    self._log_context_window_exceeded_error(
+                        purpose_label=purpose_label,
+                        kind="chat",
+                        elapsed_ms=elapsed_ms,
+                        approx_chars=approx_chars,
+                        messages_count=msg_count,
+                        stream=bool(stream),
+                        exc=exc,
+                    )
+                else:
+                    self._log_llm_error(
+                        "LLM request failed %s kind=chat stream=%s messages=%s ms=%s error=%s",
+                        purpose_label,
+                        bool(stream),
+                        msg_count,
+                        elapsed_ms,
+                        str(exc),
+                        exc_info=exc,
+                    )
             raise
 
         # ストリームは呼び出し側が受信するため、ここでは受信ログを出さない。
@@ -642,13 +720,25 @@ class LlmClient:
         except Exception as exc:  # noqa: BLE001
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
-                self._log_llm_error(
-                    "LLM request failed %s kind=reflection ms=%s error=%s",
-                    purpose_label,
-                    elapsed_ms,
-                    str(exc),
-                    exc_info=exc,
-                )
+                # コンテキスト長超過は原因を明確に区別する（ERROR）。
+                if self._is_context_window_exceeded(exc):
+                    self._log_context_window_exceeded_error(
+                        purpose_label=purpose_label,
+                        kind="reflection",
+                        elapsed_ms=elapsed_ms,
+                        approx_chars=_estimate_text_chars(messages),
+                        messages_count=len(messages),
+                        stream=False,
+                        exc=exc,
+                    )
+                else:
+                    self._log_llm_error(
+                        "LLM request failed %s kind=reflection ms=%s error=%s",
+                        purpose_label,
+                        elapsed_ms,
+                        str(exc),
+                        exc_info=exc,
+                    )
             raise
 
         elapsed_ms = int((time.perf_counter() - start) * 1000)
@@ -717,13 +807,25 @@ class LlmClient:
         except Exception as exc:  # noqa: BLE001
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
-                self._log_llm_error(
-                    "LLM request failed %s kind=json ms=%s error=%s",
-                    purpose_label,
-                    elapsed_ms,
-                    str(exc),
-                    exc_info=exc,
-                )
+                # コンテキスト長超過は原因を明確に区別する（ERROR）。
+                if self._is_context_window_exceeded(exc):
+                    self._log_context_window_exceeded_error(
+                        purpose_label=purpose_label,
+                        kind="json",
+                        elapsed_ms=elapsed_ms,
+                        approx_chars=_estimate_text_chars(messages),
+                        messages_count=len(messages),
+                        stream=False,
+                        exc=exc,
+                    )
+                else:
+                    self._log_llm_error(
+                        "LLM request failed %s kind=json ms=%s error=%s",
+                        purpose_label,
+                        elapsed_ms,
+                        str(exc),
+                        exc_info=exc,
+                    )
             raise
 
         elapsed_ms = int((time.perf_counter() - start) * 1000)
@@ -786,13 +888,25 @@ class LlmClient:
         except Exception as exc:  # noqa: BLE001
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
-                self._log_llm_error(
-                    "LLM request failed %s kind=embedding ms=%s error=%s",
-                    purpose_label,
-                    elapsed_ms,
-                    str(exc),
-                    exc_info=exc,
-                )
+                # コンテキスト長超過は原因を明確に区別する（ERROR）。
+                if self._is_context_window_exceeded(exc):
+                    self._log_context_window_exceeded_error(
+                        purpose_label=purpose_label,
+                        kind="embedding",
+                        elapsed_ms=elapsed_ms,
+                        approx_chars=sum(len(t or "") for t in texts),
+                        messages_count=None,
+                        stream=None,
+                        exc=exc,
+                    )
+                else:
+                    self._log_llm_error(
+                        "LLM request failed %s kind=embedding ms=%s error=%s",
+                        purpose_label,
+                        elapsed_ms,
+                        str(exc),
+                        exc_info=exc,
+                    )
             raise
 
         # レスポンス形式に応じて埋め込みベクトルを取り出す。
@@ -866,14 +980,26 @@ class LlmClient:
             except Exception as exc:  # noqa: BLE001
                 if llm_log_level != "OFF":
                     elapsed_ms = int((time.perf_counter() - start) * 1000)
-                    self._log_llm_error(
-                        "LLM request failed %s kind=vision image_bytes=%s ms=%s error=%s",
-                        purpose_label,
-                        len(image_bytes),
-                        elapsed_ms,
-                        str(exc),
-                        exc_info=exc,
-                    )
+                    # コンテキスト長超過は原因を明確に区別する（ERROR）。
+                    if self._is_context_window_exceeded(exc):
+                        self._log_context_window_exceeded_error(
+                            purpose_label=purpose_label,
+                            kind="vision",
+                            elapsed_ms=elapsed_ms,
+                            approx_chars=_estimate_text_chars(messages),
+                            messages_count=len(messages),
+                            stream=False,
+                            exc=exc,
+                        )
+                    else:
+                        self._log_llm_error(
+                            "LLM request failed %s kind=vision image_bytes=%s ms=%s error=%s",
+                            purpose_label,
+                            len(image_bytes),
+                            elapsed_ms,
+                            str(exc),
+                            exc_info=exc,
+                        )
                 raise
             content = _first_choice_content(resp)
             if llm_log_level != "OFF":
