@@ -29,6 +29,7 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -225,6 +226,23 @@ def claim_next_job(session: Session, *, now_ts: int) -> Optional[int]:
     return int(job.id)
 
 
+def claim_next_job_with_kind(session: Session, *, now_ts: int) -> Optional[tuple[int, str]]:
+    """実行可能な次ジョブを1件RUNNINGにしてclaimし、そのjob_idとkindを返す。"""
+    job = (
+        session.query(Job)
+        .filter(Job.status == int(JobStatus.QUEUED), Job.run_after <= now_ts)
+        .order_by(Job.run_after.asc(), Job.id.asc())
+        .first()
+    )
+    if job is None:
+        return None
+    job.status = int(JobStatus.RUNNING)
+    job.updated_at = now_ts
+    session.add(job)
+    session.commit()
+    return int(job.id), str(job.kind or "")
+
+
 def process_job(
     *,
     session: Session,
@@ -300,25 +318,54 @@ def process_due_jobs(
 ) -> int:
     """claim→processを繰り返して、最大max_jobs件まで処理する。"""
     processed = 0
+    claimed: list[tuple[int, str]] = []
     for _ in range(max_jobs):
         now_ts = _now_utc_ts()
         session = get_memory_session(embedding_preset_id, embedding_dimension)
         try:
-            job_id = claim_next_job(session, now_ts=now_ts)
+            job_info = claim_next_job_with_kind(session, now_ts=now_ts)
         finally:
             session.close()
-        if job_id is None:
-            if sleep_when_empty > 0:
+        if job_info is None:
+            if not claimed and sleep_when_empty > 0:
                 time.sleep(sleep_when_empty)
             break
+        claimed.append(job_info)
 
+    if not claimed:
+        return processed
+
+    embed_job_ids = [job_id for job_id, kind in claimed if kind == "upsert_embeddings"]
+    other_job_ids = [job_id for job_id, kind in claimed if kind != "upsert_embeddings"]
+
+    def _process_job_with_new_session(job_id: int) -> bool:
         session = get_memory_session(embedding_preset_id, embedding_dimension)
         try:
-            ok = process_job(session=session, llm_client=llm_client, job_id=job_id, now_ts=now_ts, max_tries=max_tries)
-            if ok:
-                processed += 1
+            return process_job(
+                session=session,
+                llm_client=llm_client,
+                job_id=job_id,
+                now_ts=_now_utc_ts(),
+                max_tries=max_tries,
+            )
         finally:
             session.close()
+
+    for job_id in other_job_ids:
+        if _process_job_with_new_session(job_id):
+            processed += 1
+
+    if embed_job_ids:
+        worker_count = min(4, len(embed_job_ids))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(_process_job_with_new_session, job_id) for job_id in embed_job_ids]
+            for fut in futures:
+                try:
+                    ok = fut.result()
+                except Exception:  # noqa: BLE001
+                    ok = False
+                if ok:
+                    processed += 1
 
     return processed
 
