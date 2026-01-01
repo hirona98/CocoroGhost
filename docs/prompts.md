@@ -59,7 +59,7 @@
 }
 ```
 
-- `partner_affect_label/partner_affect_intensity` は **パートナーAI側の感情反応（affect）**（ユーザーの感情推定ではない）
+- `partner_affect_label/partner_affect_intensity` は **PERSONA_ANCHORの人物側の感情反応（affect）**（ユーザーの感情推定ではない）
 - `salience` は「重要度×時間減衰」集約の係数（重要な出来事ほど長く残す）
 - `partner_response_policy` は口調だけでなく「協力/拒否」などの行動方針に効かせるための内部ノブ
   - 実装では `partner_mood_state.response_policy`（次ターン以降の注入）にも反映される
@@ -153,7 +153,7 @@
 }
 ```
 
-- `favorability_score` は **パートナーAI→人物** の好感度（0..1）。`0.5` を中立として運用する。
+- `favorability_score` は **PERSONA_ANCHORの人物→人物** の好感度（0..1）。`0.5` を中立として運用する。
 - `favorability_reasons` は根拠となる出来事の `unit_id` と短い理由（最大5件）。
 
 ## Topic Summary（トピックサマリ）

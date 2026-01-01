@@ -130,7 +130,7 @@ class Entity(UnitBase):
     __tablename__ = "entities"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)  # エンティティID
-    # 固定Enumをやめ、自由なラベル + rolesで扱う（パートナーAI用途）
+    # 固定Enumをやめ、自由なラベル + rolesで扱う（PERSONA_ANCHORの人物用途）
     type_label: Mapped[Optional[str]] = mapped_column(Text)  # 種別ラベル（person/place等）
     name: Mapped[str] = mapped_column(Text, nullable=False)  # 名前
     normalized: Mapped[Optional[str]] = mapped_column(Text)  # 正規化名

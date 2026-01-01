@@ -90,7 +90,7 @@ def _json_loads(payload_json: str) -> Dict[str, Any]:
 
 
 def _get_persona_context() -> tuple[str | None, str | None]:
-    """現在のpersona/addon設定を取得する（未初期化ならNone）。"""
+    """現在のPERSONA_ANCHOR設定（persona_text + addon_text）を取得する（未初期化ならNone）。"""
     try:
         cfg = get_config_store().config
     except Exception:  # noqa: BLE001
@@ -101,7 +101,7 @@ def _get_persona_context() -> tuple[str | None, str | None]:
 
 
 def _wrap_prompt_with_persona(base_prompt: str) -> str:
-    """persona/addonがあればsystem promptへ挿入する。"""
+    """PERSONA_ANCHOR（persona_text + addon_text）があればsystem promptへ挿入する。"""
     persona_text, addon_text = _get_persona_context()
     return prompts.wrap_prompt_with_persona(
         base_prompt,
@@ -1890,7 +1890,7 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
     if not summary_text:
         return
 
-    # パートナーAI→人物の好感度（0..1）
+    # PERSONA_ANCHORの人物→人物の好感度（0..1）
     # - 0.5: 中立（デフォルト）
     # - 1.0: とても好意的
     # - 0.0: 強い嫌悪/不信

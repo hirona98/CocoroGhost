@@ -2,7 +2,7 @@
 /v2/notification エンドポイント
 
 外部システム（ファイル監視、カレンダー、RSSリーダー等）からの通知を受け付ける。
-通知はEpisode Unitとして保存され、パートナーAIが応答を生成する。
+通知はEpisode Unitとして保存され、PERSONA_ANCHORの人物として応答を生成する。
 処理は非同期で行われ、結果はevent_streamで配信される。
 """
 

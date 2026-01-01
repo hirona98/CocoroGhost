@@ -54,7 +54,7 @@ flowchart LR
 - （任意）画像要約（Vision）
 - Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 - MemoryPack Builderで **MemoryPack** を生成（capsule/facts/summaries/loops + relevant episodes）
-- LLMへ system（guard + persona/addon + 固定プロンプト）を渡し、conversation は会話履歴（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ user_text を渡す
+- LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + 固定プロンプト）を渡し、conversation は会話履歴（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ user_text を渡す
 - 返答をSSEで配信
 - `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 - Worker用ジョブを enqueue（reflection/extraction/embedding等）
@@ -169,7 +169,7 @@ sequenceDiagram
 ## ストレージ境界
 
 - 設定は `settings.db`
-  - token / active preset / persona・addon / 注入予算 等
+  - token / active preset / PERSONA_ANCHOR（persona_text + addon_text）/ 注入予算 等
 - 記憶は `memory_<embedding_preset_id>.db`
   - `units` + `payload_*` + `entities` 等
   - `vec_units`（sqlite-vec 仮想テーブル）

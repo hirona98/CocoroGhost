@@ -58,7 +58,7 @@ data: {"message":"...","code":"..."}
 1. 画像要約（`images` がある場合）
 2. Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 3. Schedulerで **MemoryPack** を生成（検索結果を `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` に含む）
-4. LLMへ system（guard + persona/addon + partner_affect_trailer_prompt）を渡し、conversation は直近会話（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ user_text を渡す
+4. LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + partner_affect_trailer_prompt）を渡し、conversation は直近会話（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ user_text を渡す
 5. 返答をSSEで配信（返答末尾の内部JSON＝partner_affect trailer はサーバ側で回収し、SSEには流さない）
 6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 7. Worker用ジョブを enqueue（reflection/extraction/embedding等）
@@ -257,7 +257,7 @@ Invoke-RestMethod -Method Post `
 ### Worker と `embedding_preset_id`
 
 - `jobs` は `memory_<embedding_preset_id>.db` に保存されるため、Worker は **アクティブな `embedding_preset_id`（= `active_embedding_preset_id`）** を対象に処理する（内蔵Worker）。
-- persona/addon は **settings 側のプロンプトプリセット**として管理し、`embedding_preset_id`（記憶DB）とは独立する（切替は `/api/settings`）
+- PersonaPreset/AddonPreset は **settings 側のプロンプトプリセット**として管理し、注入時は persona_text + addon_text を PERSONA_ANCHOR として連結する。`embedding_preset_id`（記憶DB）とは独立する（切替は `/api/settings`）
 
 補足:
 - `jobs` は内部用のキューであり、外部から任意のジョブを投入する汎用APIは提供しない。

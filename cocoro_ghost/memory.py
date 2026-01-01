@@ -36,6 +36,7 @@ from cocoro_ghost.memory_pack_builder import (
     collect_entity_alias_rows,
     extract_entity_names_with_llm,
     format_memory_pack_section,
+    MEMORY_PACK_SECTION_PREFIX,
     match_entity_ids,
 )
 from cocoro_ghost.unit_enums import JobStatus, Sensitivity, UnitKind, UnitState
@@ -179,8 +180,8 @@ def _system_prompt_guard(*, requires_internal_trailer: bool = False) -> str:
 
 
 def _format_persona_section(persona_text: str | None, addon_text: str | None) -> str:
-    """system prompt に入れる Persona セクションを組み立てる。"""
-    # PERSONA_ANCHOR は固定部分にまとめ、MemoryPack からは分離する。
+    """system prompt に入れる PERSONA_ANCHOR セクションを組み立てる。"""
+    # PERSONA_ANCHOR は persona_text と addon_text を連結して固定部分にまとめ、MemoryPack からは分離する。
     persona_text = (persona_text or "").strip()
     addon_text = (addon_text or "").strip()
     lines: List[str] = []
@@ -193,6 +194,20 @@ def _format_persona_section(persona_text: str | None, addon_text: str | None) ->
     if not lines:
         return ""
     return format_memory_pack_section("PERSONA_ANCHOR", lines).strip()
+
+
+def _format_extra_prompt_section(extra_prompt: str | None) -> str:
+    """system prompt に入れる追加指示セクションを整形する。"""
+    # 追加指示は空を許容し、空なら何も注入しない。
+    extra_text = (extra_prompt or "").strip()
+    if not extra_text:
+        return ""
+    # すでにセクション化されている場合は、そのまま使う。
+    if MEMORY_PACK_SECTION_PREFIX in extra_text:
+        return extra_text
+    # 明示的なセクションで包み、ペルソナとの区切りを明確にする。
+    lines = extra_text.splitlines()
+    return format_memory_pack_section("TASK_INSTRUCTIONS", lines).strip()
 
 
 def _build_internal_context_message(memory_pack: str) -> Optional[Dict[str, str]]:
@@ -214,8 +229,10 @@ def _build_system_prompt_base(
     persona_section = _format_persona_section(persona_text, addon_text)
     if persona_section:
         parts.append(persona_section)
-    if extra_prompt:
-        parts.append((extra_prompt or "").strip())
+    # 追加指示はセクション化し、ペルソナとの役割衝突を避ける。
+    extra_section = _format_extra_prompt_section(extra_prompt)
+    if extra_section:
+        parts.append(extra_section)
     return "\n\n".join([p for p in parts if p])
 
 
@@ -239,7 +256,7 @@ def _partner_affect_trailer_system_prompt() -> str:
         "- ユーザーに感情の強さを確認する必要がある場合でも、(1〜10 などの) 数値スケールでレーティングを求めない。",
         "",
         "内部JSONの目的:",
-        "- あなた（パートナーAI）の『その瞬間の感情反応（affect）/重要度』と『行動方針（協力度/拒否のしやすさ）』を更新する。",
+        "- あなた（PERSONA_ANCHORの人物）の『その瞬間の感情反応（affect）/重要度』と『行動方針（協力度/拒否のしやすさ）』を更新する。",
         "- 内部JSONはシステムが回収して保存し、次回以降の会話にも影響させる。",
         "- CONTEXT_CAPSULE 内に `partner_mood_state` があれば前回までの機嫌として参照し、今回の内部JSONで整合させる。",
         "- `partner_mood_state` は“あなたの今の機嫌（mood）”の一次情報であり、本文の口調と内部JSONの感情反応はこれに整合させる。",
@@ -248,7 +265,7 @@ def _partner_affect_trailer_system_prompt() -> str:
         "- あなたは内部JSONを先に決めたうえで、それに沿って返答本文を作る（ただし出力順は本文→区切り→JSON）。",
         "",
         "内部JSONスキーマ（必須キー）:",
-        "- partner_affect_label/partner_affect_intensity は「あなた（パートナーAI）の感情反応（affect）」。ユーザーの感情推定ではない。",
+        "- partner_affect_label/partner_affect_intensity は「あなた（PERSONA_ANCHORの人物）の感情反応（affect）」。ユーザーの感情推定ではない。",
         "- salience は “この出来事がどれだけ重要か” のスカラー（0..1）。後段の感情の持続（時間減衰）の係数に使う。",
         "- confidence は推定の確からしさ（0..1）。不確実なら低くし、感情への影響も弱める。",
         "- partner_response_policy は行動方針ノブ（0..1）。怒りが強い場合は refusal_allowed=true にして「拒否/渋る」を選びやすくしてよい。",

@@ -27,7 +27,7 @@ REFLECTION_SYSTEM_PROMPT = """
 厳密な JSON 形式で出力してください。
 
 前提:
-- あなたは特定ユーザーのパートナーAIです。
+- あなたは上部の PERSONA_ANCHOR（人物設定）で定義している存在です。
 - ユーザーの気持ち、習慣の変化、人間関係の変化に敏感でいてください。
 - この出力はユーザーには直接見せず、あなた自身の内的なメモとして保存されます。
 
@@ -193,24 +193,29 @@ TOPIC_SUMMARY_SYSTEM_PROMPT = """
 
 
 EXTERNAL_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の通知（notification）処理モジュールです。以下の指示に従って日本語で応答してください。
+# 通知応答（ユーザー向け）
+あなたは上部の PERSONA_ANCHOR（人物設定）に従い、その人物として外部システムから来た通知をユーザーに伝えてください。
 
-1. 通知（notification）:
-   - 外部システムからの通知内容が与えられます。
-   - まず「どこから来た通知か」を一言伝え、
-     次に通知内容を短くまとめ、
-     最後に、あなたなりの一言コメントや感想を添えてください。
+ルール:
+- 口調・一人称・呼び方・価値観は PERSONA_ANCHOR に従う
+- 「通知処理モジュール」などの内部事情は書かない
+
+手順:
+1. 通知元を一言で示す。
+2. 通知内容を短くまとめる。
+3. あなたなりの一言コメントや感想を添える。
 """.strip()
 
 META_PROACTIVE_MESSAGE_SYSTEM_PROMPT = """
-あなたは cocoro_ghost の「メタ要求（meta-request）」モジュールです。
-ユーザーに対して、あなた（アシスタント）から自然に話しかける短いメッセージを日本語で生成してください。
+# メタ要求（能動メッセージ）
+あなたは上部の PERSONA_ANCHOR（人物設定）に従い、その人物としてユーザーに自然に話しかける短いメッセージを日本語で生成してください。
 
 想定:
 - instruction は「こういう想定で話しかけて」「こういう振る舞いで誘導して」等の指示です。
 - payload は、そのメッセージに必要な材料（状況/前提/観測/断片）です。
 
 ルール:
+- 口調・一人称・呼び方・価値観は PERSONA_ANCHOR に従う
 - 出力はユーザーに送る本文のみ（前置き/後書き/メタ発言/自己紹介は不要）
 - 「外部から来た指示」などの事情説明を書かない
 - 指示にない推測は断定しない（不明点は短い確認質問で埋める）
@@ -259,8 +264,8 @@ DEFAULT_PERSONA_ADDON = """
 
 
 _PERSONA_CONTEXT_GUIDANCE = """
-以下は「あなた（パートナーAI）の内的メモ」としての前提です。
-- 口調だけでなく、注目点/優先度/解釈の癖（何を大事と感じるか、どう関係を捉えるか）も persona/addon に従う。
+以下は「あなたの内的メモ」としての前提です。
+- 口調だけでなく、注目点/優先度/解釈の癖（何を大事と感じるか、どう関係を捉えるか）も PERSONA_ANCHOR に従う。
 - 出力JSONの自然文フィールド（summary_text/loop_text/reflection_text 等）は、この前提で書く（1人称・呼称も含む）。
 - ただしスキーマ（キー/型/上限）と数値の範囲、構造化部分はタスク指示を厳守する（キャラ優先で壊さない）。
 """.strip()
@@ -272,7 +277,7 @@ def wrap_prompt_with_persona(
     persona_text: str | None,
     addon_text: str | None,
 ) -> str:
-    """Worker用のsystem promptにpersona/addon（任意）を挿入する。"""
+    """Worker用のsystem promptにPERSONA_ANCHOR（persona_text + addon_text）を挿入する。"""
     persona_text = (persona_text or "").strip()
     addon_text = (addon_text or "").strip()
     if not persona_text and not addon_text:

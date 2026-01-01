@@ -9,7 +9,7 @@
 
 - 起動時に `settings.db` が無ければ自動作成され、`global_settings` と各種 `*_presets` の初期値が投入される（`docs/bootstrap.md` も参照）。
 - UIは原則 `/api/settings`（GET/PUT）を通して読み書きする。
-- `active_*_preset_id` を切り替えることで、LLM/Embedding/Persona/Addon（任意追加オプション）を運用中に切替できる。
+- `active_*_preset_id` を切り替えることで、LLM/Embedding/PersonaPreset/AddonPreset（任意追加オプション）を運用中に切替できる。
 - **EmbeddingPreset.id はそのまま `embedding_preset_id` として使う**ため、`active_embedding_preset_id` の切替は「参照する記憶DBファイルが変わる」ことを意味する。
 - 内蔵Worker運用のため、`/api/settings` 更新後は内蔵Workerが自動再起動して設定変更に追従する（LLM接続・embedding_preset_id など）。
 
@@ -88,7 +88,7 @@ Embedding/検索パラメータの切替単位。
 
 ### `persona_presets`
 
-persona（人格コア）プロンプトの切替単位。
+PersonaPreset（PERSONA_ANCHOR: 人物設定）プロンプトの切替単位。
 
 #### カラム（実装準拠）
 
@@ -104,7 +104,7 @@ persona（人格コア）プロンプトの切替単位。
 
 ### `addon_presets`
 
-addon（personaへの任意追加オプション）プロンプトの切替単位。
+AddonPreset（PERSONA_ANCHORへの任意追加オプション）プロンプトの切替単位。
 
 #### カラム（実装準拠）
 
@@ -113,6 +113,9 @@ addon（personaへの任意追加オプション）プロンプトの切替単�
 - `archived`（INTEGER: 0/1）
 - `addon_text`（TEXT）: addon本文
 - `created_at` / `updated_at`（DATETIME）
+
+補足:
+- 注入時は `persona_text` と `addon_text` を **同一の PERSONA_ANCHOR セクションに連結**して system prompt に固定注入する。
 
 ### `reminders`（任意）
 
