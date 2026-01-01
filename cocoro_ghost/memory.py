@@ -83,8 +83,6 @@ def _matches_exclude_keyword(pattern: str, text: str) -> bool:
             return pattern in text
     return pattern in text
 
-_META_REQUEST_REDACTED_USER_TEXT = "[meta-request] 文書生成"
-
 # /api/chat（SSE）では、同一LLM呼び出しで「ユーザー表示本文 + 内部JSON（機嫌/反射）」を生成し、
 # 内部JSONはストリームから除外して保存・注入に使う。
 _STREAM_TRAILER_MARKER = PARTNER_AFFECT_TRAILER_MARKER
@@ -1067,33 +1065,23 @@ class MemoryManager:
         request: schemas.MetaRequestRequest,
         *,
         background_tasks: Optional[BackgroundTasks] = None,
-    ) -> schemas.MetaRequestResponse:
+    ) -> None:
         """
-        文書生成（meta-request）をEpisodeとして扱い、生成結果をreply_textに保存する。
+        メタ要求（割り込み）から能動メッセージを生成する。
+
+        方針:
+        - 指示（instruction）やペイロード（payload）は永続化しない。
+        - 生成された「ユーザーに見える本文」だけを通常のEpisodeとして保存する。
+          → 後から辿ると「夢の話をした」は思い出せるが、「メタ要求があった」は辿れない。
 
         background_tasks があれば非同期実行し、結果はevent_streamで通知する。
         """
         embedding_preset_id = request.embedding_preset_id or self.config_store.embedding_preset_id
-        lock = _get_memory_lock(embedding_preset_id)
-        now_ts = _now_utc_ts()
-
-        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-            unit_id = self._create_episode_unit(
-                db,
-                now_ts=now_ts,
-                source="meta-request",
-                user_text=_META_REQUEST_REDACTED_USER_TEXT,
-                reply_text=None,
-                image_summary=None,
-                context_note=_json_dumps({"kind": "meta-request", "redacted": True}),
-                sensitivity=int(Sensitivity.NORMAL),
-            )
 
         if background_tasks is not None:
             background_tasks.add_task(
                 self._process_meta_request_async,
                 embedding_preset_id=embedding_preset_id,
-                unit_id=int(unit_id),
                 instruction=request.instruction,
                 payload_text=request.payload_text,
                 images=request.images,
@@ -1101,18 +1089,16 @@ class MemoryManager:
         else:
             self._process_meta_request_async(
                 embedding_preset_id=embedding_preset_id,
-                unit_id=int(unit_id),
                 instruction=request.instruction,
                 payload_text=request.payload_text,
                 images=request.images,
             )
-        return schemas.MetaRequestResponse(unit_id=unit_id)
+        return None
 
     def _process_meta_request_async(
         self,
         *,
         embedding_preset_id: str,
-        unit_id: int,
         instruction: str,
         payload_text: str,
         images: Sequence[Dict[str, str]],
@@ -1120,11 +1106,13 @@ class MemoryManager:
         lock = _get_memory_lock(embedding_preset_id)
         now_ts = _now_utc_ts()
 
+        # --- 画像要約（生成の材料・永続化しない） ---
         image_summaries = self._summarize_images(list(images), purpose=LlmRequestPurpose.IMAGE_SUMMARY_META_REQUEST)
-        image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
 
-        # instruction/payload は永続化しない（生成にのみ利用）
-        meta_user_text = "\n\n".join(
+        # --- meta-requestテキスト（生成用） ---
+        # instruction/payload は永続化しない（生成にのみ利用する）。
+        # 画像がある場合は、参照不能（ユーザーに見えない）になり得るため、要約を材料として渡す。
+        meta_generation_text = "\n\n".join(
             [
                 "# instruction",
                 (instruction or "").strip(),
@@ -1133,12 +1121,21 @@ class MemoryManager:
                 (payload_text or "").strip(),
             ]
         ).strip()
+        if image_summaries:
+            image_block = "\n".join([s for s in image_summaries if (s or "").strip()])
+            if image_block:
+                meta_generation_text = "\n\n".join([meta_generation_text, "# images", image_block]).strip()
+
+        # --- 記憶検索/Entity抽出用テキスト（非永続・instructionは混ぜない） ---
+        # 割り込み指示（制御プレーン）を埋め込み検索に混ぜると、検索が「指示の類似」に引っ張られやすい。
+        # ここでは話題（データプレーン）に限定する。
+        meta_retrieval_text = (payload_text or "").strip()
 
         cfg = self.config_store.config
         memory_enabled = self.config_store.memory_enabled
 
-        # entity抽出の入力はinstruction/payload＋画像要約に限定する。
-        entity_text = "\n".join(filter(None, [meta_user_text, *(image_summaries or [])])).strip()
+        # entity抽出は「話題（payload）」に寄せる（instructionや画像要約は混ぜない）。
+        entity_text = meta_retrieval_text
 
         memory_pack = ""
         if memory_enabled:
@@ -1150,10 +1147,10 @@ class MemoryManager:
                         entity_future = executor.submit(extract_entity_names_with_llm, self.llm_client, entity_text)
                     # DBアクセスはロック内でまとめて行う。
                     with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-                        recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
+                        recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=None)
                         retriever = Retriever(llm_client=self.llm_client, db=db)
                         relevant_episodes = retriever.retrieve(
-                            meta_user_text,
+                            meta_retrieval_text,
                             recent_conversation,
                             max_results=int(cfg.similar_episodes_limit or 5),
                         )
@@ -1163,7 +1160,7 @@ class MemoryManager:
                         matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
                         memory_pack = build_memory_pack(
                             db=db,
-                            user_text=meta_user_text,
+                            user_text=meta_retrieval_text,
                             image_summaries=image_summaries,
                             client_context=None,
                             now_ts=now_ts,
@@ -1193,7 +1190,7 @@ class MemoryManager:
         internal_context_message = _build_internal_context_message(memory_pack)
         if internal_context_message:
             conversation.append(internal_context_message)
-        conversation.append({"role": "user", "content": meta_user_text})
+        conversation.append({"role": "user", "content": meta_generation_text})
 
         message = ""
         try:
@@ -1208,22 +1205,30 @@ class MemoryManager:
             logger.error("meta-request document generation failed", exc_info=exc)
             message = ""
 
-        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-            self._update_episode_unit(
-                db,
-                now_ts=now_ts,
-                unit_id=unit_id,
-                reply_text=message or None,
-                image_summary=image_summary_text,
-            )
-            # 文書生成は会話ログと同様に検索対象にしたい（埋め込みのみで十分）。
-            self._enqueue_embeddings_job(db, now_ts=now_ts, unit_id=unit_id)
-            self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
+        # --- 会話結果のみ保存 ---
+        # meta-request（割り込み指示）は永続化しない。
+        # 生成した本文だけを通常のEpisodeとして保存し、「話した事実」を後から辿れるようにする。
+        episode_unit_id = -1
+        if message:
+            with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
+                episode_unit_id = self._create_episode_unit(
+                    db,
+                    now_ts=now_ts,
+                    source="proactive",
+                    user_text=None,
+                    reply_text=message,
+                    image_summary=None,
+                    context_note=None,
+                    sensitivity=int(Sensitivity.NORMAL),
+                )
+                # 能動メッセージは「検索で思い出す」だけで十分なため、埋め込みのみ作る。
+                self._enqueue_embeddings_job(db, now_ts=now_ts, unit_id=int(episode_unit_id))
+                self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
 
         publish_event(
             type="meta-request",
             embedding_preset_id=embedding_preset_id,
-            unit_id=unit_id,
+            unit_id=int(episode_unit_id),
             data={"message": message},
         )
 
