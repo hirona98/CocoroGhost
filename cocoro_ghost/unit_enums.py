@@ -56,16 +56,6 @@ class EntityRole(IntEnum):
     MENTIONED = 1  # 言及（会話中に登場）
 
 
-class LoopStatus(IntEnum):
-    """
-    ループの状態を表す列挙型。
-
-    未解決タスクや気掛かりの解決状況を示す。
-    """
-    OPEN = 0    # 未解決
-    CLOSED = 1  # 解決済み
-
-
 class JobStatus(IntEnum):
     """
     ジョブの実行状態を表す列挙型。

@@ -86,10 +86,13 @@ LOOP_EXTRACT_SYSTEM_PROMPT = """
 ルール:
 - 出力は JSON のみ（前後に説明文を付けない）
 - 個数は多すぎない（最大5件）
+- due_at は null または UNIX秒（int）
+- confidence は 0.0〜1.0
+- 完了判定（削除）はサーバ側が `expires_at`（TTL）で行うため、close指示は出さない
 
 {
   "loops": [
-    {"status":"open","due_at":null,"loop_text":"次回、UnityのAnimator設計の続きを話す","confidence":0.0}
+    {"due_at":null,"loop_text":"次回、UnityのAnimator設計の続きを話す","confidence":0.0}
   ]
 }
 """.strip()

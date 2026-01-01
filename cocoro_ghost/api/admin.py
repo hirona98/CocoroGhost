@@ -155,7 +155,7 @@ def get_unit(
         elif unit.kind == int(UnitKind.LOOP):
             pl = db.query(PayloadLoop).filter(PayloadLoop.unit_id == unit_id).one_or_none()
             if pl:
-                payload = {"status": pl.status, "due_at": pl.due_at, "loop_text": pl.loop_text}
+                payload = {"expires_at": pl.expires_at, "due_at": pl.due_at, "loop_text": pl.loop_text}
 
         return UnitDetailResponse(unit=_to_unit_meta(unit), payload=payload)
 

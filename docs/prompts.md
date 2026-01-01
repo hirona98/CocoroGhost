@@ -120,16 +120,17 @@
 ```json
 {
   "loops": [
-    {"status": "open", "due_at": null, "loop_text": "次回、UnityのAnimator設計の続きを話す", "confidence": 0.0}
+    {"due_at": null, "loop_text": "次回、UnityのAnimator設計の続きを話す", "confidence": 0.0}
   ]
 }
 ```
 
 - 保存は `units(kind=LOOP)` + `payload_loop`
-- `status` は `"open"` または `"closed"`（それ以外は使わない）
 - `due_at` は `null` または UNIX秒（int）
 - `confidence` は 0.0〜1.0
-- Close条件（任意）：次回会話で完了したと判断したら `status=closed` を出力し、同一 `loop_text` の open ループを削除する（closedとして保持しない）
+- Loopは短期メモ（TTL）として扱うため、サーバ側が `expires_at` を付与して自動削除する（LLMはclose指示を出さない）
+  - 既定: `due_at` が未来なら `expires_at=due_at`、無ければ `expires_at=now+7日`
+  - 上限: `due_at/expires_at` は最大30日までに丸める
 
 ## Bond Summary（絆サマリ）
 

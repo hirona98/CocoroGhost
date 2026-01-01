@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 from sqlalchemy.orm import Session
 
 from cocoro_ghost.partner_mood import compute_partner_mood_state_from_episodes
-from cocoro_ghost.unit_enums import LoopStatus, Sensitivity, UnitKind
+from cocoro_ghost.unit_enums import Sensitivity, UnitKind
 from cocoro_ghost.unit_models import (
     Entity,
     EntityAlias,
@@ -498,7 +498,7 @@ def build_memory_pack(
             Unit.kind == int(UnitKind.LOOP),
             Unit.state.in_([0, 1, 2]),
             Unit.sensitivity <= sensitivity_max,
-            PayloadLoop.status == int(LoopStatus.OPEN),
+            PayloadLoop.expires_at > now_ts,
         )
     )
     loop_rows: List[tuple[Unit, PayloadLoop]] = []

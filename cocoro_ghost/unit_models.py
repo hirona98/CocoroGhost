@@ -116,7 +116,7 @@ class PayloadLoop(UnitBase):
     __tablename__ = "payload_loop"
 
     unit_id: Mapped[int] = mapped_column(ForeignKey("units.id", ondelete="CASCADE"), primary_key=True)  # 親UnitID
-    status: Mapped[int] = mapped_column(Integer, nullable=False)  # 状態（LoopStatus）
+    expires_at: Mapped[int] = mapped_column(Integer, nullable=False)  # 有効期限（UNIXタイムスタンプ）
     due_at: Mapped[Optional[int]] = mapped_column(Integer)  # 期限（UNIXタイムスタンプ）
     loop_text: Mapped[str] = mapped_column(Text, nullable=False)  # ループ内容
 

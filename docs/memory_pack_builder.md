@@ -78,7 +78,8 @@ Partner: 「...」
    - 週次（BOND）＋該当topic/person
    - Current: BOND週次 + person/topic を注入対象として運用（生成は自動enqueue）
 6. **OpenLoops取得**
-   - openのみ、due順、entity一致を優先
+   - 期限切れ（`expires_at <= now_ts`）は除外し、due順、entity一致を優先
+   - 期限切れのLoopは Worker の `capsule_refresh` で自動削除される
 7. **Episode evidence 注入**
    - `should_inject_episodes(relevant_episodes)` が true のときだけ `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` を組み込む
    - `injection_strategy`（quote_key_parts/summarize/full）に応じて整形する

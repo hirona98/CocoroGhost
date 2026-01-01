@@ -38,12 +38,11 @@ from sqlalchemy.orm import Session
 
 from cocoro_ghost import prompts
 from cocoro_ghost.config import get_config_store
-from cocoro_ghost.db import get_memory_session, sync_unit_vector_metadata, upsert_edges, upsert_unit_vector
+from cocoro_ghost.db import delete_unit_vector, get_memory_session, sync_unit_vector_metadata, upsert_edges, upsert_unit_vector
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.unit_enums import (
     EntityRole,
     JobStatus,
-    LoopStatus,
     Sensitivity,
     UnitKind,
     UnitState,
@@ -154,6 +153,79 @@ def _parse_clamped01(value: Any, default: float) -> float:
         return clamp01(float(value))
     except Exception:  # noqa: BLE001
         return float(default)
+
+
+def _compute_loop_times(*, due_at: int | None, now_ts: int) -> tuple[int, int | None]:
+    """
+    Loopの期限情報（expires_at と due_at）を決定する。
+
+    方針:
+    - Loopは「次に話す理由」を作る短期メモで、LLMのclose判断に依存しない。
+    - サーバ側で TTL（expires_at）を付与し、期限超過で自動削除する。
+    - due_at は「再提起の優先順位」用途で、無ければ null でよい。
+
+    仕様（シンプルさ優先）:
+    - due_at が未来なら採用するが、最長30日までに丸める
+    - expires_at は due_at（採用できる場合）または「今から7日後」
+    """
+    # 定数は運用前のため固定（後方互換/マイグレーション無しで変更可能）。
+    default_ttl_seconds = 7 * 86400
+    max_ttl_seconds = 30 * 86400
+    now_ts_i = int(now_ts)
+    max_deadline = now_ts_i + max_ttl_seconds
+
+    due_at_i: int | None = None
+    if due_at is not None:
+        try:
+            cand = int(due_at)
+        except Exception:  # noqa: BLE001
+            cand = 0
+        if cand > now_ts_i:
+            due_at_i = min(cand, max_deadline)
+
+    if due_at_i is not None:
+        expires_at = int(due_at_i)
+    else:
+        expires_at = min(now_ts_i + default_ttl_seconds, max_deadline)
+    return int(expires_at), due_at_i
+
+
+def _delete_loop_unit(*, session: Session, unit_id: int) -> None:
+    """
+    Loop Unitを削除する（vec_units も明示削除）。
+
+    vec_units（sqlite-vec）はFKカスケードできないため、先に削除する。
+    """
+    row = session.query(Unit).filter(Unit.id == int(unit_id), Unit.kind == int(UnitKind.LOOP)).one_or_none()
+    if row is None:
+        return
+    try:
+        delete_unit_vector(session, unit_id=int(unit_id))
+    except Exception:  # noqa: BLE001
+        pass
+    session.delete(row)
+
+
+def _cleanup_expired_loops(*, session: Session, now_ts: int) -> int:
+    """
+    期限切れのLoopを削除する。
+
+    Loopは短期メモとして扱うため、expires_at <= now のものは自動的に削除する。
+    """
+    now_ts_i = int(now_ts)
+    rows = (
+        session.query(Unit.id)
+        .join(PayloadLoop, PayloadLoop.unit_id == Unit.id)
+        .filter(Unit.kind == int(UnitKind.LOOP), PayloadLoop.expires_at <= now_ts_i)
+        .order_by(PayloadLoop.expires_at.asc(), Unit.id.asc())
+        .limit(200)
+        .all()
+    )
+    deleted = 0
+    for (uid,) in rows:
+        _delete_loop_unit(session=session, unit_id=int(uid))
+        deleted += 1
+    return deleted
 
 
 def _parse_llm_json_dict(*, llm_client: LlmClient, resp: Any) -> Optional[Dict[str, Any]]:
@@ -1207,7 +1279,7 @@ def _loop_exists(session: Session, *, loop_text: str) -> bool:
     row = (
         session.query(PayloadLoop.unit_id)
         .join(Unit, Unit.id == PayloadLoop.unit_id)
-        .filter(Unit.kind == int(UnitKind.LOOP), PayloadLoop.status == int(LoopStatus.OPEN), PayloadLoop.loop_text == loop_text)
+        .filter(Unit.kind == int(UnitKind.LOOP), PayloadLoop.loop_text == loop_text)
         .limit(1)
         .scalar()
     )
@@ -1239,9 +1311,10 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
     data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
     if data is None:
         return
+    # ループ抽出の出力は open loops のみ（close判断はサーバ側のTTLに寄せる）。
     loops = data.get("loops") or []
     if not isinstance(loops, list):
-        return
+        loops = []
 
     for l in loops:
         if not isinstance(l, dict):
@@ -1249,39 +1322,8 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
         loop_text = str(l.get("loop_text") or "").strip()
         if not loop_text:
             continue
-        status_raw = str(l.get("status") or "open").strip().lower()
-        status = int(LoopStatus.CLOSED) if status_raw in ("closed", "close") else int(LoopStatus.OPEN)
-        due_at = _parse_optional_epoch_seconds(l.get("due_at"))
+        expires_at, due_at = _compute_loop_times(due_at=_parse_optional_epoch_seconds(l.get("due_at")), now_ts=now_ts)
         confidence = _parse_clamped01(l.get("confidence"), 0.0)
-
-        if status == int(LoopStatus.CLOSED):
-            existing = (
-                session.query(Unit, PayloadLoop)
-                .join(PayloadLoop, PayloadLoop.unit_id == Unit.id)
-                .filter(
-                    Unit.kind == int(UnitKind.LOOP),
-                    PayloadLoop.status == int(LoopStatus.OPEN),
-                    PayloadLoop.loop_text == loop_text,
-                )
-                .order_by(Unit.created_at.desc(), Unit.id.desc())
-                .first()
-            )
-            if existing is not None:
-                unit, pl = existing
-                pl.status = int(LoopStatus.CLOSED)
-                if due_at is not None:
-                    pl.due_at = due_at
-                unit.updated_at = now_ts
-                session.add(unit)
-                session.add(pl)
-                record_unit_version(
-                    session,
-                    unit_id=int(unit.id),
-                    payload_obj={"status": int(pl.status), "due_at": pl.due_at, "loop_text": pl.loop_text},
-                    patch_reason="extract_loops_close",
-                    now_ts=now_ts,
-                )
-            continue
 
         if _loop_exists(session, loop_text=loop_text):
             existing = (
@@ -1289,7 +1331,6 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
                 .join(PayloadLoop, PayloadLoop.unit_id == Unit.id)
                 .filter(
                     Unit.kind == int(UnitKind.LOOP),
-                    PayloadLoop.status == int(LoopStatus.OPEN),
                     PayloadLoop.loop_text == loop_text,
                 )
                 .order_by(Unit.created_at.desc(), Unit.id.desc())
@@ -1298,6 +1339,9 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
             if existing is not None:
                 unit, pl = existing
                 changed = False
+                if int(pl.expires_at or 0) != int(expires_at):
+                    pl.expires_at = int(expires_at)
+                    changed = True
                 if due_at is not None and pl.due_at != due_at:
                     pl.due_at = due_at
                     changed = True
@@ -1311,7 +1355,7 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
                     record_unit_version(
                         session,
                         unit_id=int(unit.id),
-                        payload_obj={"status": int(pl.status), "due_at": pl.due_at, "loop_text": pl.loop_text},
+                        payload_obj={"expires_at": int(pl.expires_at), "due_at": pl.due_at, "loop_text": pl.loop_text},
                         patch_reason="extract_loops_update",
                         now_ts=now_ts,
                     )
@@ -1335,14 +1379,14 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
         session.add(pl_unit)
         session.flush()
         loop_payload = {
-            "status": int(LoopStatus.OPEN),
+            "expires_at": int(expires_at),
             "due_at": due_at,
             "loop_text": loop_text,
         }
         session.add(
             PayloadLoop(
                 unit_id=pl_unit.id,
-                status=int(LoopStatus.OPEN),
+                expires_at=int(expires_at),
                 due_at=due_at,
                 loop_text=loop_text,
             )
@@ -1379,6 +1423,11 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
 
 def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts: int) -> None:
     """短期状態（Capsule）を更新する（LLM不要・軽量）。"""
+    # ついでに期限切れLoopを掃除する（TTLで確実に自動削除する）。
+    try:
+        _cleanup_expired_loops(session=session, now_ts=now_ts)
+    except Exception:  # noqa: BLE001
+        pass
     limit = int(payload.get("limit") or 5)
     limit = max(1, min(20, limit))
     # 感情は、直近エピソード群を「重要度×時間減衰」で積分して作る。

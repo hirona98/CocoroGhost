@@ -321,18 +321,22 @@ create table if not exists payload_capsule (
 ```sql
 create table if not exists payload_loop (
   unit_id    integer primary key references units(id) on delete cascade,
-  status     integer not null, -- 0 open / 1 closed
+  expires_at integer not null,
   due_at     integer,
   loop_text  text not null
 );
 
-create index if not exists idx_loop_status_due on payload_loop(status, due_at);
+create unique index if not exists idx_loop_text_unique on payload_loop(loop_text);
+create index if not exists idx_loop_due on payload_loop(due_at);
+create index if not exists idx_loop_expires on payload_loop(expires_at);
 ```
 
 #### 使い方（Loop）
 
-- `status=OPEN` のものが `<<<COCORO_GHOST_SECTION:OPEN_LOOPS>>>` に注入される。
+- Loopは「未完了の再提起」用途の短期メモ（TTL）で、期限（`expires_at`）を過ぎたものは自動削除する。
+- `payload_loop` に存在するものが `<<<COCORO_GHOST_SECTION:OPEN_LOOPS>>>` に注入される。
 - `due_at` は再提起の優先度（期限が近いものを先に）。
+- `expires_at` はサーバ側で付与する（既定: `due_at` が未来なら `expires_at=due_at`、無ければ `expires_at=now+7日`。上限: 最大30日）。
 
 ## Jobテーブル（Worker用：SQLiteで永続化）
 
@@ -481,13 +485,6 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 | name | value | 意味 |
 |---|---:|---|
 | MENTIONED | 1 | Unit内で言及された |
-
-### LoopStatus
-
-| name | value | 意味 |
-|---|---:|---|
-| OPEN | 0 | 未完了 |
-| CLOSED | 1 | 完了 |
 
 ### JobStatus
 
