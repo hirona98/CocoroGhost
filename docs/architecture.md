@@ -4,8 +4,8 @@
 
 - **API Server（FastAPI）**
   - `/api/chat`（SSE）
-  - `/api/v1/notification`
-  - `/api/v1/meta-request`
+  - `/api/v2/notification`
+  - `/api/v2/meta-request`
 - **Memory Store（SQLite: `memory_<embedding_preset_id>.db`）**
   - `units` + `payload_*` による Unit化
   - 版管理（`unit_versions`）と来歴/信頼度を保持
@@ -175,7 +175,7 @@ sequenceDiagram
   - `vec_units`（sqlite-vec 仮想テーブル）
 
 
-## `/api/v1/notification` の処理シーケンス
+## `/api/v2/notification` の処理シーケンス
 
 ```mermaid
 sequenceDiagram
@@ -190,7 +190,7 @@ sequenceDiagram
   participant Q as Jobs (DB)
   participant WS as /api/events/stream (WebSocket)
 
-  UI->>API: POST /api/v1/notification\n{source_system,text,images?}
+  UI->>API: POST /api/v2/notification\n{source_system,text,images?}
   API->>MM: handle_notification(request)\n(create placeholder unit)
   MM->>DB: save Unit(kind=EPISODE, source=notification)\nuser_text=system_text, reply_text=null
   API-->>UI: 204 No Content
@@ -207,7 +207,7 @@ sequenceDiagram
   MM-->>WS: publish {unit_id,type,data{system_text,message}}
 ```
 
-## `/api/v1/meta-request` の処理シーケンス
+## `/api/v2/meta-request` の処理シーケンス
 
 ```mermaid
 sequenceDiagram
@@ -222,7 +222,7 @@ sequenceDiagram
   participant Q as Jobs (DB)
   participant WS as /api/events/stream (WebSocket)
 
-  UI->>API: POST /api/v1/meta-request\n{instruction,payload_text?,images?}
+  UI->>API: POST /api/v2/meta-request\n{instruction,payload_text?,images?}
   API->>MM: handle_meta_request(request)\n(create placeholder unit)
   MM->>DB: save Unit(kind=EPISODE, source=meta-request)\nuser_text=[redacted], reply_text=null
   API-->>UI: 204 No Content

@@ -141,7 +141,7 @@ in-memory の partner_mood ランタイム状態（override）を解除し、自
 
 `GET /api/partner_mood` と同形式（解除後の有効値を返す）。
 
-## `/api/v1/notification`
+## `/api/v2/notification`
 
 ### Request（JSON）
 
@@ -166,14 +166,14 @@ in-memory の partner_mood ランタイム状態（override）を解除し、自
 ### 例（cURL）
 
 ```bash
-curl -X POST http://127.0.0.1:55601/api/v1/notification \
+curl -X POST http://127.0.0.1:55601/api/v2/notification \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d '{"source_system":"MyApp","text":"処理完了","images":["data:image/jpeg;base64,..."]}'
 ```
 
 ```bash
-curl -X POST http://127.0.0.1:55601/api/v1/notification \
+curl -X POST http://127.0.0.1:55601/api/v2/notification \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d '{"source_system":"MyApp","text":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
@@ -183,7 +183,7 @@ curl -X POST http://127.0.0.1:55601/api/v1/notification \
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:55601/api/v1/notification" `
+  -Uri "http://127.0.0.1:55601/api/v2/notification" `
   -ContentType "application/json; charset=utf-8" `
   -Headers @{ Authorization = "Bearer <TOKEN>" } `
   -Body '{"source_system":"MyApp","text":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
@@ -194,7 +194,7 @@ Invoke-RestMethod -Method Post `
 - `images` がある場合は `payload_episode.image_summary` に要約を保存する
 
 
-## `/api/v1/meta-request`
+## `/api/v2/meta-request`
 
 ### Request（JSON）
 
@@ -219,7 +219,7 @@ Invoke-RestMethod -Method Post `
 ### 例（cURL）
 
 ```bash
-curl -X POST http://127.0.0.1:55601/api/v1/meta-request \
+curl -X POST http://127.0.0.1:55601/api/v2/meta-request \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
@@ -229,7 +229,7 @@ curl -X POST http://127.0.0.1:55601/api/v1/meta-request \
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:55601/api/v1/meta-request" `
+  -Uri "http://127.0.0.1:55601/api/v2/meta-request" `
   -ContentType "application/json; charset=utf-8" `
   -Headers @{ Authorization = "Bearer <TOKEN>" } `
   -Body '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
@@ -475,7 +475,7 @@ UI向けの「全設定」取得/更新。
 
 - URL: `ws(s)://<host>/api/events/stream`
 - 認証: `Authorization: Bearer <TOKEN>`
-- 目的: `POST /api/v1/notification` / `POST /api/v1/meta-request` を受信したとき、接続中クライアントへ即時にイベントを配信する
+- 目的: `POST /api/v2/notification` / `POST /api/v2/meta-request` を受信したとき、接続中クライアントへ即時にイベントを配信する
 - 挙動: 接続直後に最大200件のバッファ済みイベントを送信し、その後は新規イベントをリアルタイムでpushする
 
 ### Event payload（JSON text）

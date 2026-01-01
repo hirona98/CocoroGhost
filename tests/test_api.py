@@ -274,10 +274,10 @@ def test_chat_with_image():
 
 def test_notification():
     """
-    POST /v1/notification - 通知テスト
+    POST /v2/notification - 通知テスト
     外部システムからの通知を受け付けられるかを確認する。
     """
-    print("\n=== POST /v1/notification ===")
+    print("\n=== POST /v2/notification ===")
     base64_data = load_test_image_base64("test_image_1.png")
 
     # 通知ペイロード構築
@@ -292,7 +292,7 @@ def test_notification():
         payload["images"] = []
 
     try:
-        r = httpx.post(f"{BASE_URL}/v1/notification", headers=get_headers(), json=payload, timeout=30)
+        r = httpx.post(f"{BASE_URL}/v2/notification", headers=get_headers(), json=payload, timeout=30)
         print(f"  Status: {r.status_code}")
         # 204 No Contentが成功
         if r.status_code == 204:
@@ -308,10 +308,10 @@ def test_notification():
 
 def test_meta_request():
     """
-    POST /v1/meta-request - メタ要求テスト
+    POST /v2/meta-request - メタ要求テスト
     システムからの指示をパートナーに伝達できるかを確認する。
     """
-    print("\n=== POST /v1/meta-request ===")
+    print("\n=== POST /v2/meta-request ===")
     base64_data = load_test_image_base64("test_image_3.png")
 
     # メタ要求ペイロード構築
@@ -325,7 +325,7 @@ def test_meta_request():
         payload["images"] = []
 
     try:
-        r = httpx.post(f"{BASE_URL}/v1/meta-request", headers=get_headers(), json=payload, timeout=30)
+        r = httpx.post(f"{BASE_URL}/v2/meta-request", headers=get_headers(), json=payload, timeout=30)
         print(f"  Status: {r.status_code}")
         if r.status_code == 204:
             print("  [OK] メタ要求成功")

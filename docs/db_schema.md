@@ -378,7 +378,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 - `capsule_refresh` の payload は `{"limit":5, "partner_mood_scan_limit":500}` のように拡張可能（`partner_mood_scan_limit` は機嫌集約の走査件数）。
 - 入口の例:
   - `/api/chat` の完了時（SSE done直前の保存）
-  - `/api/v1/notification` の処理完了時（reply生成後の保存更新）
+  - `/api/v2/notification` の処理完了時（reply生成後の保存更新）
   - `/api/capture`（desktop/camera）
 
 **B. bond サマリ（現行: `rolling:7d`）の更新**

@@ -65,9 +65,9 @@ class NotificationRequest(BaseModel):
     images: List[Dict[str, str]] = Field(default_factory=list)  # 添付画像
 
 
-class NotificationV1Request(BaseModel):
+class NotificationV2Request(BaseModel):
     """
-    /notification/v1 用リクエスト。
+    /notification/v2 用リクエスト。
     data URI形式の画像を受け付けるバージョン。
     """
     source_system: str                   # 通知元システム名
@@ -104,9 +104,9 @@ class MetaRequestRequest(BaseModel):
     images: List[Dict[str, str]] = Field(default_factory=list)  # 添付画像
 
 
-class MetaRequestV1Request(BaseModel):
+class MetaRequestV2Request(BaseModel):
     """
-    /meta-request/v1 用リクエスト。
+    /meta-request/v2 用リクエスト。
     data URI形式の画像を受け付けるバージョン。
     """
     instruction: str                     # パートナーへの指示

@@ -1,5 +1,5 @@
 """
-/v1/notification エンドポイント
+/v2/notification エンドポイント
 
 外部システム（ファイル監視、カレンダー、RSSリーダー等）からの通知を受け付ける。
 通知はEpisode Unitとして保存され、パートナーAIが応答を生成する。
@@ -18,9 +18,9 @@ from cocoro_ghost.memory import MemoryManager
 router = APIRouter()
 
 
-@router.post("/v1/notification", status_code=status.HTTP_204_NO_CONTENT)
-def notification_v1(
-    request: schemas.NotificationV1Request,
+@router.post("/v2/notification", status_code=status.HTTP_204_NO_CONTENT)
+def notification_v2(
+    request: schemas.NotificationV2Request,
     background_tasks: BackgroundTasks,
     memory_manager: MemoryManager = Depends(get_memory_manager),
 ) -> Response:

@@ -32,8 +32,8 @@
 flowchart TD
   subgraph API["FastAPI / MemoryManager"]
     CHAT["/api/chat (SSE)"] --> IMGC["image_summary (vision)"]
-    NOTIF["/api/v1/notification"] --> IMGN["image_summary (vision)"]
-    META["/api/v1/meta-request"] --> IMGM["image_summary (vision)"]
+    NOTIF["/api/v2/notification"] --> IMGN["image_summary (vision)"]
+    META["/api/v2/meta-request"] --> IMGM["image_summary (vision)"]
 
     IMGC --> PACK["MemoryPack Builder: build_memory_pack()"]
     IMGN --> PACKN["MemoryPack Builder: build_memory_pack()"]
