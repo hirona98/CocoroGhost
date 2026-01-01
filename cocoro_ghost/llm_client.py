@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Dict, Generator, Iterable, List, Optional
 
@@ -826,8 +827,9 @@ class LlmClient:
         """
         llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
         purpose_label = _normalize_purpose(purpose)
-        summaries: List[str] = []
-        for image_bytes in images:
+        max_workers = 4
+
+        def _process_one(image_bytes: bytes) -> str:
             start = time.perf_counter()
             if llm_log_level != "OFF":
                 self._log_llm_info(
@@ -874,7 +876,6 @@ class LlmClient:
                     )
                 raise
             content = _first_choice_content(resp)
-            summaries.append(content)
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
                 self._log_llm_info(
@@ -888,8 +889,14 @@ class LlmClient:
                 _sanitize_for_llm_log({"content": content, "finish_reason": _finish_reason(resp)}),
                 llm_log_level=llm_log_level,
             )
+            return content
 
-        return summaries
+        if len(images) <= 1:
+            return [_process_one(image_bytes) for image_bytes in images]
+
+        worker_count = min(max_workers, len(images))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            return list(executor.map(_process_one, images))
 
     def response_to_dict(self, resp: Any) -> Dict[str, Any]:
         """Responseオブジェクトをログ/デバッグ用のdictに変換する。"""
