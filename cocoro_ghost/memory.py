@@ -800,7 +800,7 @@ class MemoryManager:
         file_max_value_chars = _get_llm_log_file_value_max_chars_from_store(self.config_store)
         if llm_log_level != "OFF":
             io_console_logger.info(
-                "LLM response received %s kind=chat stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
+                "LLM response 受信 %s kind=chat stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
                 purpose,
                 True,
                 finish_reason,
@@ -809,7 +809,7 @@ class MemoryManager:
             )
             if log_file_enabled:
                 io_file_logger.info(
-                    "LLM response received %s kind=chat stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
+                    "LLM response 受信 %s kind=chat stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
                     purpose,
                     True,
                     finish_reason,

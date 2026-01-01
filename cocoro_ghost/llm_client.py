@@ -294,23 +294,23 @@ class LlmRequestPurpose:
     """LLM呼び出しの処理目的（ログ用途のラベル）。"""
 
     # docs/prompt_usage_map.md のフローに対応した日本語ラベル
-    CONVERSATION = "<< 会話応答作成 >>"
-    NOTIFICATION = "<< 通知返答 >>"
-    META_REQUEST = "<< メタ要求対応 >>"
-    INTERNAL_THOUGHT = "<< 内的思考（反射） >>"
-    ENTITY_EXTRACT = "<< エンティティ（実体）抽出 >>"
-    FACT_EXTRACT = "<< 事実抽出 >>"
-    LOOP_EXTRACT = "<< 未完了事項抽出 >>"
-    ENTITY_NAME_EXTRACT = "<< エンティティ（実体）名抽出 >>"
-    BOND_SUMMARY = "<< 絆サマリ生成 >>"
-    PERSON_SUMMARY = "<< 人物サマリ生成 >>"
-    TOPIC_SUMMARY = "<< トピックサマリ生成 >>"
-    RETRIEVAL_QUERY_EMBEDDING = "<< 記憶検索用クエリの埋め込み取得 >>"
-    UNIT_EMBEDDING = "<< ユニット埋め込み >>"
-    IMAGE_SUMMARY_CHAT = "<< 画像要約（会話） >>"
-    IMAGE_SUMMARY_NOTIFICATION = "<< 画像要約（通知） >>"
-    IMAGE_SUMMARY_META_REQUEST = "<< 画像要約（メタ要求対応） >>"
-    IMAGE_SUMMARY_CAPTURE = "<< 画像要約（キャプチャ） >>"
+    CONVERSATION = "＜＜ 会話応答作成 ＞＞"
+    NOTIFICATION = "＜＜ 通知返答 ＞＞"
+    META_REQUEST = "＜＜ メタ要求対応 ＞＞"
+    INTERNAL_THOUGHT = "＜＜ 内的思考（反射） ＞＞"
+    ENTITY_EXTRACT = "＜＜ エンティティ（実体）抽出 ＞＞"
+    FACT_EXTRACT = "＜＜ 事実抽出 ＞＞"
+    LOOP_EXTRACT = "＜＜ 未完了事項抽出 ＞＞"
+    ENTITY_NAME_EXTRACT = "＜＜ エンティティ（実体）名抽出 ＞＞"
+    BOND_SUMMARY = "＜＜ 絆サマリ生成 ＞＞"
+    PERSON_SUMMARY = "＜＜ 人物サマリ生成 ＞＞"
+    TOPIC_SUMMARY = "＜＜ トピックサマリ生成 ＞＞"
+    RETRIEVAL_QUERY_EMBEDDING = "＜＜ 記憶検索用クエリの埋め込み取得 ＞＞"
+    UNIT_EMBEDDING = "＜＜ ユニット埋め込み ＞＞"
+    IMAGE_SUMMARY_CHAT = "＜＜ 画像要約（会話） ＞＞"
+    IMAGE_SUMMARY_NOTIFICATION = "＜＜ 画像要約（通知） ＞＞"
+    IMAGE_SUMMARY_META_REQUEST = "＜＜ 画像要約（メタ要求対応） ＞＞"
+    IMAGE_SUMMARY_CAPTURE = "＜＜ 画像要約（キャプチャ） ＞＞"
 
 
 def _normalize_purpose(purpose: str) -> str:
@@ -468,7 +468,7 @@ class LlmClient:
         self,
         model: str,
         messages: List[Dict],
-        temperature: float,
+        *,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         max_tokens: Optional[int] = None,
@@ -478,23 +478,11 @@ class LlmClient:
     ) -> Dict:
         """
         completion API呼び出し用のkwargsを構築する。
-        モデル固有の制約（gpt-5系のtemperature制限等）を考慮する。
         """
-        # gpt-5 以降は temperature の制約が厳しい（LiteLLM側で弾かれる）
-        # - gpt-5 / gpt-5-mini / gpt-6 ... 等: temperature は 1 のみ
-        model_l = (model or "").lower()
-        temp = float(temperature)
-        m = re.search(r"\bgpt-(\d+)(?:\.(\d+))?\b", model_l)
-        if m:
-            major = int(m.group(1))
-            if major >= 5:
-                temp = 1.0
-
         # 基本パラメータ
         kwargs = {
             "model": model,
             "messages": messages,
-            "temperature": temp,
             "stream": stream,
         }
 
@@ -521,7 +509,6 @@ class LlmClient:
         system_prompt: str,
         conversation: List[Dict[str, str]],
         purpose: str,
-        temperature: float = 0.7,
         stream: bool = False,
     ):
         """
@@ -541,7 +528,6 @@ class LlmClient:
         kwargs = self._build_completion_kwargs(
             model=self.model,
             messages=messages,
-            temperature=temperature,
             api_key=self.api_key,
             base_url=self.llm_base_url,
             max_tokens=self.max_tokens,
@@ -552,10 +538,9 @@ class LlmClient:
         approx_chars = _estimate_text_chars(messages)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=chat stream=%s temperature=%s messages=%s 文字数=%s",
+                "LLM request 送信 %s kind=chat stream=%s messages=%s 文字数=%s",
                 purpose_label,
                 bool(stream),
-                temperature,
                 msg_count,
                 approx_chars,
             )
@@ -586,7 +571,7 @@ class LlmClient:
         finish_reason = _finish_reason(resp)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM response received %s kind=chat stream=%s finish_reason=%s chars=%s ms=%s",
+                "LLM response 受信 %s kind=chat stream=%s finish_reason=%s chars=%s ms=%s",
                 purpose_label,
                 False,
                 finish_reason,
@@ -632,11 +617,9 @@ class LlmClient:
         purpose_label = _normalize_purpose(purpose)
         start = time.perf_counter()
 
-        reflection_temp = 0.1
         kwargs = self._build_completion_kwargs(
             model=self.model,
             messages=messages,
-            temperature=reflection_temp,  # リフレクションは低温度で安定性重視
             api_key=self.api_key,
             base_url=self.llm_base_url,
             max_tokens=self.max_tokens,
@@ -645,10 +628,9 @@ class LlmClient:
 
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=reflection stream=%s temperature=%s messages=%s 文字数=%s",
+                "LLM request 送信 %s kind=reflection stream=%s messages=%s 文字数=%s",
                 purpose_label,
                 False,
-                reflection_temp,
                 len(messages),
                 _estimate_text_chars(messages),
             )
@@ -673,7 +655,7 @@ class LlmClient:
         finish_reason = _finish_reason(resp)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM response received %s kind=reflection finish_reason=%s chars=%s ms=%s",
+                "LLM response 受信 %s kind=reflection finish_reason=%s chars=%s ms=%s",
                 purpose_label,
                 finish_reason,
                 len(content or ""),
@@ -692,7 +674,6 @@ class LlmClient:
         system_prompt: str,
         user_text: str,
         purpose: str,
-        temperature: float = 0.1,
         max_tokens: Optional[int] = None,
     ):
         """JSON（json_object）を生成する（Responseオブジェクト）。
@@ -714,7 +695,6 @@ class LlmClient:
         kwargs = self._build_completion_kwargs(
             model=self.model,
             messages=messages,
-            temperature=temperature,
             api_key=self.api_key,
             base_url=self.llm_base_url,
             max_tokens=requested_max_tokens,
@@ -723,10 +703,9 @@ class LlmClient:
 
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=json stream=%s temperature=%s messages=%s 文字数=%s",
+                "LLM request 送信 %s kind=json stream=%s messages=%s 文字数=%s",
                 purpose_label,
                 False,
-                temperature,
                 len(messages),
                 _estimate_text_chars(messages),
             )
@@ -751,7 +730,7 @@ class LlmClient:
         finish_reason = _finish_reason(resp)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM response received %s kind=json finish_reason=%s chars=%s ms=%s",
+                "LLM response 受信 %s kind=json finish_reason=%s chars=%s ms=%s",
                 purpose_label,
                 finish_reason,
                 len(content or ""),
@@ -780,7 +759,7 @@ class LlmClient:
         start = time.perf_counter()
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=embedding 文字数=%s",
+                "LLM request 送信 %s kind=embedding 文字数=%s",
                 purpose_label,
                 sum(len(t or "") for t in texts),
             )
@@ -825,17 +804,17 @@ class LlmClient:
         if llm_log_level != "OFF":
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             self._log_llm_info(
-                "LLM response received %s kind=embedding ms=%s",
+                "LLM response 受信 %s kind=embedding ms=%s",
                 purpose_label,
                 elapsed_ms,
             )
             if llm_log_level == "DEBUG":
                 self.io_console_logger.debug(
-                    "LLM response received kind=embedding (payload omitted)",
+                    "LLM response 受信 kind=embedding (payload omitted)",
                 )
                 if self._is_log_file_enabled():
                     self.io_file_logger.debug(
-                        "LLM response received kind=embedding (payload omitted)",
+                        "LLM response 受信 kind=embedding (payload omitted)",
                     )
         return out
 
@@ -852,9 +831,8 @@ class LlmClient:
             start = time.perf_counter()
             if llm_log_level != "OFF":
                 self._log_llm_info(
-                    "LLM request sent %s kind=vision temperature=%s image_bytes=%s",
+                    "LLM request 送信 %s kind=vision image_bytes=%s",
                     purpose_label,
-                    0.3,
                     len(image_bytes),
                 )
             # 画像をbase64エンコード
@@ -873,7 +851,6 @@ class LlmClient:
             kwargs = self._build_completion_kwargs(
                 model=self.image_model,
                 messages=messages,
-                temperature=0.3,
                 api_key=self.image_model_api_key,
                 base_url=self.image_llm_base_url,
                 max_tokens=self.max_tokens_vision,
@@ -901,7 +878,7 @@ class LlmClient:
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
                 self._log_llm_info(
-                    "LLM response received %s kind=vision chars=%s ms=%s",
+                    "LLM response 受信 %s kind=vision chars=%s ms=%s",
                     purpose_label,
                     len(content or ""),
                     elapsed_ms,
