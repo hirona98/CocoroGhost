@@ -42,6 +42,13 @@ _clients: Set["WebSocket"] = set()
 _dispatch_task: Optional[asyncio.Task[None]] = None
 _handler_installed = False
 _installed_handler: Optional[logging.Handler] = None
+_attached_logger_names: tuple[str, ...] = (
+    "uvicorn",
+    "uvicorn.error",
+    "uvicorn.access",
+    # LLM I/O loggers are propagate=False, so attach explicitly.
+    "cocoro_ghost.llm_io.console",
+)
 logger = logging.getLogger(__name__)
 
 
@@ -122,8 +129,8 @@ def install_log_handler(loop: asyncio.AbstractEventLoop) -> None:
     root_logger = logging.getLogger()
     root_logger.addHandler(handler)
 
-    # uvicorn系ロガーは propagate=False なので個別にハンドラを付与する
-    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    # propagate=False のロガーは個別にハンドラを付与する
+    for name in _attached_logger_names:
         logging.getLogger(name).addHandler(handler)
 
     _installed_handler = handler
@@ -170,8 +177,8 @@ async def stop_dispatcher() -> None:
     root_logger = logging.getLogger()
     root_logger.removeHandler(handler)
 
-    # uvicorn系ロガーも個別に解除する（propagate=False のため）
-    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    # propagate=False のロガーも個別に解除する
+    for name in _attached_logger_names:
         logging.getLogger(name).removeHandler(handler)
 
     _installed_handler = None
