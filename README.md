@@ -79,6 +79,9 @@ start.bat
 
 - `token`: API認証トークン
 - `log_level`: ログレベル（DEBUG, INFO, WARNING, ERROR）
+- `log_file_enabled`: ファイルログの有効/無効
+- `log_file_path`: ファイルログの保存先
+- `log_file_max_bytes`: ログローテーションサイズ（bytes、既定は200000=200KB）
 
 #### 2. LLM設定
 

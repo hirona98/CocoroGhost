@@ -54,6 +54,7 @@ def setup_logging(
     *,
     log_file_enabled: bool = False,
     log_file_path: str = "logs/cocoro_ghost.log",
+    log_file_max_bytes: int = 200_000,
 ) -> None:
     """
     ロギングを初期化する。
@@ -67,10 +68,10 @@ def setup_logging(
     if log_file_enabled:
         log_path = pathlib.Path(log_file_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        # ファイルログは最大1MBでローテーションしてサイズ超過を防ぐ。
+        # ファイルログは指定サイズでローテーションして、ログ肥大化を防ぐ。
         file_handler = RotatingFileHandler(
             log_path,
-            maxBytes=1_000_000,
+            maxBytes=int(log_file_max_bytes),
             backupCount=1,
             encoding="utf-8",
         )
