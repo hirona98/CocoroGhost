@@ -223,18 +223,17 @@ sequenceDiagram
   participant WS as /api/events/stream (WebSocket)
 
   UI->>API: POST /api/v2/meta-request\n{instruction,payload_text?,images?}
-  API->>MM: handle_meta_request(request)\n(create placeholder unit)
-  MM->>DB: save Unit(kind=EPISODE, source=meta-request)\ninput_text=[redacted], reply_text=null
+  API->>MM: handle_meta_request(request)
   API-->>UI: 204 No Content
   Note over API,MM: BackgroundTasks (after response)
   MM->>LLM: (optional) summarize images
-  MM->>RET: retrieve(prompt)\n(+ payload)
+  MM->>RET: retrieve(payload)\n(instructionは混ぜない)
   RET-->>MM: relevant_episodes[]
   MM->>SCH: build MemoryPack\n(relevant episodes)
   SCH->>DB: read units/entities/summaries
   SCH-->>MM: MemoryPack
   MM->>LLM: generate persona message\n(meta-request prompt)
-  MM->>DB: update payload_episode.reply_text/image_summary
+  MM->>DB: save Unit(kind=EPISODE, source=proactive)\nreply_text=message（instruction/payloadは保存しない）
   MM->>Q: enqueue embeddings job
   MM-->>WS: publish {unit_id,type,data{message}}
 ```

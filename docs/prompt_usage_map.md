@@ -271,7 +271,7 @@ flowchart LR
 - Bond summary（rolling:7d）: 直近7日程度の `Unit(kind=EPISODE)` を時系列で最大200件抜粋し、`range_start/range_end` + 箇条書き（unit_id + input/reply抜粋）として入力にする（`cocoro_ghost/worker.py::_handle_bond_summary`）。
 - 会話品質優先のため、`persona_mood_state` はDBに保存せず、チャット直前に同期計算して `CONTEXT_CAPSULE` に注入する（`cocoro_ghost/memory_pack_builder.py` / `cocoro_ghost/persona_mood.py`）。
 - Notification: `# notification ...` 形式に整形したテキスト（+ 画像要約）を `conversation=[{"role":"user","content":...}]` として渡す（`cocoro_ghost/memory.py`）。
-- Meta request: `# meta-request ...` 形式に整形したテキスト（instruction + payload + 画像要約）を渡す（`cocoro_ghost/memory.py`）。
+- Meta request: `# instruction` / `# payload` / `# images` 形式に整形したテキスト（instruction + payload + 画像要約）を渡す（`cocoro_ghost/memory.py`）。
 - PERSONA_ANCHOR: settings の active preset から読み込み、persona_text + addon_text を連結して system prompt に固定注入する（MemoryPackには含めない）。
 - Persona affect trailer（chatのみ）: 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_PERSONA_AFFECT_JSON_v1>>>` + 内部JSON（Reflectionスキーマ準拠）を付加する。サーバ側は区切り以降をSSEに流さず回収し、`units.persona_affect_* / salience / confidence / topic_tags` と `payload_episode.reflection_json` に即時反映する（`cocoro_ghost/memory.py`）。これにより「その発言で反応する」を同ターンで実現しつつ、Workerの `reflect_episode` は冪等にスキップ可能になる。
 - Person summary: `person_summary_refresh` は注入用の `summary_text` に加えて、`favorability_score`（PERSONA_ANCHORの人物→人物の好感度 0..1）を `summary_json` に保存する。Schedulerは現状 `summary_text` を注入するため、好感度は `summary_text` 先頭に1行で含める運用（`cocoro_ghost/worker.py::_handle_person_summary_refresh`）。

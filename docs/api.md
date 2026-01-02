@@ -158,7 +158,7 @@ Invoke-RestMethod -Method Post `
 
 - HTTPレスポンスは先に返り、AI人格のセリフ（`data.message`）は `/api/events/stream` で後から届く
 - `instruction` / `payload_text` は **永続化しない**（生成にのみ利用）
-- 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=meta-request)` の `payload_episode.reply_text` に保存する
+- 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=proactive)` の `payload_episode.reply_text` に保存する
 
 ## 管理API
 

@@ -382,9 +382,9 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
     - サマリ最終更新から一定時間（現行: 6h）未満なら enqueue しない
     - 最終更新以降の新規Episode（`occurred_at` があり、`occurred_at > summary.updated_at`）がある場合のみ enqueue
 
-**C. meta-request（文書生成）**
+**C. proactive（meta-request起因の能動メッセージ）**
 
-- 対象: `units(kind=EPISODE, source=meta-request)` の結果を検索対象にしたい
+- 対象: `units(kind=EPISODE, source=proactive)` の結果を検索対象にしたい
 - enqueue: `upsert_embeddings(unit_id)`（会話ログ同様に検索できれば十分なため）
 
 **D. Worker処理の副作用としての follow-up jobs**
