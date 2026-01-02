@@ -23,39 +23,39 @@
 ```json
 {
   "reflection_text": "string",
-  "partner_affect_label": "joy|sadness|anger|fear|neutral",
-  "partner_affect_intensity": 0.0,
+  "persona_affect_label": "joy|sadness|anger|fear|neutral",
+  "persona_affect_intensity": 0.0,
   "topic_tags": ["仕事", "読書"],
   "salience": 0.0,
   "confidence": 0.0
 }
 ```
 
-- `units` の `partner_affect_* / salience / confidence` に反映
+- `units` の `persona_affect_* / salience / confidence` に反映
 - `payload_episode.reflection_json` に保存
 - 数値の範囲（推奨・実装もこの前提で扱う）:
-  - `partner_affect_intensity`: 0.0〜1.0
+  - `persona_affect_intensity`: 0.0〜1.0
   - `salience`: 0.0〜1.0
   - `confidence`: 0.0〜1.0
 
-## chat（SSE）: 返答末尾の内部JSON（partner_affect trailer）
+## chat（SSE）: 返答末尾の内部JSON（persona_affect trailer）
 
 `/api/chat` は、**同一のLLM呼び出し**で「ユーザー表示本文」と「内部用の反射JSON」を同時に生成する。
 
-- 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_PARTNER_AFFECT_JSON_v1>>>` を出力し、その次行にJSONを1つだけ出力する
+- 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_PERSONA_AFFECT_JSON_v1>>>` を出力し、その次行にJSONを1つだけ出力する
 - サーバ側は区切り以降をSSEに流さず回収し、Episodeへ即時反映する（`cocoro_ghost/memory.py`）
 
-### 出力JSON（partner_affect trailer）
+### 出力JSON（persona_affect trailer）
 
 ```json
 {
   "reflection_text": "string",
-  "partner_affect_label": "joy|sadness|anger|fear|neutral",
-  "partner_affect_intensity": 0.0,
+  "persona_affect_label": "joy|sadness|anger|fear|neutral",
+  "persona_affect_intensity": 0.0,
   "topic_tags": ["仕事", "読書"],
   "salience": 0.0,
   "confidence": 0.0,
-  "partner_response_policy": {
+  "persona_response_policy": {
     "cooperation": 0.0,
     "refusal_bias": 0.0,
     "refusal_allowed": true
@@ -63,11 +63,11 @@
 }
 ```
 
-- `partner_affect_label/partner_affect_intensity` は **PERSONA_ANCHORの人物側の感情反応（affect）**（ユーザーの感情推定ではない）
+- `persona_affect_label/persona_affect_intensity` は **PERSONA_ANCHORの人物側の感情反応（affect）**（ユーザーの感情推定ではない）
 - `salience` は「重要度×時間減衰」集約の係数（重要な出来事ほど長く残す）
-- `partner_affect_intensity/salience/confidence` は 0.0〜1.0
-- `partner_response_policy` は口調だけでなく「協力/拒否」などの行動方針に効かせるための内部ノブ
-  - 実装では `partner_mood_state.response_policy`（次ターン以降の注入）にも反映される
+- `persona_affect_intensity/salience/confidence` は 0.0〜1.0
+- `persona_response_policy` は口調だけでなく「協力/拒否」などの行動方針に効かせるための内部ノブ
+  - 実装では `persona_mood_state.response_policy`（次ターン以降の注入）にも反映される
 
 ## Entity抽出
 
@@ -86,7 +86,7 @@
 ```
 
 - `entities` / `entity_aliases` / `unit_entities` / `edges` を upsert
-- `relations.relation` は自由ラベル（推奨: `friend|family|colleague|partner|likes|dislikes|related|other`）
+- `relations.relation` は自由ラベル（推奨: `friend|family|colleague|romantic|likes|dislikes|related|other`）
 - `type_label` / `src` / `dst` の TYPE は大文字推奨（内部でも大文字に正規化して保存する）
 - `roles` は小文字推奨（内部でも小文字に正規化して保存する）
 - `confidence` は 0.0〜1.0

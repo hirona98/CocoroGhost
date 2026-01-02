@@ -14,7 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_utils.tasks import repeat_every
 
 from cocoro_ghost import event_stream, log_stream
-from cocoro_ghost.api import admin, capture, chat, events, logs, meta_request, notification, partner_mood, settings
+from cocoro_ghost.api import admin, capture, chat, events, logs, meta_request, notification, persona_mood, settings
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.logging_config import setup_logging, suppress_uvicorn_access_log_paths
@@ -71,7 +71,7 @@ def create_app() -> FastAPI:
     # uvicorn の access log から特定リクエストだけ除外（開発時にノイズになりがち）
     suppress_uvicorn_access_log_paths(
         "/api/health",
-        "GET /api/partner_mood",
+        "GET /api/persona_mood",
     )
 
     # 2. 設定DB初期化
@@ -119,7 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(notification.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(meta_request.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(capture.router, dependencies=[Depends(verify_token)], prefix="/api")
-    app.include_router(partner_mood.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(persona_mood.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(settings.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(admin.router, dependencies=[Depends(verify_token)], prefix="/api")
     # 認証不要なエンドポイント（ログ/イベントストリーム）

@@ -201,7 +201,7 @@ sequenceDiagram
   MM->>SCH: build MemoryPack\n(relevant episodes)
   SCH->>DB: read units/entities/summaries
   SCH-->>MM: MemoryPack
-  MM->>LLM: generate partner message\n(external prompt)
+  MM->>LLM: generate persona message\n(external prompt)
   MM->>DB: update payload_episode.reply_text/image_summary
   MM->>Q: enqueue jobs (reflection/extraction/embedding...)
   MM-->>WS: publish {unit_id,type,data{system_text,message}}
@@ -233,7 +233,7 @@ sequenceDiagram
   MM->>SCH: build MemoryPack\n(relevant episodes)
   SCH->>DB: read units/entities/summaries
   SCH-->>MM: MemoryPack
-  MM->>LLM: generate partner message\n(meta-request prompt)
+  MM->>LLM: generate persona message\n(meta-request prompt)
   MM->>DB: update payload_episode.reply_text/image_summary
   MM->>Q: enqueue embeddings job
   MM-->>WS: publish {unit_id,type,data{message}}

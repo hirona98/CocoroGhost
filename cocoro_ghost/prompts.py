@@ -36,14 +36,14 @@ REFLECTION_SYSTEM_PROMPT = """
 - コメントや日本語の説明文など、JSON 以外の文字は一切出力してはいけません。
 - 型とキーを厳守してください。
 - 数値の範囲:
-  - partner_affect_intensity: 0.0〜1.0
+  - persona_affect_intensity: 0.0〜1.0
   - salience: 0.0〜1.0
   - confidence: 0.0〜1.0
 
 {
   "reflection_text": "string",
-  "partner_affect_label": "joy|sadness|anger|fear|neutral",
-  "partner_affect_intensity": 0.0,
+  "persona_affect_label": "joy|sadness|anger|fear|neutral",
+  "persona_affect_intensity": 0.0,
   "topic_tags": ["仕事", "読書"],
   "salience": 0.0,
   "confidence": 0.0
@@ -121,7 +121,7 @@ ENTITY_EXTRACT_SYSTEM_PROMPT = """
 - 個数は多すぎない（最大10件）
 - relations は必要なときだけ出す（最大10件）
 - relation は自由ラベルだが、なるべく次のいずれかに寄せる（語彙爆発を避ける）:
-  - friend | family | colleague | partner | other
+  - friend | family | colleague | romantic | other
 - type_label は自由（例: PERSON/TOPIC/ORG/PROJECT/...）。固定Enumに縛られない。
   - 出力は大文字推奨（内部でも大文字に正規化して保存する）
 - roles は用途のための“役割”で、基本は次のどれか（必要なときだけ付与）:

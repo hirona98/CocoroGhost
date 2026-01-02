@@ -58,29 +58,29 @@ data: {"message":"...","code":"..."}
 1. 画像要約（`images` がある場合）
 2. Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 3. Schedulerで **MemoryPack** を生成（検索結果を `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` に含む）
-4. LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + partner_affect_trailer_prompt）を渡し、conversation は直近会話（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ user_text を渡す
-5. 返答をSSEで配信（返答末尾の内部JSON＝partner_affect trailer はサーバ側で回収し、SSEには流さない）
+4. LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + persona_affect_trailer_prompt）を渡し、conversation は直近会話（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ user_text を渡す
+5. 返答をSSEで配信（返答末尾の内部JSON＝persona_affect trailer はサーバ側で回収し、SSEには流さない）
 6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 7. Worker用ジョブを enqueue（reflection/extraction/embedding等）
 
-## `/api/partner_mood`（デバッグ）
+## `/api/persona_mood`（デバッグ）
 
-partner_mood（AI人格の機嫌）関連の数値を **UIから参照/変更**するためのデバッグ用API。
+persona_mood（AI人格の機嫌）関連の数値を **UIから参照/変更**するためのデバッグ用API。
 
 - **永続化しない**（DB/settings.db に保存しない）
 - 反映は **同一プロセス内**のみ（プロセスを跨ぐ構成ではプロセスごとに状態が分離される）
 - 認証は他の `/api/*` と同様に `Authorization: Bearer <TOKEN>`
 
-### `GET /api/partner_mood`
+### `GET /api/persona_mood`
 
-partner_mood の **前回チャットで使った値（last used）** を返す。
+persona_mood の **前回チャットで使った値（last used）** を返す。
 （LLMに渡す直前でDBから取得して計算するため、"現在値"という概念はない）
 
-- `PUT /api/partner_mood` で override を設定しても、**会話（/api/chat）が走るまでは** last used は更新されない
+- `PUT /api/persona_mood` で override を設定しても、**会話（/api/chat）が走るまでは** last used は更新されない
 
 #### Response（JSON）
 
-システムが実際に利用する partner_mood（有効値）を返す。
+システムが実際に利用する persona_mood（有効値）を返す。
 
 ```json
 {
@@ -100,9 +100,9 @@ partner_mood の **前回チャットで使った値（last used）** を返す�
 }
 ```
 
-### `PUT /api/partner_mood`
+### `PUT /api/persona_mood`
 
-in-memory の partner_mood ランタイム状態（次のチャットで有効な値）を設定する
+in-memory の persona_mood ランタイム状態（次のチャットで有効な値）を設定する
 
 #### Request（JSON）
 
@@ -131,15 +131,15 @@ in-memory の partner_mood ランタイム状態（次のチャットで有効�
 
 #### Response
 
-`GET /api/partner_mood` と同形式（有効値を返す）。
+`GET /api/persona_mood` と同形式（有効値を返す）。
 
-### `DELETE /api/partner_mood`
+### `DELETE /api/persona_mood`
 
-in-memory の partner_mood ランタイム状態（override）を解除し、自然計算（DBからの同期計算）に戻す。
+in-memory の persona_mood ランタイム状態（override）を解除し、自然計算（DBからの同期計算）に戻す。
 
 #### Response
 
-`GET /api/partner_mood` と同形式（解除後の有効値を返す）。
+`GET /api/persona_mood` と同形式（解除後の有効値を返す）。
 
 ## `/api/v2/notification`
 

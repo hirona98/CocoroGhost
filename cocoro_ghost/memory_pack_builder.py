@@ -2,7 +2,7 @@
 MemoryPack生成（取得計画器）
 
 会話に注入する「内部コンテキスト（MemoryPack）」を組み立てる。
-Facts、Summary、Loops、Episode証拠、Capsule、partner_mood_state等を
+Facts、Summary、Loops、Episode証拠、Capsule、persona_mood_state等を
 トークン予算内で優先順位に従って構築する。
 """
 
@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
-from cocoro_ghost.partner_mood import compute_partner_mood_state_from_episodes
+from cocoro_ghost.persona_mood import compute_persona_mood_state_from_episodes
 from cocoro_ghost.unit_enums import Sensitivity, UnitKind
 from cocoro_ghost.unit_models import (
     Entity,
@@ -31,7 +31,7 @@ from cocoro_ghost.unit_models import (
     Unit,
     UnitEntity,
 )
-from cocoro_ghost.partner_mood_runtime import apply_partner_mood_state_override, set_last_used
+from cocoro_ghost.persona_mood_runtime import apply_persona_mood_state_override, set_last_used
 from cocoro_ghost.fact_policy import (
     canonicalize_fact_predicate,
     effective_fact_ts,
@@ -497,8 +497,8 @@ def build_memory_pack(
         _cu, cap = cap_row
         capsule_json = (cap.capsule_json or "").strip() or None
 
-    def _partner_mood_guidance_from_state(state: dict[str, Any]) -> str | None:
-        """partner_mood_state を本文の口調へ落とし込むための短い指示（内部向け）。
+    def _persona_mood_guidance_from_state(state: dict[str, Any]) -> str | None:
+        """persona_mood_state を本文の口調へ落とし込むための短い指示（内部向け）。
 
         - LLMは数値の解釈がブレることがあるため、言語化したガイダンスを併記する。
         - ユーザーには見せない前提（MemoryPack内）。
@@ -759,7 +759,7 @@ def build_memory_pack(
                 if ut:
                     evidence_lines.append(f'User: 「{ut}」')
                 if rt:
-                    evidence_lines.append(f'Partner: 「{rt}」')
+                    evidence_lines.append(f'Persona: 「{rt}」')
 
             if reason:
                 evidence_lines.append(f"→ 関連: {reason}")
@@ -798,59 +798,59 @@ def build_memory_pack(
     #
     # 目的:
     # - /api/chat は「返信生成の前」に MemoryPack を組むため、capsule_refresh（Worker）がまだ走っていないと
-    #   "partner_mood_state" が注入されず、感情の反映が1ターン遅れやすい。
+    #   "persona_mood_state" が注入されず、感情の反映が1ターン遅れやすい。
     # - ここで同期計算して `CONTEXT_CAPSULE` に入れることで、「直前の出来事」まで含めた機嫌を次ターンから使える。
     #
-    # 計算式（partner_mood の積分ロジック）:
-    #   impact = partner_affect_intensity × salience × confidence × exp(-Δt/τ(salience))
+    # 計算式（persona_mood の積分ロジック）:
+    #   impact = persona_affect_intensity × salience × confidence × exp(-Δt/τ(salience))
     # - salience が高いほど τ が長い → 大事件が残る
     # - salience が低いほど τ が短い → 雑談はすぐ消える
     try:
-        partner_mood_units = (
+        persona_mood_units = (
             db.query(Unit, PayloadEpisode)
             .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
             .filter(
                 Unit.kind == int(UnitKind.EPISODE),
                 Unit.state.in_([0, 1, 2]),
                 Unit.sensitivity <= sensitivity_max,
-                Unit.partner_affect_label.isnot(None),
+                Unit.persona_affect_label.isnot(None),
             )
             .order_by(Unit.created_at.desc(), Unit.id.desc())
             .limit(500)
             .all()
         )
-        partner_mood_episodes = []
-        # partner_response_policy は直近だけ見れば十分なので、JSON parse は上位N件に限定する。
-        partner_response_policy_parse_limit = 60
-        for idx, (u, pe) in enumerate(partner_mood_units):
-            partner_response_policy = None
-            if idx < partner_response_policy_parse_limit and (pe.reflection_json or "").strip():
+        persona_mood_episodes = []
+        # persona_response_policy は直近だけ見れば十分なので、JSON parse は上位N件に限定する。
+        persona_response_policy_parse_limit = 60
+        for idx, (u, pe) in enumerate(persona_mood_units):
+            persona_response_policy = None
+            if idx < persona_response_policy_parse_limit and (pe.reflection_json or "").strip():
                 try:
                     obj = json.loads(pe.reflection_json)
-                    pp = obj.get("partner_response_policy") if isinstance(obj, dict) else None
-                    partner_response_policy = pp if isinstance(pp, dict) else None
+                    pp = obj.get("persona_response_policy") if isinstance(obj, dict) else None
+                    persona_response_policy = pp if isinstance(pp, dict) else None
                 except Exception:  # noqa: BLE001
-                    partner_response_policy = None
-            partner_mood_episodes.append(
+                    persona_response_policy = None
+            persona_mood_episodes.append(
                 {
                     "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
                     "created_at": int(u.created_at),
-                    "partner_affect_label": u.partner_affect_label,
-                    "partner_affect_intensity": u.partner_affect_intensity,
+                    "persona_affect_label": u.persona_affect_label,
+                    "persona_affect_intensity": u.persona_affect_intensity,
                     "salience": u.salience,
                     "confidence": u.confidence,
                     # /api/chat の内部JSONで出た「方針ノブ」を次ターン以降にも効かせる。
-                    "partner_response_policy": partner_response_policy,
+                    "persona_response_policy": persona_response_policy,
                 }
             )
-        partner_mood_state = compute_partner_mood_state_from_episodes(partner_mood_episodes, now_ts=now_ts)
+        persona_mood_state = compute_persona_mood_state_from_episodes(persona_mood_episodes, now_ts=now_ts)
         # デバッグ用: UI/API から in-memory ランタイム状態を適用する
-        partner_mood_state = apply_partner_mood_state_override(partner_mood_state, now_ts=now_ts)
+        persona_mood_state = apply_persona_mood_state_override(persona_mood_state, now_ts=now_ts)
         compact = {
-            "label": partner_mood_state.get("label"),
-            "intensity": partner_mood_state.get("intensity"),
-            "components": partner_mood_state.get("components"),
-            "response_policy": partner_mood_state.get("response_policy"),
+            "label": persona_mood_state.get("label"),
+            "intensity": persona_mood_state.get("intensity"),
+            "components": persona_mood_state.get("components"),
+            "response_policy": persona_mood_state.get("response_policy"),
             "now_local": _to_local_iso(now_ts),
         }
         # UI向け: 前回チャットで使った値（注入した値）を保存する。
@@ -860,16 +860,16 @@ def build_memory_pack(
         except Exception:  # noqa: BLE001
             pass
         capsule_parts.append(
-            f"partner_mood_state: {json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}"
+            f"persona_mood_state: {json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}"
         )
 
-        # partner_mood_state を口調へ確実に反映させるため、短い言語ガイドを併記する。
+        # persona_mood_state を口調へ確実に反映させるため、短い言語ガイドを併記する。
         # ※ capsule_json（過去の状態や直近のJoy発話など）に強く引っ張られないよう、こちらを優先材料にする。
-        guidance = _partner_mood_guidance_from_state(
-            partner_mood_state if isinstance(partner_mood_state, dict) else {}
+        guidance = _persona_mood_guidance_from_state(
+            persona_mood_state if isinstance(persona_mood_state, dict) else {}
         )
         if guidance:
-            capsule_parts.append(f"partner_mood_guidance: {guidance}")
+            capsule_parts.append(f"persona_mood_guidance: {guidance}")
     except Exception:  # noqa: BLE001
         pass
 
@@ -893,7 +893,7 @@ def build_memory_pack(
         return "".join(parts)
 
     # NOTE:
-    # - capsule_json と同期計算した partner_mood_state の両方を注入する。
+    # - capsule_json と同期計算した persona_mood_state の両方を注入する。
     capsule_lines: List[str] = []
     capsule_lines.extend(capsule_parts)
 
@@ -902,10 +902,10 @@ def build_memory_pack(
     relationship = list(relationship_lines)
 
     # 怒りが強いときは「関係性サマリ（大好き等）」が口調を上書きしやすい。
-    # ここでは短期状態（partner_mood_state）を優先し、SharedNarrativeを注入しない。
+    # ここでは短期状態（persona_mood_state）を優先し、SharedNarrativeを注入しない。
     try:
-        if isinstance(partner_mood_state, dict):
-            if str(partner_mood_state.get("label") or "") == "anger" and float(partner_mood_state.get("intensity") or 0.0) >= 0.6:
+        if isinstance(persona_mood_state, dict):
+            if str(persona_mood_state.get("label") or "") == "anger" and float(persona_mood_state.get("intensity") or 0.0) >= 0.6:
                 summaries = []
                 relationship = []
     except Exception:  # noqa: BLE001

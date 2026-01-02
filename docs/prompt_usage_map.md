@@ -20,7 +20,7 @@
 | `META_PROACTIVE_MESSAGE_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | meta-request（指示+材料）から能動メッセージ生成 | `cocoro_ghost/memory.py::MemoryManager::_process_meta_request_async` | 同期風（API応答後のBackgroundTasks） |
 | `DEFAULT_PERSONA_ANCHOR` | `cocoro_ghost/prompts.py` | PersonaPreset の初期値（未設定時の雛形） | `cocoro_ghost/db.py`（settings初期化） | 起動時/初期化 |
 | `DEFAULT_PERSONA_ADDON` | `cocoro_ghost/prompts.py` | addon（PERSONA_ANCHORの任意追加オプション）の初期値 | `cocoro_ghost/db.py`（settings初期化） | 起動時/初期化 |
-| `PARTNER_AFFECT_TRAILER_PROMPT`（inline） | `cocoro_ghost/memory.py` | chatの返答末尾に「内部JSON（反射/機嫌）」を付加し、SSEから除外して保存（即時反映） | `cocoro_ghost/memory.py::MemoryManager.stream_chat` | 同期（chat） |
+| `PERSONA_AFFECT_TRAILER_PROMPT`（inline） | `cocoro_ghost/memory.py` | chatの返答末尾に「内部JSON（反射/機嫌）」を付加し、SSEから除外して保存（即時反映） | `cocoro_ghost/memory.py::MemoryManager.stream_chat` | 同期（chat） |
 | `IMAGE_SUMMARY_PROMPT`（inline） | `cocoro_ghost/llm_client.py` | 画像を短い日本語で要約（vision） | `cocoro_ghost/llm_client.py::LlmClient.generate_image_summary`（呼び出し: `cocoro_ghost/memory.py::MemoryManager::_summarize_images` / `cocoro_ghost/memory.py::MemoryManager.handle_capture`） | 同期（chat/capture）/ 同期風（notification/meta-request の BackgroundTasks） |
 
 補足:
@@ -39,7 +39,7 @@ flowchart TD
     IMGN --> PACKN["MemoryPack Builder: build_memory_pack()"]
     IMGM --> PACKM["MemoryPack Builder: build_memory_pack()"]
 
-    PACK --> SYS_CHAT["system = guard + PERSONA_ANCHOR（persona_text+addon_text） + PARTNER_AFFECT_TRAILER_PROMPT\nMemoryPack -> internal context message"]
+    PACK --> SYS_CHAT["system = guard + PERSONA_ANCHOR（persona_text+addon_text） + PERSONA_AFFECT_TRAILER_PROMPT\nMemoryPack -> internal context message"]
     PACKN --> SYS_NOTIF["system = guard + PERSONA_ANCHOR（persona_text+addon_text） + EXTERNAL_SYSTEM_PROMPT\nMemoryPack -> internal context message"]
     PACKM --> SYS_META["system = guard + PERSONA_ANCHOR（persona_text+addon_text） + META_PROACTIVE_MESSAGE_SYSTEM_PROMPT\nMemoryPack -> internal context message"]
 
@@ -182,7 +182,7 @@ sequenceDiagram
   RET-->>API: relevant_episodes[]
   API->>SCH: build_memory_pack(facts, loops, evidence...)
   SCH-->>API: MemoryPack (<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>> / <<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>> / ...)
-  Note over API: system = guard + PERSONA_ANCHOR（persona_text+addon_text） + PARTNER_AFFECT_TRAILER_PROMPT\nMemoryPackはinternal contextとして別メッセージで注入
+  Note over API: system = guard + PERSONA_ANCHOR（persona_text+addon_text） + PERSONA_AFFECT_TRAILER_PROMPT\nMemoryPackはinternal contextとして別メッセージで注入
   API->>LLM: chat(system, conversation, user_text)\n(stream)
   LLM-->>API: streamed tokens
   API-->>UI: SSE stream
@@ -239,7 +239,7 @@ flowchart LR
 
   J --> REFL["reflect_episode"]
   REFL -->|LLM JSON| P1["REFLECTION_SYSTEM_PROMPT"]
-  P1 -->|update| U1["units.partner_affect_* / salience / confidence / topic_tags\npayload_episode.reflection_json"]
+  P1 -->|update| U1["units.persona_affect_* / salience / confidence / topic_tags\npayload_episode.reflection_json"]
   J --> CAPR["capsule_refresh (LLM不要)"]
   CAPR -->|upsert| CAP["Unit(kind=CAPSULE, source=capsule_refresh)\npayload_capsule.capsule_json"]
 
@@ -274,12 +274,12 @@ flowchart LR
 
 - Reflection / Entities / Facts / Loops: `payload_episode` の `user_text/reply_text/image_summary` を連結して入力にする（`cocoro_ghost/worker.py`）。
 - Bond summary（rolling:7d）: 直近7日程度の `Unit(kind=EPISODE)` を時系列で最大200件抜粋し、`range_start/range_end` + 箇条書き（unit_id + user/reply抜粋）として入力にする（`cocoro_ghost/worker.py::_handle_bond_summary`）。
-- Capsule refresh: 直近の `Unit(kind=EPISODE)`（既定 `limit=5`）の抜粋に加え、「重要度×時間減衰」で集約した `partner_mood_state` を `payload_capsule.capsule_json` に更新する（`cocoro_ghost/worker.py::_handle_capsule_refresh` / `cocoro_ghost/partner_mood.py`）。
-  - デバッグ用途: `PUT /api/partner_mood` による in-memory ランタイム状態が有効な場合、更新される `partner_mood_state` は適用後の値になる。
+- Capsule refresh: 直近の `Unit(kind=EPISODE)`（既定 `limit=5`）の抜粋に加え、「重要度×時間減衰」で集約した `persona_mood_state` を `payload_capsule.capsule_json` に更新する（`cocoro_ghost/worker.py::_handle_capsule_refresh` / `cocoro_ghost/persona_mood.py`）。
+  - デバッグ用途: `PUT /api/persona_mood` による in-memory ランタイム状態が有効な場合、更新される `persona_mood_state` は適用後の値になる。
 - Notification: `# notification ...` 形式に整形したテキスト（+ 画像要約）を `conversation=[{"role":"user","content":...}]` として渡す（`cocoro_ghost/memory.py`）。
 - Meta request: `# meta-request ...` 形式に整形したテキスト（instruction + payload + 画像要約）を渡す（`cocoro_ghost/memory.py`）。
 - PERSONA_ANCHOR: settings の active preset から読み込み、persona_text + addon_text を連結して system prompt に固定注入する（MemoryPackには含めない）。
-- Partner affect trailer（chatのみ）: 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_PARTNER_AFFECT_JSON_v1>>>` + 内部JSON（Reflectionスキーマ準拠）を付加する。サーバ側は区切り以降をSSEに流さず回収し、`units.partner_affect_* / salience / confidence / topic_tags` と `payload_episode.reflection_json` に即時反映する（`cocoro_ghost/memory.py`）。これにより「その発言で反応する」を同ターンで実現しつつ、Workerの `reflect_episode` は冪等にスキップ可能になる。
+- Persona affect trailer（chatのみ）: 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_PERSONA_AFFECT_JSON_v1>>>` + 内部JSON（Reflectionスキーマ準拠）を付加する。サーバ側は区切り以降をSSEに流さず回収し、`units.persona_affect_* / salience / confidence / topic_tags` と `payload_episode.reflection_json` に即時反映する（`cocoro_ghost/memory.py`）。これにより「その発言で反応する」を同ターンで実現しつつ、Workerの `reflect_episode` は冪等にスキップ可能になる。
 - Person summary: `person_summary_refresh` は注入用の `summary_text` に加えて、`favorability_score`（PERSONA_ANCHORの人物→人物の好感度 0..1）を `summary_json` に保存する。Schedulerは現状 `summary_text` を注入するため、好感度は `summary_text` 先頭に1行で含める運用（`cocoro_ghost/worker.py::_handle_person_summary_refresh`）。
 - 画像要約（vision）: `images[].base64` を画像として渡し、「短い日本語で要約」したテキストを得る（`cocoro_ghost/llm_client.py::LlmClient.generate_image_summary`）。chat/notification/meta-request/capture の `payload_episode.image_summary` に保存される。
 

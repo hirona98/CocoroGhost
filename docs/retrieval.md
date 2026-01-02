@@ -279,7 +279,7 @@ reason = f"heuristic rerank: score={final:.3f} rrf={rrf_norm:.3f} lex={lex:.3f} 
 
 [2024-12-01] プロジェクトXの進捗について
 User: 「今週中に完成させたい」
-Partner: 「締切は金曜日でしたね。サポートしますよ」
+Persona: 「締切は金曜日でしたね。サポートしますよ」
 → 関連: heuristic rerank: score=0.42 ...
 ```
 

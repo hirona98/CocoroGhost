@@ -184,10 +184,10 @@ def _parse_internal_context_sections(content: str) -> dict[str, list[Any]] | Non
             sections[current_key].append(line)
             continue
         parsed = None
-        for prefix in ("capsule_json:", "partner_mood_state:", "partner_mood_guidance:"):
+        for prefix in ("capsule_json:", "persona_mood_state:", "persona_mood_guidance:"):
             if text.startswith(prefix):
                 payload = text[len(prefix) :].strip()
-                if prefix in {"capsule_json:", "partner_mood_state:"}:
+                if prefix in {"capsule_json:", "persona_mood_state:"}:
                     try:
                         parsed = json.loads(payload)
                     except Exception:

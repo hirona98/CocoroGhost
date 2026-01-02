@@ -69,8 +69,8 @@ def _to_unit_meta(u: Unit) -> UnitMeta:
         sensitivity=int(u.sensitivity),
         pin=int(u.pin),
         topic_tags=u.topic_tags,
-        partner_affect_label=u.partner_affect_label,
-        partner_affect_intensity=float(u.partner_affect_intensity) if u.partner_affect_intensity is not None else None,
+        persona_affect_label=u.persona_affect_label,
+        persona_affect_intensity=float(u.persona_affect_intensity) if u.persona_affect_intensity is not None else None,
     )
 
 

@@ -22,7 +22,7 @@ from typing import Optional, Tuple
 
 # 述語は「どんな対象にも適用できるプリミティブ」に限定する。
 # NOTE:
-# - ドメイン名詞（romantic_partner_is / primary_vehicle_is 等）をpredicate化しない。
+# - ドメイン名詞（romantic_relation_is / primary_vehicle_is 等）をpredicate化しない。
 # - “関係性”は entity relation（Edge）側で表現する前提。
 CANONICAL_FACT_PREDICATES: frozenset[str] = frozenset(
     {
@@ -184,4 +184,3 @@ def effective_fact_ts(
     if isinstance(created_at, int) and created_at > 0:
         return int(created_at)
     return 0
-

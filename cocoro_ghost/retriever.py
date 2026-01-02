@@ -110,8 +110,8 @@ def _format_recent_conversation(recent_conversation: Sequence[Message], *, max_m
             continue
         if role == "user":
             label = "User"
-        elif role in {"assistant", "partner"}:
-            label = "Partner"
+        elif role in {"assistant", "persona"}:
+            label = "Persona"
         else:
             label = role or "Message"
         lines.append(f"{label}: {content}")

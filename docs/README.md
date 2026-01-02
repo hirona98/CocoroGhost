@@ -29,7 +29,7 @@
 4. `docs/sqlite_vec.md`（vec0設計・KNN→JOIN）
 5. `docs/memory_pack_builder.md`（MemoryPack編成・スコア・圧縮）
 6. `docs/retrieval.md`（記憶検索: LLMレス高速化版）
-7. `docs/partner_mood.md`（AI人格の反射/機嫌: 即時反応 + 持続）
+7. `docs/persona_mood.md`（AI人格の反射/機嫌: 即時反応 + 持続）
 8. `docs/worker.md`（ジョブ・冪等性・版管理）
 9. `docs/prompts.md`（LLM JSONスキーマ）
 10. `docs/prompt_usage_map.md`（プロンプト使用箇所マップ）
@@ -72,4 +72,4 @@
 
 なお、履歴のノイズ化・入力トークン増・プロンプトキャッシュの当たり悪化を避けるため、内部JSONは次ターンの会話履歴に入れない。
 
-具体仕様は `docs/prompts.md` の「chat（SSE）: 返答末尾の内部JSON（partner_affect trailer）」を参照
+具体仕様は `docs/prompts.md` の「chat（SSE）: 返答末尾の内部JSON（persona_affect trailer）」を参照

@@ -81,8 +81,8 @@ create table if not exists units (
 
   -- 任意：検索補助
   topic_tags    text,                    -- JSON array string（例: ["仕事","読書"]）
-  partner_affect_label text,             -- joy/sadness/anger/fear/neutral
-  partner_affect_intensity real          -- 0..1
+  persona_affect_label text,             -- joy/sadness/anger/fear/neutral
+  persona_affect_intensity real          -- 0..1
 );
 
 create index if not exists idx_units_kind_created on units(kind, created_at);
@@ -106,8 +106,8 @@ create index if not exists idx_units_state on units(state);
 | `sensitivity` | INTEGER | Sensitivity。PRIVATE以上は外部UI/注入の制約に使う。 | API/Worker/Admin |
 | `pin` | INTEGER | ピン留め（0/1）。Schedulerの採用優先度にボーナス。 | Admin |
 | `topic_tags` | TEXT | JSON array文字列。NFKC正規化・重複除去・ソートで安定化推奨。 | Worker/Admin |
-| `partner_affect_label` | TEXT | 反射（reflect_episode）の結果ラベル。 | Worker |
-| `partner_affect_intensity` | REAL | 反射の強度（0..1）。 | Worker |
+| `persona_affect_label` | TEXT | 反射（reflect_episode）の結果ラベル。 | Worker |
+| `persona_affect_intensity` | REAL | 反射の強度（0..1）。 | Worker |
 
 補足:
 - `occurred_at` が無い場合は `created_at` を代替にしている箇所がある（Retrieverの時刻など）。
@@ -314,7 +314,7 @@ create table if not exists payload_capsule (
 - 直近状態（現在日時/直近の文脈）を軽量に保つ「短期メモ」用途。
 - `expires_at` がある場合、Schedulerは期限切れを注入しない。
 - `capsule_json` はJSON文字列（構造は運用で決める）。
-  - 現行の `capsule_refresh` では `recent`（直近の抜粋）に加えて、`partner_mood_state`（機嫌: 重要度×時間減衰の集約）を含める。
+  - 現行の `capsule_refresh` では `recent`（直近の抜粋）に加えて、`persona_mood_state`（機嫌: 重要度×時間減衰の集約）を含める。
 
 ### OpenLoop（未完了：次に話す理由）
 
@@ -379,7 +379,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 - 対象: `units(kind=EPISODE)` を保存した直後
 - enqueue: `reflect_episode` / `extract_entities` / `extract_facts` / `extract_loops` / `upsert_embeddings` / `capsule_refresh(limit=5)`
-- `capsule_refresh` の payload は `{"limit":5, "partner_mood_scan_limit":500}` のように拡張可能（`partner_mood_scan_limit` は機嫌集約の走査件数）。
+- `capsule_refresh` の payload は `{"limit":5, "persona_mood_scan_limit":500}` のように拡張可能（`persona_mood_scan_limit` は機嫌集約の走査件数）。
 - 入口の例:
   - `/api/chat` の完了時（SSE done直前の保存）
   - `/api/v2/notification` の処理完了時（reply生成後の保存更新）
@@ -471,7 +471,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 固定の RelationType（enum値）は運用で破綻しやすいため廃止し、`edges.relation_label`（TEXT）で表現する。
 
-- 推奨ラベル: `friend` / `family` / `colleague` / `partner` / `likes` / `dislikes` / `related` / `other`
+- 推奨ラベル: `friend` / `family` / `colleague` / `romantic` / `likes` / `dislikes` / `related` / `other`
 - ただし自由に増やしてよい（例: `mentor` / `manager` / `rival` / `coworker` ...）
 
 ### SummaryScopeType

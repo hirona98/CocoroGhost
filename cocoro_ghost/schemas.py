@@ -168,8 +168,8 @@ class UnitMeta(BaseModel):
     sensitivity: int                     # 機密レベル
     pin: int                             # ピン留めフラグ
     topic_tags: Optional[str] = None     # トピックタグ（カンマ区切り）
-    partner_affect_label: Optional[str] = None      # AI人格の感情ラベル
-    partner_affect_intensity: Optional[float] = None  # 感情の強度
+    persona_affect_label: Optional[str] = None      # AI人格の感情ラベル
+    persona_affect_intensity: Optional[float] = None  # 感情の強度
 
 
 class UnitListResponse(BaseModel):

@@ -39,8 +39,8 @@ class Unit(UnitBase):
     pin: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # ピン留め（0:なし, 1:あり）
 
     topic_tags: Mapped[Optional[str]] = mapped_column(Text)  # トピックタグ（JSON配列）
-    partner_affect_label: Mapped[Optional[str]] = mapped_column(Text)  # AI人格感情ラベル
-    partner_affect_intensity: Mapped[Optional[float]] = mapped_column(Float)  # 感情強度
+    persona_affect_label: Mapped[Optional[str]] = mapped_column(Text)  # AI人格感情ラベル
+    persona_affect_intensity: Mapped[Optional[float]] = mapped_column(Float)  # 感情強度
 
 
 class PayloadEpisode(UnitBase):
