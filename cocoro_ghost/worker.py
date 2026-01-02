@@ -533,8 +533,8 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     if (pe.reflection_json or "").strip() and (unit.persona_affect_label or "").strip():
         return
     ctx_parts = []
-    if pe.user_text:
-        ctx_parts.append(f"user: {pe.user_text}")
+    if pe.input_text:
+        ctx_parts.append(f"speaker: {pe.input_text}")
     if pe.reply_text:
         ctx_parts.append(f"reply: {pe.reply_text}")
     if pe.image_summary:
@@ -546,7 +546,7 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     system_prompt = _wrap_prompt_with_persona(prompts.get_reflection_prompt())
     resp = llm_client.generate_json_response(
         system_prompt=system_prompt,
-        user_text=context_text,
+        input_text=context_text,
         purpose=LlmRequestPurpose.INTERNAL_THOUGHT,
     )
     raw_text = llm_client.response_content(resp)
@@ -747,7 +747,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
 
     resp = llm_client.generate_json_response(
         system_prompt=prompts.get_entity_extract_prompt(),
-        user_text=text_in,
+        input_text=text_in,
         purpose=LlmRequestPurpose.ENTITY_EXTRACT,
     )
     # LLMのJSON応答をdictに正規化する。
@@ -912,7 +912,7 @@ def _build_recent_context_input(*, session: Session, unit_id: int, payload: Payl
     """
     parts: list[str] = []
     # まず対象エピソードの本文を先頭に置く。
-    main_text = "\n".join(filter(None, [payload.user_text, payload.reply_text, payload.image_summary]))
+    main_text = "\n".join(filter(None, [payload.input_text, payload.reply_text, payload.image_summary]))
     if main_text.strip():
         parts.append(main_text.strip())
 
@@ -933,10 +933,10 @@ def _build_recent_context_input(*, session: Session, unit_id: int, payload: Payl
     if rows:
         lines: list[str] = []
         for _u, pe in rows:
-            ut = (pe.user_text or "").strip().replace("\n", " ")
+            ut = (pe.input_text or "").strip().replace("\n", " ")
             rt = (pe.reply_text or "").strip().replace("\n", " ")
             if ut:
-                lines.append(f"User: {ut}")
+                lines.append(f"Speaker: {ut}")
             if rt:
                 lines.append(f"Persona: {rt}")
         if lines:
@@ -959,7 +959,7 @@ def _handle_upsert_embeddings(
         pe = session.query(PayloadEpisode).filter(PayloadEpisode.unit_id == unit_id).one_or_none()
         if pe is None:
             return
-        text_to_embed = "\n".join(filter(None, [pe.user_text, pe.reply_text, pe.image_summary]))
+        text_to_embed = "\n".join(filter(None, [pe.input_text, pe.reply_text, pe.image_summary]))
     elif unit.kind == int(UnitKind.FACT):
         pf = session.query(PayloadFact).filter(PayloadFact.unit_id == unit_id).one_or_none()
         if pf is None:
@@ -1093,7 +1093,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
 
     resp = llm_client.generate_json_response(
         system_prompt=prompts.get_fact_extract_prompt(),
-        user_text=text_in,
+        input_text=text_in,
         purpose=LlmRequestPurpose.FACT_EXTRACT,
     )
     # LLMのJSON応答をdictに正規化する。
@@ -1209,22 +1209,23 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
 
         subject_entity_id: Optional[int] = None
         subj = f.get("subject")
-        subj_name = "USER"
+        subj_name = "SPEAKER"
         subj_etype_raw = "PERSON"
         if isinstance(subj, dict):
-            subj_name = str(subj.get("name") or "").strip() or "USER"
+            subj_name = str(subj.get("name") or "").strip() or "SPEAKER"
             subj_etype_raw = _normalize_type_label(str(subj.get("type_label") or "").strip() or None) or "PERSON"
 
-        if subj_name.strip().upper() == "USER":
-            user_ent = _get_or_create_entity(
+        # "SPEAKER" は「この会話で直接やりとりしている相手」を表す予約語。
+        if subj_name.strip().upper() == "SPEAKER":
+            speaker_ent = _get_or_create_entity(
                 session,
-                name="USER",
+                name="SPEAKER",
                 type_label="PERSON",
                 roles=["person"],
-                aliases=["USER"],
+                aliases=["SPEAKER"],
                 now_ts=now_ts,
             )
-            subject_entity_id = int(user_ent.id)
+            subject_entity_id = int(speaker_ent.id)
         else:
             ent = _get_or_create_entity(
                 session,
@@ -1471,7 +1472,7 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
     system_prompt = _wrap_prompt_with_persona(prompts.get_loop_extract_prompt())
     resp = llm_client.generate_json_response(
         system_prompt=system_prompt,
-        user_text=text_in,
+        input_text=text_in,
         purpose=LlmRequestPurpose.LOOP_EXTRACT,
     )
     # LLMのJSON応答をdictに正規化する。
@@ -1618,7 +1619,7 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
                 "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
                 "created_at": int(u.created_at),
                 "source": u.source,
-                "user_text": (pe.user_text or "")[:200],
+                "input_text": (pe.input_text or "")[:200],
                 "reply_text": (pe.reply_text or "")[:200],
                 "topic_tags": u.topic_tags,
                 "persona_affect_label": u.persona_affect_label,
@@ -1786,13 +1787,13 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
 
     lines = []
     for u, pe in ep_rows:
-        ut = (pe.user_text or "").strip().replace("\n", " ")
+        ut = (pe.input_text or "").strip().replace("\n", " ")
         rt = (pe.reply_text or "").strip().replace("\n", " ")
         if not ut and not rt:
             continue
         ut = ut[:200]
         rt = rt[:220]
-        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
+        lines.append(f"- unit_id={int(u.id)} speaker='{ut}' reply='{rt}'")
 
     input_text = (
         f"scope_key: {scope_key}\nrange_start: {range_start_local}\nrange_end: {range_end_local}\n\n"
@@ -1803,7 +1804,7 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
     system_prompt = _wrap_prompt_with_persona(prompts.get_bond_summary_prompt())
     resp = llm_client.generate_json_response(
         system_prompt=system_prompt,
-        user_text=input_text,
+        input_text=input_text,
         purpose=LlmRequestPurpose.BOND_SUMMARY,
     )
     # LLMのJSON応答をdictに正規化する。
@@ -2090,11 +2091,11 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
 
     lines: list[str] = []
     for u, pe in ep_rows:
-        ut = (pe.user_text or "").strip().replace("\n", " ")[:220]
+        ut = (pe.input_text or "").strip().replace("\n", " ")[:220]
         rt = (pe.reply_text or "").strip().replace("\n", " ")[:240]
         if not ut and not rt:
             continue
-        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
+        lines.append(f"- unit_id={int(u.id)} speaker='{ut}' reply='{rt}'")
 
     input_text = _build_summary_payload_input(
         header_lines=[f"scope: person", f"entity_id: {entity_id}", f"entity_name: {ent.name}"],
@@ -2104,7 +2105,7 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
     system_prompt = _wrap_prompt_with_persona(prompts.get_person_summary_prompt())
     resp = llm_client.generate_json_response(
         system_prompt=system_prompt,
-        user_text=input_text,
+        input_text=input_text,
         purpose=LlmRequestPurpose.PERSON_SUMMARY,
     )
     # LLMのJSON応答をdictに正規化する。
@@ -2208,11 +2209,11 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
 
     lines: list[str] = []
     for u, pe in ep_rows:
-        ut = (pe.user_text or "").strip().replace("\n", " ")[:220]
+        ut = (pe.input_text or "").strip().replace("\n", " ")[:220]
         rt = (pe.reply_text or "").strip().replace("\n", " ")[:240]
         if not ut and not rt:
             continue
-        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
+        lines.append(f"- unit_id={int(u.id)} speaker='{ut}' reply='{rt}'")
 
     input_text = _build_summary_payload_input(
         header_lines=[f"scope: topic", f"entity_id: {entity_id}", f"topic_key: {topic_key}", f"topic_name: {ent.name}"],
@@ -2222,7 +2223,7 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
     system_prompt = _wrap_prompt_with_persona(prompts.get_topic_summary_prompt())
     resp = llm_client.generate_json_response(
         system_prompt=system_prompt,
-        user_text=input_text,
+        input_text=input_text,
         purpose=LlmRequestPurpose.TOPIC_SUMMARY,
     )
     # LLMのJSON応答をdictに正規化する。

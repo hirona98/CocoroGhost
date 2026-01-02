@@ -17,7 +17,7 @@
 ```json
 {
   "embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "user_text": "string",
+  "input_text": "string",
   "images": [
     {"type": "image", "base64": "..."}
   ],
@@ -57,7 +57,7 @@ data: {"message":"...","code":"..."}
 1. 画像要約（`images` がある場合）
 2. Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 3. Schedulerで **MemoryPack** を生成（検索結果を `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` に含む）
-4. LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + persona_affect_trailer_prompt）を渡し、conversation は直近会話（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ user_text を渡す
+4. LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + persona_affect_trailer_prompt）を渡し、conversation は直近会話（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ input_text を渡す
 5. 返答をSSEで配信（返答末尾の内部JSON＝persona_affect trailer はサーバ側で回収し、SSEには流さない）
 6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 7. Worker用ジョブを enqueue（reflection/extraction/embedding等）
@@ -189,7 +189,7 @@ Invoke-RestMethod -Method Post `
 ```
 
 - HTTPレスポンスは先に返り、AI人格のセリフ（`data.message`）は `/api/events/stream` で後から届く
-- 保存は `units(kind=EPISODE, source=notification)` + `payload_episode.user_text` に本文を入れ、必要なら `context_note` に構造化JSONを入れる
+- 保存は `units(kind=EPISODE, source=notification)` + `payload_episode.input_text` に本文を入れ、必要なら `context_note` に構造化JSONを入れる
 - `images` がある場合は `payload_episode.image_summary` に要約を保存する
 
 

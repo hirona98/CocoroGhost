@@ -174,7 +174,7 @@ def _enable_episode_fts(engine) -> None:
             text(
                 f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS {EPISODE_FTS_TABLE_NAME} USING fts5(
-                    user_text,
+                    input_text,
                     reply_text,
                     content='payload_episode',
                     content_rowid='unit_id',
@@ -192,8 +192,8 @@ def _enable_episode_fts(engine) -> None:
                 CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_ai
                 AFTER INSERT ON payload_episode
                 BEGIN
-                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, user_text, reply_text)
-                    VALUES (new.unit_id, new.user_text, new.reply_text);
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, input_text, reply_text)
+                    VALUES (new.unit_id, new.input_text, new.reply_text);
                 END;
                 """
             )
@@ -205,8 +205,8 @@ def _enable_episode_fts(engine) -> None:
                 CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_ad
                 AFTER DELETE ON payload_episode
                 BEGIN
-                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, user_text, reply_text)
-                    VALUES ('delete', old.unit_id, old.user_text, old.reply_text);
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, input_text, reply_text)
+                    VALUES ('delete', old.unit_id, old.input_text, old.reply_text);
                 END;
                 """
             )
@@ -218,10 +218,10 @@ def _enable_episode_fts(engine) -> None:
                 CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_au
                 AFTER UPDATE ON payload_episode
                 BEGIN
-                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, user_text, reply_text)
-                    VALUES ('delete', old.unit_id, old.user_text, old.reply_text);
-                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, user_text, reply_text)
-                    VALUES (new.unit_id, new.user_text, new.reply_text);
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, input_text, reply_text)
+                    VALUES ('delete', old.unit_id, old.input_text, old.reply_text);
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, input_text, reply_text)
+                    VALUES (new.unit_id, new.input_text, new.reply_text);
                 END;
                 """
             )

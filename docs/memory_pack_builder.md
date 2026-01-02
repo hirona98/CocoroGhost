@@ -8,7 +8,7 @@
 
 ## 入力
 
-- `user_text`
+- `input_text`
 - `image_summaries`（任意）
 - `client_context`（任意）
 - `relevant_episodes`（Retrieverの検索結果）
@@ -40,7 +40,7 @@
 以下は現在の会話に関連する過去のやりとりです。
 
 [YYYY-MM-DDTHH:MM:SS±TZ] タイトル（任意）
-User: 「...」
+Speaker: 「...」
 Persona: 「...」
 → 関連: （短い理由）
 ```

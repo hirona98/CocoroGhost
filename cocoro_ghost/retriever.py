@@ -47,7 +47,7 @@ class RankedEpisode:
     """最終的に返す「採用済み」エピソード。"""
 
     unit_id: int
-    user_text: str
+    input_text: str
     reply_text: str
     occurred_at: int
     relevance: Literal["high", "medium"]
@@ -59,7 +59,7 @@ class CandidateEpisode:
     """検索で拾った候補エピソード（リランキング前）。"""
 
     unit_id: int
-    user_text: str
+    input_text: str
     reply_text: str
     occurred_at: int
     rrf_score: float
@@ -109,7 +109,7 @@ def _format_recent_conversation(recent_conversation: Sequence[Message], *, max_m
         if not content:
             continue
         if role == "user":
-            label = "User"
+            label = "Speaker"
         elif role in {"assistant", "persona"}:
             label = "Persona"
         else:
@@ -224,26 +224,26 @@ class Retriever:
 
     def retrieve(
         self,
-        user_text: str,
+        input_text: str,
         recent_conversation: Sequence[Message],
         *,
         max_candidates: int = 60,
         max_results: int = 5,
     ) -> list[RankedEpisode]:
         """ユーザー入力から関連する過去エピソードを検索して返す。"""
-        candidates = self._search_candidates(user_text, recent_conversation, max_candidates)
-        ranked = self._rerank(user_text, recent_conversation, candidates, max_results)
+        candidates = self._search_candidates(input_text, recent_conversation, max_candidates)
+        ranked = self._rerank(input_text, recent_conversation, candidates, max_results)
         return ranked
 
     def _search_candidates(
         self,
-        user_text: str,
+        input_text: str,
         recent_conversation: Sequence[Message],
         max_candidates: int,
     ) -> list[CandidateEpisode]:
         """検索器（Vector/BM25）で候補エピソードを集め、RRFで統合した順で返す。"""
-        user_text = (user_text or "").strip()
-        if not user_text or max_candidates <= 0:
+        input_text = (input_text or "").strip()
+        if not input_text or max_candidates <= 0:
             return []
 
         context = _format_recent_conversation(
@@ -251,17 +251,17 @@ class Retriever:
             max_messages=self._RECENT_CONVERSATION_TURNS * 2,
         )
         if context:
-            original_query = f"{context}\n---\n{user_text}"
+            original_query = f"{context}\n---\n{input_text}"
         else:
-            original_query = user_text
+            original_query = input_text
 
         # 固定の複数クエリ（LLM拡張なし）:
-        # - user_textのみ: 直近文脈に引っ張られすぎないようにする
-        # - context + user_text: 会話の流れ（共参照/省略）を拾いやすくする
+        # - input_textのみ: 直近文脈に引っ張られすぎないようにする
+        # - context + input_text: 会話の流れ（共参照/省略）を拾いやすくする
         all_queries: list[str] = []
-        user_only_query = user_text
-        if user_only_query:
-            all_queries.append(user_only_query)
+        input_only_query = input_text
+        if input_only_query:
+            all_queries.append(input_only_query)
         if original_query and original_query not in all_queries:
             all_queries.append(original_query)
 
@@ -329,7 +329,7 @@ class Retriever:
             ts = int(u.occurred_at or u.created_at or now_ts)
             by_id[int(u.id)] = CandidateEpisode(
                 unit_id=int(u.id),
-                user_text=(pe.user_text or "").strip(),
+                input_text=(pe.input_text or "").strip(),
                 reply_text=(pe.reply_text or "").strip(),
                 occurred_at=ts,
                 rrf_score=float(rrf_scores.get(int(u.id), 0.0)),
@@ -387,7 +387,7 @@ class Retriever:
 
     def _rerank(
         self,
-        user_text: str,
+        input_text: str,
         recent_conversation: Sequence[Message],
         candidates: Sequence[CandidateEpisode],
         max_results: int,
@@ -403,8 +403,8 @@ class Retriever:
         """
         self._last_injection_strategy = "quote_key_parts"
 
-        user_text = (user_text or "").strip()
-        if not user_text or not candidates or max_results <= 0:
+        input_text = (input_text or "").strip()
+        if not input_text or not candidates or max_results <= 0:
             return []
 
         context = _format_recent_conversation(
@@ -413,7 +413,7 @@ class Retriever:
         )
 
         now_ts = int(time.time())
-        query_text = f"{context}\n---\n{user_text}" if context else user_text
+        query_text = f"{context}\n---\n{input_text}" if context else input_text
         # クエリは末尾側（直近の発話）を重視するため、tail=Trueで切り詰める。
         query_ngrams = _char_ngrams(
             query_text,
@@ -431,8 +431,8 @@ class Retriever:
 
         scored: list[tuple[float, float, float, float, CandidateEpisode, set[str]]] = []
         for c in candidates:
-            # 候補本文は user_text + reply_text をまとめたものを比較対象にする。
-            episode_text = "\n".join([c.user_text, c.reply_text]).strip()
+            # 候補本文は input_text + reply_text をまとめたものを比較対象にする。
+            episode_text = "\n".join([c.input_text, c.reply_text]).strip()
             episode_ngrams = _char_ngrams(
                 episode_text,
                 n=self._RERANK_NGRAM_N,
@@ -481,7 +481,7 @@ class Retriever:
             ranked.append(
                 RankedEpisode(
                     unit_id=int(c.unit_id),
-                    user_text=c.user_text,
+                    input_text=c.input_text,
                     reply_text=c.reply_text,
                     occurred_at=int(c.occurred_at),
                     relevance=relevance,

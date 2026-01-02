@@ -54,7 +54,7 @@ flowchart LR
 - （任意）画像要約（Vision）
 - Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 - MemoryPack Builderで **MemoryPack** を生成（capsule/facts/summaries/loops + relevant episodes）
-- LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + 固定プロンプト）を渡し、conversation は会話履歴（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ user_text を渡す
+- LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + 固定プロンプト）を渡し、conversation は会話履歴（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ input_text を渡す
 - 返答をSSEで配信
 - `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 - Worker用ジョブを enqueue（reflection/extraction/embedding等）
@@ -63,7 +63,7 @@ flowchart LR
 
 Retriever は「暗黙参照」や「会話の流れ」を取り込み、現在の会話に関連する過去エピソードを高速に選別する。
 
-- Phase 1: 固定クエリ生成（LLMレス。user_text / context+user_text の2本）
+- Phase 1: 固定クエリ生成（LLMレス。input_text / context+input_text の2本）
 - Phase 2: Hybrid Search（vec0 + FTS5）→ RRFマージ
 - Phase 3: ヒューリスティック Rerank（LLMレス。RRF + 文字n-gram類似度 + recency で軽量スコアリング）
 - MemoryPack Builder は relevant episodes を受け取り、ルール（例: high>=1 or medium>=2）と予算で `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` を注入する（満たさない場合は省略）
@@ -83,9 +83,9 @@ sequenceDiagram
   participant Q as Jobs (DB)
   participant W as Worker
 
-  UI->>API: POST /api/chat (SSE)\n{user_text, images?, client_context?}
-  API->>RET: retrieve(user_text)\n(+ recent conversation)
-  Note over RET: Phase 1: 固定クエリ生成\n(user_text, context+user_text)
+  UI->>API: POST /api/chat (SSE)\n{input_text, images?, client_context?}
+  API->>RET: retrieve(input_text)\n(+ recent conversation)
+  Note over RET: Phase 1: 固定クエリ生成\n(input_text, context+input_text)
   RET->>EMB: embed queries
   EMB-->>RET: embeddings
   Note over RET,FTS: Phase 2: Hybrid Search
@@ -104,7 +104,7 @@ sequenceDiagram
   API->>SCH: build MemoryPack\n(relevant episodes, token budget)
   SCH->>DB: read capsule/facts/summaries/loops
   SCH-->>API: MemoryPack
-  API->>LLM: chat\n(guard + pack + conversation + user_text)
+  API->>LLM: chat\n(guard + pack + conversation + input_text)
   LLM-->>API: streamed tokens
   API-->>UI: SSE stream
   API->>DB: save Unit(kind=EPISODE) RAW
@@ -192,7 +192,7 @@ sequenceDiagram
 
   UI->>API: POST /api/v2/notification\n{source_system,text,images?}
   API->>MM: handle_notification(request)\n(create placeholder unit)
-  MM->>DB: save Unit(kind=EPISODE, source=notification)\nuser_text=system_text, reply_text=null
+  MM->>DB: save Unit(kind=EPISODE, source=notification)\ninput_text=system_text, reply_text=null
   API-->>UI: 204 No Content
   Note over API,MM: BackgroundTasks (after response)
   MM->>LLM: (optional) summarize images
@@ -224,7 +224,7 @@ sequenceDiagram
 
   UI->>API: POST /api/v2/meta-request\n{instruction,payload_text?,images?}
   API->>MM: handle_meta_request(request)\n(create placeholder unit)
-  MM->>DB: save Unit(kind=EPISODE, source=meta-request)\nuser_text=[redacted], reply_text=null
+  MM->>DB: save Unit(kind=EPISODE, source=meta-request)\ninput_text=[redacted], reply_text=null
   API-->>UI: 204 No Content
   Note over API,MM: BackgroundTasks (after response)
   MM->>LLM: (optional) summarize images

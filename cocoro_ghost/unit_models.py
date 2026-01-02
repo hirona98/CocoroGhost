@@ -52,7 +52,7 @@ class PayloadEpisode(UnitBase):
     __tablename__ = "payload_episode"
 
     unit_id: Mapped[int] = mapped_column(ForeignKey("units.id", ondelete="CASCADE"), primary_key=True)  # 親UnitID
-    user_text: Mapped[Optional[str]] = mapped_column(Text)  # ユーザー発話
+    input_text: Mapped[Optional[str]] = mapped_column(Text)  # 入力本文
     reply_text: Mapped[Optional[str]] = mapped_column(Text)  # AI返答
     image_summary: Mapped[Optional[str]] = mapped_column(Text)  # 画像の説明（添付画像がある場合）
     context_note: Mapped[Optional[str]] = mapped_column(Text)  # コンテキスト補足

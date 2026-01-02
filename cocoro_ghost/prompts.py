@@ -79,7 +79,7 @@ FACT_EXTRACT_SYSTEM_PROMPT = """
 {
   "facts": [
     {
-      "subject": {"type_label":"PERSON","name":"USER"},
+      "subject": {"type_label":"PERSON","name":"SPEAKER"},
       "predicate": "prefers",
       "object_text": "静かなカフェ",
       "object": {"type_label":"PLACE","name":"静かなカフェ"},

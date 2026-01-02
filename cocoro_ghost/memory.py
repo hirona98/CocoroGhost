@@ -558,7 +558,7 @@ class MemoryManager:
 
         messages: List[Dict[str, str]] = []
         for _u, pe in rows:
-            ut = (pe.user_text or "").strip()
+            ut = (pe.input_text or "").strip()
             rt = (pe.reply_text or "").strip()
             if ut:
                 messages.append({"role": "user", "content": ut})
@@ -639,7 +639,7 @@ class MemoryManager:
         image_summaries = self._summarize_images(request.images, purpose=LlmRequestPurpose.IMAGE_SUMMARY_CHAT)
 
         # entity抽出の入力はユーザー発話＋画像要約に限定する。
-        entity_text = "\n".join(filter(None, [request.user_text, *(image_summaries or [])])).strip()
+        entity_text = "\n".join(filter(None, [request.input_text, *(image_summaries or [])])).strip()
 
         conversation: List[Dict[str, str]] = []
         memory_pack = ""
@@ -658,7 +658,7 @@ class MemoryManager:
                             conversation = self._load_recent_conversation(db, turns=llm_turns_window)
                         retriever = Retriever(llm_client=embedding_llm_client, db=db)
                         relevant_episodes = retriever.retrieve(
-                            request.user_text,
+                            request.input_text,
                             recent_conversation,
                             max_results=int(similar_episodes_limit),
                         )
@@ -668,7 +668,7 @@ class MemoryManager:
                         matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
                         memory_pack = build_memory_pack(
                             db=db,
-                            user_text=request.user_text,
+                            input_text=request.input_text,
                             image_summaries=image_summaries,
                             client_context=request.client_context,
                             now_ts=now_ts,
@@ -700,7 +700,7 @@ class MemoryManager:
         internal_context_message = _build_internal_context_message(memory_pack)
         if internal_context_message:
             conversation.append(internal_context_message)
-        conversation.append({"role": "user", "content": request.user_text})
+        conversation.append({"role": "user", "content": request.input_text})
 
         # LLM呼び出しの処理目的をログで区別できるようにする。
         purpose = LlmRequestPurpose.CONVERSATION
@@ -857,7 +857,7 @@ class MemoryManager:
                     db,
                     now_ts=now_ts,
                     source="chat",
-                    user_text=request.user_text,
+                    input_text=request.input_text,
                     reply_text=reply_text,
                     image_summary=image_summary_text,
                     context_note=context_note,
@@ -902,7 +902,7 @@ class MemoryManager:
                 db,
                 now_ts=now_ts,
                 source="notification",
-                user_text=system_text,
+                input_text=system_text,
                 reply_text=None,
                 image_summary=None,
                 context_note=context_note,
@@ -946,7 +946,7 @@ class MemoryManager:
         image_summaries = self._summarize_images(list(images), purpose=LlmRequestPurpose.IMAGE_SUMMARY_NOTIFICATION)
         image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
 
-        notification_user_text = "\n".join(
+        notification_input_text = "\n".join(
             [
                 "# notification",
                 f"source_system: {source_system}",
@@ -958,7 +958,7 @@ class MemoryManager:
         memory_enabled = self.config_store.memory_enabled
 
         # entity抽出の入力は通知文＋画像要約に限定する。
-        entity_text = "\n".join(filter(None, [notification_user_text, *(image_summaries or [])])).strip()
+        entity_text = "\n".join(filter(None, [notification_input_text, *(image_summaries or [])])).strip()
 
         memory_pack = ""
         if memory_enabled:
@@ -973,7 +973,7 @@ class MemoryManager:
                         recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
                         retriever = Retriever(llm_client=self.llm_client, db=db)
                         relevant_episodes = retriever.retrieve(
-                            notification_user_text,
+                            notification_input_text,
                             recent_conversation,
                             max_results=int(cfg.similar_episodes_limit or 5),
                         )
@@ -983,7 +983,7 @@ class MemoryManager:
                         matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
                         memory_pack = build_memory_pack(
                             db=db,
-                            user_text=notification_user_text,
+                            input_text=notification_input_text,
                             image_summaries=image_summaries,
                             client_context=None,
                             now_ts=now_ts,
@@ -1013,7 +1013,7 @@ class MemoryManager:
         internal_context_message = _build_internal_context_message(memory_pack)
         if internal_context_message:
             conversation.append(internal_context_message)
-        conversation.append({"role": "user", "content": notification_user_text})
+        conversation.append({"role": "user", "content": notification_input_text})
 
         message = ""
         try:
@@ -1146,7 +1146,7 @@ class MemoryManager:
                         matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
                         memory_pack = build_memory_pack(
                             db=db,
-                            user_text=meta_retrieval_text,
+                            input_text=meta_retrieval_text,
                             image_summaries=image_summaries,
                             client_context=None,
                             now_ts=now_ts,
@@ -1201,7 +1201,7 @@ class MemoryManager:
                     db,
                     now_ts=now_ts,
                     source="proactive",
-                    user_text=None,
+                    input_text=None,
                     reply_text=message,
                     image_summary=None,
                     context_note=None,
@@ -1224,7 +1224,7 @@ class MemoryManager:
         *,
         now_ts: int,
         source: str,
-        user_text: Optional[str],
+        input_text: Optional[str],
         reply_text: Optional[str],
         image_summary: Optional[str],
         context_note: Optional[str],
@@ -1249,7 +1249,7 @@ class MemoryManager:
         db.flush()
         payload = PayloadEpisode(
             unit_id=unit.id,
-            user_text=user_text,
+            input_text=input_text,
             reply_text=reply_text,
             image_summary=image_summary,
             context_note=context_note,

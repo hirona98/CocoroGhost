@@ -192,7 +192,7 @@ create table if not exists unit_versions (
 ```sql
 create table if not exists payload_episode (
   unit_id         integer primary key references units(id) on delete cascade,
-  user_text       text,
+  input_text      text,
   reply_text      text,
   image_summary   text,
   context_note    text,
@@ -203,7 +203,7 @@ create table if not exists payload_episode (
 #### 使い方（Episode）
 
 - EPISODE は「証跡」枠：ユーザー発話/通知本文/生成結果など、後段の派生処理の元データ。
-- `user_text`/`reply_text` は会話ログとして保存され、Retriever（FTS/Vector）に利用される。
+- `input_text`/`reply_text` は会話ログとして保存され、Retriever（FTS/Vector）に利用される。
 - `context_note` はクライアント情報など任意JSON文字列（UI/アプリ名/ウィンドウタイトル等）。
 - `reflection_json` は `reflect_episode` のLLM出力（JSON）を丸ごと保存（解析用）。
 
@@ -215,7 +215,7 @@ Hybrid Search（Vector + BM25）の BM25 側を担う。詳細は `docs/retrieva
 -- payload_episode を対象にした FTS5 仮想テーブル（BM25）
 -- 注意: external content FTS は INSERT/UPDATE/DELETE に追従するトリガー（または再構築手順）が必要
 CREATE VIRTUAL TABLE IF NOT EXISTS episode_fts USING fts5(
-  user_text,
+  input_text,
   reply_text,
   content='payload_episode',
   content_rowid='unit_id',

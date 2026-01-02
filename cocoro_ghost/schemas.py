@@ -47,7 +47,7 @@ class ChatRequest(BaseModel):
     ユーザーのメッセージと添付画像を受け付ける。
     """
     embedding_preset_id: Optional[str] = None
-    user_text: str                       # ユーザーの入力テキスト
+    input_text: str                      # 入力テキスト
     images: List[Dict[str, str]] = Field(default_factory=list)  # 添付画像リスト
     client_context: Optional[Dict[str, Any]] = None  # クライアント側コンテキスト
 

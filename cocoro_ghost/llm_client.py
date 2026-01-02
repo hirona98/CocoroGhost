@@ -762,7 +762,7 @@ class LlmClient:
         self,
         *,
         system_prompt: str,
-        user_text: str,
+        input_text: str,
         purpose: str,
         max_tokens: Optional[int] = None,
     ):
@@ -774,7 +774,7 @@ class LlmClient:
         """
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
+            {"role": "user", "content": input_text},
         ]
 
         llm_log_level = normalize_llm_log_level(self._get_llm_log_level())

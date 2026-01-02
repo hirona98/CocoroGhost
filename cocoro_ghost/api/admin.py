@@ -119,7 +119,7 @@ def get_unit(
             pe = db.query(PayloadEpisode).filter(PayloadEpisode.unit_id == unit_id).one_or_none()
             if pe:
                 payload = {
-                    "user_text": pe.user_text,
+                    "input_text": pe.input_text,
                     "reply_text": pe.reply_text,
                     "image_summary": pe.image_summary,
                     "context_note": pe.context_note,

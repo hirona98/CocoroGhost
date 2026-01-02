@@ -78,7 +78,7 @@ flowchart TD
 
 ### 入力
 
-- `user_text`: 今回のユーザー発話
+- `input_text`: 今回の入力
 - `image_summaries`: 今回の画像要約（vision の結果）
 - `client_context`: `active_app` / `window_title` / `locale` など（任意）
 - `relevant_episodes`: Retriever が返した関連エピソード（rank済み + reason付き）
@@ -89,7 +89,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  IN["inputs: user_text / image_summaries / client_context"] --> ENT["resolve entities with LLM\n(names only)"]
+  IN["inputs: input_text / image_summaries / client_context"] --> ENT["resolve entities with LLM\n(names only)"]
   ENT --> ENTFB["ENTITY_NAMES_ONLY_SYSTEM_PROMPT\n(names only)"]
   IN --> RET["Retriever\n(vector + BM25)"]
   RET --> REL["relevant_episodes"]
@@ -124,7 +124,7 @@ flowchart TD
   - 絞り込み（entity が取れている場合）: `pin=1` または subject/object がその entity に関連、または subject が `null` のもの
   - 絞り込み（entity が取れない場合）: 直近200件 + pin=1 を混ぜてからスコアで上位
   - スコア: `confidence/salience/recency/pin` を合成して降順
-  - 形式: `- SUBJECT predicate OBJECT`（entity_idが引けると名前に置換、subject未指定は `USER`）
+  - 形式: `- SUBJECT predicate OBJECT`（entity_idが引けると名前に置換、subject未指定は `SPEAKER`）
 - `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>`:
   - 会話の「共有された物語（継続する関係性や背景）」を短く注入するセクション
   - `scope_key=rolling:7d` の bond summary（無ければ latest をfallback）
@@ -142,7 +142,7 @@ flowchart TD
 - `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>`:
   - `should_inject_episodes()` が True のときだけ注入（`high>=1` or `medium>=2`）
   - `injection_strategy`:
-  - `quote_key_parts`（既定）: user/reply を短く引用
+  - `quote_key_parts`（既定）: input/reply を短く引用
   - `summarize`: 1行「要点: ...」に寄せる
   - `full`: 長めに引用
   - 各項目に `→ 関連: <reason>` を添える
@@ -176,17 +176,17 @@ sequenceDiagram
   participant DB as memory_<id>.db
   participant Q as jobs
 
-  UI->>API: POST /api/chat (SSE)\n{user_text, images?, client_context?}
+  UI->>API: POST /api/chat (SSE)\n{input_text, images?, client_context?}
   API->>VIS: generate_image_summary(images?)
-  API->>RET: retrieve(user_text, recent_conversation)
+  API->>RET: retrieve(input_text, recent_conversation)
   RET-->>API: relevant_episodes[]
   API->>SCH: build_memory_pack(facts, loops, evidence...)
   SCH-->>API: MemoryPack (<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>> / <<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>> / ...)
   Note over API: system = guard + PERSONA_ANCHOR（persona_text+addon_text） + PERSONA_AFFECT_TRAILER_PROMPT\nMemoryPackはinternal contextとして別メッセージで注入
-  API->>LLM: chat(system, conversation, user_text)\n(stream)
+  API->>LLM: chat(system, conversation, input_text)\n(stream)
   LLM-->>API: streamed tokens
   API-->>UI: SSE stream
-  API->>DB: save Unit(kind=EPISODE)\n(user_text, reply_text, image_summary...)
+  API->>DB: save Unit(kind=EPISODE)\n(input_text, reply_text, image_summary...)
   API->>Q: enqueue default jobs\n(reflect/extract/embed/capsule_refresh...)
   API->>Q: maybe enqueue bond_summary\n(bond summary refresh)
 ```
@@ -272,8 +272,8 @@ flowchart LR
 
 ## 5) “どの入力で” 各プロンプトが呼ばれるか（要点）
 
-- Reflection / Entities / Facts / Loops: `payload_episode` の `user_text/reply_text/image_summary` を連結して入力にする（`cocoro_ghost/worker.py`）。
-- Bond summary（rolling:7d）: 直近7日程度の `Unit(kind=EPISODE)` を時系列で最大200件抜粋し、`range_start/range_end` + 箇条書き（unit_id + user/reply抜粋）として入力にする（`cocoro_ghost/worker.py::_handle_bond_summary`）。
+- Reflection / Entities / Facts / Loops: `payload_episode` の `input_text/reply_text/image_summary` を連結して入力にする（`cocoro_ghost/worker.py`）。
+- Bond summary（rolling:7d）: 直近7日程度の `Unit(kind=EPISODE)` を時系列で最大200件抜粋し、`range_start/range_end` + 箇条書き（unit_id + input/reply抜粋）として入力にする（`cocoro_ghost/worker.py::_handle_bond_summary`）。
 - Capsule refresh: 直近の `Unit(kind=EPISODE)`（既定 `limit=5`）の抜粋に加え、「重要度×時間減衰」で集約した `persona_mood_state` を `payload_capsule.capsule_json` に更新する（`cocoro_ghost/worker.py::_handle_capsule_refresh` / `cocoro_ghost/persona_mood.py`）。
   - デバッグ用途: `PUT /api/persona_mood` による in-memory ランタイム状態が有効な場合、更新される `persona_mood_state` は適用後の値になる。
 - Notification: `# notification ...` 形式に整形したテキスト（+ 画像要約）を `conversation=[{"role":"user","content":...}]` として渡す（`cocoro_ghost/memory.py`）。

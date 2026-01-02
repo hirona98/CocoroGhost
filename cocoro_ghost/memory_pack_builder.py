@@ -160,7 +160,7 @@ def _format_fact_line(
     - predicate は制御語彙（正規形）を想定する。
     - obj_text は表示のための補助であり、同一性判定には別ロジックを使う。
     """
-    s = subject or "USER"
+    s = subject or "SPEAKER"
     o = obj_text or ""
     o = o.strip()
     if o:
@@ -361,7 +361,7 @@ def extract_entity_names_with_llm(llm_client: "LlmClient", text: str) -> list[st
         # ここは「names only」専用の軽量プロンプトを使う（roles/relationsの推測を避ける）。
         resp = llm_client.generate_json_response(
             system_prompt=prompts.get_entity_names_only_prompt(),
-            user_text=text,
+            input_text=text,
             purpose=LlmRequestPurpose.ENTITY_NAME_EXTRACT,
         )
         raw = llm_client.response_content(resp)
@@ -416,10 +416,15 @@ def match_entity_ids(candidate_names: Sequence[str], alias_rows: Sequence[tuple[
     return ids
 
 
-def _get_user_entity_id(db: Session) -> Optional[int]:
+def _get_speaker_entity_id(db: Session) -> Optional[int]:
+    """
+    「直接やりとりしている相手（SPEAKER）」に対応する Entity.id を返す。
+
+    見つからない場合は None。
+    """
     row = (
         db.query(Entity.id)
-        .filter(Entity.normalized == "user")
+        .filter(Entity.normalized == "speaker")
         .order_by(Entity.id.asc())
         .limit(1)
         .scalar()
@@ -460,7 +465,7 @@ def should_inject_episodes(relevant_episodes: Sequence["RankedEpisode"]) -> bool
 def build_memory_pack(
     *,
     db: Session,
-    user_text: str,
+    input_text: str,
     image_summaries: Sequence[str] | None,
     client_context: Dict[str, Any] | None,
     now_ts: int,
@@ -526,10 +531,10 @@ def build_memory_pack(
 
     # Facts（intent→entity解決→スコアで上位）
     matched_entity_ids = {int(eid) for eid in matched_entity_ids if eid is not None}
-    user_entity_id = _get_user_entity_id(db)
+    speaker_entity_id = _get_speaker_entity_id(db)
     fact_entity_ids = set(matched_entity_ids)
-    if user_entity_id is not None:
-        fact_entity_ids.add(user_entity_id)
+    if speaker_entity_id is not None:
+        fact_entity_ids.add(speaker_entity_id)
 
     fact_q = (
         db.query(Unit, PayloadFact)
@@ -734,11 +739,11 @@ def build_memory_pack(
             return t[:limit].rstrip() + "…"
 
         if strategy == "full":
-            user_limit, reply_limit = 420, 520
+            input_limit, reply_limit = 420, 520
         elif strategy == "summarize":
-            user_limit, reply_limit = 180, 220
+            input_limit, reply_limit = 180, 220
         else:
-            user_limit, reply_limit = 120, 160
+            input_limit, reply_limit = 120, 160
 
         evidence_lines.append("以下は現在の会話に関連する過去のやりとりです。")
         evidence_lines.append("")
@@ -748,7 +753,7 @@ def build_memory_pack(
             if date_s:
                 evidence_lines.append(f"[{date_s}]")
 
-            ut = _truncate(e.user_text, user_limit)
+            ut = _truncate(e.input_text, input_limit)
             rt = _truncate(e.reply_text, reply_limit)
             reason = _truncate(e.reason, 180)
 
@@ -757,7 +762,7 @@ def build_memory_pack(
                 evidence_lines.append(f"要点: {combined}")
             else:
                 if ut:
-                    evidence_lines.append(f'User: 「{ut}」')
+                    evidence_lines.append(f'Speaker: 「{ut}」')
                 if rt:
                     evidence_lines.append(f'Persona: 「{rt}」')
 

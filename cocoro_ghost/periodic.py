@@ -136,9 +136,9 @@ def maybe_enqueue_bond_summary(
             Unit.occurred_at.isnot(None),
             Unit.occurred_at >= int(range_start),
             Unit.occurred_at < int(range_end),
-            # worker側の行生成条件に合わせ、user/reply のどちらかが空でないものだけ対象にする。
+            # worker側の行生成条件に合わせ、input/reply のどちらかが空でないものだけ対象にする。
             or_(
-                func.length(func.trim(PayloadEpisode.user_text)) > 0,
+                func.length(func.trim(PayloadEpisode.input_text)) > 0,
                 func.length(func.trim(PayloadEpisode.reply_text)) > 0,
             ),
         ]
