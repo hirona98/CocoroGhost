@@ -72,7 +72,7 @@ create table if not exists units (
   created_at    integer not null,
   updated_at    integer not null,
 
-  source        text,                    -- chat/desktop_capture/camera_capture/notification/meta-request/...
+  source        text,                    -- chat/notification/meta-request/proactive/...
   state         integer not null default 0,   -- UnitState
   confidence    real    not null default 0.5, -- 0..1
   salience      real    not null default 0.0, -- 0..1
@@ -375,7 +375,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 外部から任意に投入するのではなく、主に以下のイベントで内部enqueueされる。
 
-**A. Episode（会話/通知/キャプチャ）保存時の既定ジョブ**
+**A. Episode（会話/通知）保存時の既定ジョブ**
 
 - 対象: `units(kind=EPISODE)` を保存した直後
 - enqueue: `reflect_episode` / `extract_entities` / `extract_facts` / `extract_loops` / `upsert_embeddings` / `capsule_refresh(limit=5)`
@@ -383,7 +383,6 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 - 入口の例:
   - `/api/chat` の完了時（SSE done直前の保存）
   - `/api/v2/notification` の処理完了時（reply生成後の保存更新）
-  - `/api/capture`（desktop/camera）
 
 **B. bond サマリ（現行: `rolling:7d`）の更新**
 

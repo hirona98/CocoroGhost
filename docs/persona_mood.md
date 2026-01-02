@@ -108,7 +108,7 @@ UI/デバッグ用途では `PUT /api/persona_mood` で `response_policy` を含
 - 保存（素材）:
   - `units.persona_affect_label` / `units.persona_affect_intensity` / `units.salience` / `units.confidence` / `units.topic_tags`
 - `/api/chat` は persona_affect trailer で即時更新（`payload_episode.reflection_json` にも保存）
-  - その他入口（notification/capture 等）は Worker `reflect_episode` が補完（反射済みならスキップ）
+  - その他入口（notification 等）は Worker `reflect_episode` が補完（反射済みならスキップ）
 - 注入:
   - 同期: `cocoro_ghost/memory_pack_builder.py::build_memory_pack()` が `CONTEXT_CAPSULE` に `persona_mood_state: {...}` を追加
   - 非同期: `cocoro_ghost/worker.py::_handle_capsule_refresh()` が `payload_capsule.capsule_json.persona_mood_state` を更新

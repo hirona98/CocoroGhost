@@ -6,7 +6,6 @@ FastAPI の APIRouter を使用して各エンドポイントを実装する。
 
 含まれるルーター:
 - chat: チャットAPI（SSEストリーミング）
-- capture: 画面/カメラキャプチャAPI
 - notification: 外部通知受付API
 - meta-request: メタ要求（能動メッセージ）API
 - settings: 設定取得/更新API

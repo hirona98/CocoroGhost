@@ -19,8 +19,7 @@
   "embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "user_text": "string",
   "images": [
-    {"type": "desktop_capture", "base64": "..."},
-    {"type": "camera_capture", "base64": "..."}
+    {"type": "image", "base64": "..."}
   ],
   "client_context": {
     "active_app": "string",
@@ -266,7 +265,6 @@ Invoke-RestMethod -Method Post `
 
 現行実装に含まれる。
 
-- `/api/capture`（desktop/camera のキャプチャ保存）
 - `/api/settings`（UI向けの設定取得/更新）
 - `/api/logs/stream`（WebSocketログ購読）
 - `/api/events/stream`（WebSocketイベント購読: notification/meta-request）
@@ -338,7 +336,7 @@ UI向けの「全設定」取得/更新。
 
 - `scheduled_at` はISO 8601のdatetime（Pydanticがパース可能な形式）で返す
 - `memory_enabled` は「記憶機能を使うか」を示す設定値
-- `exclude_keywords` は `/api/capture` の `context_text` 除外判定に使う
+- `exclude_keywords` は現状未使用（将来の入力フィルタ用途として予約）
 
 ### `PUT /api/settings`
 
@@ -422,35 +420,6 @@ UI向けの「全設定」取得/更新。
 - `active_*_preset_id` は **対応する配列に含まれるID**である必要がある（未存在/アーカイブは `400`）
 - `active_embedding_preset_id` は記憶DB識別子（= `embedding_preset_id`）で、変更時はメモリDB初期化を検証する（失敗時 `400`）
 - `max_inject_tokens` / `similar_limit_by_kind` 等の詳細パラメータは現状API外
-
-## `/api/capture`
-
-キャプチャ画像をUnit(Episode)として保存し、派生ジョブをenqueueする。
-
-### `POST /api/capture`
-
-#### Request（`CaptureRequest`）
-
-```json
-{
-  "capture_type": "desktop",
-  "image_base64": "string",
-  "context_text": "optional"
-}
-```
-
-- `capture_type`: `"desktop"` または `"camera"`
-- `image_base64`: 画像のbase64（data URLヘッダ無しの想定）
-- `context_text`: 保存時の `payload_episode.user_text` に入る（省略可）
-
-- 除外判定: `context_text` が `exclude_keywords` のいずれかにマッチする場合、保存せずに `{"episode_id":-1,"stored":false}` を返す。`exclude_keywords` は正規表現メタ文字（例: `.*`）を含むと正規表現として評価され、それ以外は部分一致で判定する。
-- `capture_type` は現状厳密バリデーションしない（`"desktop"` 以外は `"camera"` 扱い）
-
-#### Response（`CaptureResponse`）
-
-```json
-{ "episode_id": 12345, "stored": true }
-```
 
 ## `/api/logs/stream`（WebSocket）
 

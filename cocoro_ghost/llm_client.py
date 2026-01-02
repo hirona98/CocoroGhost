@@ -311,7 +311,6 @@ class LlmRequestPurpose:
     IMAGE_SUMMARY_CHAT = "＜＜ 画像要約（会話） ＞＞"
     IMAGE_SUMMARY_NOTIFICATION = "＜＜ 画像要約（通知） ＞＞"
     IMAGE_SUMMARY_META_REQUEST = "＜＜ 画像要約（メタ要求対応） ＞＞"
-    IMAGE_SUMMARY_CAPTURE = "＜＜ 画像要約（キャプチャ） ＞＞"
 
 
 def _normalize_purpose(purpose: str) -> str:

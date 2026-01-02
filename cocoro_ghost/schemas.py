@@ -129,25 +129,6 @@ class MetaRequestResponse(BaseModel):
     unit_id: int
 
 
-# --- キャプチャ関連 ---
-
-
-class CaptureRequest(BaseModel):
-    """
-    /capture 用リクエスト。
-    スクリーンショット/カメラ画像をepisodeとして保存する。
-    """
-    capture_type: str                    # キャプチャ種別（"desktop" or "camera"）
-    image_base64: str                    # BASE64エンコードされた画像データ
-    context_text: Optional[str] = None   # キャプチャ時のコンテキスト情報
-
-
-class CaptureResponse(BaseModel):
-    """captureの保存結果。"""
-    episode_id: int                      # 作成されたエピソードID
-    stored: bool                         # 保存成功フラグ
-
-
 # --- Unit関連（記憶ユニット） ---
 
 

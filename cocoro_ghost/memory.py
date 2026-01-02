@@ -1,7 +1,7 @@
 """
 記憶・エピソード生成（Unitベース）
 
-チャット、通知、メタ要求、キャプチャを「Episode Unit」として保存し、
+チャット、通知、メタ要求を「Episode Unit」として保存し、
 LLMを使った反射（reflection）や埋め込み生成のジョブをエンキューする。
 MemoryManagerがすべての記憶操作の中心となる。
 """
@@ -11,7 +11,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import time
@@ -55,7 +54,6 @@ _memory_locks: dict[str, threading.Lock] = {}
 _request_id_lock = threading.Lock()
 _request_id_seq = 0
 
-_REGEX_META_CHARS = re.compile(r"[.^$*+?{}\[\]\\|()]")
 _SUMMARY_REFRESH_INTERVAL_SECONDS = 6 * 3600
 _BOND_SUMMARY_SCOPE_KEY = "rolling:7d"
 
@@ -70,18 +68,6 @@ class EmbeddingPresetSnapshot:
     embedding_dimension: int
     similar_episodes_limit: int
     max_inject_tokens: int
-
-
-def _matches_exclude_keyword(pattern: str, text: str) -> bool:
-    """除外キーワード（部分一致 or 正規表現）にマッチするか判定する。"""
-    if not pattern:
-        return False
-    if _REGEX_META_CHARS.search(pattern):
-        try:
-            return re.search(pattern, text) is not None
-        except re.error:
-            return pattern in text
-    return pattern in text
 
 # /api/chat（SSE）では、同一LLM呼び出しで「ユーザー表示本文 + 内部JSON（機嫌/反射）」を生成し、
 # 内部JSONはストリームから除外して保存・注入に使う。
@@ -369,7 +355,7 @@ def _get_llm_log_file_value_max_chars_from_store(config_store: ConfigStore) -> i
 
 
 class MemoryManager:
-    """会話/通知/メタ要求/キャプチャをEpisodeとして扱い、DB保存と後処理を統括する。"""
+    """会話/通知/メタ要求をEpisodeとして扱い、DB保存と後処理を統括する。"""
 
     def __init__(self, llm_client: LlmClient, config_store: ConfigStore):
         self.llm_client = llm_client
@@ -1231,45 +1217,6 @@ class MemoryManager:
             unit_id=int(episode_unit_id),
             data={"message": message},
         )
-
-    def handle_capture(self, request: schemas.CaptureRequest) -> schemas.CaptureResponse:
-        """スクリーンショット/カメラ画像を要約してEpisodeとして保存する。"""
-        cfg = self.config_store.config
-        embedding_preset_id = self.config_store.embedding_preset_id
-        lock = _get_memory_lock(embedding_preset_id)
-        now_ts = _now_utc_ts()
-
-        text_to_check = request.context_text or ""
-        for keyword in cfg.exclude_keywords:
-            if _matches_exclude_keyword(keyword, text_to_check):
-                logger.info("capture skipped due to exclude keyword", extra={"keyword": keyword})
-                return schemas.CaptureResponse(episode_id=-1, stored=False)
-
-        image_bytes = _decode_base64_image(request.image_base64)
-        try:
-            image_summary = self.llm_client.generate_image_summary(
-                [image_bytes],
-                purpose=LlmRequestPurpose.IMAGE_SUMMARY_CAPTURE,
-            )[0]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("画像要約に失敗しました", exc_info=exc)
-            image_summary = "画像要約に失敗しました"
-
-        source = "desktop_capture" if request.capture_type == "desktop" else "camera_capture"
-        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-            unit_id = self._create_episode_unit(
-                db,
-                now_ts=now_ts,
-                source=source,
-                user_text=request.context_text,
-                reply_text=None,
-                image_summary=image_summary,
-                context_note=None,
-                sensitivity=int(Sensitivity.PRIVATE),
-            )
-            self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
-            self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
-        return schemas.CaptureResponse(episode_id=unit_id, stored=True)
 
     def _create_episode_unit(
         self,
