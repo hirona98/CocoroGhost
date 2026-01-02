@@ -420,6 +420,8 @@ UI向けの「全設定」取得/更新。
 - `active_*_preset_id` は **対応する配列に含まれるID**である必要がある（未存在/アーカイブは `400`）
 - `active_embedding_preset_id` は記憶DB識別子（= `embedding_preset_id`）で、変更時はメモリDB初期化を検証する（失敗時 `400`）
 - `max_inject_tokens` / `similar_limit_by_kind` 等の詳細パラメータは現状API外
+- base_url（`llm_base_url` / `embedding_base_url` / `image_llm_base_url`）は、ローカルLLM等の OpenAI互換エンドポイント向けに使用できる（任意）。
+- OpenRouter の embeddings は `embedding_model="openrouter/<model slug>"` を指定すると、`embedding_base_url` 未指定でもサーバ内部で `https://openrouter.ai/api/v1` を自動設定して呼び出す。
 
 ## `/api/logs/stream`（WebSocket）
 
