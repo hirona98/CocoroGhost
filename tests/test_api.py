@@ -1,8 +1,8 @@
 """
-cocoro_ghost API テストスクリプト
+CocoroGhost API テストスクリプト
 
 各種APIエンドポイントの動作確認を行うインテグレーションテスト。
-事前にcocoro_ghostサーバーを起動しておく必要がある。
+事前にCocoroGhostサーバーを起動しておく必要がある。
 
 使用方法:
     python -X utf8 tests/test_api.py
@@ -344,7 +344,7 @@ def main():
     テスト結果に応じて終了コードを返す。
     """
     print("=" * 50)
-    print("cocoro_ghost API テスト")
+    print("CocoroGhost API テスト")
     print("=" * 50)
 
     results = {}

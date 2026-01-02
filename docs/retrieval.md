@@ -2,7 +2,7 @@
 
 ## 概要
 
-cocoro_ghost における記憶呼び出しシステム。会話に関連する過去のエピソードを高速に検索・選別し、MemoryPack に注入する。
+CocoroGhost における記憶呼び出しシステム。会話に関連する過去のエピソードを高速に検索・選別し、MemoryPack に注入する。
 
 **特徴**:
 - **LLMレス**: Query Expansion / Reranking に LLM を使わず、高速に動作

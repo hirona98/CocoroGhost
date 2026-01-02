@@ -1,6 +1,6 @@
-# cocoro_ghost 仕様
+# Cocoro_ghost 仕様
 
-このディレクトリは、`cocoro_ghost` の設計/仕様（units/payload + MemoryPack Builder + Worker + sqlite-vec(vec0)）を、実装ハンドオフ可能な粒度で分割ドキュメント化したものです。
+このディレクトリは、`CocoroGhost` の設計/仕様（units/payload + MemoryPack Builder + Worker + sqlite-vec(vec0)）を、実装ハンドオフ可能な粒度で分割ドキュメント化したものです。
 
 ## 目的
 

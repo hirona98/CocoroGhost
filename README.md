@@ -1,4 +1,4 @@
-# cocoro_ghost
+# CocoroGhost
 
 CocoroAI Ver5（パートナーAIシステム）のLLMと記憶処理を担当するPython/FastAPIバックエンドサーバー
 CocoroConsoleやCocoroShell無しでの単独動作も可能とする
