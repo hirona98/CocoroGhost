@@ -20,7 +20,6 @@ class UnitKind(IntEnum):
     EPISODE = 1   # 対話エピソード（会話ログ）
     FACT = 2      # ファクト（三つ組の知識）
     SUMMARY = 3   # 要約（日次/週次など）
-    CAPSULE = 6   # カプセル（期限付きメモ）
     LOOP = 7      # ループ（未解決タスク/気掛かり）
 
 

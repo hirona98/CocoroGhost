@@ -2,7 +2,7 @@
 cron無しの定期実行ユーティリティ
 
 Workerから定期的に呼び出され、必要なジョブをenqueueする。
-bond_summary、entity_summary、capsule_refreshなどの
+bond_summary、entity_summaryなどの
 定期ジョブを重複抑制・クールダウン付きで管理する。
 """
 
@@ -173,46 +173,6 @@ def maybe_enqueue_bond_summary(
         return False
 
     _enqueue_job(session, kind="bond_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
-    return True
-
-
-def maybe_enqueue_capsule_refresh(
-    session: Session,
-    *,
-    now_ts: int,
-    interval_seconds: int = 30 * 60,
-    limit: int = 5,
-    max_sensitivity: int = int(Sensitivity.PRIVATE),
-) -> bool:
-    """
-    capsule_refresh ジョブを一定間隔でenqueueする。
-
-    重複抑制を行い、前回実行から一定時間経過した場合のみ実行する。
-    """
-    if _has_pending_job(
-        session,
-        kind="capsule_refresh",
-        predicate=lambda p: int(p.get("limit") or 0) == int(limit),
-    ):
-        return False
-
-    last_capsule_ts = (
-        session.query(Unit.updated_at, Unit.created_at)
-        .filter(
-            Unit.kind == int(UnitKind.CAPSULE),
-            Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
-            Unit.sensitivity <= int(max_sensitivity),
-        )
-        .order_by(Unit.updated_at.desc().nulls_last(), Unit.id.desc())
-        .first()
-    )
-    if last_capsule_ts is not None:
-        updated_at, created_at = last_capsule_ts
-        ts = int(updated_at or created_at or 0)
-        if ts > 0 and int(now_ts) - ts < int(interval_seconds):
-            return False
-
-    _enqueue_job(session, kind="capsule_refresh", payload={"limit": int(limit)}, now_ts=now_ts)
     return True
 
 
@@ -399,8 +359,6 @@ class PeriodicEnqueueConfig:
     entity_window_days: int = 14
     max_person: int = 3
     max_topic: int = 3
-    capsule_interval_seconds: int = 30 * 60
-    capsule_limit: int = 5
     max_sensitivity: int = int(Sensitivity.PRIVATE)
 
 
@@ -414,7 +372,6 @@ def enqueue_periodic_jobs(session: Session, *, now_ts: int, config: PeriodicEnqu
     cfg = config or PeriodicEnqueueConfig()
     stats: dict[str, Any] = {
         "bond_summary": 0,
-        "capsule_refresh": 0,
         "person_summary_refresh": 0,
         "topic_summary_refresh": 0,
     }
@@ -438,14 +395,5 @@ def enqueue_periodic_jobs(session: Session, *, now_ts: int, config: PeriodicEnqu
     )
     stats["person_summary_refresh"] += int(entity_stats.get("person") or 0)
     stats["topic_summary_refresh"] += int(entity_stats.get("topic") or 0)
-
-    if maybe_enqueue_capsule_refresh(
-        session,
-        now_ts=now_ts,
-        interval_seconds=cfg.capsule_interval_seconds,
-        limit=cfg.capsule_limit,
-        max_sensitivity=cfg.max_sensitivity,
-    ):
-        stats["capsule_refresh"] += 1
 
     return stats

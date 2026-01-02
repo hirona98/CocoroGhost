@@ -26,7 +26,6 @@
 - `bond_summary(scope_key=rolling:7d)`（定期 / `embedding_preset_id` は Worker が扱うDBで暗黙）
 - `person_summary_refresh(entity_id)`（人物サマリ更新）
 - `topic_summary_refresh(entity_id)`（トピックサマリ更新）
-- `capsule_refresh(limit)`（任意 / `limit` は直近件数、既定5）
 
 補足:
 - `/api/chat` は「返答本文 + 内部JSON（反射）」を同一LLM呼び出しで得て、Episodeへ即時反映するため、`reflect_episode` は既に反射が入っている場合は冪等にスキップされます（フォールバック用として残す）。
@@ -35,8 +34,7 @@
 
 - Current: bond summary（rolling:7d）は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり）。
 - Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）を自動enqueue（重複抑制あり）。
-- Current: capsule_refresh は Episode保存後の既定ジョブとして自動enqueue（`limit=5`）。
-- Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic/capsule）も実施できる（固定値: 30秒ごとに判定）。
+- Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic）も実施できる（固定値: 30秒ごとに判定）。
 - Current: 起動コマンドは `run.py` のみ（内蔵Workerがバックグラウンドで動作）。
 - Current: `/api/settings` で active preset / embedding_preset_id を切り替えると、内蔵Workerは自動で再起動して追従する。
 - Non-goal: uvicorn multi-worker 等の多重起動は未対応（内蔵Workerが重複実行されうるため）。`workers=1` 前提で運用する。
@@ -70,9 +68,9 @@
 
 cron が無い環境向けに、Worker（jobs処理ループ）内で定期的に jobs を enqueue する。
 
-- enqueue 対象: `bond_summary` / `person_summary_refresh` / `topic_summary_refresh` / `capsule_refresh`
+- enqueue 対象: `bond_summary` / `person_summary_refresh` / `topic_summary_refresh`
 - 重複抑制: queued/running の同種ジョブがあれば enqueue しない
-- クールダウン: summary/capsule の更新頻度を抑制（デフォルト: 30秒ごとに判定）
+- クールダウン: summary の更新頻度を抑制（デフォルト: 30秒ごとに判定）
 
 起動例:
 

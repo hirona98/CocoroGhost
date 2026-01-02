@@ -50,7 +50,7 @@ Persona: 「...」
 - PERSONA_ANCHOR は system prompt 側に固定注入する（MemoryPackには含めない）。
 - MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（コード側でガードする。例: `cocoro_ghost/memory.py`）。
 - `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` には `now_local` / `client_context` 等に加え、`persona_mood_state: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/persona_mood.py`）。
-   - LLMに渡す時刻はローカル時刻に変換して注入する（now_local/episode日付/persona_mood_state/capsule_json内の時刻）。
+   - LLMに渡す時刻はローカル時刻に変換して注入する（now_local/episode日付/persona_mood_state など）。
 - `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>` は「共有された物語」を注入するセクション。
    - 週次の bond summary（`scope_key=rolling:7d`。無ければ最新）を1本入れる。
    - 今回の entity に応じて、人物サマリ（`scope_label=person`）やトピックサマリ（`scope_label=topic`）を追加する。
@@ -78,7 +78,7 @@ Persona: 「...」
    - Current: BOND週次 + person/topic を注入対象として運用（生成は自動enqueue）
 6. **OpenLoops取得**
    - 期限切れ（`expires_at <= now_ts`）は除外し、due順、entity一致を優先
-   - 期限切れのLoopは Worker の `capsule_refresh` で自動削除される
+- 期限切れのLoopは Worker のジョブ処理ループで自動削除される
 7. **Episode evidence 注入**
    - `should_inject_episodes(relevant_episodes)` が true のときだけ `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` を組み込む
    - `injection_strategy`（quote_key_parts/summarize/full）に応じて整形する

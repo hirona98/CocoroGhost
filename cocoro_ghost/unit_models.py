@@ -94,18 +94,6 @@ class PayloadSummary(UnitBase):
     summary_text: Mapped[str] = mapped_column(Text, nullable=False)  # 要約テキスト
     summary_json: Mapped[Optional[str]] = mapped_column(Text)  # 構造化要約（JSON）
 
-class PayloadCapsule(UnitBase):
-    """
-    Capsule（期限付きメモ）のペイロード。
-
-    有効期限付きの一時的な情報を保持する。
-    """
-    __tablename__ = "payload_capsule"
-
-    unit_id: Mapped[int] = mapped_column(ForeignKey("units.id", ondelete="CASCADE"), primary_key=True)  # 親UnitID
-    expires_at: Mapped[Optional[int]] = mapped_column(Integer)  # 有効期限（UNIXタイムスタンプ）
-    capsule_json: Mapped[str] = mapped_column(Text, nullable=False)  # カプセル内容（JSON）
-
 
 class PayloadLoop(UnitBase):
     """

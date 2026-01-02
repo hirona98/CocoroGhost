@@ -9,13 +9,13 @@
 - **すべてのデータは Unit として `units` に1行の共通メタを持つ**
   - 検索/注入/編集/版管理などの“共通操作”を `units` だけで完結できるようにするため。
 - **本文・構造化データは `payload_*` に分離（種別ごとにスキーマを固定）**
-  - EPISODE/FACT/SUMMARY/LOOP/CAPSULE など、内容の形が違うものを1テーブルに詰めない（nullable地獄を避ける）。
+  - EPISODE/FACT/SUMMARY/LOOP など、内容の形が違うものを1テーブルに詰めない（nullable地獄を避ける）。
   - 種別ごとに「どの列が正で、どの列が派生か」を明確にする（後段のWorkerの冪等性にも効く）。
 
 ### 2) Canonical（証跡）と Derived（派生）を分ける
 
 - **EPISODE は証跡（Canonical）**：ユーザー発話・通知本文など「改変しないログ」。
-- **FACT/SUMMARY/LOOP/CAPSULE は派生（Derived）**：Workerが抽出/統合して生成する“解釈・整理”。
+- **FACT/SUMMARY/LOOP は派生（Derived）**：Workerが抽出/統合して生成する“解釈・整理”。
 - ねらい:
   - 「派生が間違っても、証跡から再生成できる」＝長期運用での修復性。
   - 「同期(`/api/chat`)は軽く、重い生成はWorkerへ」＝会話テンポの安定化。
@@ -95,7 +95,7 @@ create index if not exists idx_units_state on units(state);
 | column | type | 意味/使い方 | 主な書き手 |
 |---|---|---|---|
 | `id` | INTEGER | Unitの主キー（自動採番）。他テーブルは `unit_id` で参照する。 | DB |
-| `kind` | INTEGER | UnitKind（EPISODE/FACT/SUMMARY/CAPSULE/LOOP）。Payloadテーブル選択のキー。 | API/Worker |
+| `kind` | INTEGER | UnitKind（EPISODE/FACT/SUMMARY/LOOP）。Payloadテーブル選択のキー。 | API/Worker |
 | `occurred_at` | INTEGER | 出来事の時刻（UTC epoch sec）。検索のrecencyや週次集計の基準になる。 | API/Worker |
 | `created_at` | INTEGER | 作成時刻（UTC epoch sec）。 | API/Worker |
 | `updated_at` | INTEGER | 更新時刻（UTC epoch sec）。派生物更新/編集時に更新。 | Worker/Admin |
@@ -299,23 +299,6 @@ create index if not exists idx_summary_scope on payload_summary(scope_label, sco
 - `summary_text` は注入用のプレーンテキスト（Schedulerが `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>` に入れる）。
 - `summary_json` はLLM出力を丸ごと保存（key_events等の構造化）。
 
-### Capsule（短期状態：会話テンポのため）
-
-```sql
-create table if not exists payload_capsule (
-  unit_id      integer primary key references units(id) on delete cascade,
-  expires_at   integer,
-  capsule_json text not null
-);
-```
-
-#### 使い方（Capsule）
-
-- 直近状態（現在日時/直近の文脈）を軽量に保つ「短期メモ」用途。
-- `expires_at` がある場合、Schedulerは期限切れを注入しない。
-- `capsule_json` はJSON文字列（構造は運用で決める）。
-  - 現行の `capsule_refresh` では `recent`（直近の抜粋）を含める（会話品質のため、機嫌 `persona_mood_state` はDBに保存せずチャット直前に同期計算して注入する）。
-
 ### OpenLoop（未完了：次に話す理由）
 
 ```sql
@@ -378,8 +361,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 **A. Episode（会話/通知）保存時の既定ジョブ**
 
 - 対象: `units(kind=EPISODE)` を保存した直後
-- enqueue: `reflect_episode` / `extract_entities` / `extract_facts` / `extract_loops` / `upsert_embeddings` / `capsule_refresh(limit=5)`
-- `capsule_refresh` の payload は `{"limit":5}` のように拡張可能（現行は直近抜粋の更新のみ）。
+- enqueue: `reflect_episode` / `extract_entities` / `extract_facts` / `extract_loops` / `upsert_embeddings`
 - 入口の例:
   - `/api/chat` の完了時（SSE done直前の保存）
   - `/api/v2/notification` の処理完了時（reply生成後の保存更新）
@@ -419,7 +401,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
   - jobs enqueue（反射/抽出/埋め込み等）
 - Worker（非同期）
   - 反射（episodeのメタ更新）
-  - entity/fact/loop/summary/capsule の生成・更新
+  - entity/fact/loop/summary の生成・更新
   - vec0（`vec_units`）の upsert
 
 ### 検索に関わるテーブル
@@ -437,7 +419,6 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 | EPISODE | 1 | 証跡（会話/出来事） |
 | FACT | 2 | 安定知識（好み/関係/設定） |
 | SUMMARY | 3 | 要約（週次/人物別/トピック別/共有ナラティブ） |
-| CAPSULE | 6 | 短期状態 |
 | LOOP | 7 | 未完了（open loops） |
 
 ### UnitState

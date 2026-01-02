@@ -20,7 +20,6 @@ Episode作成後の反射（reflection）、エンティティ抽出、ファク
 - bond_summary: 絆サマリ生成
 - person_summary_refresh: 人物サマリ更新
 - topic_summary_refresh: トピックサマリ更新
-- capsule_refresh: 短期状態カプセル更新
 """
 
 from __future__ import annotations
@@ -59,7 +58,6 @@ from cocoro_ghost.unit_models import (
     Entity,
     EntityAlias,
     Job,
-    PayloadCapsule,
     PayloadEpisode,
     PayloadFact,
     PayloadLoop,
@@ -369,8 +367,6 @@ def process_job(
             _handle_person_summary_refresh(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "topic_summary_refresh":
             _handle_topic_summary_refresh(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "capsule_refresh":
-            _handle_capsule_refresh(session=session, payload=payload, now_ts=now_ts)
         else:
             logger.warning("unknown job kind", extra={"job_id": job_id, "kind": job.kind})
 
@@ -419,6 +415,12 @@ def process_due_jobs(
         now_ts = _now_utc_ts()
         session = get_memory_session(embedding_preset_id, embedding_dimension)
         try:
+            # Loopは短期メモとして扱うため、期限切れ（expires_at <= now）は定期的に削除する。
+            # capsule（短期状態）機能を廃止したため、ジョブ処理ループ内で確実に掃除する。
+            try:
+                _cleanup_expired_loops(session=session, now_ts=now_ts)
+            except Exception:  # noqa: BLE001
+                pass
             job_info = claim_next_job_with_kind(session, now_ts=now_ts)
         finally:
             session.close()
@@ -1585,111 +1587,6 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
                 updated_at=now_ts,
             )
         )
-
-
-def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts: int) -> None:
-    """短期状態（Capsule）を更新する（LLM不要・軽量）。"""
-    # ついでに期限切れLoopを掃除する（TTLで確実に自動削除する）。
-    try:
-        _cleanup_expired_loops(session=session, now_ts=now_ts)
-    except Exception:  # noqa: BLE001
-        pass
-    limit = int(payload.get("limit") or 5)
-    limit = max(1, min(20, limit))
-
-    rows = (
-        session.query(Unit, PayloadEpisode)
-        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(Unit.kind == int(UnitKind.EPISODE), Unit.state.in_([0, 1, 2]), Unit.sensitivity <= int(Sensitivity.SECRET))
-        .order_by(Unit.created_at.desc(), Unit.id.desc())
-        .limit(limit)
-        .all()
-    )
-
-    recent = []
-    for u, pe in rows:
-        recent.append(
-            {
-                "unit_id": int(u.id),
-                "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
-                "created_at": int(u.created_at),
-                "source": u.source,
-                "input_text": (pe.input_text or "")[:200],
-                "reply_text": (pe.reply_text or "")[:200],
-                "topic_tags": u.topic_tags,
-                "persona_affect_label": u.persona_affect_label,
-                "persona_affect_intensity": u.persona_affect_intensity,
-                "salience": u.salience,
-                "confidence": u.confidence,
-            }
-        )
-
-    # NOTE:
-    # - 会話品質優先の方針として、AI人格の機嫌（persona_mood_state）はチャット直前に同期計算して注入する。
-    # - そのため Capsule（DB保存）は「直近の抜粋（recent）」のみを保持し、moodは保存しない。
-    capsule_obj = {
-        "generated_at": now_ts,
-        "window": limit,
-        "recent": recent,
-    }
-    capsule_json = _json_dumps(capsule_obj)
-    expires_at = now_ts + 3600
-
-    existing = (
-        session.query(Unit, PayloadCapsule)
-        .join(PayloadCapsule, PayloadCapsule.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.CAPSULE),
-            Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= int(Sensitivity.SECRET),
-            PayloadCapsule.expires_at.isnot(None),
-            PayloadCapsule.expires_at > now_ts,
-        )
-        .order_by(Unit.created_at.desc(), Unit.id.desc())
-        .first()
-    )
-
-    if existing is None:
-        cap_unit = Unit(
-            kind=int(UnitKind.CAPSULE),
-            occurred_at=now_ts,
-            created_at=now_ts,
-            updated_at=now_ts,
-            source="capsule_refresh",
-            state=int(UnitState.VALIDATED),
-            confidence=0.5,
-            salience=0.0,
-            sensitivity=int(Sensitivity.PRIVATE),
-            pin=0,
-            topic_tags=None,
-            persona_affect_label=None,
-            persona_affect_intensity=None,
-        )
-        session.add(cap_unit)
-        session.flush()
-        session.add(PayloadCapsule(unit_id=cap_unit.id, expires_at=expires_at, capsule_json=capsule_json))
-        record_unit_version(
-            session,
-            unit_id=int(cap_unit.id),
-            payload_obj={"expires_at": expires_at, "capsule": capsule_obj},
-            patch_reason="capsule_refresh",
-            now_ts=now_ts,
-        )
-        return
-
-    cap_unit, cap = existing
-    cap.expires_at = expires_at
-    cap.capsule_json = capsule_json
-    cap_unit.updated_at = now_ts
-    session.add(cap_unit)
-    session.add(cap)
-    record_unit_version(
-        session,
-        unit_id=int(cap_unit.id),
-        payload_obj={"expires_at": expires_at, "capsule": capsule_obj},
-        patch_reason="capsule_refresh",
-        now_ts=now_ts,
-    )
 
 
 def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:

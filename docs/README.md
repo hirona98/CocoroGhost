@@ -39,11 +39,11 @@
 ## 用語
 
 - **Unit**: 記憶DB（`memory_<embedding_preset_id>.db`）で扱う「1つの記憶/出来事/生成物」の基本単位。共通メタを `units` に1行で持ち、`kind/state/sensitivity/pin/topic_tags` 等で扱いを決める（詳細は `docs/db_schema.md`）。
-- **Payload**: Unitの本文や構造化データを、種別ごとにスキーマ分離したテーブル群（`payload_episode` / `payload_fact` / `payload_summary` / `payload_loop` / `payload_capsule` など）。Unitと同じ `unit_id` で1:1に紐づく（詳細は `docs/db_schema.md`）。
+- **Payload**: Unitの本文や構造化データを、種別ごとにスキーマ分離したテーブル群（`payload_episode` / `payload_fact` / `payload_summary` / `payload_loop` など）。Unitと同じ `unit_id` で1:1に紐づく（詳細は `docs/db_schema.md`）。
 - **UnitKind / UnitState / Sensitivity**: Unitの「種別」「状態」「取り扱い区分」をenum値で表すもの。検索・注入・Worker処理の対象範囲を決めるための土台（詳細は `docs/db_schema.md` と実装の `cocoro_ghost/unit_enums.py`）。
 - **Canonical / Derived**: “原文（証跡）” と “派生物” を分ける考え方。
   - Canonical: ユーザー発話や通知本文など「改変しないログ」（例: `EPISODE`）。
-  - Derived: Workerで抽出/統合された「解釈・要約・構造化」（例: `FACT` / `SUMMARY` / `LOOP` / `CAPSULE`）。
+- Derived: Workerで抽出/統合された「解釈・要約・構造化」（例: `FACT` / `SUMMARY` / `LOOP`）。
 - **MemoryPack**: `/api/chat` の同期処理中に、MemoryPack Builderが「LLMへ注入するため」に組み立てるテキストパック。見出し順（`<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` 等）に沿って、検索結果をそのまま貼らずに圧縮・整形する（仕様: `docs/memory_pack_builder.md`、実装: `cocoro_ghost/memory_pack_builder.py`）。
 - **Retriever**: 記憶検索システム。固定クエリ → Hybrid Search (Vector + BM25) → ヒューリスティック Rerank の3段階で、会話に関連する過去のエピソードを高速に選別する（仕様: `docs/retrieval.md`）。LLMレスで高速に動作。
 - **PERSONA_ANCHOR（persona_text + addon_text）**: LLM注入プロンプトを「人物設定」と「任意追加オプション」に分けたものを、1つのセクションとして扱う。

@@ -3,7 +3,7 @@
 
 記憶ユニット（Unit）の一覧取得、詳細取得、メタ情報更新を提供する。
 デバッグや運用管理で記憶内容を確認・調整するために使用される。
-Unit種別（Episode, Fact, Summary, Loop, Capsule）に応じたペイロードを返す。
+Unit種別（Episode, Fact, Summary, Loop）に応じたペイロードを返す。
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from cocoro_ghost.schemas import (
 )
 from cocoro_ghost.unit_enums import UnitKind
 from cocoro_ghost.unit_models import (
-    PayloadCapsule,
     PayloadEpisode,
     PayloadFact,
     PayloadLoop,
@@ -148,10 +147,6 @@ def get_unit(
                     "summary_text": ps.summary_text,
                     "summary_json": ps.summary_json,
                 }
-        elif unit.kind == int(UnitKind.CAPSULE):
-            cap = db.query(PayloadCapsule).filter(PayloadCapsule.unit_id == unit_id).one_or_none()
-            if cap:
-                payload = {"expires_at": cap.expires_at, "capsule_json": cap.capsule_json}
         elif unit.kind == int(UnitKind.LOOP):
             pl = db.query(PayloadLoop).filter(PayloadLoop.unit_id == unit_id).one_or_none()
             if pl:

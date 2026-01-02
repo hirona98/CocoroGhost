@@ -2,7 +2,8 @@
 MemoryPack生成（取得計画器）
 
 会話に注入する「内部コンテキスト（MemoryPack）」を組み立てる。
-Facts、Summary、Loops、Episode証拠、Capsule、persona_mood_state等を
+Facts、Summary、Loops、Episode証拠、CONTEXT_CAPSULE（時刻/状況/画像要約）、
+persona_mood_state等を
 トークン予算内で優先順位に従って構築する。
 """
 
@@ -23,7 +24,6 @@ from cocoro_ghost.unit_enums import Sensitivity, UnitKind
 from cocoro_ghost.unit_models import (
     Entity,
     EntityAlias,
-    PayloadCapsule,
     PayloadEpisode,
     PayloadFact,
     PayloadLoop,
@@ -51,7 +51,6 @@ logger = logging.getLogger(__name__)
 # MemoryPackの見出しは日常会話で衝突しにくい形式に統一する。
 MEMORY_PACK_SECTION_PREFIX = "<<<COCORO_GHOST_SECTION:"
 MEMORY_PACK_SECTION_SUFFIX = ">>>"
-_TIME_KEYS_FOR_LLM = {"generated_at", "occurred_at", "created_at", "expires_at", "now_ts"}
 
 
 def format_memory_pack_section(title: str, body_lines: Sequence[str]) -> str:
@@ -76,49 +75,6 @@ def _to_local_iso(ts: int | float | None) -> str | None:
         return datetime.fromtimestamp(float(ts)).astimezone().isoformat()
     except Exception:  # noqa: BLE001
         return None
-
-
-def _convert_time_fields_for_llm(obj: Any) -> Any:
-    """
-    LLMに渡す前提で、既知の時刻キーだけローカル時刻へ変換する。
-    """
-    if isinstance(obj, dict):
-        out: dict[str, Any] = {}
-        for k, v in obj.items():
-            if k in _TIME_KEYS_FOR_LLM and isinstance(v, (int, float)):
-                out[k] = _to_local_iso(v) or v
-                continue
-            out[k] = _convert_time_fields_for_llm(v)
-        return out
-    if isinstance(obj, list):
-        return [_convert_time_fields_for_llm(v) for v in obj]
-    return obj
-
-
-def _convert_capsule_json_for_llm(capsule_json: str | None) -> str | None:
-    """
-    capsule_json内の時刻をローカル時刻に変換してから返す。
-    """
-    if not capsule_json:
-        return None
-    try:
-        obj = json.loads(capsule_json)
-    except Exception:  # noqa: BLE001
-        return capsule_json
-    # NOTE:
-    # - 会話品質優先のため、persona_mood_state は capsule_json には含めない（正は persona_mood_state: 行）。
-    # - 過去のDBに残っていた場合も、LLMへは渡さない。
-    if isinstance(obj, dict) and "persona_mood_state" in obj:
-        try:
-            obj = dict(obj)
-            obj.pop("persona_mood_state", None)
-        except Exception:  # noqa: BLE001
-            pass
-    converted = _convert_time_fields_for_llm(obj)
-    try:
-        return json.dumps(converted, ensure_ascii=False, separators=(",", ":"))
-    except Exception:  # noqa: BLE001
-        return capsule_json
 
 
 def now_utc_ts() -> int:
@@ -494,23 +450,6 @@ def build_memory_pack(
     # 一旦「注入（引き出し）」を無制限にする（SECRETまで許可）。
     sensitivity_max = int(Sensitivity.SECRET)
 
-    capsule_json: Optional[str] = None
-    cap_row = (
-        db.query(Unit, PayloadCapsule)
-        .join(PayloadCapsule, PayloadCapsule.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.CAPSULE),
-            Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= sensitivity_max,
-            (PayloadCapsule.expires_at.is_(None) | (PayloadCapsule.expires_at > now_ts)),
-        )
-        .order_by(Unit.created_at.desc(), Unit.id.desc())
-        .first()
-    )
-    if cap_row:
-        _cu, cap = cap_row
-        capsule_json = (cap.capsule_json or "").strip() or None
-
     def _persona_mood_guidance_from_state(state: dict[str, Any]) -> str | None:
         """persona_mood_state を本文の口調へ落とし込むための短い指示（内部向け）。
 
@@ -781,10 +720,6 @@ def build_memory_pack(
 
     # Context capsule（軽量）
     capsule_parts: List[str] = []
-    if capsule_json:
-        # LLM向けに時刻だけローカルへ変換する。
-        capsule_local = _convert_capsule_json_for_llm(capsule_json)
-        capsule_parts.append(f"capsule_json: {capsule_local}")
     now_local = datetime.fromtimestamp(now_ts).astimezone().isoformat()
     capsule_parts.append(f"now_local: {now_local}")
     if client_context:
@@ -812,7 +747,6 @@ def build_memory_pack(
     #
     # 目的:
     # - 会話品質優先のため、「チャット直前に同期計算した persona_mood_state」を唯一の正として注入する。
-    # - Capsule（payload_capsule.capsule_json）は直近の抜粋（recent）だけを保持し、moodは保存しない。
     #
     # 計算式（persona_mood の積分ロジック）:
     #   impact = persona_affect_intensity × salience × confidence × exp(-Δt/τ(salience))
@@ -869,7 +803,7 @@ def build_memory_pack(
         )
 
         # persona_mood_state を口調へ確実に反映させるため、短い言語ガイドを併記する。
-        # ※ capsule_json（過去の状態や直近のJoy発話など）に強く引っ張られないよう、こちらを優先材料にする。
+        # 数値をそのまま渡すより、言語化した指示の方が安定するため。
         guidance = _persona_mood_guidance_from_state(
             persona_mood_state if isinstance(persona_mood_state, dict) else {}
         )
@@ -898,7 +832,7 @@ def build_memory_pack(
         return "".join(parts)
 
     # NOTE:
-    # - capsule_json と同期計算した persona_mood_state の両方を注入する。
+    # - 会話品質優先のため、persona_mood_state は同期計算した値のみを注入する（正は1つ）。
     capsule_lines: List[str] = []
     capsule_lines.extend(capsule_parts)
 
