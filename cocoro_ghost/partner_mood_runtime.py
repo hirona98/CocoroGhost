@@ -1,7 +1,7 @@
 """
 partner_moodのランタイム上書き（デバッグ用）
 
-UIからpartner_mood（パートナーの機嫌）を参照/変更するためのin-memoryストア。
+UIからpartner_mood（AI人格の機嫌）を参照/変更するためのin-memoryストア。
 
 特徴:
 - overrideは完全上書きのみ（部分マージしない）

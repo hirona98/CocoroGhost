@@ -794,7 +794,7 @@ def build_memory_pack(
             capsule_parts.append("---IMAGE_SUMMARY_END---")
             capsule_parts.append("")
 
-    # パートナーの感情（重要度×時間減衰）を同期計算して注入する。
+    # AI人格の感情（重要度×時間減衰）を同期計算して注入する。
     #
     # 目的:
     # - /api/chat は「返信生成の前」に MemoryPack を組むため、capsule_refresh（Worker）がまだ走っていないと

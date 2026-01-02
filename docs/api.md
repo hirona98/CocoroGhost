@@ -65,7 +65,7 @@ data: {"message":"...","code":"..."}
 
 ## `/api/partner_mood`（デバッグ）
 
-partner_mood（パートナーの機嫌）関連の数値を **UIから参照/変更**するためのデバッグ用API。
+partner_mood（AI人格の機嫌）関連の数値を **UIから参照/変更**するためのデバッグ用API。
 
 - **永続化しない**（DB/settings.db に保存しない）
 - 反映は **同一プロセス内**のみ（プロセスを跨ぐ構成ではプロセスごとに状態が分離される）
@@ -189,7 +189,7 @@ Invoke-RestMethod -Method Post `
   -Body '{"source_system":"MyApp","text":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
 ```
 
-- HTTPレスポンスは先に返り、パートナーのセリフ（`data.message`）は `/api/events/stream` で後から届く
+- HTTPレスポンスは先に返り、AI人格のセリフ（`data.message`）は `/api/events/stream` で後から届く
 - 保存は `units(kind=EPISODE, source=notification)` + `payload_episode.user_text` に本文を入れ、必要なら `context_note` に構造化JSONを入れる
 - `images` がある場合は `payload_episode.image_summary` に要約を保存する
 
@@ -235,7 +235,7 @@ Invoke-RestMethod -Method Post `
   -Body '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
 ```
 
-- HTTPレスポンスは先に返り、パートナーのセリフ（`data.message`）は `/api/events/stream` で後から届く
+- HTTPレスポンスは先に返り、AI人格のセリフ（`data.message`）は `/api/events/stream` で後から届く
 - `instruction` / `payload_text` は **永続化しない**（生成にのみ利用）
 - 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=meta-request)` の `payload_episode.reply_text` に保存する
 
@@ -500,7 +500,7 @@ UI向けの「全設定」取得/更新。
   "type": "notification",
   "data": {
     "system_text": "[notificationのfrom] notificationのmessage",
-    "message": "AIパートナーのセリフ"
+    "message": "AIAI人格のセリフ"
   }
 }
 
@@ -508,7 +508,7 @@ UI向けの「全設定」取得/更新。
   "unit_id": 12345,
   "type": "meta-request",
   "data": {
-    "message": "AIパートナーのセリフ"
+    "message": "AI人格のセリフ",
   }
 }
 ```

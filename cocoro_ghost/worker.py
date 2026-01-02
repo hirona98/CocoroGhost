@@ -1628,7 +1628,7 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
             }
         )
 
-    # パートナーの感情（重要度×時間減衰）:
+    # AI人格の感情（重要度×時間減衰）:
     #
     # 直近N件（recent）だけで機嫌を作ると、「大事件が短時間で埋もれて消える」問題が出る。
     # そこで、別枠で「直近partner_mood_scan_limit件のエピソード」を走査し、各エピソードの影響度を

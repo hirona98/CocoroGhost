@@ -1,4 +1,4 @@
-# パートナーの反射/機嫌（partner_affect / partner_mood）仕様
+# AI人格の反射/機嫌（partner_affect / partner_mood）仕様
 
 このドキュメントは「会話の内容にその時の反射（affect）と、その後も続く機嫌（mood）を反映する」ための実装方針と、保存場所・注入場所をまとめます。
 

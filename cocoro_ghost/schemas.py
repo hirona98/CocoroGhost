@@ -58,7 +58,7 @@ class ChatRequest(BaseModel):
 class NotificationRequest(BaseModel):
     """
     /notification 用リクエスト（内部形式）。
-    外部システムからの通知をパートナーに伝える。
+    外部システムからの通知をAI人格に伝える。
     """
     source_system: str                   # 通知元システム名
     text: str                            # 通知テキスト
@@ -96,10 +96,10 @@ class NotificationResponse(BaseModel):
 class MetaRequestRequest(BaseModel):
     """
     /meta-request 用リクエスト（内部形式）。
-    システムからパートナーへの指示を伝える。
+    システムからAI人格への指示を伝える。
     """
     embedding_preset_id: Optional[str] = None
-    instruction: str                     # パートナーへの指示
+    instruction: str                     # AI人格への指示
     payload_text: str                    # 追加情報テキスト
     images: List[Dict[str, str]] = Field(default_factory=list)  # 添付画像
 
@@ -109,7 +109,7 @@ class MetaRequestV2Request(BaseModel):
     /meta-request/v2 用リクエスト。
     data URI形式の画像を受け付けるバージョン。
     """
-    instruction: str                     # パートナーへの指示
+    instruction: str                     # AI人格への指示
     payload_text: str = ""               # 追加情報テキスト
     images: List[str] = Field(default_factory=list, max_length=5)  # data URI形式の画像
 
@@ -168,7 +168,7 @@ class UnitMeta(BaseModel):
     sensitivity: int                     # 機密レベル
     pin: int                             # ピン留めフラグ
     topic_tags: Optional[str] = None     # トピックタグ（カンマ区切り）
-    partner_affect_label: Optional[str] = None      # パートナーの感情ラベル
+    partner_affect_label: Optional[str] = None      # AI人格の感情ラベル
     partner_affect_intensity: Optional[float] = None  # 感情の強度
 
 

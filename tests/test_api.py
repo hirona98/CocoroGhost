@@ -309,7 +309,7 @@ def test_notification():
 def test_meta_request():
     """
     POST /v2/meta-request - メタ要求テスト
-    システムからの指示をパートナーに伝達できるかを確認する。
+    システムからの指示をAI人格に伝達できるかを確認する。
     """
     print("\n=== POST /v2/meta-request ===")
     base64_data = load_test_image_base64("test_image_3.png")
