@@ -10,7 +10,6 @@ FastAPI の APIRouter を使用して各エンドポイントを実装する。
 - meta-request: メタ要求（能動メッセージ）API
 - settings: 設定取得/更新API
 - admin: 管理API（Unit操作等）
-- persona_mood: AI人格感情状態API
 - events: イベントSSEストリーム
 - logs: ログSSEストリーム
 """

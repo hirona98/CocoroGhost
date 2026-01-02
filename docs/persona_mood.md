@@ -7,7 +7,7 @@
 - **即時反応（affect）**: 特定の発言で、そのターンの返答が苛立ったり喜んだりできる
 - **持続（mood）**: 大事件（重要度が高い出来事）は数ターンで消えず、余韻として残る
 - **口調だけに閉じない**: “協力/拒否” などの行動方針にも影響させられる
-- **通常はユーザー介入なし**: UI操作で状態を直接上書きしない（ただしデバッグ用途では例外として専用APIで一時上書きを許可する）
+- **会話品質優先**: 返答生成で使う mood を単一の正にする（タイミング差でブレない）
 
 ## 全体像（2層）
 
@@ -78,7 +78,7 @@ JSONスキーマは `docs/prompts.md` の「chat（SSE）: 返答末尾の内部
 
 #### refusal_allowed は誰がどうやって決めるか
 
-`refusal_allowed` には、次の3つの経路があります。
+`refusal_allowed` には、次の2つの経路があります。
 
 1) **通常（自動計算）**
 
@@ -96,37 +96,18 @@ JSONスキーマは `docs/prompts.md` の「chat（SSE）: 返答末尾の内部
   - 「直近で重要な出来事（salience×confidence×時間減衰）が強い」ときほど採用されやすい
   - bool は暴れやすいので、重みが強いときのみ上書きする（弱いときは自動計算を優先）
 
-3) **デバッグ用API（in-memory override）による強制上書き**
-
-UI/デバッグ用途では `PUT /api/persona_mood` で `response_policy` を含む状態を完全上書きできます。
-
-- 永続化はしない（プロセス内のみ）
-- override がある場合は計算結果に対して完全上書きが適用される
-
 ## 保存場所 / 注入場所
 
 - 保存（素材）:
   - `units.persona_affect_label` / `units.persona_affect_intensity` / `units.salience` / `units.confidence` / `units.topic_tags`
 - `/api/chat` は persona_affect trailer で即時更新（`payload_episode.reflection_json` にも保存）
   - その他入口（notification 等）は Worker `reflect_episode` が補完（反射済みならスキップ）
-- 注入:
-  - 同期: `cocoro_ghost/memory_pack_builder.py::build_memory_pack()` が `CONTEXT_CAPSULE` に `persona_mood_state: {...}` を追加
-  - 非同期: `cocoro_ghost/worker.py::_handle_capsule_refresh()` が `payload_capsule.capsule_json.persona_mood_state` を更新
-
-## デバッグ用：ランタイム状態（in-memory override）
-
-UIから機嫌（persona_mood）を一時的に参照/変更するため、in-memory のランタイム状態を提供します。
-
-- API: `GET /api/persona_mood` / `PUT /api/persona_mood`（仕様: `docs/api.md`）
-- override解除: `DELETE /api/persona_mood`（自然計算に戻す）
-- `GET` は「前回チャットで使った値（last used）」を返す（無ければデフォルト値）。DBからの計算はしない
-- 永続化: しない（DBにも `settings.db` にも保存しない）
-- 注意:
-  - 同一プロセス内の in-memory 状態なので、プロセス再起動で消える
-  - 複数プロセス/複数ワーカー構成ではプロセスごとに状態が分離される
+- 注入（会話品質優先）:
+  - `cocoro_ghost/memory_pack_builder.py::build_memory_pack()` が `CONTEXT_CAPSULE` に `persona_mood_state: {...}` を追加し、これを唯一の正として扱う
 
 ## 失敗時の挙動（フォールバック）
 
 - LLMが区切り文字/JSONを出さない場合、サーバ側は内部JSONを取得できない
   - その場合でも Episode は保存され、Worker `reflect_episode` が後から反射値を埋める（次ターン以降で回復）
 - 区切り文字が本文中に誤って混入した場合、サーバは最初に出現した区切りで分離する（設計上の前提: 本文に区切りは出さない）
+

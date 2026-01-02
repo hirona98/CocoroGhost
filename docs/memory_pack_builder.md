@@ -50,7 +50,6 @@ Persona: 「...」
 - PERSONA_ANCHOR は system prompt 側に固定注入する（MemoryPackには含めない）。
 - MemoryPack は内部注入テキストのため、見出し名や中身をそのままユーザーへ出力しないようにする（コード側でガードする。例: `cocoro_ghost/memory.py`）。
 - `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` には `now_local` / `client_context` 等に加え、`persona_mood_state: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/persona_mood.py`）。
-   - デバッグ用途: `PUT /api/persona_mood` による in-memory ランタイム状態が有効な場合、注入される `persona_mood_state` は適用後の値になる。
    - LLMに渡す時刻はローカル時刻に変換して注入する（now_local/episode日付/persona_mood_state/capsule_json内の時刻）。
 - `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>` は「共有された物語」を注入するセクション。
    - 週次の bond summary（`scope_key=rolling:7d`。無ければ最新）を1本入れる。

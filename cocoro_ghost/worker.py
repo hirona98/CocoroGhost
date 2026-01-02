@@ -69,9 +69,7 @@ from cocoro_ghost.unit_models import (
 )
 from cocoro_ghost.versioning import canonical_json_dumps, record_unit_version
 from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
-from cocoro_ghost.persona_mood import clamp01, compute_persona_mood_state_from_episodes
-from cocoro_ghost.persona_mood_runtime import apply_persona_mood_state_override, set_last_used
-
+from cocoro_ghost.persona_mood import clamp01
 
 logger = logging.getLogger(__name__)
 
@@ -1598,9 +1596,6 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
         pass
     limit = int(payload.get("limit") or 5)
     limit = max(1, min(20, limit))
-    # 感情は、直近エピソード群を「重要度×時間減衰」で積分して作る。
-    persona_mood_scan_limit = int(payload.get("persona_mood_scan_limit") or 500)
-    persona_mood_scan_limit = max(50, min(2000, persona_mood_scan_limit))
 
     rows = (
         session.query(Unit, PayloadEpisode)
@@ -1629,75 +1624,13 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
             }
         )
 
-    # AI人格の感情（重要度×時間減衰）:
-    #
-    # 直近N件（recent）だけで機嫌を作ると、「大事件が短時間で埋もれて消える」問題が出る。
-    # そこで、別枠で「直近persona_mood_scan_limit件のエピソード」を走査し、各エピソードの影響度を
-    #     impact = persona_affect_intensity × salience × confidence × exp(-Δt/τ(salience))
-    # の形で減衰させて積分し、現在の機嫌（persona_mood_state）を推定する。
-    #
-    # - salience が高いほど τ が長くなるため、「印象的な出来事」は長く残る
-    # - salience が低い雑談は τ が短く、数分で影響が薄れる
-    # - anger 成分が十分高いときは refusal_allowed=True となり、プロンプト側で拒否が選びやすくなる
-    persona_mood_units = (
-        session.query(Unit, PayloadEpisode)
-        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.EPISODE),
-            Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= int(Sensitivity.SECRET),
-            Unit.persona_affect_label.isnot(None),
-        )
-        .order_by(Unit.created_at.desc(), Unit.id.desc())
-        .limit(persona_mood_scan_limit)
-        .all()
-    )
-    persona_mood_episodes = []
-    # persona_response_policy は直近だけ見れば十分なので、JSON parse は上位N件に限定する。
-    persona_response_policy_parse_limit = 60
-    for idx, (u, pe) in enumerate(persona_mood_units):
-        persona_response_policy = None
-        if idx < persona_response_policy_parse_limit and (pe.reflection_json or "").strip():
-            try:
-                obj = json.loads(pe.reflection_json)
-                pp = obj.get("persona_response_policy") if isinstance(obj, dict) else None
-                persona_response_policy = pp if isinstance(pp, dict) else None
-            except Exception:  # noqa: BLE001
-                persona_response_policy = None
-        persona_mood_episodes.append(
-            {
-                "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
-                "created_at": int(u.created_at),
-                "persona_affect_label": u.persona_affect_label,
-                "persona_affect_intensity": u.persona_affect_intensity,
-                "salience": u.salience,
-                "confidence": u.confidence,
-                # /api/chat の内部JSONで出た「方針ノブ」を次ターン以降にも効かせる。
-                "persona_response_policy": persona_response_policy,
-            }
-        )
-    persona_mood_state = compute_persona_mood_state_from_episodes(persona_mood_episodes, now_ts=now_ts)
-    # デバッグ用: UI/API から in-memory ランタイム状態を適用する
-    persona_mood_state = apply_persona_mood_state_override(persona_mood_state, now_ts=now_ts)
-
-    # UI向け: 前回使った値（compact）を保存する。
-    # Worker側の更新でも last_used を進めておく。
-    compact_persona_mood_state = {
-        "label": persona_mood_state.get("label"),
-        "intensity": persona_mood_state.get("intensity"),
-        "components": persona_mood_state.get("components"),
-        "response_policy": persona_mood_state.get("response_policy"),
-    }
-    try:
-        set_last_used(now_ts=now_ts, state=compact_persona_mood_state)
-    except Exception:  # noqa: BLE001
-        pass
-
+    # NOTE:
+    # - 会話品質優先の方針として、AI人格の機嫌（persona_mood_state）はチャット直前に同期計算して注入する。
+    # - そのため Capsule（DB保存）は「直近の抜粋（recent）」のみを保持し、moodは保存しない。
     capsule_obj = {
         "generated_at": now_ts,
         "window": limit,
         "recent": recent,
-        "persona_mood_state": persona_mood_state,
     }
     capsule_json = _json_dumps(capsule_obj)
     expires_at = now_ts + 3600

@@ -31,7 +31,7 @@ from cocoro_ghost.unit_models import (
     Unit,
     UnitEntity,
 )
-from cocoro_ghost.persona_mood_runtime import apply_persona_mood_state_override, set_last_used
+
 from cocoro_ghost.fact_policy import (
     canonicalize_fact_predicate,
     effective_fact_ts,
@@ -105,6 +105,15 @@ def _convert_capsule_json_for_llm(capsule_json: str | None) -> str | None:
         obj = json.loads(capsule_json)
     except Exception:  # noqa: BLE001
         return capsule_json
+    # NOTE:
+    # - 会話品質優先のため、persona_mood_state は capsule_json には含めない（正は persona_mood_state: 行）。
+    # - 過去のDBに残っていた場合も、LLMへは渡さない。
+    if isinstance(obj, dict) and "persona_mood_state" in obj:
+        try:
+            obj = dict(obj)
+            obj.pop("persona_mood_state", None)
+        except Exception:  # noqa: BLE001
+            pass
     converted = _convert_time_fields_for_llm(obj)
     try:
         return json.dumps(converted, ensure_ascii=False, separators=(",", ":"))
@@ -799,12 +808,11 @@ def build_memory_pack(
             capsule_parts.append("---IMAGE_SUMMARY_END---")
             capsule_parts.append("")
 
-    # AI人格の感情（重要度×時間減衰）を同期計算して注入する。
+    # AI人格の機嫌（重要度×時間減衰）を同期計算して注入する。
     #
     # 目的:
-    # - /api/chat は「返信生成の前」に MemoryPack を組むため、capsule_refresh（Worker）がまだ走っていないと
-    #   "persona_mood_state" が注入されず、感情の反映が1ターン遅れやすい。
-    # - ここで同期計算して `CONTEXT_CAPSULE` に入れることで、「直前の出来事」まで含めた機嫌を次ターンから使える。
+    # - 会話品質優先のため、「チャット直前に同期計算した persona_mood_state」を唯一の正として注入する。
+    # - Capsule（payload_capsule.capsule_json）は直近の抜粋（recent）だけを保持し、moodは保存しない。
     #
     # 計算式（persona_mood の積分ロジック）:
     #   impact = persona_affect_intensity × salience × confidence × exp(-Δt/τ(salience))
@@ -849,8 +857,6 @@ def build_memory_pack(
                 }
             )
         persona_mood_state = compute_persona_mood_state_from_episodes(persona_mood_episodes, now_ts=now_ts)
-        # デバッグ用: UI/API から in-memory ランタイム状態を適用する
-        persona_mood_state = apply_persona_mood_state_override(persona_mood_state, now_ts=now_ts)
         compact = {
             "label": persona_mood_state.get("label"),
             "intensity": persona_mood_state.get("intensity"),
@@ -858,12 +864,6 @@ def build_memory_pack(
             "response_policy": persona_mood_state.get("response_policy"),
             "now_local": _to_local_iso(now_ts),
         }
-        # UI向け: 前回チャットで使った値（注入した値）を保存する。
-        # ここでの値が、次のチャットの直前状態として扱われる。
-        try:
-            set_last_used(now_ts=now_ts, state=compact)
-        except Exception:  # noqa: BLE001
-            pass
         capsule_parts.append(
             f"persona_mood_state: {json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}"
         )
