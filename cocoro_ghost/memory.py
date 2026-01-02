@@ -354,6 +354,130 @@ def _get_llm_log_file_value_max_chars_from_store(config_store: ConfigStore) -> i
         return 6000
 
 
+class _UserVisibleReplySanitizer:
+    """
+    LLMの「ユーザーに見せる本文」から、内部コンテキスト/内部見出しの混入を除去する。
+
+    背景:
+    - 内部コンテキスト（MemoryPack）は <<INTERNAL_CONTEXT>> と
+      <<<COCORO_GHOST_SECTION:...>>> を使って構造化されている。
+    - LLMが誤ってこれらを本文に出力することがあるため、クライアントへ送る前に除去する。
+
+    方針:
+    - 行単位で判定し、「内部っぽい行」を検出したら、そのブロック（次の空行まで）を丸ごと捨てる。
+    - ストリームでも安全に扱えるよう、改行単位で逐次処理する。
+    """
+
+    def __init__(self) -> None:
+        # feed()で改行が来るまで保留する末尾（行未確定）
+        self._pending: str = ""
+
+        # 内部ブロックをスキップ中かどうか
+        self._skip_mode: bool = False
+
+        # スキップ開始後に、空行以外を1行でも捨てたか
+        self._skipped_any_line_in_block: bool = False
+
+        # デバッグ用に削除量だけを記録（内容は残さない）
+        self.removed_lines: int = 0
+        self.removed_blocks: int = 0
+
+    def feed(self, text: str) -> str:
+        """
+        ストリームの差分テキストを取り込み、ユーザーに送ってよいテキストだけ返す。
+
+        改行まで揃った行だけを確定し、残りは次回へ持ち越す。
+        """
+        if not text:
+            return ""
+
+        # 受信差分を保留バッファへ積む
+        self._pending += text
+
+        # 改行まで揃った行だけ処理して返す
+        out_parts: list[str] = []
+        while True:
+            head, sep, tail = self._pending.partition("\n")
+            if not sep:
+                break
+            line = head + sep
+            self._pending = tail
+            kept = self._process_line(line)
+            if kept:
+                out_parts.append(kept)
+        return "".join(out_parts)
+
+    def flush(self) -> str:
+        """
+        ストリーム終了時に残った末尾（改行が無い行）を確定し、送ってよいテキストだけ返す。
+        """
+        if not self._pending:
+            return ""
+        tail = self._process_line(self._pending)
+        self._pending = ""
+        return tail
+
+    def _process_line(self, line: str) -> str:
+        """
+        1行分のテキストを処理し、送信する場合はそのまま返す。
+        スキップ対象なら空文字を返す。
+        """
+        # strip判定用（末尾の改行を除いた行）
+        stripped_line = line.rstrip("\n").rstrip("\r").strip()
+
+        # すでに内部ブロックを捨てている最中なら、空行で終端を検出する
+        if self._skip_mode:
+            self.removed_lines += 1
+            if stripped_line:
+                self._skipped_any_line_in_block = True
+                return ""
+            # 空行はブロック終端の候補
+            if self._skipped_any_line_in_block:
+                self._skip_mode = False
+                self._skipped_any_line_in_block = False
+            return ""
+
+        # 内部っぽい行が来たら、その行から次の空行まで捨てる
+        if self._is_internal_line(stripped_line):
+            self.removed_lines += 1
+            self.removed_blocks += 1
+            self._skip_mode = True
+            self._skipped_any_line_in_block = False
+            return ""
+
+        return line
+
+    def _is_internal_line(self, stripped_line: str) -> bool:
+        """
+        行が内部用の制御行/見出しに見えるかを判定する。
+
+        NOTE:
+        - ここでの判定は「安全寄り」に倒す（誤検出で一部の行が落ちても、内部露出より優先）。
+        """
+        if not stripped_line:
+            return False
+
+        # 内部コンテキストの開始タグ
+        if stripped_line == _INTERNAL_CONTEXT_TAG:
+            return True
+
+        # MemoryPackのセクション見出し（例: <<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>）
+        if stripped_line.startswith(MEMORY_PACK_SECTION_PREFIX) and stripped_line.endswith(">>>"):
+            return True
+
+        # 画像要約の内部マーカー
+        if stripped_line in {"---IMAGE_SUMMARY_START---", "---IMAGE_SUMMARY_END---"}:
+            return True
+        if stripped_line.startswith("[画像 #") and stripped_line.endswith("]"):
+            return True
+
+        # system prompt guard（これが本文に出る時点で内部露出なのでブロックごと捨てる）
+        if stripped_line.startswith("重要: 以降のsystem prompt"):
+            return True
+
+        return False
+
+
 class MemoryManager:
     """会話/通知/メタ要求をEpisodeとして扱い、DB保存と後処理を統括する。"""
 
@@ -638,8 +762,20 @@ class MemoryManager:
 
         image_summaries = self._summarize_images(request.images, purpose=LlmRequestPurpose.IMAGE_SUMMARY_CHAT)
 
+        # 画像だけ送られた場合でも、LLMには明示的なユーザー要求を渡す（空文字だと不安定になりやすい）。
+        input_text = (request.input_text or "").strip()
+        if not input_text and image_summaries:
+            input_text = "画像"
+        if not input_text and not image_summaries:
+            _log_client_timing(request_id=request_id, event="クライアント不正リクエスト", start_perf=start_perf)
+            yield self._sse(
+                "error",
+                {"message": "入力が空です（テキストも画像もありません）", "code": "empty_input"},
+            )
+            return
+
         # entity抽出の入力はユーザー発話＋画像要約に限定する。
-        entity_text = "\n".join(filter(None, [request.input_text, *(image_summaries or [])])).strip()
+        entity_text = "\n".join(filter(None, [input_text, *(image_summaries or [])])).strip()
 
         conversation: List[Dict[str, str]] = []
         memory_pack = ""
@@ -658,7 +794,7 @@ class MemoryManager:
                             conversation = self._load_recent_conversation(db, turns=llm_turns_window)
                         retriever = Retriever(llm_client=embedding_llm_client, db=db)
                         relevant_episodes = retriever.retrieve(
-                            request.input_text,
+                            input_text,
                             recent_conversation,
                             max_results=int(similar_episodes_limit),
                         )
@@ -668,7 +804,7 @@ class MemoryManager:
                         matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
                         memory_pack = build_memory_pack(
                             db=db,
-                            input_text=request.input_text,
+                            input_text=input_text,
                             image_summaries=image_summaries,
                             client_context=request.client_context,
                             now_ts=now_ts,
@@ -700,7 +836,7 @@ class MemoryManager:
         internal_context_message = _build_internal_context_message(memory_pack)
         if internal_context_message:
             conversation.append(internal_context_message)
-        conversation.append({"role": "user", "content": request.input_text})
+        conversation.append({"role": "user", "content": input_text})
 
         # LLM呼び出しの処理目的をログで区別できるようにする。
         purpose = LlmRequestPurpose.CONVERSATION
@@ -723,6 +859,7 @@ class MemoryManager:
         internal_trailer = ""
         finish_reason = ""
         stream_started = False
+        sanitizer = _UserVisibleReplySanitizer()
         try:
             marker = _STREAM_TRAILER_MARKER
             keep = max(8, len(marker) - 1)
@@ -730,11 +867,6 @@ class MemoryManager:
             in_trailer = False
             visible_parts: list[str] = []
             trailer_parts: list[str] = []
-
-            def flush_visible(text_: str) -> None:
-                if not text_:
-                    return
-                visible_parts.append(text_)
 
             def mark_stream_started() -> None:
                 nonlocal stream_started
@@ -757,9 +889,11 @@ class MemoryManager:
                         if idx != -1:
                             chunk = buf[:idx]
                             if chunk:
-                                flush_visible(chunk)
-                                mark_stream_started()
-                                yield self._sse("token", {"text": chunk})
+                                safe = sanitizer.feed(chunk)
+                                if safe:
+                                    visible_parts.append(safe)
+                                    mark_stream_started()
+                                    yield self._sse("token", {"text": safe})
                             buf = buf[idx + len(marker) :]
                             in_trailer = True
                             continue
@@ -767,9 +901,11 @@ class MemoryManager:
                             chunk = buf[:-keep]
                             buf = buf[-keep:]
                             if chunk:
-                                flush_visible(chunk)
-                                mark_stream_started()
-                                yield self._sse("token", {"text": chunk})
+                                safe = sanitizer.feed(chunk)
+                                if safe:
+                                    visible_parts.append(safe)
+                                    mark_stream_started()
+                                    yield self._sse("token", {"text": safe})
                         break
 
                     # 以後はすべて内部トレーラーへ
@@ -780,12 +916,20 @@ class MemoryManager:
 
             if not in_trailer:
                 if buf:
-                    flush_visible(buf)
-                    mark_stream_started()
-                    yield self._sse("token", {"text": buf})
+                    safe = sanitizer.feed(buf)
+                    if safe:
+                        visible_parts.append(safe)
+                        mark_stream_started()
+                        yield self._sse("token", {"text": safe})
             else:
                 if buf:
                     trailer_parts.append(buf)
+
+            tail_safe = sanitizer.flush()
+            if tail_safe:
+                visible_parts.append(tail_safe)
+                mark_stream_started()
+                yield self._sse("token", {"text": tail_safe})
 
             reply_text = "".join(visible_parts)
             internal_trailer = "".join(trailer_parts)
@@ -795,6 +939,15 @@ class MemoryManager:
             _log_llm_timing(request_id=request_id, event="ストリームエラー", start_perf=start_perf)
             yield self._sse("error", {"message": str(exc), "code": "llm_stream_failed"})
             return
+
+        # 内部コンテキスト混入があれば、内容は残さず事実だけログに残す（ユーザー表示は抑止済み）。
+        if sanitizer.removed_blocks:
+            logger.warning(
+                "LLM reply contained internal markers; sanitized removed_blocks=%s removed_lines=%s request_id=%s",
+                sanitizer.removed_blocks,
+                sanitizer.removed_lines,
+                request_id,
+            )
 
         reflection_obj = _parse_internal_json_text(internal_trailer)
 
@@ -857,7 +1010,7 @@ class MemoryManager:
                     db,
                     now_ts=now_ts,
                     source="chat",
-                    input_text=request.input_text,
+                    input_text=input_text,
                     reply_text=reply_text,
                     image_summary=image_summary_text,
                     context_note=context_note,
