@@ -1,4 +1,4 @@
-"""cocoro_ghost 起動スクリプト"""
+"""CocoroGhost 起動スクリプト"""
 import sys
 from pathlib import Path
 
@@ -8,4 +8,4 @@ sys.path.insert(0, str(project_root))
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("cocoro_ghost.main:app", host="0.0.0.0", port=55601, reload=False)
+    uvicorn.run("CocoroGhost.main:app", host="0.0.0.0", port=55601, reload=False)

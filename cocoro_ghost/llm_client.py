@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Dict, Generator, Iterable, List, Optional
 
@@ -294,23 +295,22 @@ class LlmRequestPurpose:
     """LLM呼び出しの処理目的（ログ用途のラベル）。"""
 
     # docs/prompt_usage_map.md のフローに対応した日本語ラベル
-    CONVERSATION = "<< 会話返答 >>"
-    NOTIFICATION = "<< 通知返答 >>"
-    META_REQUEST = "<< メタ要求対応 >>"
-    INTERNAL_THOUGHT = "<< 内的思考（反射） >>"
-    ENTITY_EXTRACT = "<< エンティティ（実体）抽出 >>"
-    FACT_EXTRACT = "<< 事実抽出 >>"
-    LOOP_EXTRACT = "<< 未完了事項抽出 >>"
-    ENTITY_NAME_EXTRACT = "<< エンティティ（実体）名抽出 >>"
-    BOND_SUMMARY = "<< 絆サマリ生成 >>"
-    PERSON_SUMMARY = "<< 人物サマリ生成 >>"
-    TOPIC_SUMMARY = "<< トピックサマリ生成 >>"
-    RETRIEVAL_QUERY_EMBEDDING = "<< 記憶検索クエリ埋め込み >>"
-    UNIT_EMBEDDING = "<< ユニット埋め込み >>"
-    IMAGE_SUMMARY_CHAT = "<< 画像要約（会話） >>"
-    IMAGE_SUMMARY_NOTIFICATION = "<< 画像要約（通知） >>"
-    IMAGE_SUMMARY_META_REQUEST = "<< 画像要約（メタ要求対応） >>"
-    IMAGE_SUMMARY_CAPTURE = "<< 画像要約（キャプチャ） >>"
+    CONVERSATION = "＜＜ 会話応答作成 ＞＞"
+    NOTIFICATION = "＜＜ 通知返答 ＞＞"
+    META_REQUEST = "＜＜ メタ要求対応 ＞＞"
+    INTERNAL_THOUGHT = "＜＜ 内的思考（反射） ＞＞"
+    ENTITY_EXTRACT = "＜＜ エンティティ（実体）抽出 ＞＞"
+    FACT_EXTRACT = "＜＜ 事実抽出 ＞＞"
+    LOOP_EXTRACT = "＜＜ 未完了事項抽出 ＞＞"
+    ENTITY_NAME_EXTRACT = "＜＜ エンティティ（実体）名抽出 ＞＞"
+    BOND_SUMMARY = "＜＜ 絆サマリ生成 ＞＞"
+    PERSON_SUMMARY = "＜＜ 人物サマリ生成 ＞＞"
+    TOPIC_SUMMARY = "＜＜ トピックサマリ生成 ＞＞"
+    RETRIEVAL_QUERY_EMBEDDING = "＜＜ 記憶検索用クエリの埋め込み取得 ＞＞"
+    UNIT_EMBEDDING = "＜＜ ユニット埋め込み ＞＞"
+    IMAGE_SUMMARY_CHAT = "＜＜ 画像要約（会話） ＞＞"
+    IMAGE_SUMMARY_NOTIFICATION = "＜＜ 画像要約（通知） ＞＞"
+    IMAGE_SUMMARY_META_REQUEST = "＜＜ 画像要約（メタ要求対応） ＞＞"
 
 
 def _normalize_purpose(purpose: str) -> str:
@@ -436,6 +436,72 @@ class LlmClient:
         if self._is_log_file_enabled():
             self.io_file_logger.error(message, *args, **kwargs)
 
+    # NOTE:
+    # - LLM側の「コンテキスト長（入力トークン）超過」は運用上の頻出トラブルなので、
+    #   例外種別やメッセージから判定し、原因が一目で分かる日本語ログを残す。
+    # - 末尾文言はユーザー指定に合わせて固定で付与する。
+    def _is_context_window_exceeded(self, exc: Exception) -> bool:
+        """
+        例外が「コンテキスト長超過（入力トークン過多）」由来かを判定する。
+
+        LiteLLMはプロバイダ差分を吸収するため、例外型が揺れる可能性がある。
+        そのため、型判定＋メッセージ判定の両方で検出する。
+        """
+        # まず LiteLLM の専用例外を優先する。
+        try:
+            from litellm import exceptions as litellm_exceptions
+
+            if isinstance(exc, litellm_exceptions.ContextWindowExceededError):
+                return True
+            if isinstance(exc, litellm_exceptions.BadRequestError):
+                msg = str(exc).lower()
+                if "context window" in msg or "maximum context length" in msg or "context length" in msg:
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+
+        # フォールバック: メッセージ内容で検出する（プロバイダ/SDK差分対策）。
+        msg = str(exc).lower()
+        keywords = (
+            "context_window_exceeded",
+            "context window",
+            "maximum context length",
+            "context length",
+            "too many tokens",
+            "prompt is too long",
+            "input is too long",
+        )
+        return any(k in msg for k in keywords)
+
+    def _log_context_window_exceeded_error(
+        self,
+        *,
+        purpose_label: str,
+        kind: str,
+        elapsed_ms: int,
+        approx_chars: int | None,
+        messages_count: int | None,
+        stream: bool | None,
+        exc: Exception,
+    ) -> None:
+        """
+        コンテキスト長超過（入力トークン過多）に特化したERRORログを出力する。
+
+        目的:
+        - 通常の「LLM request failed」よりも原因を明確にし、運用で探しやすくする。
+        """
+        self._log_llm_error(
+            "トークン予算（コンテキスト長）を超過したため、LLMリクエストに失敗しました: purpose=%s kind=%s stream=%s messages=%s approx_chars=%s ms=%s error=%s。最大トークンを増やすか会話履歴数を減らしてください",
+            purpose_label,
+            str(kind),
+            stream,
+            messages_count,
+            approx_chars,
+            int(elapsed_ms),
+            str(exc),
+            exc_info=exc,
+        )
+
     def _log_llm_payload(
         self,
         label: str,
@@ -468,7 +534,7 @@ class LlmClient:
         self,
         model: str,
         messages: List[Dict],
-        temperature: float,
+        *,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         max_tokens: Optional[int] = None,
@@ -478,23 +544,11 @@ class LlmClient:
     ) -> Dict:
         """
         completion API呼び出し用のkwargsを構築する。
-        モデル固有の制約（gpt-5系のtemperature制限等）を考慮する。
         """
-        # gpt-5 以降は temperature の制約が厳しい（LiteLLM側で弾かれる）
-        # - gpt-5 / gpt-5-mini / gpt-6 ... 等: temperature は 1 のみ
-        model_l = (model or "").lower()
-        temp = float(temperature)
-        m = re.search(r"\bgpt-(\d+)(?:\.(\d+))?\b", model_l)
-        if m:
-            major = int(m.group(1))
-            if major >= 5:
-                temp = 1.0
-
         # 基本パラメータ
         kwargs = {
             "model": model,
             "messages": messages,
-            "temperature": temp,
             "stream": stream,
         }
 
@@ -521,7 +575,6 @@ class LlmClient:
         system_prompt: str,
         conversation: List[Dict[str, str]],
         purpose: str,
-        temperature: float = 0.7,
         stream: bool = False,
     ):
         """
@@ -541,7 +594,6 @@ class LlmClient:
         kwargs = self._build_completion_kwargs(
             model=self.model,
             messages=messages,
-            temperature=temperature,
             api_key=self.api_key,
             base_url=self.llm_base_url,
             max_tokens=self.max_tokens,
@@ -552,11 +604,9 @@ class LlmClient:
         approx_chars = _estimate_text_chars(messages)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=chat model=%s stream=%s temperature=%s messages=%s approx_chars=%s",
+                "LLM request 送信 %s kind=chat stream=%s messages=%s 文字数=%s",
                 purpose_label,
-                self.model,
                 bool(stream),
-                temperature,
                 msg_count,
                 approx_chars,
             )
@@ -567,16 +617,27 @@ class LlmClient:
         except Exception as exc:  # noqa: BLE001
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
-                self._log_llm_error(
-                    "LLM request failed %s kind=chat model=%s stream=%s messages=%s ms=%s error=%s",
-                    purpose_label,
-                    self.model,
-                    bool(stream),
-                    msg_count,
-                    elapsed_ms,
-                    str(exc),
-                    exc_info=exc,
-                )
+                # コンテキスト長超過は原因を明確に区別する（ERROR）。
+                if self._is_context_window_exceeded(exc):
+                    self._log_context_window_exceeded_error(
+                        purpose_label=purpose_label,
+                        kind="chat",
+                        elapsed_ms=elapsed_ms,
+                        approx_chars=approx_chars,
+                        messages_count=msg_count,
+                        stream=bool(stream),
+                        exc=exc,
+                    )
+                else:
+                    self._log_llm_error(
+                        "LLM request failed %s kind=chat stream=%s messages=%s ms=%s error=%s",
+                        purpose_label,
+                        bool(stream),
+                        msg_count,
+                        elapsed_ms,
+                        str(exc),
+                        exc_info=exc,
+                    )
             raise
 
         # ストリームは呼び出し側が受信するため、ここでは受信ログを出さない。
@@ -588,9 +649,8 @@ class LlmClient:
         finish_reason = _finish_reason(resp)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM response received %s kind=chat model=%s stream=%s finish_reason=%s chars=%s ms=%s",
+                "LLM response 受信 %s kind=chat stream=%s finish_reason=%s chars=%s ms=%s",
                 purpose_label,
-                self.model,
                 False,
                 finish_reason,
                 len(content or ""),
@@ -635,11 +695,9 @@ class LlmClient:
         purpose_label = _normalize_purpose(purpose)
         start = time.perf_counter()
 
-        reflection_temp = 0.1
         kwargs = self._build_completion_kwargs(
             model=self.model,
             messages=messages,
-            temperature=reflection_temp,  # リフレクションは低温度で安定性重視
             api_key=self.api_key,
             base_url=self.llm_base_url,
             max_tokens=self.max_tokens,
@@ -648,11 +706,9 @@ class LlmClient:
 
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=reflection model=%s stream=%s temperature=%s messages=%s approx_chars=%s",
+                "LLM request 送信 %s kind=reflection stream=%s messages=%s 文字数=%s",
                 purpose_label,
-                self.model,
                 False,
-                reflection_temp,
                 len(messages),
                 _estimate_text_chars(messages),
             )
@@ -663,14 +719,25 @@ class LlmClient:
         except Exception as exc:  # noqa: BLE001
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
-                self._log_llm_error(
-                    "LLM request failed %s kind=reflection model=%s ms=%s error=%s",
-                    purpose_label,
-                    self.model,
-                    elapsed_ms,
-                    str(exc),
-                    exc_info=exc,
-                )
+                # コンテキスト長超過は原因を明確に区別する（ERROR）。
+                if self._is_context_window_exceeded(exc):
+                    self._log_context_window_exceeded_error(
+                        purpose_label=purpose_label,
+                        kind="reflection",
+                        elapsed_ms=elapsed_ms,
+                        approx_chars=_estimate_text_chars(messages),
+                        messages_count=len(messages),
+                        stream=False,
+                        exc=exc,
+                    )
+                else:
+                    self._log_llm_error(
+                        "LLM request failed %s kind=reflection ms=%s error=%s",
+                        purpose_label,
+                        elapsed_ms,
+                        str(exc),
+                        exc_info=exc,
+                    )
             raise
 
         elapsed_ms = int((time.perf_counter() - start) * 1000)
@@ -678,9 +745,8 @@ class LlmClient:
         finish_reason = _finish_reason(resp)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM response received %s kind=reflection model=%s finish_reason=%s chars=%s ms=%s",
+                "LLM response 受信 %s kind=reflection finish_reason=%s chars=%s ms=%s",
                 purpose_label,
-                self.model,
                 finish_reason,
                 len(content or ""),
                 elapsed_ms,
@@ -698,7 +764,6 @@ class LlmClient:
         system_prompt: str,
         user_text: str,
         purpose: str,
-        temperature: float = 0.1,
         max_tokens: Optional[int] = None,
     ):
         """JSON（json_object）を生成する（Responseオブジェクト）。
@@ -720,7 +785,6 @@ class LlmClient:
         kwargs = self._build_completion_kwargs(
             model=self.model,
             messages=messages,
-            temperature=temperature,
             api_key=self.api_key,
             base_url=self.llm_base_url,
             max_tokens=requested_max_tokens,
@@ -729,11 +793,9 @@ class LlmClient:
 
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=json model=%s stream=%s temperature=%s messages=%s approx_chars=%s",
+                "LLM request 送信 %s kind=json stream=%s messages=%s 文字数=%s",
                 purpose_label,
-                self.model,
                 False,
-                temperature,
                 len(messages),
                 _estimate_text_chars(messages),
             )
@@ -744,14 +806,25 @@ class LlmClient:
         except Exception as exc:  # noqa: BLE001
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
-                self._log_llm_error(
-                    "LLM request failed %s kind=json model=%s ms=%s error=%s",
-                    purpose_label,
-                    self.model,
-                    elapsed_ms,
-                    str(exc),
-                    exc_info=exc,
-                )
+                # コンテキスト長超過は原因を明確に区別する（ERROR）。
+                if self._is_context_window_exceeded(exc):
+                    self._log_context_window_exceeded_error(
+                        purpose_label=purpose_label,
+                        kind="json",
+                        elapsed_ms=elapsed_ms,
+                        approx_chars=_estimate_text_chars(messages),
+                        messages_count=len(messages),
+                        stream=False,
+                        exc=exc,
+                    )
+                else:
+                    self._log_llm_error(
+                        "LLM request failed %s kind=json ms=%s error=%s",
+                        purpose_label,
+                        elapsed_ms,
+                        str(exc),
+                        exc_info=exc,
+                    )
             raise
 
         elapsed_ms = int((time.perf_counter() - start) * 1000)
@@ -759,9 +832,8 @@ class LlmClient:
         finish_reason = _finish_reason(resp)
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM response received %s kind=json model=%s finish_reason=%s chars=%s ms=%s",
+                "LLM response 受信 %s kind=json finish_reason=%s chars=%s ms=%s",
                 purpose_label,
-                self.model,
                 finish_reason,
                 len(content or ""),
                 elapsed_ms,
@@ -789,16 +861,15 @@ class LlmClient:
         start = time.perf_counter()
         if llm_log_level != "OFF":
             self._log_llm_info(
-                "LLM request sent %s kind=embedding model=%s count=%s approx_chars=%s",
+                "LLM request 送信 %s kind=embedding 文字数=%s",
                 purpose_label,
-                self.embedding_model,
-                len(texts),
                 sum(len(t or "") for t in texts),
             )
         # NOTE: embedding入力は漏洩しやすいので、DEBUGでもトリミングされる前提で出す。
+        # inputキーは持たせず、配列のままログに出す。
         self._log_llm_payload(
             "LLM request (embedding)",
-            _sanitize_for_llm_log({"model": self.embedding_model, "input": texts, "count": len(texts)}),
+            _sanitize_for_llm_log(texts),
             llm_log_level=llm_log_level,
         )
 
@@ -816,15 +887,25 @@ class LlmClient:
         except Exception as exc:  # noqa: BLE001
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
-                self._log_llm_error(
-                    "LLM request failed %s kind=embedding model=%s count=%s ms=%s error=%s",
-                    purpose_label,
-                    self.embedding_model,
-                    len(texts),
-                    elapsed_ms,
-                    str(exc),
-                    exc_info=exc,
-                )
+                # コンテキスト長超過は原因を明確に区別する（ERROR）。
+                if self._is_context_window_exceeded(exc):
+                    self._log_context_window_exceeded_error(
+                        purpose_label=purpose_label,
+                        kind="embedding",
+                        elapsed_ms=elapsed_ms,
+                        approx_chars=sum(len(t or "") for t in texts),
+                        messages_count=None,
+                        stream=None,
+                        exc=exc,
+                    )
+                else:
+                    self._log_llm_error(
+                        "LLM request failed %s kind=embedding ms=%s error=%s",
+                        purpose_label,
+                        elapsed_ms,
+                        str(exc),
+                        exc_info=exc,
+                    )
             raise
 
         # レスポンス形式に応じて埋め込みベクトルを取り出す。
@@ -837,19 +918,17 @@ class LlmClient:
         if llm_log_level != "OFF":
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             self._log_llm_info(
-                "LLM response received %s kind=embedding model=%s count=%s ms=%s",
+                "LLM response 受信 %s kind=embedding ms=%s",
                 purpose_label,
-                self.embedding_model,
-                len(out),
                 elapsed_ms,
             )
             if llm_log_level == "DEBUG":
                 self.io_console_logger.debug(
-                    "LLM response received kind=embedding (payload omitted)",
+                    "LLM response 受信 kind=embedding (payload omitted)",
                 )
                 if self._is_log_file_enabled():
                     self.io_file_logger.debug(
-                        "LLM response received kind=embedding (payload omitted)",
+                        "LLM response 受信 kind=embedding (payload omitted)",
                     )
         return out
 
@@ -861,15 +940,14 @@ class LlmClient:
         """
         llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
         purpose_label = _normalize_purpose(purpose)
-        summaries: List[str] = []
-        for image_bytes in images:
+        max_workers = 4
+
+        def _process_one(image_bytes: bytes) -> str:
             start = time.perf_counter()
             if llm_log_level != "OFF":
                 self._log_llm_info(
-                    "LLM request sent %s kind=vision model=%s temperature=%s image_bytes=%s",
+                    "LLM request 送信 %s kind=vision image_bytes=%s",
                     purpose_label,
-                    self.image_model,
-                    0.3,
                     len(image_bytes),
                 )
             # 画像をbase64エンコード
@@ -888,7 +966,6 @@ class LlmClient:
             kwargs = self._build_completion_kwargs(
                 model=self.image_model,
                 messages=messages,
-                temperature=0.3,
                 api_key=self.image_model_api_key,
                 base_url=self.image_llm_base_url,
                 max_tokens=self.max_tokens_vision,
@@ -902,24 +979,33 @@ class LlmClient:
             except Exception as exc:  # noqa: BLE001
                 if llm_log_level != "OFF":
                     elapsed_ms = int((time.perf_counter() - start) * 1000)
-                    self._log_llm_error(
-                        "LLM request failed %s kind=vision model=%s image_bytes=%s ms=%s error=%s",
-                        purpose_label,
-                        self.image_model,
-                        len(image_bytes),
-                        elapsed_ms,
-                        str(exc),
-                        exc_info=exc,
-                    )
+                    # コンテキスト長超過は原因を明確に区別する（ERROR）。
+                    if self._is_context_window_exceeded(exc):
+                        self._log_context_window_exceeded_error(
+                            purpose_label=purpose_label,
+                            kind="vision",
+                            elapsed_ms=elapsed_ms,
+                            approx_chars=_estimate_text_chars(messages),
+                            messages_count=len(messages),
+                            stream=False,
+                            exc=exc,
+                        )
+                    else:
+                        self._log_llm_error(
+                            "LLM request failed %s kind=vision image_bytes=%s ms=%s error=%s",
+                            purpose_label,
+                            len(image_bytes),
+                            elapsed_ms,
+                            str(exc),
+                            exc_info=exc,
+                        )
                 raise
             content = _first_choice_content(resp)
-            summaries.append(content)
             if llm_log_level != "OFF":
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
                 self._log_llm_info(
-                    "LLM response received %s kind=vision model=%s chars=%s ms=%s",
+                    "LLM response 受信 %s kind=vision chars=%s ms=%s",
                     purpose_label,
-                    self.image_model,
                     len(content or ""),
                     elapsed_ms,
                 )
@@ -928,8 +1014,14 @@ class LlmClient:
                 _sanitize_for_llm_log({"content": content, "finish_reason": _finish_reason(resp)}),
                 llm_log_level=llm_log_level,
             )
+            return content
 
-        return summaries
+        if len(images) <= 1:
+            return [_process_one(image_bytes) for image_bytes in images]
+
+        worker_count = min(max_workers, len(images))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            return list(executor.map(_process_one, images))
 
     def response_to_dict(self, resp: Any) -> Dict[str, Any]:
         """Responseオブジェクトをログ/デバッグ用のdictに変換する。"""

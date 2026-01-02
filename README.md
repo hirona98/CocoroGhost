@@ -1,6 +1,6 @@
-# cocoro_ghost
+# CocoroGhost
 
-CocoroAI Ver5（パートナーAIシステム）のLLMと記憶処理を担当するPython/FastAPIバックエンドサーバー
+CocoroAI Ver5（AI人格システム）のLLMと記憶処理を担当するPython/FastAPIバックエンドサーバー
 CocoroConsoleやCocoroShell無しでの単独動作も可能とする
 
 ## 機能
@@ -13,7 +13,7 @@ CocoroConsoleやCocoroShell無しでの単独動作も可能とする
 
 ## 特徴
 
-- パートナーAI専用の会話/記憶システム
+- AI人格システム専用の会話/記憶システム
 - AI視点での記憶整理
 
 ## ドキュメント
@@ -79,6 +79,9 @@ start.bat
 
 - `token`: API認証トークン
 - `log_level`: ログレベル（DEBUG, INFO, WARNING, ERROR）
+- `log_file_enabled`: ファイルログの有効/無効
+- `log_file_path`: ファイルログの保存先
+- `log_file_max_bytes`: ログローテーションサイズ（bytes、既定は200000=200KB）
 
 #### 2. LLM設定
 

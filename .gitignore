@@ -2,8 +2,9 @@ settings.local.json
 /tmp
 .serena
 /.vscode/launch.json
+/logs
 
-# cocoro_ghost specific
+# CocoroGhost specific
 config/setting.toml
 data/
 check_sqlite.py

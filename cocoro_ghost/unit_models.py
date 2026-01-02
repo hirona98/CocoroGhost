@@ -39,8 +39,8 @@ class Unit(UnitBase):
     pin: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # ピン留め（0:なし, 1:あり）
 
     topic_tags: Mapped[Optional[str]] = mapped_column(Text)  # トピックタグ（JSON配列）
-    partner_affect_label: Mapped[Optional[str]] = mapped_column(Text)  # パートナー感情ラベル
-    partner_affect_intensity: Mapped[Optional[float]] = mapped_column(Float)  # 感情強度
+    persona_affect_label: Mapped[Optional[str]] = mapped_column(Text)  # AI人格感情ラベル
+    persona_affect_intensity: Mapped[Optional[float]] = mapped_column(Float)  # 感情強度
 
 
 class PayloadEpisode(UnitBase):
@@ -116,7 +116,7 @@ class PayloadLoop(UnitBase):
     __tablename__ = "payload_loop"
 
     unit_id: Mapped[int] = mapped_column(ForeignKey("units.id", ondelete="CASCADE"), primary_key=True)  # 親UnitID
-    status: Mapped[int] = mapped_column(Integer, nullable=False)  # 状態（LoopStatus）
+    expires_at: Mapped[int] = mapped_column(Integer, nullable=False)  # 有効期限（UNIXタイムスタンプ）
     due_at: Mapped[Optional[int]] = mapped_column(Integer)  # 期限（UNIXタイムスタンプ）
     loop_text: Mapped[str] = mapped_column(Text, nullable=False)  # ループ内容
 
@@ -130,7 +130,7 @@ class Entity(UnitBase):
     __tablename__ = "entities"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)  # エンティティID
-    # 固定Enumをやめ、自由なラベル + rolesで扱う（パートナーAI用途）
+    # 固定Enumをやめ、自由なラベル + rolesで扱う（PERSONA_ANCHORの人物用途）
     type_label: Mapped[Optional[str]] = mapped_column(Text)  # 種別ラベル（person/place等）
     name: Mapped[str] = mapped_column(Text, nullable=False)  # 名前
     normalized: Mapped[Optional[str]] = mapped_column(Text)  # 正規化名

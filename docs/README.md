@@ -1,10 +1,10 @@
-# cocoro_ghost 仕様
+# Cocoro_ghost 仕様
 
-このディレクトリは、`cocoro_ghost` の設計/仕様（units/payload + MemoryPack Builder + Worker + sqlite-vec(vec0)）を、実装ハンドオフ可能な粒度で分割ドキュメント化したものです。
+このディレクトリは、`CocoroGhost` の設計/仕様（units/payload + MemoryPack Builder + Worker + sqlite-vec(vec0)）を、実装ハンドオフ可能な粒度で分割ドキュメント化したものです。
 
 ## 目的
 
-- 人格の一貫性（PersonaAnchor）
+- 人格の一貫性（PERSONA_ANCHOR）
 - 関係性の連続性（SharedNarrative）
 - 会話テンポ（同期は軽く、重い処理はWorkerへ）
 - 長期運用での継続的な統合・更新（Lifecycle: 統合・整理・矛盾管理）
@@ -29,7 +29,7 @@
 4. `docs/sqlite_vec.md`（vec0設計・KNN→JOIN）
 5. `docs/memory_pack_builder.md`（MemoryPack編成・スコア・圧縮）
 6. `docs/retrieval.md`（記憶検索: LLMレス高速化版）
-7. `docs/partner_mood.md`（パートナーの反射/機嫌: 即時反応 + 持続）
+7. `docs/persona_mood.md`（AI人格の反射/機嫌: 即時反応 + 持続）
 8. `docs/worker.md`（ジョブ・冪等性・版管理）
 9. `docs/prompts.md`（LLM JSONスキーマ）
 10. `docs/prompt_usage_map.md`（プロンプト使用箇所マップ）
@@ -44,14 +44,14 @@
 - **Canonical / Derived**: “原文（証跡）” と “派生物” を分ける考え方。
   - Canonical: ユーザー発話や通知本文など「改変しないログ」（例: `EPISODE`）。
   - Derived: Workerで抽出/統合された「解釈・要約・構造化」（例: `FACT` / `SUMMARY` / `LOOP` / `CAPSULE`）。
-- **MemoryPack**: `/api/chat` の同期処理中に、MemoryPack Builderが「LLMへ注入するため」に組み立てるテキストパック。見出し順（`[PERSONA_ANCHOR]` 等）に沿って、検索結果をそのまま貼らずに圧縮・整形する（仕様: `docs/memory_pack_builder.md`、実装: `cocoro_ghost/memory_pack_builder.py`）。
+- **MemoryPack**: `/api/chat` の同期処理中に、MemoryPack Builderが「LLMへ注入するため」に組み立てるテキストパック。見出し順（`<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` 等）に沿って、検索結果をそのまま貼らずに圧縮・整形する（仕様: `docs/memory_pack_builder.md`、実装: `cocoro_ghost/memory_pack_builder.py`）。
 - **Retriever**: 記憶検索システム。固定クエリ → Hybrid Search (Vector + BM25) → ヒューリスティック Rerank の3段階で、会話に関連する過去のエピソードを高速に選別する（仕様: `docs/retrieval.md`）。LLMレスで高速に動作。
-- **Persona / Addon**: LLM注入プロンプトを「人格」と「任意追加オプション」に分けたもの。
-  - Persona: 人格・口調・価値観の中核（崩れると会話の一貫性が壊れる）。
-  - Addon: 必要なときだけ足す補助指示（例: 表情タグの追加ルール、呼称の追加、距離感の微調整）。
-  - 注入上は、Persona/Addon は MemoryPack の先頭セクション（`[PERSONA_ANCHOR]`）に含める（`docs/memory_pack_builder.md` / `docs/api.md`）。
+- **PERSONA_ANCHOR（persona_text + addon_text）**: LLM注入プロンプトを「人物設定」と「任意追加オプション」に分けたものを、1つのセクションとして扱う。
+  - persona_text: 人格・口調・価値観の中核（崩れると会話の一貫性が壊れる）。
+  - addon_text: 必要なときだけ足す補助指示（例: 表情タグの追加ルール、呼称の追加、距離感の微調整）。
+  - 注入上は、persona_text と addon_text を **同一の PERSONA_ANCHOR セクションに連結**して system prompt に固定注入し、MemoryPackは `<<INTERNAL_CONTEXT>>` の内部メッセージとして渡す（`docs/memory_pack_builder.md` / `docs/api.md`）。
 - **Preset（settings）**: `settings.db` に永続化する切替単位。
-  - LLM/Embeddingの接続情報・検索予算に加え、Persona/Addon をプリセットとして保持し、`active_*_preset_id` でアクティブを選ぶ（`docs/settings_db.md`）。
+  - LLM/Embeddingの接続情報・検索予算に加え、PersonaPreset/AddonPreset をプリセットとして保持し、`active_*_preset_id` でアクティブを選ぶ（`docs/settings_db.md`）。注入時は persona_text + addon_text を PERSONA_ANCHOR として連結する。
 - **embedding_preset_id**: 記憶DBファイル名を選ぶための識別子。`EmbeddingPreset.id`（UUID）を `embedding_preset_id` として扱い、`memory_<embedding_preset_id>.db` を開く（`docs/settings_db.md` / `docs/api.md`）。
 
 
@@ -72,4 +72,4 @@
 
 なお、履歴のノイズ化・入力トークン増・プロンプトキャッシュの当たり悪化を避けるため、内部JSONは次ターンの会話履歴に入れない。
 
-具体仕様は `docs/prompts.md` の「chat（SSE）: 返答末尾の内部JSON（partner_affect trailer）」を参照
+具体仕様は `docs/prompts.md` の「chat（SSE）: 返答末尾の内部JSON（persona_affect trailer）」を参照

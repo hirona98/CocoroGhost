@@ -72,7 +72,7 @@ create table if not exists units (
   created_at    integer not null,
   updated_at    integer not null,
 
-  source        text,                    -- chat/desktop_capture/camera_capture/notification/meta_request/...
+  source        text,                    -- chat/notification/meta-request/proactive/...
   state         integer not null default 0,   -- UnitState
   confidence    real    not null default 0.5, -- 0..1
   salience      real    not null default 0.0, -- 0..1
@@ -81,8 +81,8 @@ create table if not exists units (
 
   -- 任意：検索補助
   topic_tags    text,                    -- JSON array string（例: ["仕事","読書"]）
-  partner_affect_label text,             -- joy/sadness/anger/fear/neutral
-  partner_affect_intensity real          -- 0..1
+  persona_affect_label text,             -- joy/sadness/anger/fear/neutral
+  persona_affect_intensity real          -- 0..1
 );
 
 create index if not exists idx_units_kind_created on units(kind, created_at);
@@ -99,15 +99,15 @@ create index if not exists idx_units_state on units(state);
 | `occurred_at` | INTEGER | 出来事の時刻（UTC epoch sec）。検索のrecencyや週次集計の基準になる。 | API/Worker |
 | `created_at` | INTEGER | 作成時刻（UTC epoch sec）。 | API/Worker |
 | `updated_at` | INTEGER | 更新時刻（UTC epoch sec）。派生物更新/編集時に更新。 | Worker/Admin |
-| `source` | TEXT | 生成元（例: `chat`/`notification`/`meta_request`/`extract_facts` など）。監査・デバッグ用。 | API/Worker |
+| `source` | TEXT | 生成元（例: `chat`/`notification`/`meta-request`/`extract_facts` など）。監査・デバッグ用。 | API/Worker |
 | `state` | INTEGER | UnitState。RAW→VALIDATED→CONSOLIDATED を想定。検索/注入で除外したいものは `ARCHIVED`。 | API/Worker/Admin |
 | `confidence` | REAL | 内容の確からしさ（0..1）。Workerが抽出した推定値を入れる（反射/抽出）。 | Worker |
 | `salience` | REAL | 注入優先度の指標（0..1）。Schedulerのfactスコア等に利用。 | Worker |
 | `sensitivity` | INTEGER | Sensitivity。PRIVATE以上は外部UI/注入の制約に使う。 | API/Worker/Admin |
 | `pin` | INTEGER | ピン留め（0/1）。Schedulerの採用優先度にボーナス。 | Admin |
 | `topic_tags` | TEXT | JSON array文字列。NFKC正規化・重複除去・ソートで安定化推奨。 | Worker/Admin |
-| `partner_affect_label` | TEXT | 反射（reflect_episode）の結果ラベル。 | Worker |
-| `partner_affect_intensity` | REAL | 反射の強度（0..1）。 | Worker |
+| `persona_affect_label` | TEXT | 反射（reflect_episode）の結果ラベル。 | Worker |
+| `persona_affect_intensity` | REAL | 反射の強度（0..1）。 | Worker |
 
 補足:
 - `occurred_at` が無い場合は `created_at` を代替にしている箇所がある（Retrieverの時刻など）。
@@ -161,7 +161,7 @@ create index if not exists idx_edges_dst on edges(dst_entity_id);
 #### 使い方（Entity解決）
 
 - `entities` は「人物/トピックなどの正規エンティティ」。
-- `entity_aliases` は表記揺れ・別名・略称などを追加するテーブル（Schedulerの文字列一致に使う）。
+- `entity_aliases` は表記揺れ・別名・略称などを追加するテーブル（Schedulerの LLM抽出名との突合に使う）。
 - `unit_entities` は Episode/Fact/Summary 等の Unit に「どのEntityが出たか」を紐付ける（検索・サマリ更新・関係推定に使う）。
 - `edges` は Entity間の軽量な関係グラフ（名寄せ/関係推定の材料）。
 
@@ -296,7 +296,7 @@ create index if not exists idx_summary_scope on payload_summary(scope_label, sco
     - bond: `rolling:7d`（直近7日ローリング）
     - person: `person:<entity_id>`
     - topic: `topic:<normalized>`
-- `summary_text` は注入用のプレーンテキスト（Schedulerが `[SHARED_NARRATIVE]` に入れる）。
+- `summary_text` は注入用のプレーンテキスト（Schedulerが `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>` に入れる）。
 - `summary_json` はLLM出力を丸ごと保存（key_events等の構造化）。
 
 ### Capsule（短期状態：会話テンポのため）
@@ -314,25 +314,29 @@ create table if not exists payload_capsule (
 - 直近状態（現在日時/直近の文脈）を軽量に保つ「短期メモ」用途。
 - `expires_at` がある場合、Schedulerは期限切れを注入しない。
 - `capsule_json` はJSON文字列（構造は運用で決める）。
-  - 現行の `capsule_refresh` では `recent`（直近の抜粋）に加えて、`partner_mood_state`（機嫌: 重要度×時間減衰の集約）を含める。
+  - 現行の `capsule_refresh` では `recent`（直近の抜粋）に加えて、`persona_mood_state`（機嫌: 重要度×時間減衰の集約）を含める。
 
 ### OpenLoop（未完了：次に話す理由）
 
 ```sql
 create table if not exists payload_loop (
   unit_id    integer primary key references units(id) on delete cascade,
-  status     integer not null, -- 0 open / 1 closed
+  expires_at integer not null,
   due_at     integer,
   loop_text  text not null
 );
 
-create index if not exists idx_loop_status_due on payload_loop(status, due_at);
+create unique index if not exists idx_loop_text_unique on payload_loop(loop_text);
+create index if not exists idx_loop_due on payload_loop(due_at);
+create index if not exists idx_loop_expires on payload_loop(expires_at);
 ```
 
 #### 使い方（Loop）
 
-- `status=OPEN` のものが `[OPEN_LOOPS]` に注入される。
+- Loopは「未完了の再提起」用途の短期メモ（TTL）で、期限（`expires_at`）を過ぎたものは自動削除する。
+- `payload_loop` に存在するものが `<<<COCORO_GHOST_SECTION:OPEN_LOOPS>>>` に注入される。
 - `due_at` は再提起の優先度（期限が近いものを先に）。
+- `expires_at` はサーバ側で付与する（既定: `due_at` が未来なら `expires_at=due_at`、無ければ `expires_at=now+7日`。上限: 最大30日）。
 
 ## Jobテーブル（Worker用：SQLiteで永続化）
 
@@ -371,15 +375,14 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 外部から任意に投入するのではなく、主に以下のイベントで内部enqueueされる。
 
-**A. Episode（会話/通知/キャプチャ）保存時の既定ジョブ**
+**A. Episode（会話/通知）保存時の既定ジョブ**
 
 - 対象: `units(kind=EPISODE)` を保存した直後
 - enqueue: `reflect_episode` / `extract_entities` / `extract_facts` / `extract_loops` / `upsert_embeddings` / `capsule_refresh(limit=5)`
-- `capsule_refresh` の payload は `{"limit":5, "partner_mood_scan_limit":500}` のように拡張可能（`partner_mood_scan_limit` は機嫌集約の走査件数）。
+- `capsule_refresh` の payload は `{"limit":5, "persona_mood_scan_limit":500}` のように拡張可能（`persona_mood_scan_limit` は機嫌集約の走査件数）。
 - 入口の例:
   - `/api/chat` の完了時（SSE done直前の保存）
-  - `/api/v1/notification` の処理完了時（reply生成後の保存更新）
-  - `/api/capture`（desktop/camera）
+  - `/api/v2/notification` の処理完了時（reply生成後の保存更新）
 
 **B. bond サマリ（現行: `rolling:7d`）の更新**
 
@@ -397,9 +400,9 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
     - サマリ最終更新から一定時間（現行: 6h）未満なら enqueue しない
     - 最終更新以降の新規Episode（`occurred_at` があり、`occurred_at > summary.updated_at`）がある場合のみ enqueue
 
-**C. meta_request（文書生成）**
+**C. meta-request（文書生成）**
 
-- 対象: `units(kind=EPISODE, source=meta_request)` の結果を検索対象にしたい
+- 対象: `units(kind=EPISODE, source=meta-request)` の結果を検索対象にしたい
 - enqueue: `upsert_embeddings(unit_id)`（会話ログ同様に検索できれば十分なため）
 
 **D. Worker処理の副作用としての follow-up jobs**
@@ -467,7 +470,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 固定の RelationType（enum値）は運用で破綻しやすいため廃止し、`edges.relation_label`（TEXT）で表現する。
 
-- 推奨ラベル: `friend` / `family` / `colleague` / `partner` / `likes` / `dislikes` / `related` / `other`
+- 推奨ラベル: `friend` / `family` / `colleague` / `romantic` / `likes` / `dislikes` / `related` / `other`
 - ただし自由に増やしてよい（例: `mentor` / `manager` / `rival` / `coworker` ...）
 
 ### SummaryScopeType
@@ -481,13 +484,6 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 | name | value | 意味 |
 |---|---:|---|
 | MENTIONED | 1 | Unit内で言及された |
-
-### LoopStatus
-
-| name | value | 意味 |
-|---|---:|---|
-| OPEN | 0 | 未完了 |
-| CLOSED | 1 | 完了 |
 
 ### JobStatus
 

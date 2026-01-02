@@ -19,8 +19,7 @@
   "embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "user_text": "string",
   "images": [
-    {"type": "desktop_capture", "base64": "..."},
-    {"type": "camera_capture", "base64": "..."}
+    {"type": "image", "base64": "..."}
   ],
   "client_context": {
     "active_app": "string",
@@ -57,30 +56,30 @@ data: {"message":"...","code":"..."}
 
 1. 画像要約（`images` がある場合）
 2. Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
-3. Schedulerで **MemoryPack** を生成（検索結果を `[EPISODE_EVIDENCE]` に含む）
-4. LLMへ `memorypack + partner_affect_trailer_prompt` を system に注入し、conversation には直近会話（max_turns_window）+ user_text を渡す（MemoryPack内に persona/addon を含む）
-5. 返答をSSEで配信（返答末尾の内部JSON＝partner_affect trailer はサーバ側で回収し、SSEには流さない）
+3. Schedulerで **MemoryPack** を生成（検索結果を `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` に含む）
+4. LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + persona_affect_trailer_prompt）を渡し、conversation は直近会話（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ user_text を渡す
+5. 返答をSSEで配信（返答末尾の内部JSON＝persona_affect trailer はサーバ側で回収し、SSEには流さない）
 6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 7. Worker用ジョブを enqueue（reflection/extraction/embedding等）
 
-## `/api/partner_mood`（デバッグ）
+## `/api/persona_mood`（デバッグ）
 
-partner_mood（パートナーの機嫌）関連の数値を **UIから参照/変更**するためのデバッグ用API。
+persona_mood（AI人格の機嫌）関連の数値を **UIから参照/変更**するためのデバッグ用API。
 
 - **永続化しない**（DB/settings.db に保存しない）
 - 反映は **同一プロセス内**のみ（プロセスを跨ぐ構成ではプロセスごとに状態が分離される）
 - 認証は他の `/api/*` と同様に `Authorization: Bearer <TOKEN>`
 
-### `GET /api/partner_mood`
+### `GET /api/persona_mood`
 
-partner_mood の **前回チャットで使った値（last used）** を返す。
+persona_mood の **前回チャットで使った値（last used）** を返す。
 （LLMに渡す直前でDBから取得して計算するため、"現在値"という概念はない）
 
-- `PUT /api/partner_mood` で override を設定しても、**会話（/api/chat）が走るまでは** last used は更新されない
+- `PUT /api/persona_mood` で override を設定しても、**会話（/api/chat）が走るまでは** last used は更新されない
 
 #### Response（JSON）
 
-システムが実際に利用する partner_mood（有効値）を返す。
+システムが実際に利用する persona_mood（有効値）を返す。
 
 ```json
 {
@@ -100,9 +99,9 @@ partner_mood の **前回チャットで使った値（last used）** を返す�
 }
 ```
 
-### `PUT /api/partner_mood`
+### `PUT /api/persona_mood`
 
-in-memory の partner_mood ランタイム状態（次のチャットで有効な値）を設定する
+in-memory の persona_mood ランタイム状態（次のチャットで有効な値）を設定する
 
 #### Request（JSON）
 
@@ -131,17 +130,17 @@ in-memory の partner_mood ランタイム状態（次のチャットで有効�
 
 #### Response
 
-`GET /api/partner_mood` と同形式（有効値を返す）。
+`GET /api/persona_mood` と同形式（有効値を返す）。
 
-### `DELETE /api/partner_mood`
+### `DELETE /api/persona_mood`
 
-in-memory の partner_mood ランタイム状態（override）を解除し、自然計算（DBからの同期計算）に戻す。
+in-memory の persona_mood ランタイム状態（override）を解除し、自然計算（DBからの同期計算）に戻す。
 
 #### Response
 
-`GET /api/partner_mood` と同形式（解除後の有効値を返す）。
+`GET /api/persona_mood` と同形式（解除後の有効値を返す）。
 
-## `/api/v1/notification`
+## `/api/v2/notification`
 
 ### Request（JSON）
 
@@ -166,14 +165,14 @@ in-memory の partner_mood ランタイム状態（override）を解除し、自
 ### 例（cURL）
 
 ```bash
-curl -X POST http://127.0.0.1:55601/api/v1/notification \
+curl -X POST http://127.0.0.1:55601/api/v2/notification \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d '{"source_system":"MyApp","text":"処理完了","images":["data:image/jpeg;base64,..."]}'
 ```
 
 ```bash
-curl -X POST http://127.0.0.1:55601/api/v1/notification \
+curl -X POST http://127.0.0.1:55601/api/v2/notification \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d '{"source_system":"MyApp","text":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
@@ -183,18 +182,18 @@ curl -X POST http://127.0.0.1:55601/api/v1/notification \
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:55601/api/v1/notification" `
+  -Uri "http://127.0.0.1:55601/api/v2/notification" `
   -ContentType "application/json; charset=utf-8" `
   -Headers @{ Authorization = "Bearer <TOKEN>" } `
   -Body '{"source_system":"MyApp","text":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
 ```
 
-- HTTPレスポンスは先に返り、パートナーのセリフ（`data.message`）は `/api/events/stream` で後から届く
+- HTTPレスポンスは先に返り、AI人格のセリフ（`data.message`）は `/api/events/stream` で後から届く
 - 保存は `units(kind=EPISODE, source=notification)` + `payload_episode.user_text` に本文を入れ、必要なら `context_note` に構造化JSONを入れる
 - `images` がある場合は `payload_episode.image_summary` に要約を保存する
 
 
-## `/api/v1/meta_request`
+## `/api/v2/meta-request`
 
 ### Request（JSON）
 
@@ -219,7 +218,7 @@ Invoke-RestMethod -Method Post `
 ### 例（cURL）
 
 ```bash
-curl -X POST http://127.0.0.1:55601/api/v1/meta_request \
+curl -X POST http://127.0.0.1:55601/api/v2/meta-request \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
@@ -229,15 +228,15 @@ curl -X POST http://127.0.0.1:55601/api/v1/meta_request \
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:55601/api/v1/meta_request" `
+  -Uri "http://127.0.0.1:55601/api/v2/meta-request" `
   -ContentType "application/json; charset=utf-8" `
   -Headers @{ Authorization = "Bearer <TOKEN>" } `
   -Body '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
 ```
 
-- HTTPレスポンスは先に返り、パートナーのセリフ（`data.message`）は `/api/events/stream` で後から届く
+- HTTPレスポンスは先に返り、AI人格のセリフ（`data.message`）は `/api/events/stream` で後から届く
 - `instruction` / `payload_text` は **永続化しない**（生成にのみ利用）
-- 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=meta_request)` の `payload_episode.reply_text` に保存する
+- 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=meta-request)` の `payload_episode.reply_text` に保存する
 
 ## 管理API
 
@@ -257,7 +256,7 @@ Invoke-RestMethod -Method Post `
 ### Worker と `embedding_preset_id`
 
 - `jobs` は `memory_<embedding_preset_id>.db` に保存されるため、Worker は **アクティブな `embedding_preset_id`（= `active_embedding_preset_id`）** を対象に処理する（内蔵Worker）。
-- persona/addon は **settings 側のプロンプトプリセット**として管理し、`embedding_preset_id`（記憶DB）とは独立する（切替は `/api/settings`）
+- PersonaPreset/AddonPreset は **settings 側のプロンプトプリセット**として管理し、注入時は persona_text + addon_text を PERSONA_ANCHOR として連結する。`embedding_preset_id`（記憶DB）とは独立する（切替は `/api/settings`）
 
 補足:
 - `jobs` は内部用のキューであり、外部から任意のジョブを投入する汎用APIは提供しない。
@@ -266,10 +265,9 @@ Invoke-RestMethod -Method Post `
 
 現行実装に含まれる。
 
-- `/api/capture`（desktop/camera のキャプチャ保存）
 - `/api/settings`（UI向けの設定取得/更新）
 - `/api/logs/stream`（WebSocketログ購読）
-- `/api/events/stream`（WebSocketイベント購読: notification/meta_request）
+- `/api/events/stream`（WebSocketイベント購読: notification/meta-request）
 
 ## `/api/settings`
 
@@ -338,7 +336,7 @@ UI向けの「全設定」取得/更新。
 
 - `scheduled_at` はISO 8601のdatetime（Pydanticがパース可能な形式）で返す
 - `memory_enabled` は「記憶機能を使うか」を示す設定値
-- `exclude_keywords` は `/api/capture` の `context_text` 除外判定に使う
+- `exclude_keywords` は現状未使用（将来の入力フィルタ用途として予約）
 
 ### `PUT /api/settings`
 
@@ -423,35 +421,6 @@ UI向けの「全設定」取得/更新。
 - `active_embedding_preset_id` は記憶DB識別子（= `embedding_preset_id`）で、変更時はメモリDB初期化を検証する（失敗時 `400`）
 - `max_inject_tokens` / `similar_limit_by_kind` 等の詳細パラメータは現状API外
 
-## `/api/capture`
-
-キャプチャ画像をUnit(Episode)として保存し、派生ジョブをenqueueする。
-
-### `POST /api/capture`
-
-#### Request（`CaptureRequest`）
-
-```json
-{
-  "capture_type": "desktop",
-  "image_base64": "string",
-  "context_text": "optional"
-}
-```
-
-- `capture_type`: `"desktop"` または `"camera"`
-- `image_base64`: 画像のbase64（data URLヘッダ無しの想定）
-- `context_text`: 保存時の `payload_episode.user_text` に入る（省略可）
-
-- 除外判定: `context_text` が `exclude_keywords` のいずれかにマッチする場合、保存せずに `{"episode_id":-1,"stored":false}` を返す。`exclude_keywords` は正規表現メタ文字（例: `.*`）を含むと正規表現として評価され、それ以外は部分一致で判定する。
-- `capture_type` は現状厳密バリデーションしない（`"desktop"` 以外は `"camera"` 扱い）
-
-#### Response（`CaptureResponse`）
-
-```json
-{ "episode_id": 12345, "stored": true }
-```
-
 ## `/api/logs/stream`（WebSocket）
 
 サーバログの購読（テキストフレームでJSONをpush）。
@@ -475,7 +444,7 @@ UI向けの「全設定」取得/更新。
 
 - URL: `ws(s)://<host>/api/events/stream`
 - 認証: `Authorization: Bearer <TOKEN>`
-- 目的: `POST /api/v1/notification` / `POST /api/v1/meta_request` を受信したとき、接続中クライアントへ即時にイベントを配信する
+- 目的: `POST /api/v2/notification` / `POST /api/v2/meta-request` を受信したとき、接続中クライアントへ即時にイベントを配信する
 - 挙動: 接続直後に最大200件のバッファ済みイベントを送信し、その後は新規イベントをリアルタイムでpushする
 
 ### Event payload（JSON text）
@@ -485,7 +454,7 @@ UI向けの「全設定」取得/更新。
 ```json
 {
   "unit_id": 12345,
-  "type": "notification|meta_request",
+  "type": "notification|meta-request",
   "data": {
     "system_text": "string",
     "message": "string"
@@ -500,15 +469,15 @@ UI向けの「全設定」取得/更新。
   "type": "notification",
   "data": {
     "system_text": "[notificationのfrom] notificationのmessage",
-    "message": "AIパートナーのセリフ"
+    "message": "AIAI人格のセリフ"
   }
 }
 
 {
   "unit_id": 12345,
-  "type": "meta_request",
+  "type": "meta-request",
   "data": {
-    "message": "AIパートナーのセリフ"
+    "message": "AI人格のセリフ",
   }
 }
 ```

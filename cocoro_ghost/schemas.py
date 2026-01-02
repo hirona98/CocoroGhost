@@ -58,16 +58,16 @@ class ChatRequest(BaseModel):
 class NotificationRequest(BaseModel):
     """
     /notification 用リクエスト（内部形式）。
-    外部システムからの通知をパートナーに伝える。
+    外部システムからの通知をAI人格に伝える。
     """
     source_system: str                   # 通知元システム名
     text: str                            # 通知テキスト
     images: List[Dict[str, str]] = Field(default_factory=list)  # 添付画像
 
 
-class NotificationV1Request(BaseModel):
+class NotificationV2Request(BaseModel):
     """
-    /notification/v1 用リクエスト。
+    /notification/v2 用リクエスト。
     data URI形式の画像を受け付けるバージョン。
     """
     source_system: str                   # 通知元システム名
@@ -95,21 +95,21 @@ class NotificationResponse(BaseModel):
 
 class MetaRequestRequest(BaseModel):
     """
-    /meta_request 用リクエスト（内部形式）。
-    システムからパートナーへの指示を伝える。
+    /meta-request 用リクエスト（内部形式）。
+    システムからAI人格への指示を伝える。
     """
     embedding_preset_id: Optional[str] = None
-    instruction: str                     # パートナーへの指示
+    instruction: str                     # AI人格への指示
     payload_text: str                    # 追加情報テキスト
     images: List[Dict[str, str]] = Field(default_factory=list)  # 添付画像
 
 
-class MetaRequestV1Request(BaseModel):
+class MetaRequestV2Request(BaseModel):
     """
-    /meta_request/v1 用リクエスト。
+    /meta-request/v2 用リクエスト。
     data URI形式の画像を受け付けるバージョン。
     """
-    instruction: str                     # パートナーへの指示
+    instruction: str                     # AI人格への指示
     payload_text: str = ""               # 追加情報テキスト
     images: List[str] = Field(default_factory=list, max_length=5)  # data URI形式の画像
 
@@ -127,25 +127,6 @@ class MetaRequestV1Request(BaseModel):
 class MetaRequestResponse(BaseModel):
     """メタリクエストの保存結果（作成したepisode unit_id）。"""
     unit_id: int
-
-
-# --- キャプチャ関連 ---
-
-
-class CaptureRequest(BaseModel):
-    """
-    /capture 用リクエスト。
-    スクリーンショット/カメラ画像をepisodeとして保存する。
-    """
-    capture_type: str                    # キャプチャ種別（"desktop" or "camera"）
-    image_base64: str                    # BASE64エンコードされた画像データ
-    context_text: Optional[str] = None   # キャプチャ時のコンテキスト情報
-
-
-class CaptureResponse(BaseModel):
-    """captureの保存結果。"""
-    episode_id: int                      # 作成されたエピソードID
-    stored: bool                         # 保存成功フラグ
 
 
 # --- Unit関連（記憶ユニット） ---
@@ -168,8 +149,8 @@ class UnitMeta(BaseModel):
     sensitivity: int                     # 機密レベル
     pin: int                             # ピン留めフラグ
     topic_tags: Optional[str] = None     # トピックタグ（カンマ区切り）
-    partner_affect_label: Optional[str] = None      # パートナーの感情ラベル
-    partner_affect_intensity: Optional[float] = None  # 感情の強度
+    persona_affect_label: Optional[str] = None      # AI人格の感情ラベル
+    persona_affect_intensity: Optional[float] = None  # 感情の強度
 
 
 class UnitListResponse(BaseModel):

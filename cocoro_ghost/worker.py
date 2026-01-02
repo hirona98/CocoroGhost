@@ -29,6 +29,7 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -37,12 +38,18 @@ from sqlalchemy.orm import Session
 
 from cocoro_ghost import prompts
 from cocoro_ghost.config import get_config_store
-from cocoro_ghost.db import get_memory_session, sync_unit_vector_metadata, upsert_edges, upsert_unit_vector
+from cocoro_ghost.db import delete_unit_vector, get_memory_session, sync_unit_vector_metadata, upsert_edges, upsert_unit_vector
+from cocoro_ghost.fact_policy import (
+    canonicalize_fact_predicate,
+    effective_fact_ts,
+    is_event_predicate,
+    is_exclusive_predicate,
+    normalize_object_text_for_key,
+)
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.unit_enums import (
     EntityRole,
     JobStatus,
-    LoopStatus,
     Sensitivity,
     UnitKind,
     UnitState,
@@ -62,8 +69,8 @@ from cocoro_ghost.unit_models import (
 )
 from cocoro_ghost.versioning import canonical_json_dumps, record_unit_version
 from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
-from cocoro_ghost.partner_mood import clamp01, compute_partner_mood_state_from_episodes
-from cocoro_ghost.partner_mood_runtime import apply_partner_mood_state_override, set_last_used
+from cocoro_ghost.persona_mood import clamp01, compute_persona_mood_state_from_episodes
+from cocoro_ghost.persona_mood_runtime import apply_persona_mood_state_override, set_last_used
 
 
 logger = logging.getLogger(__name__)
@@ -89,7 +96,7 @@ def _json_loads(payload_json: str) -> Dict[str, Any]:
 
 
 def _get_persona_context() -> tuple[str | None, str | None]:
-    """現在のpersona/addon設定を取得する（未初期化ならNone）。"""
+    """現在のPERSONA_ANCHOR設定（persona_text + addon_text）を取得する（未初期化ならNone）。"""
     try:
         cfg = get_config_store().config
     except Exception:  # noqa: BLE001
@@ -100,7 +107,7 @@ def _get_persona_context() -> tuple[str | None, str | None]:
 
 
 def _wrap_prompt_with_persona(base_prompt: str) -> str:
-    """persona/addonがあればsystem promptへ挿入する。"""
+    """PERSONA_ANCHOR（persona_text + addon_text）があればsystem promptへ挿入する。"""
     persona_text, addon_text = _get_persona_context()
     return prompts.wrap_prompt_with_persona(
         base_prompt,
@@ -136,9 +143,136 @@ def _parse_optional_epoch_seconds(value: Any) -> Optional[int]:
     return None
 
 
+def _parse_clamped01(value: Any, default: float) -> float:
+    """
+    任意の値を 0..1 の float として保守的に解釈し、範囲外は丸める。
+
+    LLM出力の確信度/強度/重要度などは「確率スケール（0..1）」として扱う設計のため、
+    ここで型崩れや範囲逸脱を吸収する。
+    """
+    # None/Boolはスコアとして扱わない（defaultへフォールバック）
+    if value is None:
+        return float(default)
+    if isinstance(value, bool):
+        return float(default)
+    # 数値変換できるなら clamp01
+    try:
+        return clamp01(float(value))
+    except Exception:  # noqa: BLE001
+        return float(default)
+
+
+def _compute_loop_times(*, due_at: int | None, now_ts: int) -> tuple[int, int | None]:
+    """
+    Loopの期限情報（expires_at と due_at）を決定する。
+
+    方針:
+    - Loopは「次に話す理由」を作る短期メモで、LLMのclose判断に依存しない。
+    - サーバ側で TTL（expires_at）を付与し、期限超過で自動削除する。
+    - due_at は「再提起の優先順位」用途で、無ければ null でよい。
+
+    仕様（シンプルさ優先）:
+    - due_at が未来なら採用するが、最長30日までに丸める
+    - expires_at は due_at（採用できる場合）または「今から7日後」
+    """
+    # 定数は運用前のため固定（後方互換/マイグレーション無しで変更可能）。
+    default_ttl_seconds = 7 * 86400
+    max_ttl_seconds = 30 * 86400
+    now_ts_i = int(now_ts)
+    max_deadline = now_ts_i + max_ttl_seconds
+
+    due_at_i: int | None = None
+    if due_at is not None:
+        try:
+            cand = int(due_at)
+        except Exception:  # noqa: BLE001
+            cand = 0
+        if cand > now_ts_i:
+            due_at_i = min(cand, max_deadline)
+
+    if due_at_i is not None:
+        expires_at = int(due_at_i)
+    else:
+        expires_at = min(now_ts_i + default_ttl_seconds, max_deadline)
+    return int(expires_at), due_at_i
+
+
+def _delete_loop_unit(*, session: Session, unit_id: int) -> None:
+    """
+    Loop Unitを削除する（vec_units も明示削除）。
+
+    vec_units（sqlite-vec）はFKカスケードできないため、先に削除する。
+    """
+    row = session.query(Unit).filter(Unit.id == int(unit_id), Unit.kind == int(UnitKind.LOOP)).one_or_none()
+    if row is None:
+        return
+    try:
+        delete_unit_vector(session, unit_id=int(unit_id))
+    except Exception:  # noqa: BLE001
+        pass
+    session.delete(row)
+
+
+def _cleanup_expired_loops(*, session: Session, now_ts: int) -> int:
+    """
+    期限切れのLoopを削除する。
+
+    Loopは短期メモとして扱うため、expires_at <= now のものは自動的に削除する。
+    """
+    now_ts_i = int(now_ts)
+    rows = (
+        session.query(Unit.id)
+        .join(PayloadLoop, PayloadLoop.unit_id == Unit.id)
+        .filter(Unit.kind == int(UnitKind.LOOP), PayloadLoop.expires_at <= now_ts_i)
+        .order_by(PayloadLoop.expires_at.asc(), Unit.id.asc())
+        .limit(200)
+        .all()
+    )
+    deleted = 0
+    for (uid,) in rows:
+        _delete_loop_unit(session=session, unit_id=int(uid))
+        deleted += 1
+    return deleted
+
+
+def _parse_llm_json_dict(*, llm_client: LlmClient, resp: Any) -> Optional[Dict[str, Any]]:
+    """LLMのJSON応答をdictへ正規化して返す。"""
+    # JSON本文を抽出してパースする。
+    try:
+        parsed = llm_client.response_json(resp)
+    except Exception as exc:  # noqa: BLE001
+        # パース失敗時は警告して打ち切る。
+        logger.warning("LLM JSON parse failed: %s", exc)
+        return None
+
+    # dictならそのまま返す。
+    if isinstance(parsed, dict):
+        return parsed
+
+    # 1要素のlistにdictが入っているならunwrapする。
+    if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
+        return parsed[0]
+
+    # 想定外の型は警告してNone。
+    logger.warning("LLM JSON root is not object: type=%s", type(parsed).__name__)
+    return None
+
+
 def _backoff_seconds(tries: int) -> int:
     """失敗回数に応じた簡易バックオフ秒を返す（最大1時間）。"""
     return min(3600, max(5, 2 ** max(0, tries)))
+
+
+def _format_local_datetime(ts: int | float | None) -> str:
+    """
+    UNIX秒をローカル時刻の文字列へ変換する。
+    """
+    if ts is None:
+        return ""
+    try:
+        return datetime.fromtimestamp(float(ts)).astimezone().isoformat()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _has_pending_job_with_payload(session: Session, *, kind: str, payload_key: str, payload_value: Any) -> bool:
@@ -188,6 +322,23 @@ def claim_next_job(session: Session, *, now_ts: int) -> Optional[int]:
     session.add(job)
     session.commit()
     return int(job.id)
+
+
+def claim_next_job_with_kind(session: Session, *, now_ts: int) -> Optional[tuple[int, str]]:
+    """実行可能な次ジョブを1件RUNNINGにしてclaimし、そのjob_idとkindを返す。"""
+    job = (
+        session.query(Job)
+        .filter(Job.status == int(JobStatus.QUEUED), Job.run_after <= now_ts)
+        .order_by(Job.run_after.asc(), Job.id.asc())
+        .first()
+    )
+    if job is None:
+        return None
+    job.status = int(JobStatus.RUNNING)
+    job.updated_at = now_ts
+    session.add(job)
+    session.commit()
+    return int(job.id), str(job.kind or "")
 
 
 def process_job(
@@ -265,25 +416,54 @@ def process_due_jobs(
 ) -> int:
     """claim→processを繰り返して、最大max_jobs件まで処理する。"""
     processed = 0
+    claimed: list[tuple[int, str]] = []
     for _ in range(max_jobs):
         now_ts = _now_utc_ts()
         session = get_memory_session(embedding_preset_id, embedding_dimension)
         try:
-            job_id = claim_next_job(session, now_ts=now_ts)
+            job_info = claim_next_job_with_kind(session, now_ts=now_ts)
         finally:
             session.close()
-        if job_id is None:
-            if sleep_when_empty > 0:
+        if job_info is None:
+            if not claimed and sleep_when_empty > 0:
                 time.sleep(sleep_when_empty)
             break
+        claimed.append(job_info)
 
+    if not claimed:
+        return processed
+
+    embed_job_ids = [job_id for job_id, kind in claimed if kind == "upsert_embeddings"]
+    other_job_ids = [job_id for job_id, kind in claimed if kind != "upsert_embeddings"]
+
+    def _process_job_with_new_session(job_id: int) -> bool:
         session = get_memory_session(embedding_preset_id, embedding_dimension)
         try:
-            ok = process_job(session=session, llm_client=llm_client, job_id=job_id, now_ts=now_ts, max_tries=max_tries)
-            if ok:
-                processed += 1
+            return process_job(
+                session=session,
+                llm_client=llm_client,
+                job_id=job_id,
+                now_ts=_now_utc_ts(),
+                max_tries=max_tries,
+            )
         finally:
             session.close()
+
+    for job_id in other_job_ids:
+        if _process_job_with_new_session(job_id):
+            processed += 1
+
+    if embed_job_ids:
+        worker_count = min(4, len(embed_job_ids))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(_process_job_with_new_session, job_id) for job_id in embed_job_ids]
+            for fut in futures:
+                try:
+                    ok = fut.result()
+                except Exception:  # noqa: BLE001
+                    ok = False
+                if ok:
+                    processed += 1
 
     return processed
 
@@ -350,7 +530,7 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     unit, pe = row
     # /api/chat では「本文 + 内部JSON（反射）」を同一LLM呼び出しで得られるため、
     # すでに反射が保存されている場合は冪等にスキップする。
-    if (pe.reflection_json or "").strip() and (unit.partner_affect_label or "").strip():
+    if (pe.reflection_json or "").strip() and (unit.persona_affect_label or "").strip():
         return
     ctx_parts = []
     if pe.user_text:
@@ -373,19 +553,8 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     raw_json = raw_text
     data = json.loads(raw_text)
 
-    def _parse_clamped01(value: Any, default: float) -> float:
-        """0..1 の float として保守的に解釈し、範囲外は丸める。"""
-        if value is None:
-            return float(default)
-        if isinstance(value, bool):
-            return float(default)
-        try:
-            return clamp01(float(value))
-        except Exception:  # noqa: BLE001
-            return float(default)
-
-    unit.partner_affect_label = str(data.get("partner_affect_label") or "")
-    unit.partner_affect_intensity = _parse_clamped01(data.get("partner_affect_intensity"), 0.0)
+    unit.persona_affect_label = str(data.get("persona_affect_label") or "")
+    unit.persona_affect_intensity = _parse_clamped01(data.get("persona_affect_intensity"), 0.0)
     unit.salience = _parse_clamped01(data.get("salience"), 0.0)
     unit.confidence = _parse_clamped01(data.get("confidence"), 0.5)
     topic_tags_raw = data.get("topic_tags")
@@ -572,7 +741,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
     if row is None:
         return
     _u, pe = row
-    text_in = "\n".join(filter(None, [pe.user_text, pe.reply_text, pe.image_summary]))
+    text_in = _build_recent_context_input(session=session, unit_id=unit_id, payload=pe, now_ts=now_ts)
     if not text_in.strip():
         return
 
@@ -581,7 +750,10 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
         user_text=text_in,
         purpose=LlmRequestPurpose.ENTITY_EXTRACT,
     )
-    data = json.loads(llm_client.response_content(resp))
+    # LLMのJSON応答をdictに正規化する。
+    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
+    if data is None:
+        return
     entities = data.get("entities") or []
     if not isinstance(entities, list):
         return
@@ -598,7 +770,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
             aliases_raw = []
         aliases = [str(a) for a in aliases_raw if str(a).strip()]
         roles = _normalize_roles(e.get("roles"), type_label=type_label)
-        confidence = float(e.get("confidence") or 0.0)
+        confidence = _parse_clamped01(e.get("confidence"), 0.0)
         ent = _get_or_create_entity(
             session,
             name=name,
@@ -732,6 +904,48 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
     upsert_edges(session, rows=list(edge_rows_by_key.values()))
 
 
+def _build_recent_context_input(*, session: Session, unit_id: int, payload: PayloadEpisode, now_ts: int) -> str:
+    """
+    抽出処理向けに、直近2ターン（User/Persona）を補助文脈として付与した入力を作る。
+
+    目的は指示語/省略の解決であり、会話全体は送らない。
+    """
+    parts: list[str] = []
+    # まず対象エピソードの本文を先頭に置く。
+    main_text = "\n".join(filter(None, [payload.user_text, payload.reply_text, payload.image_summary]))
+    if main_text.strip():
+        parts.append(main_text.strip())
+
+    # 直近2ターン分の補助文脈を集める（対象unitは除外）。
+    rows = (
+        session.query(Unit, PayloadEpisode)
+        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
+        .filter(
+            Unit.kind == int(UnitKind.EPISODE),
+            Unit.state.in_([0, 1, 2]),
+            Unit.sensitivity <= int(Sensitivity.SECRET),
+            Unit.id != unit_id,
+        )
+        .order_by(Unit.occurred_at.desc().nulls_last(), Unit.id.desc())
+        .limit(2)
+        .all()
+    )
+    if rows:
+        lines: list[str] = []
+        for _u, pe in rows:
+            ut = (pe.user_text or "").strip().replace("\n", " ")
+            rt = (pe.reply_text or "").strip().replace("\n", " ")
+            if ut:
+                lines.append(f"User: {ut}")
+            if rt:
+                lines.append(f"Persona: {rt}")
+        if lines:
+            parts.append("（参考: 直近の会話）")
+            parts.extend(lines)
+
+    return "\n".join([p for p in parts if p]).strip()
+
+
 def _handle_upsert_embeddings(
     *, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int
 ) -> None:
@@ -760,16 +974,18 @@ def _handle_upsert_embeddings(
             ent = session.query(Entity).filter(Entity.id == int(pf.object_entity_id)).one_or_none()
             if ent is not None:
                 object_name = (ent.name or "").strip() or None
-        text_to_embed = "\n".join(
-            filter(
-                None,
-                [
-                    subject_name or (str(pf.subject_entity_id) if pf.subject_entity_id is not None else None),
-                    pf.predicate,
-                    object_name or (pf.object_text or "").strip() or None,
-                ],
-            )
-        )
+        subject = subject_name or (str(pf.subject_entity_id) if pf.subject_entity_id is not None else None)
+        obj = object_name or (pf.object_text or "").strip() or None
+        predicate = (pf.predicate or "").strip()
+        # FACTは構造化のまま埋め込み、述語の意味を変形しない。
+        parts: list[str] = []
+        if subject:
+            parts.append(f"subject={subject}")
+        if predicate:
+            parts.append(f"predicate={predicate}")
+        if obj:
+            parts.append(f"object={obj}")
+        text_to_embed = " ".join(parts) if parts else ""
     elif unit.kind == int(UnitKind.LOOP):
         pl = session.query(PayloadLoop).filter(PayloadLoop.unit_id == unit_id).one_or_none()
         if pl is None:
@@ -802,9 +1018,15 @@ def _find_existing_fact_unit_id(
     predicate: str,
     object_text: Optional[str],
     object_entity_id: Optional[int],
-    evidence_unit_id: int,
 ) -> Optional[int]:
-    # まず object_entity_id で一致するものを探す（Entity化できたFactを優先的に集約する）
+    """
+    既存Factの unit_id を探す（同一三つ組のupsert用）。
+
+    NOTE:
+    - ここでは evidence_unit_id はキーに含めない（別エピソード由来の同一Factは統合する）
+    - predicate は canonical（制御語彙）を想定する
+    """
+    # --- まず object_entity_id で一致するものを探す（Entity化できたFactを優先） ---
     if object_entity_id is not None:
         row = session.execute(
             text(
@@ -816,9 +1038,6 @@ def _find_existing_fact_unit_id(
                   AND pf.subject_entity_id IS :subject_entity_id
                   AND pf.predicate = :predicate
                   AND pf.object_entity_id = :object_entity_id
-                  AND EXISTS (
-                    SELECT 1 FROM json_each(pf.evidence_unit_ids_json) WHERE value = :evidence_unit_id
-                  )
                 LIMIT 1
                 """
             ),
@@ -827,13 +1046,12 @@ def _find_existing_fact_unit_id(
                 "subject_entity_id": subject_entity_id,
                 "predicate": predicate,
                 "object_entity_id": int(object_entity_id),
-                "evidence_unit_id": evidence_unit_id,
             },
         ).fetchone()
         if row is not None:
             return int(row[0])
 
-    # フォールバック: object_entity_id が未設定のFactも対象にし、object_text で一致を取る
+    # --- フォールバック: object_entity_id が未設定のFactは object_text で一致 ---
     row = session.execute(
         text(
             """
@@ -845,9 +1063,6 @@ def _find_existing_fact_unit_id(
               AND pf.predicate = :predicate
               AND pf.object_entity_id IS NULL
               AND pf.object_text IS :object_text
-              AND EXISTS (
-                SELECT 1 FROM json_each(pf.evidence_unit_ids_json) WHERE value = :evidence_unit_id
-              )
             LIMIT 1
             """
         ),
@@ -856,7 +1071,6 @@ def _find_existing_fact_unit_id(
             "subject_entity_id": subject_entity_id,
             "predicate": predicate,
             "object_text": object_text,
-            "evidence_unit_id": evidence_unit_id,
         },
     ).fetchone()
     return int(row[0]) if row is not None else None
@@ -873,7 +1087,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
     if row is None:
         return
     src_unit, pe = row
-    text_in = "\n".join(filter(None, [pe.user_text, pe.reply_text, pe.image_summary]))
+    text_in = _build_recent_context_input(session=session, unit_id=unit_id, payload=pe, now_ts=now_ts)
     if not text_in.strip():
         return
 
@@ -882,20 +1096,109 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
         user_text=text_in,
         purpose=LlmRequestPurpose.FACT_EXTRACT,
     )
-    data = json.loads(llm_client.response_content(resp))
+    # LLMのJSON応答をdictに正規化する。
+    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
+    if data is None:
+        return
     facts = data.get("facts") or []
     if not isinstance(facts, list):
         return
 
+    def _merge_evidence_unit_id(*, pf: PayloadFact, evidence_unit_id: int) -> bool:
+        """
+        evidence_unit_ids_json に根拠episodeの unit_id を追記する（集合として扱う）。
+
+        変更があった場合は True を返す。
+        """
+        try:
+            loaded = json.loads(pf.evidence_unit_ids_json or "[]")
+        except Exception:  # noqa: BLE001
+            loaded = []
+        ids = loaded if isinstance(loaded, list) else []
+        seen: set[int] = set()
+        merged: list[int] = []
+        for x in ids:
+            try:
+                xi = int(x)
+            except Exception:  # noqa: BLE001
+                continue
+            if xi in seen:
+                continue
+            seen.add(xi)
+            merged.append(xi)
+        ev = int(evidence_unit_id)
+        if ev not in seen:
+            merged.append(ev)
+            pf.evidence_unit_ids_json = _json_dumps(merged)
+            return True
+        return False
+
+    def _close_exclusive_conflicts(
+        *,
+        subject_entity_id: Optional[int],
+        predicate: str,
+        keep_unit_id: Optional[int],
+        close_ts: int,
+    ) -> None:
+        """
+        exclusive predicate の競合Factを valid_to で閉じる。
+
+        - keep_unit_id（採用するFact）は閉じない
+        - pin はユーザー意思として優先し、閉じない
+        """
+        rows = (
+            session.query(Unit, PayloadFact)
+            .join(PayloadFact, PayloadFact.unit_id == Unit.id)
+            .filter(
+                Unit.kind == int(UnitKind.FACT),
+                PayloadFact.subject_entity_id.is_(subject_entity_id),
+                PayloadFact.predicate == str(predicate),
+                Unit.pin == 0,
+                (PayloadFact.valid_to.is_(None) | (PayloadFact.valid_to > int(close_ts))),
+            )
+            .order_by(Unit.id.desc())
+            .all()
+        )
+        for u0, pf0 in rows:
+            if keep_unit_id is not None and int(u0.id) == int(keep_unit_id):
+                continue
+            # すでに十分古く閉じられている場合は触らない。
+            if pf0.valid_to is not None and int(pf0.valid_to) <= int(close_ts):
+                continue
+            # 範囲が逆転する閉じ方はしない（データを壊さない）。
+            if pf0.valid_from is not None and int(pf0.valid_from) >= int(close_ts):
+                continue
+            pf0.valid_to = int(close_ts)
+            u0.updated_at = int(now_ts)
+            session.add(u0)
+            session.add(pf0)
+            record_unit_version(
+                session,
+                unit_id=int(u0.id),
+                payload_obj={
+                    "subject_entity_id": pf0.subject_entity_id,
+                    "predicate": pf0.predicate,
+                    "object_text": pf0.object_text,
+                    "object_entity_id": pf0.object_entity_id,
+                    "valid_from": pf0.valid_from,
+                    "valid_to": pf0.valid_to,
+                    "evidence_unit_ids": json.loads(pf0.evidence_unit_ids_json or "[]"),
+                },
+                patch_reason="extract_facts_close_exclusive",
+                now_ts=int(now_ts),
+            )
+
     for f in facts:
         if not isinstance(f, dict):
             continue
-        predicate = str(f.get("predicate") or "").strip()
-        obj_text_raw = f.get("object_text")
-        obj_text = str(obj_text_raw).strip() if obj_text_raw is not None else None
-        confidence = float(f.get("confidence") or 0.0)
-        if not predicate:
+        predicate_raw = str(f.get("predicate") or "").strip()
+        predicate = canonicalize_fact_predicate(predicate_raw)
+        # 制御語彙に無いpredicateは採用しない（プロンプト逸脱・ノイズを遮断する）。
+        if predicate is None:
             continue
+        obj_text_raw = f.get("object_text")
+        obj_text = normalize_object_text_for_key(str(obj_text_raw) if obj_text_raw is not None else None)
+        confidence = _parse_clamped01(f.get("confidence"), 0.0)
 
         validity = f.get("validity")
         valid_from = None
@@ -950,15 +1253,54 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
                 )
                 object_entity_id = int(obj_ent.id)
                 if not obj_text:
-                    obj_text = obj_name
+                    obj_text = normalize_object_text_for_key(obj_name)
+
+        # event（例: first_met_at）は「最初だけ」残せばよいので、既存があるなら新規作成しない。
+        # （正確な最古判定は注入側でも行うため、ここはDB増殖抑止を優先）
+        if is_event_predicate(predicate):
+            existing_event = (
+                session.query(PayloadFact.unit_id)
+                .join(Unit, Unit.id == PayloadFact.unit_id)
+                .filter(
+                    Unit.kind == int(UnitKind.FACT),
+                    PayloadFact.subject_entity_id.is_(subject_entity_id),
+                    PayloadFact.predicate == str(predicate),
+                )
+                .order_by(Unit.id.asc())
+                .limit(1)
+                .scalar()
+            )
+            if existing_event is not None:
+                pf = session.query(PayloadFact).filter(PayloadFact.unit_id == int(existing_event)).one_or_none()
+                if pf is not None and _merge_evidence_unit_id(pf=pf, evidence_unit_id=unit_id):
+                    u = session.query(Unit).filter(Unit.id == int(existing_event)).one_or_none()
+                    if u is not None:
+                        u.updated_at = int(now_ts)
+                        session.add(u)
+                        session.add(pf)
+                        record_unit_version(
+                            session,
+                            unit_id=int(existing_event),
+                            payload_obj={
+                                "subject_entity_id": pf.subject_entity_id,
+                                "predicate": pf.predicate,
+                                "object_text": pf.object_text,
+                                "object_entity_id": pf.object_entity_id,
+                                "valid_from": pf.valid_from,
+                                "valid_to": pf.valid_to,
+                                "evidence_unit_ids": json.loads(pf.evidence_unit_ids_json or "[]"),
+                            },
+                            patch_reason="extract_facts_event_merge_evidence",
+                            now_ts=int(now_ts),
+                        )
+                continue
 
         existing_fact_unit_id = _find_existing_fact_unit_id(
             session,
             subject_entity_id=subject_entity_id,
-            predicate=predicate,
+            predicate=str(predicate),
             object_text=obj_text,
             object_entity_id=object_entity_id,
-            evidence_unit_id=unit_id,
         )
         if existing_fact_unit_id is not None:
             existing = (
@@ -971,6 +1313,13 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
                 continue
             fact_unit, pf = existing
             changed = False
+            # evidenceは別エピソードでも統合する（同一Factの増殖を止める）。
+            if _merge_evidence_unit_id(pf=pf, evidence_unit_id=unit_id):
+                changed = True
+            # predicateは正規形で保存する（プロンプト逸脱対策）。
+            if pf.predicate != str(predicate):
+                pf.predicate = str(predicate)
+                changed = True
             if valid_from is not None and pf.valid_from != valid_from:
                 pf.valid_from = valid_from
                 changed = True
@@ -979,6 +1328,9 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
                 changed = True
             if object_entity_id is not None and pf.object_entity_id != object_entity_id:
                 pf.object_entity_id = int(object_entity_id)
+                changed = True
+            if obj_text and (pf.object_text is None or not str(pf.object_text).strip()):
+                pf.object_text = obj_text
                 changed = True
             if confidence and float(fact_unit.confidence or 0.0) != float(confidence):
                 fact_unit.confidence = float(confidence)
@@ -1002,7 +1354,34 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
                     patch_reason="extract_facts_update",
                     now_ts=now_ts,
                 )
+                # exclusiveは「現在状態が1つ」であることが重要なので、競合を閉じる。
+                if is_exclusive_predicate(str(predicate)):
+                    close_ts = effective_fact_ts(
+                        occurred_at=src_unit.occurred_at,
+                        created_at=now_ts,
+                        valid_from=valid_from,
+                    )
+                    _close_exclusive_conflicts(
+                        subject_entity_id=subject_entity_id,
+                        predicate=str(predicate),
+                        keep_unit_id=int(fact_unit.id),
+                        close_ts=int(close_ts),
+                    )
             continue
+
+        # exclusiveは新規作成前に競合を閉じる（DB増殖/注入矛盾を抑える）。
+        if is_exclusive_predicate(str(predicate)):
+            close_ts = effective_fact_ts(
+                occurred_at=src_unit.occurred_at,
+                created_at=now_ts,
+                valid_from=valid_from,
+            )
+            _close_exclusive_conflicts(
+                subject_entity_id=subject_entity_id,
+                predicate=str(predicate),
+                keep_unit_id=None,
+                close_ts=int(close_ts),
+            )
 
         fact_unit = Unit(
             kind=int(UnitKind.FACT),
@@ -1016,14 +1395,14 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
             sensitivity=int(src_unit.sensitivity),
             pin=0,
             topic_tags=None,
-            partner_affect_label=None,
-            partner_affect_intensity=None,
+            persona_affect_label=None,
+            persona_affect_intensity=None,
         )
         session.add(fact_unit)
         session.flush()
         fact_payload = {
             "subject_entity_id": subject_entity_id,
-            "predicate": predicate,
+            "predicate": str(predicate),
             "object_text": obj_text,
             "object_entity_id": object_entity_id,
             "valid_from": valid_from,
@@ -1034,7 +1413,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
             PayloadFact(
                 unit_id=fact_unit.id,
                 subject_entity_id=subject_entity_id,
-                predicate=predicate,
+                predicate=str(predicate),
                 object_text=obj_text,
                 object_entity_id=object_entity_id,
                 valid_from=valid_from,
@@ -1067,7 +1446,7 @@ def _loop_exists(session: Session, *, loop_text: str) -> bool:
     row = (
         session.query(PayloadLoop.unit_id)
         .join(Unit, Unit.id == PayloadLoop.unit_id)
-        .filter(Unit.kind == int(UnitKind.LOOP), PayloadLoop.status == int(LoopStatus.OPEN), PayloadLoop.loop_text == loop_text)
+        .filter(Unit.kind == int(UnitKind.LOOP), PayloadLoop.loop_text == loop_text)
         .limit(1)
         .scalar()
     )
@@ -1085,7 +1464,7 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
     if row is None:
         return
     src_unit, pe = row
-    text_in = "\n".join(filter(None, [pe.user_text, pe.reply_text, pe.image_summary]))
+    text_in = _build_recent_context_input(session=session, unit_id=unit_id, payload=pe, now_ts=now_ts)
     if not text_in.strip():
         return
 
@@ -1095,10 +1474,14 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
         user_text=text_in,
         purpose=LlmRequestPurpose.LOOP_EXTRACT,
     )
-    data = json.loads(llm_client.response_content(resp))
+    # LLMのJSON応答をdictに正規化する。
+    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
+    if data is None:
+        return
+    # ループ抽出の出力は open loops のみ（close判断はサーバ側のTTLに寄せる）。
     loops = data.get("loops") or []
     if not isinstance(loops, list):
-        return
+        loops = []
 
     for l in loops:
         if not isinstance(l, dict):
@@ -1106,38 +1489,8 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
         loop_text = str(l.get("loop_text") or "").strip()
         if not loop_text:
             continue
-        status_raw = str(l.get("status") or "open").strip().lower()
-        status = int(LoopStatus.CLOSED) if status_raw in ("closed", "close") else int(LoopStatus.OPEN)
-        due_at = _parse_optional_epoch_seconds(l.get("due_at"))
-
-        if status == int(LoopStatus.CLOSED):
-            existing = (
-                session.query(Unit, PayloadLoop)
-                .join(PayloadLoop, PayloadLoop.unit_id == Unit.id)
-                .filter(
-                    Unit.kind == int(UnitKind.LOOP),
-                    PayloadLoop.status == int(LoopStatus.OPEN),
-                    PayloadLoop.loop_text == loop_text,
-                )
-                .order_by(Unit.created_at.desc(), Unit.id.desc())
-                .first()
-            )
-            if existing is not None:
-                unit, pl = existing
-                pl.status = int(LoopStatus.CLOSED)
-                if due_at is not None:
-                    pl.due_at = due_at
-                unit.updated_at = now_ts
-                session.add(unit)
-                session.add(pl)
-                record_unit_version(
-                    session,
-                    unit_id=int(unit.id),
-                    payload_obj={"status": int(pl.status), "due_at": pl.due_at, "loop_text": pl.loop_text},
-                    patch_reason="extract_loops_close",
-                    now_ts=now_ts,
-                )
-            continue
+        expires_at, due_at = _compute_loop_times(due_at=_parse_optional_epoch_seconds(l.get("due_at")), now_ts=now_ts)
+        confidence = _parse_clamped01(l.get("confidence"), 0.0)
 
         if _loop_exists(session, loop_text=loop_text):
             existing = (
@@ -1145,7 +1498,6 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
                 .join(PayloadLoop, PayloadLoop.unit_id == Unit.id)
                 .filter(
                     Unit.kind == int(UnitKind.LOOP),
-                    PayloadLoop.status == int(LoopStatus.OPEN),
                     PayloadLoop.loop_text == loop_text,
                 )
                 .order_by(Unit.created_at.desc(), Unit.id.desc())
@@ -1154,11 +1506,14 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
             if existing is not None:
                 unit, pl = existing
                 changed = False
+                if int(pl.expires_at or 0) != int(expires_at):
+                    pl.expires_at = int(expires_at)
+                    changed = True
                 if due_at is not None and pl.due_at != due_at:
                     pl.due_at = due_at
                     changed = True
-                if float(l.get("confidence") or 0.0) and float(unit.confidence or 0.0) != float(l.get("confidence") or 0.0):
-                    unit.confidence = float(l.get("confidence") or 0.0)
+                if confidence and float(unit.confidence or 0.0) != float(confidence):
+                    unit.confidence = float(confidence)
                     changed = True
                 if changed:
                     unit.updated_at = now_ts
@@ -1167,7 +1522,7 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
                     record_unit_version(
                         session,
                         unit_id=int(unit.id),
-                        payload_obj={"status": int(pl.status), "due_at": pl.due_at, "loop_text": pl.loop_text},
+                        payload_obj={"expires_at": int(pl.expires_at), "due_at": pl.due_at, "loop_text": pl.loop_text},
                         patch_reason="extract_loops_update",
                         now_ts=now_ts,
                     )
@@ -1180,25 +1535,25 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
             updated_at=now_ts,
             source="extract_loops",
             state=int(UnitState.RAW),
-            confidence=float(l.get("confidence") or 0.0),
+            confidence=float(confidence),
             salience=0.0,
             sensitivity=int(src_unit.sensitivity),
             pin=0,
             topic_tags=None,
-            partner_affect_label=None,
-            partner_affect_intensity=None,
+            persona_affect_label=None,
+            persona_affect_intensity=None,
         )
         session.add(pl_unit)
         session.flush()
         loop_payload = {
-            "status": int(LoopStatus.OPEN),
+            "expires_at": int(expires_at),
             "due_at": due_at,
             "loop_text": loop_text,
         }
         session.add(
             PayloadLoop(
                 unit_id=pl_unit.id,
-                status=int(LoopStatus.OPEN),
+                expires_at=int(expires_at),
                 due_at=due_at,
                 loop_text=loop_text,
             )
@@ -1235,11 +1590,16 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
 
 def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts: int) -> None:
     """短期状態（Capsule）を更新する（LLM不要・軽量）。"""
+    # ついでに期限切れLoopを掃除する（TTLで確実に自動削除する）。
+    try:
+        _cleanup_expired_loops(session=session, now_ts=now_ts)
+    except Exception:  # noqa: BLE001
+        pass
     limit = int(payload.get("limit") or 5)
     limit = max(1, min(20, limit))
     # 感情は、直近エピソード群を「重要度×時間減衰」で積分して作る。
-    partner_mood_scan_limit = int(payload.get("partner_mood_scan_limit") or 500)
-    partner_mood_scan_limit = max(50, min(2000, partner_mood_scan_limit))
+    persona_mood_scan_limit = int(payload.get("persona_mood_scan_limit") or 500)
+    persona_mood_scan_limit = max(50, min(2000, persona_mood_scan_limit))
 
     rows = (
         session.query(Unit, PayloadEpisode)
@@ -1261,74 +1621,74 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
                 "user_text": (pe.user_text or "")[:200],
                 "reply_text": (pe.reply_text or "")[:200],
                 "topic_tags": u.topic_tags,
-                "partner_affect_label": u.partner_affect_label,
-                "partner_affect_intensity": u.partner_affect_intensity,
+                "persona_affect_label": u.persona_affect_label,
+                "persona_affect_intensity": u.persona_affect_intensity,
                 "salience": u.salience,
                 "confidence": u.confidence,
             }
         )
 
-    # パートナーの感情（重要度×時間減衰）:
+    # AI人格の感情（重要度×時間減衰）:
     #
     # 直近N件（recent）だけで機嫌を作ると、「大事件が短時間で埋もれて消える」問題が出る。
-    # そこで、別枠で「直近partner_mood_scan_limit件のエピソード」を走査し、各エピソードの影響度を
-    #     impact = partner_affect_intensity × salience × confidence × exp(-Δt/τ(salience))
-    # の形で減衰させて積分し、現在の機嫌（partner_mood_state）を推定する。
+    # そこで、別枠で「直近persona_mood_scan_limit件のエピソード」を走査し、各エピソードの影響度を
+    #     impact = persona_affect_intensity × salience × confidence × exp(-Δt/τ(salience))
+    # の形で減衰させて積分し、現在の機嫌（persona_mood_state）を推定する。
     #
     # - salience が高いほど τ が長くなるため、「印象的な出来事」は長く残る
     # - salience が低い雑談は τ が短く、数分で影響が薄れる
     # - anger 成分が十分高いときは refusal_allowed=True となり、プロンプト側で拒否が選びやすくなる
-    partner_mood_units = (
+    persona_mood_units = (
         session.query(Unit, PayloadEpisode)
         .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
         .filter(
             Unit.kind == int(UnitKind.EPISODE),
             Unit.state.in_([0, 1, 2]),
             Unit.sensitivity <= int(Sensitivity.SECRET),
-            Unit.partner_affect_label.isnot(None),
+            Unit.persona_affect_label.isnot(None),
         )
         .order_by(Unit.created_at.desc(), Unit.id.desc())
-        .limit(partner_mood_scan_limit)
+        .limit(persona_mood_scan_limit)
         .all()
     )
-    partner_mood_episodes = []
-    # partner_response_policy は直近だけ見れば十分なので、JSON parse は上位N件に限定する。
-    partner_response_policy_parse_limit = 60
-    for idx, (u, pe) in enumerate(partner_mood_units):
-        partner_response_policy = None
-        if idx < partner_response_policy_parse_limit and (pe.reflection_json or "").strip():
+    persona_mood_episodes = []
+    # persona_response_policy は直近だけ見れば十分なので、JSON parse は上位N件に限定する。
+    persona_response_policy_parse_limit = 60
+    for idx, (u, pe) in enumerate(persona_mood_units):
+        persona_response_policy = None
+        if idx < persona_response_policy_parse_limit and (pe.reflection_json or "").strip():
             try:
                 obj = json.loads(pe.reflection_json)
-                pp = obj.get("partner_response_policy") if isinstance(obj, dict) else None
-                partner_response_policy = pp if isinstance(pp, dict) else None
+                pp = obj.get("persona_response_policy") if isinstance(obj, dict) else None
+                persona_response_policy = pp if isinstance(pp, dict) else None
             except Exception:  # noqa: BLE001
-                partner_response_policy = None
-        partner_mood_episodes.append(
+                persona_response_policy = None
+        persona_mood_episodes.append(
             {
                 "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
                 "created_at": int(u.created_at),
-                "partner_affect_label": u.partner_affect_label,
-                "partner_affect_intensity": u.partner_affect_intensity,
+                "persona_affect_label": u.persona_affect_label,
+                "persona_affect_intensity": u.persona_affect_intensity,
                 "salience": u.salience,
                 "confidence": u.confidence,
                 # /api/chat の内部JSONで出た「方針ノブ」を次ターン以降にも効かせる。
-                "partner_response_policy": partner_response_policy,
+                "persona_response_policy": persona_response_policy,
             }
         )
-    partner_mood_state = compute_partner_mood_state_from_episodes(partner_mood_episodes, now_ts=now_ts)
+    persona_mood_state = compute_persona_mood_state_from_episodes(persona_mood_episodes, now_ts=now_ts)
     # デバッグ用: UI/API から in-memory ランタイム状態を適用する
-    partner_mood_state = apply_partner_mood_state_override(partner_mood_state, now_ts=now_ts)
+    persona_mood_state = apply_persona_mood_state_override(persona_mood_state, now_ts=now_ts)
 
     # UI向け: 前回使った値（compact）を保存する。
     # Worker側の更新でも last_used を進めておく。
-    compact_partner_mood_state = {
-        "label": partner_mood_state.get("label"),
-        "intensity": partner_mood_state.get("intensity"),
-        "components": partner_mood_state.get("components"),
-        "response_policy": partner_mood_state.get("response_policy"),
+    compact_persona_mood_state = {
+        "label": persona_mood_state.get("label"),
+        "intensity": persona_mood_state.get("intensity"),
+        "components": persona_mood_state.get("components"),
+        "response_policy": persona_mood_state.get("response_policy"),
     }
     try:
-        set_last_used(now_ts=now_ts, state=compact_partner_mood_state)
+        set_last_used(now_ts=now_ts, state=compact_persona_mood_state)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1336,7 +1696,7 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
         "generated_at": now_ts,
         "window": limit,
         "recent": recent,
-        "partner_mood_state": partner_mood_state,
+        "persona_mood_state": persona_mood_state,
     }
     capsule_json = _json_dumps(capsule_obj)
     expires_at = now_ts + 3600
@@ -1368,8 +1728,8 @@ def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts
             sensitivity=int(Sensitivity.PRIVATE),
             pin=0,
             topic_tags=None,
-            partner_affect_label=None,
-            partner_affect_intensity=None,
+            persona_affect_label=None,
+            persona_affect_intensity=None,
         )
         session.add(cap_unit)
         session.flush()
@@ -1405,6 +1765,8 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
     window_days = 7
     range_end = int(now_ts)
     range_start = range_end - window_days * 86400
+    range_start_local = _format_local_datetime(range_start)
+    range_end_local = _format_local_datetime(range_end)
 
     ep_rows = (
         session.query(Unit, PayloadEpisode)
@@ -1432,7 +1794,11 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
         rt = rt[:220]
         lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
 
-    input_text = f"scope_key: {scope_key}\nrange_start: {range_start}\nrange_end: {range_end}\n\n[EPISODES]\n" + "\n".join(lines)
+    input_text = (
+        f"scope_key: {scope_key}\nrange_start: {range_start_local}\nrange_end: {range_end_local}\n\n"
+        "<<<COCORO_GHOST_SECTION:EPISODES>>>\n"
+        + "\n".join(lines)
+    )
 
     system_prompt = _wrap_prompt_with_persona(prompts.get_bond_summary_prompt())
     resp = llm_client.generate_json_response(
@@ -1440,7 +1806,10 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
         user_text=input_text,
         purpose=LlmRequestPurpose.BOND_SUMMARY,
     )
-    data = json.loads(llm_client.response_content(resp))
+    # LLMのJSON応答をdictに正規化する。
+    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
+    if data is None:
+        return
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
         return
@@ -1575,7 +1944,7 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
 
 
 def _build_summary_payload_input(*, header_lines: list[str], episode_lines: list[str]) -> str:
-    parts = [*header_lines, "", "[EPISODES]", *episode_lines]
+    parts = [*header_lines, "", "<<<COCORO_GHOST_SECTION:EPISODES>>>", *episode_lines]
     return "\n".join([p for p in parts if p is not None]).strip()
 
 
@@ -1738,12 +2107,15 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
         user_text=input_text,
         purpose=LlmRequestPurpose.PERSON_SUMMARY,
     )
-    data = json.loads(llm_client.response_content(resp))
+    # LLMのJSON応答をdictに正規化する。
+    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
+    if data is None:
+        return
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
         return
 
-    # パートナーAI→人物の好感度（0..1）
+    # PERSONA_ANCHORの人物→人物の好感度（0..1）
     # - 0.5: 中立（デフォルト）
     # - 1.0: とても好意的
     # - 0.0: 強い嫌悪/不信
@@ -1768,10 +2140,6 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
                 continue
             if why:
                 favorability_reasons.append({"unit_id": unit_id, "why": why})
-
-    # 注入テキストは Scheduler が summary_text しか使わないため、好感度も summary_text 先頭に出す。
-    if "AI好感度:" not in summary_text:
-        summary_text = f"AI好感度: {favorability_score:.2f}（0..1。0.5=中立）\n{summary_text}"
 
     key_events_raw = data.get("key_events") or []
     key_events: list[dict[str, Any]] = []
@@ -1857,7 +2225,10 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
         user_text=input_text,
         purpose=LlmRequestPurpose.TOPIC_SUMMARY,
     )
-    data = json.loads(llm_client.response_content(resp))
+    # LLMのJSON応答をdictに正規化する。
+    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
+    if data is None:
+        return
     summary_text = str(data.get("summary_text") or "").strip()
     if not summary_text:
         return

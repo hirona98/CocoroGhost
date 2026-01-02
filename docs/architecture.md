@@ -4,8 +4,8 @@
 
 - **API Server（FastAPI）**
   - `/api/chat`（SSE）
-  - `/api/v1/notification`
-  - `/api/v1/meta_request`
+  - `/api/v2/notification`
+  - `/api/v2/meta-request`
 - **Memory Store（SQLite: `memory_<embedding_preset_id>.db`）**
   - `units` + `payload_*` による Unit化
   - 版管理（`unit_versions`）と来歴/信頼度を保持
@@ -19,7 +19,7 @@
 - **MemoryPack Builder（取得計画器）**
   - 検索結果の生注入ではなく、**MemoryPack** を編成して注入
   - 注入予算（token budget）で階層的に収集・圧縮
-  - Retriever の結果（relevant episodes）を `[EPISODE_EVIDENCE]` に整形して注入する
+  - Retriever の結果（relevant episodes）を `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` に整形して注入する
 - **Worker（非同期ジョブ）**
   - Reflection / Entities / Facts / Summaries / Loops / Embedding upsert を担当
   - APIプロセスと分離（推奨）
@@ -54,7 +54,7 @@ flowchart LR
 - （任意）画像要約（Vision）
 - Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 - MemoryPack Builderで **MemoryPack** を生成（capsule/facts/summaries/loops + relevant episodes）
-- LLMへ `memorypack` を system に注入し、会話履歴（max_turns_window）+ user_text を conversation として渡す（MemoryPack内に persona/addon を含む）
+- LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + 固定プロンプト）を渡し、conversation は会話履歴（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ user_text を渡す
 - 返答をSSEで配信
 - `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 - Worker用ジョブを enqueue（reflection/extraction/embedding等）
@@ -66,7 +66,7 @@ Retriever は「暗黙参照」や「会話の流れ」を取り込み、現在�
 - Phase 1: 固定クエリ生成（LLMレス。user_text / context+user_text の2本）
 - Phase 2: Hybrid Search（vec0 + FTS5）→ RRFマージ
 - Phase 3: ヒューリスティック Rerank（LLMレス。RRF + 文字n-gram類似度 + recency で軽量スコアリング）
-- MemoryPack Builder は relevant episodes を受け取り、ルール（例: high>=1 or medium>=2）と予算で `[EPISODE_EVIDENCE]` を注入する（満たさない場合は省略）
+- MemoryPack Builder は relevant episodes を受け取り、ルール（例: high>=1 or medium>=2）と予算で `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` を注入する（満たさない場合は省略）
 
 ```mermaid
 sequenceDiagram
@@ -169,13 +169,13 @@ sequenceDiagram
 ## ストレージ境界
 
 - 設定は `settings.db`
-  - token / active preset / persona・addon / 注入予算 等
+  - token / active preset / PERSONA_ANCHOR（persona_text + addon_text）/ 注入予算 等
 - 記憶は `memory_<embedding_preset_id>.db`
   - `units` + `payload_*` + `entities` 等
   - `vec_units`（sqlite-vec 仮想テーブル）
 
 
-## `/api/v1/notification` の処理シーケンス
+## `/api/v2/notification` の処理シーケンス
 
 ```mermaid
 sequenceDiagram
@@ -190,7 +190,7 @@ sequenceDiagram
   participant Q as Jobs (DB)
   participant WS as /api/events/stream (WebSocket)
 
-  UI->>API: POST /api/v1/notification\n{source_system,text,images?}
+  UI->>API: POST /api/v2/notification\n{source_system,text,images?}
   API->>MM: handle_notification(request)\n(create placeholder unit)
   MM->>DB: save Unit(kind=EPISODE, source=notification)\nuser_text=system_text, reply_text=null
   API-->>UI: 204 No Content
@@ -201,13 +201,13 @@ sequenceDiagram
   MM->>SCH: build MemoryPack\n(relevant episodes)
   SCH->>DB: read units/entities/summaries
   SCH-->>MM: MemoryPack
-  MM->>LLM: generate partner message\n(external prompt)
+  MM->>LLM: generate persona message\n(external prompt)
   MM->>DB: update payload_episode.reply_text/image_summary
   MM->>Q: enqueue jobs (reflection/extraction/embedding...)
   MM-->>WS: publish {unit_id,type,data{system_text,message}}
 ```
 
-## `/api/v1/meta_request` の処理シーケンス
+## `/api/v2/meta-request` の処理シーケンス
 
 ```mermaid
 sequenceDiagram
@@ -222,9 +222,9 @@ sequenceDiagram
   participant Q as Jobs (DB)
   participant WS as /api/events/stream (WebSocket)
 
-  UI->>API: POST /api/v1/meta_request\n{instruction,payload_text?,images?}
+  UI->>API: POST /api/v2/meta-request\n{instruction,payload_text?,images?}
   API->>MM: handle_meta_request(request)\n(create placeholder unit)
-  MM->>DB: save Unit(kind=EPISODE, source=meta_request)\nuser_text=[redacted], reply_text=null
+  MM->>DB: save Unit(kind=EPISODE, source=meta-request)\nuser_text=[redacted], reply_text=null
   API-->>UI: 204 No Content
   Note over API,MM: BackgroundTasks (after response)
   MM->>LLM: (optional) summarize images
@@ -233,7 +233,7 @@ sequenceDiagram
   MM->>SCH: build MemoryPack\n(relevant episodes)
   SCH->>DB: read units/entities/summaries
   SCH-->>MM: MemoryPack
-  MM->>LLM: generate partner message\n(meta_request prompt)
+  MM->>LLM: generate persona message\n(meta-request prompt)
   MM->>DB: update payload_episode.reply_text/image_summary
   MM->>Q: enqueue embeddings job
   MM-->>WS: publish {unit_id,type,data{message}}

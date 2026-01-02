@@ -1,17 +1,21 @@
-# cocoro_ghost 起動設定
+# CocoroGhost 起動設定
 token = "cocoro_token"
 log_level = "INFO"
 
 # LLM送受信ログレベル: DEBUG=内容表示, INFO=送受信事実のみ, OFF=出力なし
 llm_log_level = "INFO"
+
 # LLM送受信ログの最大文字数（ターミナル/ファイル）
 llm_log_console_max_chars = 500
 llm_log_file_max_chars = 8000
+
 # LLM送受信ログの各Value最大文字数（JSON向け、0で無効）
 llm_log_console_value_max_chars = 100
 llm_log_file_value_max_chars = 6000
 
-
 # ログのファイル出力
 log_file_enabled = false
 log_file_path = "logs/cocoro_ghost.log"
+
+# ログファイルのローテーションサイズ（bytes）。例: 200KB = 200000
+log_file_max_bytes = 200000

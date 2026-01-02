@@ -2,7 +2,7 @@
 
 ## 概要
 
-cocoro_ghost における記憶呼び出しシステム。会話に関連する過去のエピソードを高速に検索・選別し、MemoryPack に注入する。
+CocoroGhost における記憶呼び出しシステム。会話に関連する過去のエピソードを高速に検索・選別し、MemoryPack に注入する。
 
 **特徴**:
 - **LLMレス**: Query Expansion / Reranking に LLM を使わず、高速に動作
@@ -274,12 +274,12 @@ reason = f"heuristic rerank: score={final:.3f} rrf={rrf_norm:.3f} lex={lex:.3f} 
 ### EPISODE_EVIDENCE セクション
 
 ```
-[EPISODE_EVIDENCE]
+<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>
 以下は現在の会話に関連する過去のやりとりです。
 
 [2024-12-01] プロジェクトXの進捗について
 User: 「今週中に完成させたい」
-Partner: 「締切は金曜日でしたね。サポートしますよ」
+Persona: 「締切は金曜日でしたね。サポートしますよ」
 → 関連: heuristic rerank: score=0.42 ...
 ```
 

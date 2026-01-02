@@ -2,7 +2,7 @@
 設定API
 
 アプリケーション設定の取得・更新を行うエンドポイント。
-LLM/Embedding/Persona/Addon各プリセットの管理、
+LLM/Embedding/PersonaPreset/AddonPreset各プリセットの管理、
 GlobalSettings（除外キーワード、記憶機能ON/OFF等）の更新、
 リマインダー設定の管理をサポートする。
 """

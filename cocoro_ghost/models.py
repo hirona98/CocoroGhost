@@ -114,7 +114,7 @@ class LlmPreset(Base):
 class PersonaPreset(Base):
     """
     ペルソナプロンプトプリセットテーブル。
-    AIパートナーの性格・口調を定義するプロンプトを保持する。
+    AI人格の性格・口調を定義するプロンプトを保持する。
     """
 
     __tablename__ = "persona_presets"

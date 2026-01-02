@@ -1,7 +1,7 @@
 """
-partner_moodのランタイム上書き（デバッグ用）
+persona_moodのランタイム上書き（デバッグ用）
 
-UIからpartner_mood（パートナーの機嫌）を参照/変更するためのin-memoryストア。
+UIからpersona_mood（AI人格の機嫌）を参照/変更するためのin-memoryストア。
 
 特徴:
 - overrideは完全上書きのみ（部分マージしない）
@@ -16,7 +16,7 @@ import copy
 import threading
 from typing import Any, Optional
 
-from cocoro_ghost.partner_mood import PARTNER_MOOD_LABELS, clamp01, compute_partner_mood_state_from_episodes
+from cocoro_ghost.persona_mood import PERSONA_MOOD_LABELS, clamp01, compute_persona_mood_state_from_episodes
 
 
 _lock = threading.Lock()
@@ -24,7 +24,7 @@ _override: Optional[dict[str, Any]] = None
 _override_updated_at: Optional[int] = None
 
 # 「前回チャットで使った値（last used）」を保持する（UI表示用）。
-# - override そのものではなく、MemoryPackに注入した partner_mood_state（compact）の最新を保存する。
+# - override そのものではなく、MemoryPackに注入した persona_mood_state（compact）の最新を保存する。
 # - 永続化しない（プロセス再起動で消える）。
 _last_used: Optional[dict[str, Any]] = None
 _last_used_at: Optional[int] = None
@@ -34,7 +34,7 @@ def get_last_used() -> Optional[dict[str, Any]]:
     """
     前回チャットで使った機嫌状態を取得する。
 
-    MemoryPackに注入されたpartner_mood_stateの最新値を返す。
+    MemoryPackに注入されたpersona_mood_stateの最新値を返す。
     """
     with _lock:
         return copy.deepcopy(_last_used)
@@ -57,7 +57,7 @@ def set_last_used(*, now_ts: int, state: dict[str, Any]) -> dict[str, Any]:
     """
     前回チャットで使った機嫌状態を保存する。
 
-    GET /api/partner_moodが「前回使った値」を返すために使用。
+    GET /api/persona_moodが「前回使った値」を返すために使用。
     overrideをPUTしても会話が走るまでlast_usedは変わらない。
     """
     if not isinstance(state, dict):
@@ -65,7 +65,7 @@ def set_last_used(*, now_ts: int, state: dict[str, Any]) -> dict[str, Any]:
 
     label = _normalize_label(state.get("label"))
     if label is None:
-        raise ValueError(f"label must be one of: {', '.join(PARTNER_MOOD_LABELS)}")
+        raise ValueError(f"label must be one of: {', '.join(PERSONA_MOOD_LABELS)}")
 
     intensity_raw = state.get("intensity")
     if intensity_raw is None:
@@ -130,7 +130,7 @@ def clear_override() -> None:
 
 def _normalize_label(label: Any) -> Optional[str]:
     s = str(label or "").strip()
-    return s if s in PARTNER_MOOD_LABELS else None
+    return s if s in PERSONA_MOOD_LABELS else None
 
 
 def _normalize_components(raw: Any) -> Optional[dict[str, float]]:
@@ -178,7 +178,7 @@ def set_override(
     # 完全上書きのみ: 必須キーが揃わなければエラーにする。
     label = _normalize_label(state.get("label"))
     if label is None:
-        raise ValueError(f"label must be one of: {', '.join(PARTNER_MOOD_LABELS)}")
+        raise ValueError(f"label must be one of: {', '.join(PERSONA_MOOD_LABELS)}")
 
     intensity_raw = state.get("intensity")
     if intensity_raw is None:
@@ -206,7 +206,7 @@ def set_override(
         return copy.deepcopy(_override)
 
 
-def apply_partner_mood_state_override(
+def apply_persona_mood_state_override(
     computed_state: Optional[dict[str, Any]],
     *,
     now_ts: int,
@@ -221,13 +221,13 @@ def apply_partner_mood_state_override(
         return (
             computed_state
             if isinstance(computed_state, dict)
-            else compute_partner_mood_state_from_episodes([], now_ts=int(now_ts))
+            else compute_persona_mood_state_from_episodes([], now_ts=int(now_ts))
         )
 
     base = (
         computed_state
         if isinstance(computed_state, dict)
-        else compute_partner_mood_state_from_episodes([], now_ts=int(now_ts))
+        else compute_persona_mood_state_from_episodes([], now_ts=int(now_ts))
     )
     out = copy.deepcopy(base)
     # 完全上書き: components/response_policy も含めて差し替える。

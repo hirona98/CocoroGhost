@@ -152,6 +152,82 @@ def _escape_control_chars_in_json_strings(text: str) -> str:
     return "".join(out)
 
 
+_INTERNAL_CONTEXT_TAG = "<<INTERNAL_CONTEXT>>"
+_MEMORY_PACK_SECTION_RE = re.compile(r"^<<<COCORO_GHOST_SECTION:([A-Z0-9_]+)>>>$")
+
+
+def _parse_internal_context_sections(content: str) -> dict[str, list[Any]] | None:
+    """
+    <<INTERNAL_CONTEXT>> 内のMemoryPackをセクション単位で分解する。
+    """
+    if not content:
+        return None
+    head, sep, tail = content.partition("\n")
+    if head.strip() != _INTERNAL_CONTEXT_TAG:
+        return None
+    body = tail
+    sections: dict[str, list[Any]] = {}
+    current_key: str | None = None
+    for raw in body.splitlines():
+        line = raw.rstrip()
+        if not line and current_key is None:
+            continue
+        m = _MEMORY_PACK_SECTION_RE.match(line.strip())
+        if m:
+            current_key = m.group(1)
+            sections.setdefault(current_key, [])
+            continue
+        if current_key is None:
+            continue
+        text = line.strip()
+        if not text:
+            sections[current_key].append(line)
+            continue
+        parsed = None
+        for prefix in ("capsule_json:", "persona_mood_state:", "persona_mood_guidance:"):
+            if text.startswith(prefix):
+                payload = text[len(prefix) :].strip()
+                if prefix in {"capsule_json:", "persona_mood_state:"}:
+                    try:
+                        parsed = json.loads(payload)
+                    except Exception:
+                        parsed = payload
+                else:
+                    parsed = payload
+                sections[current_key].append({prefix[:-1]: parsed})
+                break
+        if parsed is None:
+            sections[current_key].append(line)
+    return sections or {}
+
+
+def _reshape_messages_for_debug(value: Any) -> Any:
+    """
+    messages配列のcontentに内部コンテキストがあれば分解して表示する。
+    """
+    if not isinstance(value, dict):
+        return value
+    messages = value.get("messages")
+    if not isinstance(messages, list):
+        return value
+    new_messages: list[dict[str, Any]] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            new_messages.append(m)
+            continue
+        content = m.get("content")
+        parsed = _parse_internal_context_sections(content) if isinstance(content, str) else None
+        if parsed is None:
+            new_messages.append(m)
+            continue
+        new_msg = dict(m)
+        new_msg["content"] = parsed
+        new_messages.append(new_msg)
+    new_value = dict(value)
+    new_value["messages"] = new_messages
+    return new_value
+
+
 def _repair_json_like_text(text: str) -> str:
     """LLMが生成しがちな「ほぼJSON」を、最低限パースできるように整形する。"""
     if not text:
@@ -341,8 +417,13 @@ def format_debug_payload(
     serializable = _parse_embedded_json_strings(serializable)
     # 秘匿情報をマスクする
     serializable = redact_secrets(serializable)
+    # 内部コンテキストをパースして見やすくする
+    serializable = _reshape_messages_for_debug(serializable)
     # Value長を制限してログの肥大化を抑える
     serializable = limit_json_value_lengths(serializable, max_value_chars=max_value_chars)
+    # 要素が1つだけのdictは中身だけを出力する（ログ簡素化）。
+    if isinstance(serializable, dict) and len(serializable) == 1:
+        serializable = next(iter(serializable.values()))
 
     # dict/list ならそのまま pretty JSON
     if isinstance(serializable, (dict, list)):

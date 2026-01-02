@@ -80,8 +80,8 @@ def _create_engine_with_vec_support(db_url: str):
     """
     import sqlite_vec
 
-    # SQLiteの場合はスレッドチェックを無効化
-    connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
+    # SQLiteの場合はスレッドチェックを無効化し、ロック解消を待つ。
+    connect_args = {"check_same_thread": False, "timeout": 10.0} if db_url.startswith("sqlite") else {}
     engine = create_engine(db_url, future=True, connect_args=connect_args)
 
     if db_url.startswith("sqlite"):
@@ -258,7 +258,10 @@ def _create_memory_indexes(engine) -> None:
         "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_entity_id)",
         "CREATE INDEX IF NOT EXISTS idx_fact_subject_pred ON payload_fact(subject_entity_id, predicate)",
         "CREATE INDEX IF NOT EXISTS idx_summary_scope ON payload_summary(scope_label, scope_key)",
-        "CREATE INDEX IF NOT EXISTS idx_loop_status_due ON payload_loop(status, due_at)",
+        # open loops は短期メモ（TTL）として扱い、loop_text で一意に扱う（重複抑制）。
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_loop_text_unique ON payload_loop(loop_text)",
+        "CREATE INDEX IF NOT EXISTS idx_loop_due ON payload_loop(due_at)",
+        "CREATE INDEX IF NOT EXISTS idx_loop_expires ON payload_loop(expires_at)",
         "CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after)",
     ]
     with engine.connect() as conn:
@@ -278,7 +281,8 @@ def init_settings_db() -> None:
     global SettingsSessionLocal
 
     db_url = get_settings_db_path()
-    connect_args = {"check_same_thread": False}
+    # SQLiteのロック待ちは短いタイムアウトで十分。
+    connect_args = {"check_same_thread": False, "timeout": 10.0}
     engine = create_engine(db_url, future=True, connect_args=connect_args)
     SettingsSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     Base.metadata.create_all(bind=engine)
@@ -457,6 +461,16 @@ def upsert_unit_vector(
             "sensitivity": sensitivity,
         },
     )
+
+
+def delete_unit_vector(session: Session, *, unit_id: int) -> None:
+    """
+    Unitの検索用ベクトルを削除する（sqlite-vec仮想テーブル）。
+
+    Unit本体の削除はFKカスケードで payload_* 等が消えるが、vec0の仮想テーブルは
+    外部キーでカスケードできないため、明示的に削除する。
+    """
+    session.execute(text(f"DELETE FROM {VEC_UNITS_TABLE_NAME} WHERE unit_id = :unit_id"), {"unit_id": int(unit_id)})
 
 
 def sync_unit_vector_metadata(

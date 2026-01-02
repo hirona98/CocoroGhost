@@ -36,6 +36,7 @@ class Config:
     llm_log_level: str   # LLM送受信ログレベル（DEBUG, INFO, OFF）
     log_file_enabled: bool  # ファイルログ有効/無効
     log_file_path: str      # ファイルログの保存先パス
+    log_file_max_bytes: int  # ファイルログのローテーションサイズ（bytes）
     llm_log_console_max_chars: int  # LLM送受信ログの最大文字数（ターミナル）
     llm_log_file_max_chars: int     # LLM送受信ログの最大文字数（ファイル）
     llm_log_console_value_max_chars: int  # LLM送受信ログのValue最大文字数（ターミナル, JSON向け）
@@ -167,6 +168,7 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
         "llm_log_level",
         "log_file_enabled",
         "log_file_path",
+        "log_file_max_bytes",
         "llm_log_console_max_chars",
         "llm_log_file_max_chars",
         "llm_log_console_value_max_chars",
@@ -184,6 +186,7 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
         llm_log_level=data.get("llm_log_level", "INFO"),
         log_file_enabled=bool(data.get("log_file_enabled", False)),
         log_file_path=str(data.get("log_file_path", "logs/cocoro_ghost.log")),
+        log_file_max_bytes=int(data.get("log_file_max_bytes", 200_000)),
         llm_log_console_max_chars=int(data.get("llm_log_console_max_chars", 2000)),
         llm_log_file_max_chars=int(data.get("llm_log_file_max_chars", 8000)),
         llm_log_console_value_max_chars=int(data.get("llm_log_console_value_max_chars", 100)),
