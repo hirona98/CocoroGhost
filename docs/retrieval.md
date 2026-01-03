@@ -18,9 +18,9 @@ CocoroGhost における記憶呼び出しシステム。会話に関連する�
 ┌─────────────────────────────────────────────────────┐
 │ Phase 1: 固定クエリ生成（LLMレス）                    │
 │                                                     │
-│  入力: user_text + recent_conversation              │
+│  入力: input_text + recent_conversation             │
 │  処理: 固定2本のクエリを生成（展開なし）               │
-│  出力: queries[] = [user_text, context+user_text]   │
+│  出力: queries[] = [input_text, context+input_text] │
 └─────────────────────────────────────────────────────┘
     │
     ▼
@@ -36,7 +36,7 @@ CocoroGhost における記憶呼び出しシステム。会話に関連する�
 ┌─────────────────────────────────────────────────────┐
 │ Phase 3: ヒューリスティック Rerank（LLMレス）         │
 │                                                     │
-│  入力: user_text + context + candidates             │
+│  入力: input_text + context + candidates            │
 │  処理: 軽量スコアリング + 閾値判定                   │
 │  出力: relevant_episodes[] (0-5件)                  │
 └─────────────────────────────────────────────────────┘
@@ -57,10 +57,10 @@ sequenceDiagram
     participant FTS as FTS5 (BM25)
     participant DB as Memory DB
 
-    MM->>RET: retrieve(user_text, recent_conv)
+    MM->>RET: retrieve(input_text, recent_conv)
 
     Note over RET: Phase 1: 固定クエリ生成
-    RET->>RET: Q1=user_text, Q2=context+user_text
+    RET->>RET: Q1=input_text, Q2=context+input_text
 
     Note over RET,FTS: Phase 2: Hybrid Search
     RET->>EMB: embed([Q1, Q2])
@@ -97,17 +97,17 @@ LLM や形態素解析を使わず、固定的なクエリを生成して検索�
 
 | クエリ | 内容 | 目的 |
 |--------|------|------|
-| `Q1` | `user_text` | 直近文脈に引っ張られない検索 |
-| `Q2` | `context + "---" + user_text` | 会話の連続性を考慮した検索 |
+| `Q1` | `input_text` | 直近文脈に引っ張られない検索 |
+| `Q2` | `context + "---" + input_text` | 会話の連続性を考慮した検索 |
 
 ```python
 context = _format_recent_conversation(recent_conversation, max_messages=6)
 if context:
-    original_query = f"{context}\n---\n{user_text}"
+    original_query = f"{context}\n---\n{input_text}"
 else:
-    original_query = user_text
+    original_query = input_text
 
-all_queries = [user_text, original_query]  # 重複時は1本
+all_queries = [input_text, original_query]  # 重複時は1本
 ```
 
 ### 設計判断
@@ -145,7 +145,7 @@ all_queries = [user_text, original_query]  # 重複時は1本
 
 ```sql
 CREATE VIRTUAL TABLE IF NOT EXISTS episode_fts USING fts5(
-    user_text,
+    input_text,
     reply_text,
     content='payload_episode',
     content_rowid='unit_id',
@@ -278,7 +278,7 @@ reason = f"heuristic rerank: score={final:.3f} rrf={rrf_norm:.3f} lex={lex:.3f} 
 以下は現在の会話に関連する過去のやりとりです。
 
 [2024-12-01] プロジェクトXの進捗について
-User: 「今週中に完成させたい」
+Speaker: 「今週中に完成させたい」
 Persona: 「締切は金曜日でしたね。サポートしますよ」
 → 関連: heuristic rerank: score=0.42 ...
 ```
@@ -311,7 +311,7 @@ def should_inject_episodes(relevant_episodes: list[RankedEpisode]) -> bool:
 @dataclass(frozen=True)
 class RankedEpisode:
     unit_id: int
-    user_text: str
+    input_text: str
     reply_text: str
     occurred_at: int
     relevance: Literal["high", "medium"]
@@ -324,7 +324,7 @@ class RankedEpisode:
 @dataclass(frozen=True)
 class CandidateEpisode:
     unit_id: int
-    user_text: str
+    input_text: str
     reply_text: str
     occurred_at: int
     rrf_score: float
@@ -347,14 +347,14 @@ class Retriever:
 
     def retrieve(
         self,
-        user_text: str,
+        input_text: str,
         recent_conversation: Sequence[Message],
         *,
         max_candidates: int = 60,
         max_results: int = 5,
     ) -> list[RankedEpisode]:
-        candidates = self._search_candidates(user_text, recent_conversation, max_candidates)
-        ranked = self._rerank(user_text, recent_conversation, candidates, max_results)
+        candidates = self._search_candidates(input_text, recent_conversation, max_candidates)
+        ranked = self._rerank(input_text, recent_conversation, candidates, max_results)
         return ranked
 ```
 

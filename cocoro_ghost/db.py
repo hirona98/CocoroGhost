@@ -21,8 +21,6 @@ from sqlalchemy import create_engine, event, func, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
-from cocoro_ghost.defaults import DEFAULT_EXCLUDE_KEYWORDS_JSON
-
 logger = logging.getLogger(__name__)
 
 # sqlite-vec 仮想テーブル名（検索用ベクトルインデックス）
@@ -174,7 +172,7 @@ def _enable_episode_fts(engine) -> None:
             text(
                 f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS {EPISODE_FTS_TABLE_NAME} USING fts5(
-                    user_text,
+                    input_text,
                     reply_text,
                     content='payload_episode',
                     content_rowid='unit_id',
@@ -192,8 +190,8 @@ def _enable_episode_fts(engine) -> None:
                 CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_ai
                 AFTER INSERT ON payload_episode
                 BEGIN
-                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, user_text, reply_text)
-                    VALUES (new.unit_id, new.user_text, new.reply_text);
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, input_text, reply_text)
+                    VALUES (new.unit_id, new.input_text, new.reply_text);
                 END;
                 """
             )
@@ -205,8 +203,8 @@ def _enable_episode_fts(engine) -> None:
                 CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_ad
                 AFTER DELETE ON payload_episode
                 BEGIN
-                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, user_text, reply_text)
-                    VALUES ('delete', old.unit_id, old.user_text, old.reply_text);
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, input_text, reply_text)
+                    VALUES ('delete', old.unit_id, old.input_text, old.reply_text);
                 END;
                 """
             )
@@ -218,10 +216,10 @@ def _enable_episode_fts(engine) -> None:
                 CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_au
                 AFTER UPDATE ON payload_episode
                 BEGIN
-                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, user_text, reply_text)
-                    VALUES ('delete', old.unit_id, old.user_text, old.reply_text);
-                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, user_text, reply_text)
-                    VALUES (new.unit_id, new.user_text, new.reply_text);
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, input_text, reply_text)
+                    VALUES ('delete', old.unit_id, old.input_text, old.reply_text);
+                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, input_text, reply_text)
+                    VALUES (new.unit_id, new.input_text, new.reply_text);
                 END;
                 """
             )
@@ -594,13 +592,14 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     if global_settings is None:
         global_settings = models.GlobalSettings(
             token=toml_config.token,
-            exclude_keywords=DEFAULT_EXCLUDE_KEYWORDS_JSON,
             memory_enabled=True,
+            # 視覚（Vision）: デスクトップウォッチ（初期は無効）
+            desktop_watch_enabled=False,
+            desktop_watch_interval_seconds=300,
+            desktop_watch_target_client_id=None,
         )
         session.add(global_settings)
         session.flush()
-    elif not global_settings.exclude_keywords:
-        global_settings.exclude_keywords = DEFAULT_EXCLUDE_KEYWORDS_JSON
     if not getattr(global_settings, "token", ""):
         global_settings.token = toml_config.token
 

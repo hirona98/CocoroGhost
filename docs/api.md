@@ -17,7 +17,8 @@
 ```json
 {
   "embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "user_text": "string",
+  "client_id": "console-uuid-or-stable-id",
+  "input_text": "string",
   "images": [
     {"type": "image", "base64": "..."}
   ],
@@ -30,6 +31,7 @@
 ```
 
 - `embedding_preset_id` は必須
+- `client_id` は必須（発話者クライアントの識別子）。視覚（Vision）命令の宛先決定にも使用する。
 - `embedding_preset_id` は embedding_presets.id（UUID）を想定。埋め込み次元が一致しないDBは初期化に失敗するため、次元一致を前提に指定する
 - 注意: `jobs` は `memory_<embedding_preset_id>.db` に作られるが、内蔵Workerの処理対象は `active_embedding_preset_id`（アクティブな `embedding_preset_id`）のみ。非アクティブ `embedding_preset_id` のジョブは処理されない。
 - `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
@@ -57,88 +59,10 @@ data: {"message":"...","code":"..."}
 1. 画像要約（`images` がある場合）
 2. Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 3. Schedulerで **MemoryPack** を生成（検索結果を `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>` に含む）
-4. LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + persona_affect_trailer_prompt）を渡し、conversation は直近会話（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ user_text を渡す
+4. LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + persona_affect_trailer_prompt）を渡し、conversation は直近会話（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ input_text を渡す
 5. 返答をSSEで配信（返答末尾の内部JSON＝persona_affect trailer はサーバ側で回収し、SSEには流さない）
 6. `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 7. Worker用ジョブを enqueue（reflection/extraction/embedding等）
-
-## `/api/persona_mood`（デバッグ）
-
-persona_mood（AI人格の機嫌）関連の数値を **UIから参照/変更**するためのデバッグ用API。
-
-- **永続化しない**（DB/settings.db に保存しない）
-- 反映は **同一プロセス内**のみ（プロセスを跨ぐ構成ではプロセスごとに状態が分離される）
-- 認証は他の `/api/*` と同様に `Authorization: Bearer <TOKEN>`
-
-### `GET /api/persona_mood`
-
-persona_mood の **前回チャットで使った値（last used）** を返す。
-（LLMに渡す直前でDBから取得して計算するため、"現在値"という概念はない）
-
-- `PUT /api/persona_mood` で override を設定しても、**会話（/api/chat）が走るまでは** last used は更新されない
-
-#### Response（JSON）
-
-システムが実際に利用する persona_mood（有効値）を返す。
-
-```json
-{
-  "label": "neutral",
-  "intensity": 0.0,
-  "components": {
-    "joy": 0.0,
-    "sadness": 0.0,
-    "anger": 0.0,
-    "fear": 0.0
-  },
-  "response_policy": {
-    "cooperation": 1.0,
-    "refusal_bias": 0.0,
-    "refusal_allowed": false
-  }
-}
-```
-
-### `PUT /api/persona_mood`
-
-in-memory の persona_mood ランタイム状態（次のチャットで有効な値）を設定する
-
-#### Request（JSON）
-
-```json
-{
-  "label": "anger",
-  "intensity": 0.8,
-  "components": {
-    "joy": 0.0,
-    "sadness": 0.1,
-    "anger": 0.9,
-    "fear": 0.0
-  },
-  "response_policy": {
-    "cooperation": 0.2,
-    "refusal_bias": 0.8,
-    "refusal_allowed": true
-  }
-}
-```
-
-- `label` は `joy|sadness|anger|fear|neutral` のいずれか
-- `intensity` は 0..1
-- `components` は `joy/sadness/anger/fear` を **すべて指定**（0..1）
-- `response_policy` は `cooperation/refusal_bias/refusal_allowed` を **すべて指定**
-
-#### Response
-
-`GET /api/persona_mood` と同形式（有効値を返す）。
-
-### `DELETE /api/persona_mood`
-
-in-memory の persona_mood ランタイム状態（override）を解除し、自然計算（DBからの同期計算）に戻す。
-
-#### Response
-
-`GET /api/persona_mood` と同形式（解除後の有効値を返す）。
 
 ## `/api/v2/notification`
 
@@ -189,7 +113,7 @@ Invoke-RestMethod -Method Post `
 ```
 
 - HTTPレスポンスは先に返り、AI人格のセリフ（`data.message`）は `/api/events/stream` で後から届く
-- 保存は `units(kind=EPISODE, source=notification)` + `payload_episode.user_text` に本文を入れ、必要なら `context_note` に構造化JSONを入れる
+- 保存は `units(kind=EPISODE, source=notification)` + `payload_episode.input_text` に本文を入れ、必要なら `context_note` に構造化JSONを入れる
 - `images` がある場合は `payload_episode.image_summary` に要約を保存する
 
 
@@ -236,7 +160,38 @@ Invoke-RestMethod -Method Post `
 
 - HTTPレスポンスは先に返り、AI人格のセリフ（`data.message`）は `/api/events/stream` で後から届く
 - `instruction` / `payload_text` は **永続化しない**（生成にのみ利用）
-- 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=meta-request)` の `payload_episode.reply_text` に保存する
+- 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=proactive)` の `payload_episode.reply_text` に保存する
+
+## `/api/v2/vision/capture-response`
+
+CocoroConsole等のクライアントが、`/api/events/stream` で受け取った `vision.capture_request` に対する画像取得結果を返す。
+
+### Request（JSON）
+
+```json
+{
+  "request_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "client_id": "console-uuid-or-stable-id",
+  "images": [
+    "data:image/jpeg;base64,/9j/4AAQ..."
+  ],
+  "client_context": {
+    "active_app": "string",
+    "window_title": "string",
+    "locale": "ja-JP"
+  },
+  "error": null
+}
+```
+
+- `request_id` は `vision.capture_request.data.request_id` と一致させる（相関用）。
+- `images` は Data URI 形式。
+- `error` が非nullの場合、`images` は空でよい。
+- `client_id` は `/api/chat` の `client_id` と一致させる（どのクライアントのキャプチャかを一意にするため）。
+
+### Response
+
+- `204 No Content`
 
 ## 管理API
 
@@ -267,7 +222,8 @@ Invoke-RestMethod -Method Post `
 
 - `/api/settings`（UI向けの設定取得/更新）
 - `/api/logs/stream`（WebSocketログ購読）
-- `/api/events/stream`（WebSocketイベント購読: notification/meta-request）
+- `/api/events/stream`（WebSocketイベント購読: notification/meta-request/desktop_watch + vision command）
+- `/api/v2/vision/capture-response`（視覚: 画像取得結果の返却）
 
 ## `/api/settings`
 
@@ -279,8 +235,10 @@ UI向けの「全設定」取得/更新。
 
 ```json
 {
-  "exclude_keywords": ["例:除外したい単語"],
   "memory_enabled": true,
+  "desktop_watch_enabled": false,
+  "desktop_watch_interval_seconds": 300,
+  "desktop_watch_target_client_id": "console-uuid-or-stable-id",
   "reminders_enabled": true,
   "reminders": [
     {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
@@ -336,7 +294,6 @@ UI向けの「全設定」取得/更新。
 
 - `scheduled_at` はISO 8601のdatetime（Pydanticがパース可能な形式）で返す
 - `memory_enabled` は「記憶機能を使うか」を示す設定値
-- `exclude_keywords` は現状未使用（将来の入力フィルタ用途として予約）
 
 ### `PUT /api/settings`
 
@@ -353,8 +310,10 @@ UI向けの「全設定」取得/更新。
 
 ```json
 {
-  "exclude_keywords": ["string"],
   "memory_enabled": true,
+  "desktop_watch_enabled": false,
+  "desktop_watch_interval_seconds": 300,
+  "desktop_watch_target_client_id": "console-uuid-or-stable-id",
   "reminders_enabled": true,
   "reminders": [
     {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
@@ -419,7 +378,10 @@ UI向けの「全設定」取得/更新。
 - 各配列内で `*_preset_id` が重複している場合は `400`
 - `active_*_preset_id` は **対応する配列に含まれるID**である必要がある（未存在/アーカイブは `400`）
 - `active_embedding_preset_id` は記憶DB識別子（= `embedding_preset_id`）で、変更時はメモリDB初期化を検証する（失敗時 `400`）
+- `desktop_watch_*` はデスクトップウォッチ（視覚/能動監視）の設定。
 - `max_inject_tokens` / `similar_limit_by_kind` 等の詳細パラメータは現状API外
+- base_url（`llm_base_url` / `embedding_base_url` / `image_llm_base_url`）は、ローカルLLM等の OpenAI互換エンドポイント向けに使用できる（任意）。
+- OpenRouter の embeddings は `embedding_model="openrouter/<model slug>"` を指定すると、`embedding_base_url` 未指定でもサーバ内部で `https://openrouter.ai/api/v1` を自動設定して呼び出す。
 
 ## `/api/logs/stream`（WebSocket）
 
@@ -444,7 +406,9 @@ UI向けの「全設定」取得/更新。
 
 - URL: `ws(s)://<host>/api/events/stream`
 - 認証: `Authorization: Bearer <TOKEN>`
-- 目的: `POST /api/v2/notification` / `POST /api/v2/meta-request` を受信したとき、接続中クライアントへ即時にイベントを配信する
+- 目的:
+  - `POST /api/v2/notification` / `POST /api/v2/meta-request` を受信したとき、接続中クライアントへ即時にイベントを配信する
+  - 視覚（Vision）のための `vision.capture_request` をクライアントへ送る（命令）
 - 挙動: 接続直後に最大200件のバッファ済みイベントを送信し、その後は新規イベントをリアルタイムでpushする
 
 ### Event payload（JSON text）
@@ -454,7 +418,7 @@ UI向けの「全設定」取得/更新。
 ```json
 {
   "unit_id": 12345,
-  "type": "notification|meta-request",
+  "type": "notification|meta-request|desktop_watch|vision.capture_request",
   "data": {
     "system_text": "string",
     "message": "string"
@@ -480,9 +444,53 @@ UI向けの「全設定」取得/更新。
     "message": "AI人格のセリフ",
   }
 }
+
+{
+  "unit_id": 12345,
+  "type": "desktop_watch",
+  "data": {
+    "system_text": "[desktop_watch] active_app window_title",
+    "message": "AI人格のセリフ"
+  }
+}
+```
+
+- 視覚（命令）例）
+```json
+{
+  "unit_id": 0,
+  "type": "vision.capture_request",
+  "data": {
+    "request_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "source": "desktop|camera",
+    "mode": "still",
+    "purpose": "chat|desktop_watch",
+    "timeout_ms": 5000
+  }
+}
 ```
 
 - 認証: `Authorization: Bearer <TOKEN>`（HTTPヘッダ）
+
+補足:
+- `vision.capture_request` は遅延実行を避けるため、サーバ側で **バッファに保持しない**（接続直後のキャッチアップ対象外）。
+- `vision.capture_request` を特定クライアントへ送るため、クライアントは接続直後に `hello` を送って client_id を登録する必要がある（Vision利用時）。
+
+### Client message（必須: Vision利用時 / JSON text）
+
+クライアントは接続直後に `hello` を送って client_id を登録する（Client→Ghost）。
+
+```json
+{
+  "type": "hello",
+  "client_id": "console-uuid-or-stable-id",
+  "caps": ["vision.desktop", "vision.camera"]
+}
+```
+
+補足:
+- `client_id` は `/api/chat` の `client_id` と一致させる（発話者＝命令宛先の一意化のため）。
+- `caps` は予約（将来の `video` 等）。現状は未使用。
 
 
 ## `/api/health`

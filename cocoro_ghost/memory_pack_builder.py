@@ -2,7 +2,8 @@
 MemoryPack生成（取得計画器）
 
 会話に注入する「内部コンテキスト（MemoryPack）」を組み立てる。
-Facts、Summary、Loops、Episode証拠、Capsule、persona_mood_state等を
+Facts、Summary、Loops、Episode証拠、CONTEXT_CAPSULE（時刻/状況/画像要約）、
+persona_mood_state等を
 トークン予算内で優先順位に従って構築する。
 """
 
@@ -23,7 +24,6 @@ from cocoro_ghost.unit_enums import Sensitivity, UnitKind
 from cocoro_ghost.unit_models import (
     Entity,
     EntityAlias,
-    PayloadCapsule,
     PayloadEpisode,
     PayloadFact,
     PayloadLoop,
@@ -31,7 +31,7 @@ from cocoro_ghost.unit_models import (
     Unit,
     UnitEntity,
 )
-from cocoro_ghost.persona_mood_runtime import apply_persona_mood_state_override, set_last_used
+
 from cocoro_ghost.fact_policy import (
     canonicalize_fact_predicate,
     effective_fact_ts,
@@ -51,7 +51,6 @@ logger = logging.getLogger(__name__)
 # MemoryPackの見出しは日常会話で衝突しにくい形式に統一する。
 MEMORY_PACK_SECTION_PREFIX = "<<<COCORO_GHOST_SECTION:"
 MEMORY_PACK_SECTION_SUFFIX = ">>>"
-_TIME_KEYS_FOR_LLM = {"generated_at", "occurred_at", "created_at", "expires_at", "now_ts"}
 
 
 def format_memory_pack_section(title: str, body_lines: Sequence[str]) -> str:
@@ -76,40 +75,6 @@ def _to_local_iso(ts: int | float | None) -> str | None:
         return datetime.fromtimestamp(float(ts)).astimezone().isoformat()
     except Exception:  # noqa: BLE001
         return None
-
-
-def _convert_time_fields_for_llm(obj: Any) -> Any:
-    """
-    LLMに渡す前提で、既知の時刻キーだけローカル時刻へ変換する。
-    """
-    if isinstance(obj, dict):
-        out: dict[str, Any] = {}
-        for k, v in obj.items():
-            if k in _TIME_KEYS_FOR_LLM and isinstance(v, (int, float)):
-                out[k] = _to_local_iso(v) or v
-                continue
-            out[k] = _convert_time_fields_for_llm(v)
-        return out
-    if isinstance(obj, list):
-        return [_convert_time_fields_for_llm(v) for v in obj]
-    return obj
-
-
-def _convert_capsule_json_for_llm(capsule_json: str | None) -> str | None:
-    """
-    capsule_json内の時刻をローカル時刻に変換してから返す。
-    """
-    if not capsule_json:
-        return None
-    try:
-        obj = json.loads(capsule_json)
-    except Exception:  # noqa: BLE001
-        return capsule_json
-    converted = _convert_time_fields_for_llm(obj)
-    try:
-        return json.dumps(converted, ensure_ascii=False, separators=(",", ":"))
-    except Exception:  # noqa: BLE001
-        return capsule_json
 
 
 def now_utc_ts() -> int:
@@ -160,7 +125,7 @@ def _format_fact_line(
     - predicate は制御語彙（正規形）を想定する。
     - obj_text は表示のための補助であり、同一性判定には別ロジックを使う。
     """
-    s = subject or "USER"
+    s = subject or "SPEAKER"
     o = obj_text or ""
     o = o.strip()
     if o:
@@ -361,7 +326,7 @@ def extract_entity_names_with_llm(llm_client: "LlmClient", text: str) -> list[st
         # ここは「names only」専用の軽量プロンプトを使う（roles/relationsの推測を避ける）。
         resp = llm_client.generate_json_response(
             system_prompt=prompts.get_entity_names_only_prompt(),
-            user_text=text,
+            input_text=text,
             purpose=LlmRequestPurpose.ENTITY_NAME_EXTRACT,
         )
         raw = llm_client.response_content(resp)
@@ -416,10 +381,15 @@ def match_entity_ids(candidate_names: Sequence[str], alias_rows: Sequence[tuple[
     return ids
 
 
-def _get_user_entity_id(db: Session) -> Optional[int]:
+def _get_speaker_entity_id(db: Session) -> Optional[int]:
+    """
+    「直接やりとりしている相手（SPEAKER）」に対応する Entity.id を返す。
+
+    見つからない場合は None。
+    """
     row = (
         db.query(Entity.id)
-        .filter(Entity.normalized == "user")
+        .filter(Entity.normalized == "speaker")
         .order_by(Entity.id.asc())
         .limit(1)
         .scalar()
@@ -460,7 +430,7 @@ def should_inject_episodes(relevant_episodes: Sequence["RankedEpisode"]) -> bool
 def build_memory_pack(
     *,
     db: Session,
-    user_text: str,
+    input_text: str,
     image_summaries: Sequence[str] | None,
     client_context: Dict[str, Any] | None,
     now_ts: int,
@@ -479,23 +449,6 @@ def build_memory_pack(
     max_chars = _token_budget_to_char_budget(max_inject_tokens)
     # 一旦「注入（引き出し）」を無制限にする（SECRETまで許可）。
     sensitivity_max = int(Sensitivity.SECRET)
-
-    capsule_json: Optional[str] = None
-    cap_row = (
-        db.query(Unit, PayloadCapsule)
-        .join(PayloadCapsule, PayloadCapsule.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.CAPSULE),
-            Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= sensitivity_max,
-            (PayloadCapsule.expires_at.is_(None) | (PayloadCapsule.expires_at > now_ts)),
-        )
-        .order_by(Unit.created_at.desc(), Unit.id.desc())
-        .first()
-    )
-    if cap_row:
-        _cu, cap = cap_row
-        capsule_json = (cap.capsule_json or "").strip() or None
 
     def _persona_mood_guidance_from_state(state: dict[str, Any]) -> str | None:
         """persona_mood_state を本文の口調へ落とし込むための短い指示（内部向け）。
@@ -526,10 +479,10 @@ def build_memory_pack(
 
     # Facts（intent→entity解決→スコアで上位）
     matched_entity_ids = {int(eid) for eid in matched_entity_ids if eid is not None}
-    user_entity_id = _get_user_entity_id(db)
+    speaker_entity_id = _get_speaker_entity_id(db)
     fact_entity_ids = set(matched_entity_ids)
-    if user_entity_id is not None:
-        fact_entity_ids.add(user_entity_id)
+    if speaker_entity_id is not None:
+        fact_entity_ids.add(speaker_entity_id)
 
     fact_q = (
         db.query(Unit, PayloadFact)
@@ -734,11 +687,11 @@ def build_memory_pack(
             return t[:limit].rstrip() + "…"
 
         if strategy == "full":
-            user_limit, reply_limit = 420, 520
+            input_limit, reply_limit = 420, 520
         elif strategy == "summarize":
-            user_limit, reply_limit = 180, 220
+            input_limit, reply_limit = 180, 220
         else:
-            user_limit, reply_limit = 120, 160
+            input_limit, reply_limit = 120, 160
 
         evidence_lines.append("以下は現在の会話に関連する過去のやりとりです。")
         evidence_lines.append("")
@@ -748,7 +701,7 @@ def build_memory_pack(
             if date_s:
                 evidence_lines.append(f"[{date_s}]")
 
-            ut = _truncate(e.user_text, user_limit)
+            ut = _truncate(e.input_text, input_limit)
             rt = _truncate(e.reply_text, reply_limit)
             reason = _truncate(e.reason, 180)
 
@@ -757,7 +710,7 @@ def build_memory_pack(
                 evidence_lines.append(f"要点: {combined}")
             else:
                 if ut:
-                    evidence_lines.append(f'User: 「{ut}」')
+                    evidence_lines.append(f'Speaker: 「{ut}」')
                 if rt:
                     evidence_lines.append(f'Persona: 「{rt}」')
 
@@ -767,10 +720,6 @@ def build_memory_pack(
 
     # Context capsule（軽量）
     capsule_parts: List[str] = []
-    if capsule_json:
-        # LLM向けに時刻だけローカルへ変換する。
-        capsule_local = _convert_capsule_json_for_llm(capsule_json)
-        capsule_parts.append(f"capsule_json: {capsule_local}")
     now_local = datetime.fromtimestamp(now_ts).astimezone().isoformat()
     capsule_parts.append(f"now_local: {now_local}")
     if client_context:
@@ -794,12 +743,10 @@ def build_memory_pack(
             capsule_parts.append("---IMAGE_SUMMARY_END---")
             capsule_parts.append("")
 
-    # AI人格の感情（重要度×時間減衰）を同期計算して注入する。
+    # AI人格の機嫌（重要度×時間減衰）を同期計算して注入する。
     #
     # 目的:
-    # - /api/chat は「返信生成の前」に MemoryPack を組むため、capsule_refresh（Worker）がまだ走っていないと
-    #   "persona_mood_state" が注入されず、感情の反映が1ターン遅れやすい。
-    # - ここで同期計算して `CONTEXT_CAPSULE` に入れることで、「直前の出来事」まで含めた機嫌を次ターンから使える。
+    # - 会話品質優先のため、「チャット直前に同期計算した persona_mood_state」を唯一の正として注入する。
     #
     # 計算式（persona_mood の積分ロジック）:
     #   impact = persona_affect_intensity × salience × confidence × exp(-Δt/τ(salience))
@@ -844,8 +791,6 @@ def build_memory_pack(
                 }
             )
         persona_mood_state = compute_persona_mood_state_from_episodes(persona_mood_episodes, now_ts=now_ts)
-        # デバッグ用: UI/API から in-memory ランタイム状態を適用する
-        persona_mood_state = apply_persona_mood_state_override(persona_mood_state, now_ts=now_ts)
         compact = {
             "label": persona_mood_state.get("label"),
             "intensity": persona_mood_state.get("intensity"),
@@ -853,18 +798,12 @@ def build_memory_pack(
             "response_policy": persona_mood_state.get("response_policy"),
             "now_local": _to_local_iso(now_ts),
         }
-        # UI向け: 前回チャットで使った値（注入した値）を保存する。
-        # ここでの値が、次のチャットの直前状態として扱われる。
-        try:
-            set_last_used(now_ts=now_ts, state=compact)
-        except Exception:  # noqa: BLE001
-            pass
         capsule_parts.append(
             f"persona_mood_state: {json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}"
         )
 
         # persona_mood_state を口調へ確実に反映させるため、短い言語ガイドを併記する。
-        # ※ capsule_json（過去の状態や直近のJoy発話など）に強く引っ張られないよう、こちらを優先材料にする。
+        # 数値をそのまま渡すより、言語化した指示の方が安定するため。
         guidance = _persona_mood_guidance_from_state(
             persona_mood_state if isinstance(persona_mood_state, dict) else {}
         )
@@ -893,7 +832,7 @@ def build_memory_pack(
         return "".join(parts)
 
     # NOTE:
-    # - capsule_json と同期計算した persona_mood_state の両方を注入する。
+    # - 会話品質優先のため、persona_mood_state は同期計算した値のみを注入する（正は1つ）。
     capsule_lines: List[str] = []
     capsule_lines.extend(capsule_parts)
 

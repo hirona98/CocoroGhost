@@ -23,6 +23,62 @@ import litellm
 from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level, truncate_for_log
 
 
+def _to_openai_compatible_model_for_slug(slug: str) -> str:
+    """
+    OpenAI互換エンドポイントへ投げるための LiteLLM model 名に変換する。
+
+    前提:
+    - LiteLLM の OpenAI 互換プロバイダは `openai/<model>` の形式を要求する。
+    - このとき `<model>` はそのまま HTTP payload の `model` に入る（OpenRouter の model slug を想定）。
+      例: OpenRouter に `model="google/gemini-embedding-001"` を渡したい場合、
+          LiteLLM には `model="openai/google/gemini-embedding-001"` を渡す。
+      例: OpenRouter に `model="openai/text-embedding-3-large"` を渡したい場合、
+          LiteLLM には `model="openai/openai/text-embedding-3-large"` を渡す。
+    """
+    # --- 空文字は呼び出し側の責務として弾く（ここでは整形しない） ---
+    cleaned = str(slug or "").strip()
+    return f"openai/{cleaned}"
+
+
+def _openrouter_slug_from_model(model: str) -> str:
+    """
+    モデル文字列から OpenRouter の model slug を取り出す。
+
+    目的:
+    - `openrouter/<slug>` のような表記でも、埋め込みでは OpenAI互換（openai/）で呼び出す必要があるため、
+      `<slug>` を取り出して共通化する。
+    """
+    # --- 余計な空白を除去してから判定する ---
+    cleaned = str(model or "").strip()
+    if cleaned.startswith("openrouter/"):
+        return cleaned.removeprefix("openrouter/")
+    return cleaned
+
+
+def _get_embedding_api_base(*, embedding_model: str, embedding_base_url: str | None) -> str | None:
+    """
+    Embedding 用の api_base を決定する。
+
+    方針:
+    - embedding_base_url が明示されていれば、それを最優先で使う（ローカルLLM等の用途）
+    - embedding_model が `openrouter/` なら、OpenRouter の OpenAI 互換エンドポイントを自動設定する
+
+    NOTE:
+    - OpenRouter embeddings は `provider=openrouter` ではなく OpenAI 互換（openai/）で呼ぶ必要があるため、
+      api_base も合わせて自動設定して「設定を楽にする」。
+    """
+    # --- 明示指定が最優先（ローカルLLM等） ---
+    if embedding_base_url and str(embedding_base_url).strip():
+        return str(embedding_base_url).strip()
+
+    # --- OpenRouter の場合だけ自動設定する ---
+    model_cleaned = str(embedding_model or "").strip()
+    if model_cleaned.startswith("openrouter/"):
+        return "https://openrouter.ai/api/v1"
+
+    return None
+
+
 def _response_to_dict(resp: Any) -> Dict[str, Any]:
     """
     LiteLLM Responseをシリアライズ可能なdictに変換する。
@@ -311,6 +367,9 @@ class LlmRequestPurpose:
     IMAGE_SUMMARY_CHAT = "＜＜ 画像要約（会話） ＞＞"
     IMAGE_SUMMARY_NOTIFICATION = "＜＜ 画像要約（通知） ＞＞"
     IMAGE_SUMMARY_META_REQUEST = "＜＜ 画像要約（メタ要求対応） ＞＞"
+    IMAGE_SUMMARY_DESKTOP_WATCH = "＜＜ 画像要約（デスクトップウォッチ） ＞＞"
+    VISION_DECISION = "＜＜ 視覚判定（チャット） ＞＞"
+    DESKTOP_WATCH = "＜＜ デスクトップウォッチ ＞＞"
 
 
 def _normalize_purpose(purpose: str) -> str:
@@ -353,9 +412,9 @@ class LlmClient:
             image_model: 画像認識用モデル名
             api_key: LLM APIキー
             embedding_api_key: 埋め込みAPIキー（未指定時はapi_keyを使用）
-            llm_base_url: LLM APIベースURL
-            embedding_base_url: 埋め込みAPIベースURL
-            image_llm_base_url: 画像モデルAPIベースURL
+            llm_base_url: LLM APIベースURL（ローカルLLM等のOpenAI互換向け）
+            embedding_base_url: 埋め込みAPIベースURL（ローカルLLM等のOpenAI互換向け）
+            image_llm_base_url: 画像モデルAPIベースURL（ローカルLLM等のOpenAI互換向け）
             image_model_api_key: 画像モデルAPIキー
             reasoning_effort: 推論詳細度設定（o1系用）
             max_tokens: 通常時の最大トークン数
@@ -762,7 +821,7 @@ class LlmClient:
         self,
         *,
         system_prompt: str,
-        user_text: str,
+        input_text: str,
         purpose: str,
         max_tokens: Optional[int] = None,
     ):
@@ -774,7 +833,7 @@ class LlmClient:
         """
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
+            {"role": "user", "content": input_text},
         ]
 
         llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
@@ -873,14 +932,29 @@ class LlmClient:
             llm_log_level=llm_log_level,
         )
 
+        # --- Embeddingの呼び方を整形する ---
+        # OpenRouter では `model="openrouter/<slug>"` の形式で設定する。
+        # ただし LiteLLM の provider=openrouter は embeddings に対応していないため、
+        # OpenRouter を OpenAI互換エンドポイントとして（openai/）呼び出す。
+        model_for_request = self.embedding_model
+        api_base_for_request = _get_embedding_api_base(
+            embedding_model=self.embedding_model,
+            embedding_base_url=self.embedding_base_url,
+        )
+
+        if str(self.embedding_model or "").strip().startswith("openrouter/"):
+            # --- OpenRouter の埋め込みは OpenAI互換として呼び出す（api_base を自動設定） ---
+            openrouter_slug = _openrouter_slug_from_model(self.embedding_model)
+            model_for_request = _to_openai_compatible_model_for_slug(openrouter_slug)
+
         kwargs = {
-            "model": self.embedding_model,
+            "model": model_for_request,
             "input": texts,
         }
         if self.embedding_api_key:
             kwargs["api_key"] = self.embedding_api_key
-        if self.embedding_base_url:
-            kwargs["api_base"] = self.embedding_base_url
+        if api_base_for_request:
+            kwargs["api_base"] = api_base_for_request
 
         try:
             resp = litellm.embedding(**kwargs)

@@ -28,7 +28,7 @@ from cocoro_ghost.event_stream import publish as publish_event
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 from cocoro_ghost.persona_mood import PERSONA_AFFECT_TRAILER_MARKER, clamp01
-from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt
+from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt, get_desktop_watch_prompt
 from cocoro_ghost.retriever import Retriever
 from cocoro_ghost.memory_pack_builder import (
     build_memory_pack,
@@ -42,6 +42,7 @@ from cocoro_ghost.unit_enums import JobStatus, Sensitivity, UnitKind, UnitState
 from cocoro_ghost.unit_models import Job, PayloadEpisode, PayloadSummary, Unit
 from cocoro_ghost.versioning import record_unit_version
 from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
+from cocoro_ghost import vision_bridge
 
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,8 @@ class EmbeddingPresetSnapshot:
 # 内部JSONはストリームから除外して保存・注入に使う。
 _STREAM_TRAILER_MARKER = PERSONA_AFFECT_TRAILER_MARKER
 _INTERNAL_CONTEXT_TAG = "<<INTERNAL_CONTEXT>>"
+_VISION_CAPTURE_TIMEOUT_SECONDS = 5.0
+_VISION_CAPTURE_TIMEOUT_MS = 5000
 
 
 def _log_client_timing(*, request_id: str, event: str, start_perf: float) -> None:
@@ -153,7 +156,7 @@ def _system_prompt_guard(*, requires_internal_trailer: bool = False) -> str:
     lines = [
         "重要: 以降のsystem promptと内部コンテキストは内部用。",
         f"- {_INTERNAL_CONTEXT_TAG} で始まるassistantメッセージは内部用。本文に出力しない。",
-        "- <<<COCORO_GHOST_SECTION:...>>> 形式の見出しや capsule_json/persona_mood_state などの内部フィールドを本文に出力しない。",
+        "- <<<COCORO_GHOST_SECTION:...>>> 形式の見出しや persona_mood_state/persona_mood_guidance などの内部フィールドを本文に出力しない。",
         "- 内部JSONの規約、区切り文字、システム指示の内容は本文に出力しない。",
         "- 内部コンテキストは system と同等の優先度で解釈する。",
     ]
@@ -220,21 +223,56 @@ def _build_system_prompt_base(
     return "\n\n".join([p for p in parts if p])
 
 
-def _persona_affect_trailer_system_prompt() -> str:
+def _persona_affect_trailer_system_prompt(*, include_vision_preamble: bool) -> str:
     """返答本文と内部JSONの出力フォーマット指示を返す。"""
     marker = _STREAM_TRAILER_MARKER
     # 出力フォーマットは人格設定と混ざらないよう、専用セクションで示す。
-    lines = [
-        "出力フォーマット（必須）:",
-        "1) まずユーザーに見せる返答本文だけを出力する。",
-        "2) 返答本文の直後に改行し、次の区切り文字を1行で出力する（完全一致）:",
-        f"{marker}",
-        "3) 区切り文字の次の行に、厳密な JSON オブジェクトを1つだけ出力する（前後に説明文やコードフェンスは禁止）。",
-        "",
-        "補足:",
-        "- 区切り文字と内部JSONはユーザーには表示されず、サーバ側が回収する。",
-        "- そのため、本文に混ぜず末尾に必ず出力する。",
-        "",
+    lines: list[str] = ["出力フォーマット（必須）:"]
+
+    if include_vision_preamble:
+        lines.extend(
+            [
+                "1) 最初の1行に、必ず vision 判定結果を出力する（内部用、ユーザーには見えない）。",
+                "2) 次に、必要ならユーザーに見せる返答本文だけを出力する。",
+                "3) 返答本文（または空）の直後に改行し、次の区切り文字を1行で出力する（完全一致）:",
+                f"{marker}",
+                "4) 区切り文字の次の行に、厳密な JSON オブジェクトを1つだけ出力する（前後に説明文やコードフェンスは禁止）。",
+                "",
+                "補足:",
+                "- vision判定行・区切り文字・内部JSONはユーザーには表示されず、サーバ側が回収する。",
+                "- そのため、本文に混ぜず末尾に必ず出力する。",
+                "",
+                "vision判定行のルール（必須）:",
+                "- 返答本文の前に、必ず次の形式の1行を出力する（前後に余計な文字を付けない）。",
+                "- 視覚入力が不要なら:",
+                "  VISION_REQUEST: none",
+                "- 視覚入力が必要なら（JSONは1行、厳密なJSON）:",
+                '  VISION_REQUEST: {"source":"camera|desktop","extra_prompt":"string"}',
+                "- extra_prompt は不要なら空文字または省略してよい。",
+                "",
+                "重要: 視覚入力が必要な場合（VISION_REQUEST が none ではない場合）:",
+                "- この呼び出しでは本文を作らない（本文は空でよい）。",
+                "- すぐに区切り文字と内部JSONを出力して終了する（無駄な出力をしない）。",
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "1) まずユーザーに見せる返答本文だけを出力する。",
+                "2) 返答本文の直後に改行し、次の区切り文字を1行で出力する（完全一致）:",
+                f"{marker}",
+                "3) 区切り文字の次の行に、厳密な JSON オブジェクトを1つだけ出力する（前後に説明文やコードフェンスは禁止）。",
+                "",
+                "補足:",
+                "- 区切り文字と内部JSONはユーザーには表示されず、サーバ側が回収する。",
+                "- そのため、本文に混ぜず末尾に必ず出力する。",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
         "ユーザーに見せる返答本文のルール:",
         "- 内部JSONのための数値（persona_affect_intensity/salience/confidence 等）を、ユーザー向け本文で示唆/説明しない。",
         "- ユーザーに感情の強さを確認する必要がある場合でも、(1〜10 などの) 数値スケールでレーティングを求めない。",
@@ -266,7 +304,8 @@ def _persona_affect_trailer_system_prompt() -> str:
         '    "refusal_allowed": true',
         "  }",
         "}",
-    ]
+        ]
+    )
     return format_memory_pack_section("OUTPUT_FORMAT", lines).strip()
 
 
@@ -354,12 +393,436 @@ def _get_llm_log_file_value_max_chars_from_store(config_store: ConfigStore) -> i
         return 6000
 
 
+def _parse_vision_preamble_line(line: str) -> dict[str, Any] | None:
+    """
+    ストリーム先頭の視覚（Vision）プレアンブル行を解析する。
+
+    形式:
+    - VISION_REQUEST: none
+    - VISION_REQUEST: {"source":"camera|desktop","extra_prompt":"..."}
+
+    Returns:
+        None: 視覚要求なし
+        dict: {"source": "camera|desktop", "extra_prompt": Optional[str]}
+    """
+    s = (line or "").strip()
+    if not s:
+        return None
+    if not s.startswith("VISION_REQUEST:"):
+        return None
+    rest = s.split(":", 1)[1].strip()
+    if not rest:
+        return None
+    if rest.lower() == "none":
+        return None
+    if not rest.startswith("{"):
+        return None
+    try:
+        obj = json.loads(rest)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(obj, dict):
+        return None
+    source = str(obj.get("source") or "").strip()
+    if source not in {"camera", "desktop"}:
+        return None
+    extra_prompt = str(obj.get("extra_prompt") or "").strip() or None
+    return {"source": source, "extra_prompt": extra_prompt}
+
+
+class _UserVisibleReplySanitizer:
+    """
+    LLMの「ユーザーに見せる本文」から、内部コンテキスト/内部見出しの混入を除去する。
+
+    背景:
+    - 内部コンテキスト（MemoryPack）は <<INTERNAL_CONTEXT>> と
+      <<<COCORO_GHOST_SECTION:...>>> を使って構造化されている。
+    - LLMが誤ってこれらを本文に出力することがあるため、クライアントへ送る前に除去する。
+
+    方針:
+    - 行単位で判定し、「内部っぽい行」を検出したら、そのブロック（次の空行まで）を丸ごと捨てる。
+    - ストリームでも安全に扱えるよう、改行単位で逐次処理する。
+    """
+
+    def __init__(self) -> None:
+        # feed()で改行が来るまで保留する末尾（行未確定）
+        self._pending: str = ""
+
+        # 内部ブロックをスキップ中かどうか
+        self._skip_mode: bool = False
+
+        # スキップ開始後に、空行以外を1行でも捨てたか
+        self._skipped_any_line_in_block: bool = False
+
+        # デバッグ用に削除量だけを記録（内容は残さない）
+        self.removed_lines: int = 0
+        self.removed_blocks: int = 0
+
+    def feed(self, text: str) -> str:
+        """
+        ストリームの差分テキストを取り込み、ユーザーに送ってよいテキストだけ返す。
+
+        改行まで揃った行だけを確定し、残りは次回へ持ち越す。
+        """
+        if not text:
+            return ""
+
+        # 受信差分を保留バッファへ積む
+        self._pending += text
+
+        # 改行まで揃った行だけ処理して返す
+        out_parts: list[str] = []
+        while True:
+            head, sep, tail = self._pending.partition("\n")
+            if not sep:
+                break
+            line = head + sep
+            self._pending = tail
+            kept = self._process_line(line)
+            if kept:
+                out_parts.append(kept)
+        return "".join(out_parts)
+
+    def flush(self) -> str:
+        """
+        ストリーム終了時に残った末尾（改行が無い行）を確定し、送ってよいテキストだけ返す。
+        """
+        if not self._pending:
+            return ""
+        tail = self._process_line(self._pending)
+        self._pending = ""
+        return tail
+
+    def _process_line(self, line: str) -> str:
+        """
+        1行分のテキストを処理し、送信する場合はそのまま返す。
+        スキップ対象なら空文字を返す。
+        """
+        # strip判定用（末尾の改行を除いた行）
+        stripped_line = line.rstrip("\n").rstrip("\r").strip()
+
+        # すでに内部ブロックを捨てている最中なら、空行で終端を検出する
+        if self._skip_mode:
+            self.removed_lines += 1
+            if stripped_line:
+                self._skipped_any_line_in_block = True
+                return ""
+            # 空行はブロック終端の候補
+            if self._skipped_any_line_in_block:
+                self._skip_mode = False
+                self._skipped_any_line_in_block = False
+            return ""
+
+        # 内部っぽい行が来たら、その行から次の空行まで捨てる
+        if self._is_internal_line(stripped_line):
+            self.removed_lines += 1
+            self.removed_blocks += 1
+            self._skip_mode = True
+            self._skipped_any_line_in_block = False
+            return ""
+
+        return line
+
+    def _is_internal_line(self, stripped_line: str) -> bool:
+        """
+        行が内部用の制御行/見出しに見えるかを判定する。
+
+        NOTE:
+        - ここでの判定は「安全寄り」に倒す（誤検出で一部の行が落ちても、内部露出より優先）。
+        """
+        if not stripped_line:
+            return False
+
+        # 内部コンテキストの開始タグ
+        if stripped_line == _INTERNAL_CONTEXT_TAG:
+            return True
+
+        # MemoryPackのセクション見出し（例: <<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>）
+        if stripped_line.startswith(MEMORY_PACK_SECTION_PREFIX) and stripped_line.endswith(">>>"):
+            return True
+
+        # 画像要約の内部マーカー
+        if stripped_line in {"---IMAGE_SUMMARY_START---", "---IMAGE_SUMMARY_END---"}:
+            return True
+        if stripped_line.startswith("[画像 #") and stripped_line.endswith("]"):
+            return True
+
+        # system prompt guard（これが本文に出る時点で内部露出なのでブロックごと捨てる）
+        if stripped_line.startswith("重要: 以降のsystem prompt"):
+            return True
+
+        # 視覚（Vision）: ストリーム先頭の内部プレアンブル
+        if stripped_line.startswith("VISION_REQUEST:"):
+            return True
+
+        return False
+
+
 class MemoryManager:
     """会話/通知/メタ要求をEpisodeとして扱い、DB保存と後処理を統括する。"""
 
     def __init__(self, llm_client: LlmClient, config_store: ConfigStore):
         self.llm_client = llm_client
         self.config_store = config_store
+
+    def handle_vision_capture_response(self, request: schemas.VisionCaptureResponseV2Request) -> None:
+        """
+        クライアントからの視覚キャプチャ結果（capture-response）を受け取る。
+
+        チャット視覚やデスクトップウォッチが request_id の応答待ちを解除できるように、
+        vision_bridge の待機キューへ紐づける。
+        """
+        resp = vision_bridge.VisionCaptureResponse(
+            request_id=str(request.request_id).strip(),
+            client_id=str(request.client_id).strip(),
+            images=list(request.images or []),
+            client_context=request.client_context,
+            error=(str(request.error).strip() if request.error else None),
+        )
+        ok = vision_bridge.fulfill_capture_response(resp)
+        if not ok:
+            logger.info(
+                "vision capture-response ignored (no pending request) request_id=%s client_id=%s",
+                resp.request_id,
+                resp.client_id,
+            )
+            return
+
+        logger.info(
+            "vision capture-response accepted request_id=%s client_id=%s images_count=%s has_error=%s",
+            resp.request_id,
+            resp.client_id,
+            len(resp.images or []),
+            bool(resp.error),
+        )
+
+    def _merge_client_context(self, *, client_id: str, client_context: Dict[str, Any] | None) -> Dict[str, Any]:
+        """
+        client_context を正規化し、必ず client_id を含む辞書を返す。
+
+        - 入力の辞書は破壊しない。
+        - client_id はトップレベルキーとして格納する。
+        """
+        ctx: Dict[str, Any] = {}
+        if client_context:
+            ctx.update(dict(client_context))
+        ctx["client_id"] = str(client_id or "").strip()
+        return ctx
+
+    def _request_capture_for_chat(
+        self,
+        *,
+        embedding_preset_id: str,
+        speaker_client_id: str,
+        source: str,
+    ) -> tuple[list[Dict[str, str]], Dict[str, Any] | None, str | None]:
+        """
+        チャット視覚のためにクライアントへキャプチャ要求を送り、結果を待つ。
+
+        Returns:
+            (images_internal, client_context, error_message)
+        """
+        resp = vision_bridge.request_capture_and_wait(
+            embedding_preset_id=str(embedding_preset_id),
+            target_client_id=str(speaker_client_id),
+            source=str(source),
+            purpose="chat",
+            timeout_seconds=_VISION_CAPTURE_TIMEOUT_SECONDS,
+            timeout_ms=_VISION_CAPTURE_TIMEOUT_MS,
+        )
+        if resp is None:
+            return [], None, "見えない（タイムアウト）"
+        if resp.error:
+            logger.info(
+                "vision capture failed (chat) client_id=%s source=%s error=%s",
+                str(speaker_client_id),
+                str(source),
+                str(resp.error),
+            )
+            return [], resp.client_context, "見えない（取得失敗）"
+        if not resp.images:
+            logger.info(
+                "vision capture returned empty images (chat) client_id=%s source=%s",
+                str(speaker_client_id),
+                str(source),
+            )
+            return [], resp.client_context, "見えない（画像が空）"
+
+        # data URI -> base64 へ変換（内部形式）
+        internal_images: list[Dict[str, str]] = []
+        for s in resp.images:
+            try:
+                b64 = schemas.data_uri_image_to_base64(s)
+            except Exception:  # noqa: BLE001
+                continue
+            internal_images.append({"type": "data_uri", "base64": b64})
+        if not internal_images:
+            logger.info(
+                "vision capture returned invalid images (chat) client_id=%s source=%s",
+                str(speaker_client_id),
+                str(source),
+            )
+            return [], resp.client_context, "見えない（画像が不正）"
+        return internal_images, resp.client_context, None
+
+    def run_desktop_watch_once(self, *, target_client_id: str) -> None:
+        """
+        デスクトップウォッチを1回実行する。
+
+        - デスクトップ担当クライアントへキャプチャ要求を送り、最大5秒待つ
+        - 画像を要約し、人格として能動コメントを生成する
+        - Episodeとして保存し、events/streamで通知する
+        """
+        cfg = self.config_store.config
+        embedding_preset_id = self.config_store.embedding_preset_id
+        lock = _get_memory_lock(embedding_preset_id)
+        now_ts = _now_utc_ts()
+
+        # --- 宛先（desktop担当） ---
+        cid = str(target_client_id or "").strip()
+        if not cid:
+            logger.warning("desktop_watch target_client_id is empty")
+            return
+
+        # --- キャプチャ要求 ---
+        resp = vision_bridge.request_capture_and_wait(
+            embedding_preset_id=str(embedding_preset_id),
+            target_client_id=cid,
+            source="desktop",
+            purpose="desktop_watch",
+            timeout_seconds=_VISION_CAPTURE_TIMEOUT_SECONDS,
+            timeout_ms=_VISION_CAPTURE_TIMEOUT_MS,
+        )
+        if resp is None:
+            logger.info("desktop_watch capture timeout client_id=%s", cid)
+            return
+        if resp.error:
+            logger.info("desktop_watch capture failed client_id=%s error=%s", cid, str(resp.error))
+            return
+        if not resp.images:
+            logger.info("desktop_watch capture empty images client_id=%s", cid)
+            return
+
+        # --- data URI -> base64（内部形式） ---
+        images_internal: list[Dict[str, str]] = []
+        for s in resp.images:
+            try:
+                b64 = schemas.data_uri_image_to_base64(s)
+            except Exception:  # noqa: BLE001
+                continue
+            images_internal.append({"type": "data_uri", "base64": b64})
+        if not images_internal:
+            logger.info("desktop_watch capture invalid images client_id=%s", cid)
+            return
+
+        # --- client_context ---
+        client_context = self._merge_client_context(client_id=cid, client_context=resp.client_context)
+
+        # --- 画像要約 ---
+        image_summaries = self._summarize_images(images_internal, purpose=LlmRequestPurpose.IMAGE_SUMMARY_DESKTOP_WATCH)
+        image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
+
+        # --- 入力テキスト（検索/保存用） ---
+        # NOTE:
+        # - desktop_watch は「ユーザー発話」ではないため、内部タグ（例: # desktop_watch）を入れると
+        #   通常チャットの会話履歴に混入したときに、LLMがそれを根拠として引用してしまう。
+        # - ここでは「出ても破綻しない自然文」にし、区別は Unit.source="desktop_watch" で行う。
+        active_app = str(client_context.get("active_app") or "").strip()
+        window_title = str(client_context.get("window_title") or "").strip()
+        details = " / ".join([x for x in [active_app, window_title] if x]).strip()
+        watch_lines: list[str] = ["デスクトップを確認"]
+        if details:
+            watch_lines.append(details)
+        watch_input_text = "\n".join(watch_lines).strip()
+
+        # --- MemoryPack ---
+        memory_pack = ""
+        if self.config_store.memory_enabled:
+            try:
+                with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
+                    recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=None)
+                    retriever = Retriever(llm_client=self.llm_client, db=db)
+                    relevant_episodes = retriever.retrieve(
+                        watch_input_text,
+                        recent_conversation,
+                        max_results=int(cfg.similar_episodes_limit or 5),
+                    )
+                    memory_pack = build_memory_pack(
+                        db=db,
+                        input_text=watch_input_text,
+                        image_summaries=image_summaries,
+                        client_context=client_context,
+                        now_ts=now_ts,
+                        max_inject_tokens=int(cfg.max_inject_tokens),
+                        relevant_episodes=relevant_episodes,
+                        matched_entity_ids=[],
+                        injection_strategy=retriever.last_injection_strategy,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("MemoryPack生成に失敗しました(desktop_watch)", exc_info=exc)
+                memory_pack = ""
+        else:
+            memory_pack = self._build_simple_memory_pack(
+                client_context=client_context,
+                image_summaries=image_summaries,
+                now_ts=now_ts,
+            )
+
+        # --- 能動コメント生成 ---
+        system_prompt = _build_system_prompt_base(
+            persona_text=cfg.persona_text,
+            addon_text=cfg.addon_text,
+            requires_internal_trailer=False,
+            extra_prompt=get_desktop_watch_prompt(),
+        )
+        conversation: List[Dict[str, str]] = []
+        internal_context_message = _build_internal_context_message(memory_pack)
+        if internal_context_message:
+            conversation.append(internal_context_message)
+        conversation.append({"role": "user", "content": watch_input_text})
+
+        message = ""
+        try:
+            resp_llm = self.llm_client.generate_reply_response(
+                system_prompt=system_prompt,
+                conversation=conversation,
+                purpose=LlmRequestPurpose.DESKTOP_WATCH,
+                stream=False,
+            )
+            message = (self.llm_client.response_content(resp_llm) or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("desktop_watch message generation failed", exc_info=exc)
+            message = ""
+
+        # --- 保存（Episode） ---
+        context_note = _json_dumps(client_context) if client_context else None
+        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
+            unit_id = self._create_episode_unit(
+                db,
+                now_ts=now_ts,
+                source="desktop_watch",
+                input_text=watch_input_text,
+                reply_text=message or None,
+                image_summary=image_summary_text,
+                context_note=context_note,
+                sensitivity=int(Sensitivity.NORMAL),
+            )
+            self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=int(unit_id))
+            self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
+
+        # --- イベント配信 ---
+        system_text = "[デスクトップウォッチ]".strip()
+        if active_app or window_title:
+            system_text = " ".join([x for x in [system_text, active_app, window_title] if x]).strip()
+        publish_event(
+            type="desktop_watch",
+            embedding_preset_id=embedding_preset_id,
+            unit_id=int(unit_id),
+            data={"system_text": system_text, "message": message},
+            # デスクトップウォッチは「その瞬間に能動で覗いた」イベントのため、
+            # クライアント再接続時に過去分を再送しない（バッファしない）。
+            bufferable=False,
+        )
 
     def _update_episode_unit(
         self,
@@ -557,9 +1020,40 @@ class MemoryManager:
         rows.reverse()
 
         messages: List[Dict[str, str]] = []
-        for _u, pe in rows:
-            ut = (pe.user_text or "").strip()
+        for u, pe in rows:
+            source = str(getattr(u, "source", "") or "").strip()
+            ut = (pe.input_text or "").strip()
             rt = (pe.reply_text or "").strip()
+
+            # --- desktop_watch は「観測メモ」として扱う ---
+            # NOTE:
+            # - desktop_watch を role="user" で混ぜると、LLMが「ユーザーが発話した」と誤解しやすい。
+            # - さらに、過去に内部タグ（例: # desktop_watch / active_app:）が混入していると、
+            #   LLMがそれを根拠として引用してしまう。
+            # - ここでは「デスクトップを確認」という自然語ラベルに寄せて、1つのassistantメッセージに畳む。
+            if source == "desktop_watch":
+                active_app = ""
+                window_title = ""
+                try:
+                    if pe.context_note:
+                        ctx = json.loads(pe.context_note)
+                        if isinstance(ctx, dict):
+                            active_app = str(ctx.get("active_app") or "").strip()
+                            window_title = str(ctx.get("window_title") or "").strip()
+                except Exception:  # noqa: BLE001
+                    active_app = ""
+                    window_title = ""
+
+                details = " / ".join([x for x in [active_app, window_title] if x]).strip()
+                memo_lines: list[str] = ["（観測メモ）デスクトップを確認"]
+                if details:
+                    memo_lines.append(f"見えていたもの: {details}")
+                if rt:
+                    memo_lines.append(f"独り言: {rt}")
+                messages.append({"role": "assistant", "content": "\n".join(memo_lines).strip()})
+                continue
+
+            # --- 通常の会話（user/assistant） ---
             if ut:
                 messages.append({"role": "user", "content": ut})
             if rt:
@@ -636,185 +1130,311 @@ class MemoryManager:
             image_timeout_seconds=cfg.image_timeout_seconds,
         )
 
-        image_summaries = self._summarize_images(request.images, purpose=LlmRequestPurpose.IMAGE_SUMMARY_CHAT)
+        # --- 発話者 client_id（必須） ---
+        # NOTE: /api/chat は「発話者＝視覚命令の宛先」を一意に決める必要があるため、
+        # client_id を必須とし、推定やフォールバックは行わない。
+        speaker_client_id = str(request.client_id or "").strip()
 
-        # entity抽出の入力はユーザー発話＋画像要約に限定する。
-        entity_text = "\n".join(filter(None, [request.user_text, *(image_summaries or [])])).strip()
+        # --- 入力テキスト ---
+        input_text = (request.input_text or "").strip()
 
-        conversation: List[Dict[str, str]] = []
-        memory_pack = ""
-        if memory_enabled:
-            try:
-                # entity名抽出（LLM）を先に走らせ、Retriever検索と並列化する。
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    entity_future = None
-                    if entity_text:
-                        entity_future = executor.submit(extract_entity_names_with_llm, self.llm_client, entity_text)
-                    # DBアクセスはロック内でまとめて行う。
-                    with lock, memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-                        recent_conversation = self._load_recent_conversation(db, turns=3)
-                        llm_turns_window = int(getattr(cfg, "max_turns_window", 0) or 0)
-                        if llm_turns_window > 0:
-                            conversation = self._load_recent_conversation(db, turns=llm_turns_window)
-                        retriever = Retriever(llm_client=embedding_llm_client, db=db)
-                        relevant_episodes = retriever.retrieve(
-                            request.user_text,
-                            recent_conversation,
-                            max_results=int(similar_episodes_limit),
-                        )
-                        # entity名の突合はDB内のalias/name一覧で行う。
-                        alias_rows = collect_entity_alias_rows(db)
-                        candidate_names = entity_future.result() if entity_future else []
-                        matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
-                        memory_pack = build_memory_pack(
-                            db=db,
-                            user_text=request.user_text,
-                            image_summaries=image_summaries,
-                            client_context=request.client_context,
-                            now_ts=now_ts,
-                            max_inject_tokens=int(max_inject_tokens),
-                            relevant_episodes=relevant_episodes,
-                            matched_entity_ids=matched_entity_ids,
-                            injection_strategy=retriever.last_injection_strategy,
-                        )
-            except Exception as exc:  # noqa: BLE001
-                logger.error("MemoryPack生成に失敗しました", exc_info=exc)
-                _log_client_timing(request_id=request_id, event="クライアント要求エラー", start_perf=start_perf)
-                yield self._sse("error", {"message": str(exc), "code": "memory_pack_failed"})
-                return
-        else:
-            memory_pack = self._build_simple_memory_pack(
-                client_context=request.client_context,
-                image_summaries=image_summaries,
-                now_ts=now_ts,
-            )
-
-        # system は固定化し、MemoryPack は内部コンテキストとして後置する。
-        system_prompt = _build_system_prompt_base(
-            persona_text=cfg.persona_text,
-            addon_text=cfg.addon_text,
-            requires_internal_trailer=True,
-            extra_prompt=_persona_affect_trailer_system_prompt(),
+        # --- client_context（保存/注入用） ---
+        effective_client_context = self._merge_client_context(client_id=speaker_client_id, client_context=request.client_context)
+        logger.info(
+            "chat request received request_id=%s speaker_client_id=%s has_images=%s vision_preamble_enabled=%s",
+            request_id,
+            speaker_client_id,
+            bool(request.images),
+            not bool(request.images),
         )
-        conversation = list(conversation)
-        internal_context_message = _build_internal_context_message(memory_pack)
-        if internal_context_message:
-            conversation.append(internal_context_message)
-        conversation.append({"role": "user", "content": request.user_text})
 
-        # LLM呼び出しの処理目的をログで区別できるようにする。
-        purpose = LlmRequestPurpose.CONVERSATION
-        try:
-            _log_llm_timing(request_id=request_id, event="送信開始", start_perf=start_perf)
-            resp_stream = self.llm_client.generate_reply_response(
-                system_prompt=system_prompt,
-                conversation=conversation,
-                purpose=purpose,
-                stream=True,
+        # --- チャット視覚（Vision） ---
+        # 方針:
+        # - 通常会話は「追加のLLM判定呼び出し」を行わない。
+        # - 画像添付が無い場合は、LLMストリームの先頭1行（VISION_REQUESTプレアンブル）で判定する。
+        # - 視覚が必要なら、いったんストリームを中断してキャプチャ→本返答を作る（同一ターンで返す）。
+        images_input: list[Dict[str, str]] = list(request.images or [])
+        include_vision_preamble = not bool(images_input)
+        vision_extra_prompt: str | None = None
+        vision_capture_error_for_user: str | None = None
+
+        rerun_used = False
+        while True:
+            # --- 画像要約 ---
+            image_summaries = self._summarize_images(images_input, purpose=LlmRequestPurpose.IMAGE_SUMMARY_CHAT)
+
+            # 画像だけ送られた場合でも、LLMには明示的なユーザー要求を渡す（空文字だと不安定になりやすい）。
+            if not input_text and image_summaries:
+                input_text = "画像"
+            if not input_text and not image_summaries:
+                _log_client_timing(request_id=request_id, event="クライアント不正リクエスト", start_perf=start_perf)
+                yield self._sse(
+                    "error",
+                    {"message": "入力が空です（テキストも画像もありません）", "code": "empty_input"},
+                )
+                return
+
+            # entity抽出の入力はユーザー発話＋画像要約に限定する。
+            entity_text = "\n".join(filter(None, [input_text, *(image_summaries or [])])).strip()
+
+            conversation: List[Dict[str, str]] = []
+            memory_pack = ""
+            if memory_enabled:
+                try:
+                    # entity名抽出（LLM）を先に走らせ、Retriever検索と並列化する。
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        entity_future = None
+                        if entity_text:
+                            entity_future = executor.submit(extract_entity_names_with_llm, self.llm_client, entity_text)
+                        # DBアクセスはロック内でまとめて行う。
+                        with lock, memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                            recent_conversation = self._load_recent_conversation(db, turns=3)
+                            llm_turns_window = int(getattr(cfg, "max_turns_window", 0) or 0)
+                            if llm_turns_window > 0:
+                                conversation = self._load_recent_conversation(db, turns=llm_turns_window)
+                            retriever = Retriever(llm_client=embedding_llm_client, db=db)
+                            relevant_episodes = retriever.retrieve(
+                                input_text,
+                                recent_conversation,
+                                max_results=int(similar_episodes_limit),
+                            )
+                            # entity名の突合はDB内のalias/name一覧で行う。
+                            alias_rows = collect_entity_alias_rows(db)
+                            candidate_names = entity_future.result() if entity_future else []
+                            matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
+                            memory_pack = build_memory_pack(
+                                db=db,
+                                input_text=input_text,
+                                image_summaries=image_summaries,
+                                client_context=effective_client_context,
+                                now_ts=now_ts,
+                                max_inject_tokens=int(max_inject_tokens),
+                                relevant_episodes=relevant_episodes,
+                                matched_entity_ids=matched_entity_ids,
+                                injection_strategy=retriever.last_injection_strategy,
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("MemoryPack生成に失敗しました", exc_info=exc)
+                    _log_client_timing(request_id=request_id, event="クライアント要求エラー", start_perf=start_perf)
+                    yield self._sse("error", {"message": str(exc), "code": "memory_pack_failed"})
+                    return
+            else:
+                memory_pack = self._build_simple_memory_pack(
+                    client_context=effective_client_context,
+                    image_summaries=image_summaries,
+                    now_ts=now_ts,
+                )
+
+            # system は固定化し、MemoryPack は内部コンテキストとして後置する。
+            vision_instruction = ""
+            if vision_extra_prompt:
+                vision_instruction = str(vision_extra_prompt).strip()
+            if vision_capture_error_for_user:
+                msg = str(vision_capture_error_for_user).strip()
+                vision_instruction = "\n\n".join(
+                    [
+                        (vision_instruction or "").strip(),
+                        "視覚入力が必要だったが、画像が取得できなかった。",
+                        f"ユーザーには「{msg}」のニュアンスで自然に伝える。",
+                        "画像に言及せずに返せる範囲で答え、必要なら確認を1つだけ提案する。",
+                    ]
+                ).strip()
+
+            extra_prompt = _persona_affect_trailer_system_prompt(include_vision_preamble=include_vision_preamble)
+            if vision_instruction:
+                extra_prompt = "\n\n".join([extra_prompt, vision_instruction]).strip()
+            system_prompt = _build_system_prompt_base(
+                persona_text=cfg.persona_text,
+                addon_text=cfg.addon_text,
+                requires_internal_trailer=True,
+                extra_prompt=extra_prompt,
             )
-            _log_llm_timing(request_id=request_id, event="送信完了", start_perf=start_perf)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("stream chat start failed", exc_info=exc)
-            _log_llm_timing(request_id=request_id, event="送信エラー", start_perf=start_perf)
-            yield self._sse("error", {"message": str(exc), "code": "llm_start_failed"})
-            return
+            conversation = list(conversation)
+            internal_context_message = _build_internal_context_message(memory_pack)
+            if internal_context_message:
+                conversation.append(internal_context_message)
+            conversation.append({"role": "user", "content": input_text})
 
-        reply_text = ""
-        internal_trailer = ""
-        finish_reason = ""
-        stream_started = False
-        try:
-            marker = _STREAM_TRAILER_MARKER
-            keep = max(8, len(marker) - 1)
-            buf = ""
-            in_trailer = False
-            visible_parts: list[str] = []
-            trailer_parts: list[str] = []
+            # LLM呼び出しの処理目的をログで区別できるようにする。
+            purpose = LlmRequestPurpose.CONVERSATION
+            try:
+                _log_llm_timing(request_id=request_id, event="送信開始", start_perf=start_perf)
+                resp_stream = self.llm_client.generate_reply_response(
+                    system_prompt=system_prompt,
+                    conversation=conversation,
+                    purpose=purpose,
+                    stream=True,
+                )
+                _log_llm_timing(request_id=request_id, event="送信完了", start_perf=start_perf)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("stream chat start failed", exc_info=exc)
+                _log_llm_timing(request_id=request_id, event="送信エラー", start_perf=start_perf)
+                yield self._sse("error", {"message": str(exc), "code": "llm_start_failed"})
+                return
 
-            def flush_visible(text_: str) -> None:
-                if not text_:
-                    return
-                visible_parts.append(text_)
+            reply_text = ""
+            internal_trailer = ""
+            finish_reason = ""
+            stream_started = False
+            sanitizer = _UserVisibleReplySanitizer()
+            vision_request: dict[str, Any] | None = None
+            preamble_buf = ""
+            preamble_done = not bool(include_vision_preamble)
 
-            def mark_stream_started() -> None:
-                nonlocal stream_started
-                if stream_started:
-                    return
-                stream_started = True
-                _log_client_timing(request_id=request_id, event="クライアント送信開始", start_perf=start_perf)
+            try:
+                marker = _STREAM_TRAILER_MARKER
+                keep = max(8, len(marker) - 1)
+                buf = ""
+                in_trailer = False
+                visible_parts: list[str] = []
+                trailer_parts: list[str] = []
 
-            for chunk in self.llm_client.stream_delta_chunks(resp_stream):
-                # finish_reason は最終チャンクで届くことがあるため、見つけたら保持する。
-                if chunk.finish_reason:
-                    finish_reason = chunk.finish_reason
-                # テキスト差分がないチャンクはスキップする。
-                if not chunk.text:
-                    continue
-                buf += chunk.text
-                while True:
-                    if not in_trailer:
-                        idx = buf.find(marker)
-                        if idx != -1:
-                            chunk = buf[:idx]
-                            if chunk:
-                                flush_visible(chunk)
-                                mark_stream_started()
-                                yield self._sse("token", {"text": chunk})
-                            buf = buf[idx + len(marker) :]
-                            in_trailer = True
+                def mark_stream_started() -> None:
+                    nonlocal stream_started
+                    if stream_started:
+                        return
+                    stream_started = True
+                    _log_client_timing(request_id=request_id, event="クライアント送信開始", start_perf=start_perf)
+
+                for delta in self.llm_client.stream_delta_chunks(resp_stream):
+                    # finish_reason は最終チャンクで届くことがあるため、見つけたら保持する。
+                    if delta.finish_reason:
+                        finish_reason = delta.finish_reason
+                    # テキスト差分がないチャンクはスキップする。
+                    if not delta.text:
+                        continue
+
+                    text_piece = delta.text
+
+                    # --- Visionプレアンブル（最初の1行） ---
+                    if not preamble_done:
+                        preamble_buf += text_piece
+                        if "\n" not in preamble_buf:
+                            # 先頭行が来ない場合はハングを避ける（安全寄りに通常応答へフォールバック）
+                            if len(preamble_buf) > 512:
+                                preamble_done = True
+                                buf += preamble_buf
+                                preamble_buf = ""
                             continue
-                        if len(buf) > keep:
-                            chunk = buf[:-keep]
-                            buf = buf[-keep:]
-                            if chunk:
-                                flush_visible(chunk)
-                                mark_stream_started()
-                                yield self._sse("token", {"text": chunk})
+
+                        line, rest = preamble_buf.split("\n", 1)
+                        preamble_buf = ""
+                        vr = _parse_vision_preamble_line(line)
+                        if vr is not None and not rerun_used:
+                            vision_request = vr
+                            logger.info(
+                                "vision request detected in preamble source=%s client_id=%s",
+                                str(vr.get("source") or ""),
+                                speaker_client_id,
+                            )
+                            break
+                        preamble_done = True
+                        # プレアンブル行の改行はユーザーへ見せないため落とす
+                        buf += rest
+                    else:
+                        buf += text_piece
+
+                    while True:
+                        if not in_trailer:
+                            idx = buf.find(marker)
+                            if idx != -1:
+                                chunk_text = buf[:idx]
+                                if chunk_text:
+                                    safe = sanitizer.feed(chunk_text)
+                                    if safe:
+                                        visible_parts.append(safe)
+                                        mark_stream_started()
+                                        yield self._sse("token", {"text": safe})
+                                buf = buf[idx + len(marker) :]
+                                in_trailer = True
+                                continue
+                            if len(buf) > keep:
+                                chunk_text = buf[:-keep]
+                                buf = buf[-keep:]
+                                if chunk_text:
+                                    safe = sanitizer.feed(chunk_text)
+                                    if safe:
+                                        visible_parts.append(safe)
+                                        mark_stream_started()
+                                        yield self._sse("token", {"text": safe})
+                            break
+
+                        # 以後はすべて内部トレーラーへ
+                        if buf:
+                            trailer_parts.append(buf)
+                            buf = ""
                         break
 
-                    # 以後はすべて内部トレーラーへ
-                    if buf:
-                        trailer_parts.append(buf)
-                        buf = ""
-                    break
+                # Vision要求が出た場合は、ここでストリームを捨ててリランする。
+                if vision_request is not None:
+                    _log_llm_timing(request_id=request_id, event="ストリーム中断（Vision要求）", start_perf=start_perf)
+                else:
+                    if not in_trailer:
+                        if buf:
+                            safe = sanitizer.feed(buf)
+                            if safe:
+                                visible_parts.append(safe)
+                                mark_stream_started()
+                                yield self._sse("token", {"text": safe})
+                    else:
+                        if buf:
+                            trailer_parts.append(buf)
 
-            if not in_trailer:
-                if buf:
-                    flush_visible(buf)
-                    mark_stream_started()
-                    yield self._sse("token", {"text": buf})
-            else:
-                if buf:
-                    trailer_parts.append(buf)
+                    tail_safe = sanitizer.flush()
+                    if tail_safe:
+                        visible_parts.append(tail_safe)
+                        mark_stream_started()
+                        yield self._sse("token", {"text": tail_safe})
 
-            reply_text = "".join(visible_parts)
-            internal_trailer = "".join(trailer_parts)
-            _log_llm_timing(request_id=request_id, event="ストリーム終了", start_perf=start_perf)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("stream chat failed", exc_info=exc)
-            _log_llm_timing(request_id=request_id, event="ストリームエラー", start_perf=start_perf)
-            yield self._sse("error", {"message": str(exc), "code": "llm_stream_failed"})
-            return
+                    reply_text = "".join(visible_parts)
+                    internal_trailer = "".join(trailer_parts)
+                    _log_llm_timing(request_id=request_id, event="ストリーム終了", start_perf=start_perf)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("stream chat failed", exc_info=exc)
+                _log_llm_timing(request_id=request_id, event="ストリームエラー", start_perf=start_perf)
+                yield self._sse("error", {"message": str(exc), "code": "llm_stream_failed"})
+                return
 
-        reflection_obj = _parse_internal_json_text(internal_trailer)
+            # --- Vision要求（同一ターンキャプチャ） ---
+            if vision_request is not None and not rerun_used:
+                vision_extra_prompt = vision_request.get("extra_prompt")
+                source = str(vision_request.get("source") or "").strip()
+                cap_images, cap_ctx, cap_err = self._request_capture_for_chat(
+                    embedding_preset_id=embedding_preset_id,
+                    speaker_client_id=speaker_client_id,
+                    source=source,
+                )
+                if cap_ctx:
+                    effective_client_context = self._merge_client_context(client_id=speaker_client_id, client_context=cap_ctx)
+                if cap_err:
+                    vision_capture_error_for_user = cap_err
+                    images_input = []
+                else:
+                    images_input = cap_images
 
-        llm_log_level = _get_llm_log_level_from_store(self.config_store)
-        log_file_enabled = bool(self.config_store.toml_config.log_file_enabled)
-        console_max_chars = _get_llm_log_console_max_chars_from_store(self.config_store)
-        file_max_chars = _get_llm_log_file_max_chars_from_store(self.config_store)
-        console_max_value_chars = _get_llm_log_console_value_max_chars_from_store(self.config_store)
-        file_max_value_chars = _get_llm_log_file_value_max_chars_from_store(self.config_store)
-        if llm_log_level != "OFF":
-            io_console_logger.info(
-                "LLM response 受信 %s kind=chat stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
-                purpose,
-                True,
-                finish_reason,
-                len(reply_text or ""),
-                len(internal_trailer or ""),
-            )
-            if log_file_enabled:
-                io_file_logger.info(
+                include_vision_preamble = False
+                rerun_used = True
+                continue
+
+            # 内部コンテキスト混入があれば、内容は残さず事実だけログに残す（ユーザー表示は抑止済み）。
+            if sanitizer.removed_blocks:
+                logger.warning(
+                    "LLM reply contained internal markers; sanitized removed_blocks=%s removed_lines=%s request_id=%s",
+                    sanitizer.removed_blocks,
+                    sanitizer.removed_lines,
+                    request_id,
+                )
+
+            reflection_obj = _parse_internal_json_text(internal_trailer)
+
+            llm_log_level = _get_llm_log_level_from_store(self.config_store)
+            log_file_enabled = bool(self.config_store.toml_config.log_file_enabled)
+            console_max_chars = _get_llm_log_console_max_chars_from_store(self.config_store)
+            file_max_chars = _get_llm_log_file_max_chars_from_store(self.config_store)
+            console_max_value_chars = _get_llm_log_console_value_max_chars_from_store(self.config_store)
+            file_max_value_chars = _get_llm_log_file_value_max_chars_from_store(self.config_store)
+            if llm_log_level != "OFF":
+                io_console_logger.info(
                     "LLM response 受信 %s kind=chat stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
                     purpose,
                     True,
@@ -822,66 +1442,76 @@ class MemoryManager:
                     len(reply_text or ""),
                     len(internal_trailer or ""),
                 )
-        log_llm_payload(
-            io_console_logger,
-            "LLM response (chat stream)",
-            {
-                "finish_reason": finish_reason,
-                "reply_text": reply_text,
-                "internal_trailer": internal_trailer,
-            },
-            max_chars=console_max_chars,
-            max_value_chars=console_max_value_chars,
-            llm_log_level=llm_log_level,
-        )
-        if log_file_enabled:
+                if log_file_enabled:
+                    io_file_logger.info(
+                        "LLM response 受信 %s kind=chat stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
+                        purpose,
+                        True,
+                        finish_reason,
+                        len(reply_text or ""),
+                        len(internal_trailer or ""),
+                    )
             log_llm_payload(
-                io_file_logger,
+                io_console_logger,
                 "LLM response (chat stream)",
                 {
                     "finish_reason": finish_reason,
                     "reply_text": reply_text,
                     "internal_trailer": internal_trailer,
                 },
-                max_chars=file_max_chars,
-                max_value_chars=file_max_value_chars,
+                max_chars=console_max_chars,
+                max_value_chars=console_max_value_chars,
                 llm_log_level=llm_log_level,
             )
-
-        image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
-        context_note = _json_dumps(request.client_context) if request.client_context else None
-
-        try:
-            with lock, memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-                episode_unit_id = self._create_episode_unit(
-                    db,
-                    now_ts=now_ts,
-                    source="chat",
-                    user_text=request.user_text,
-                    reply_text=reply_text,
-                    image_summary=image_summary_text,
-                    context_note=context_note,
-                    sensitivity=int(Sensitivity.NORMAL),
+            if log_file_enabled:
+                log_llm_payload(
+                    io_file_logger,
+                    "LLM response (chat stream)",
+                    {
+                        "finish_reason": finish_reason,
+                        "reply_text": reply_text,
+                        "internal_trailer": internal_trailer,
+                    },
+                    max_chars=file_max_chars,
+                    max_value_chars=file_max_value_chars,
+                    llm_log_level=llm_log_level,
                 )
-                if reflection_obj:
-                    self._apply_inline_reflection_if_present(
+
+            image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
+            context_note = _json_dumps(effective_client_context) if effective_client_context else None
+
+            try:
+                with lock, memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                    episode_unit_id = self._create_episode_unit(
                         db,
                         now_ts=now_ts,
-                        unit_id=int(episode_unit_id),
-                        reflection_obj=reflection_obj,
+                        source="chat",
+                        input_text=input_text,
+                        reply_text=reply_text,
+                        image_summary=image_summary_text,
+                        context_note=context_note,
+                        sensitivity=int(Sensitivity.NORMAL),
                     )
-                self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=episode_unit_id)
-                self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("episode保存に失敗しました", exc_info=exc)
-            _log_client_timing(request_id=request_id, event="クライアント応答エラー", start_perf=start_perf)
-            yield self._sse("error", {"message": str(exc), "code": "db_write_failed"})
-            return
+                    if reflection_obj:
+                        self._apply_inline_reflection_if_present(
+                            db,
+                            now_ts=now_ts,
+                            unit_id=int(episode_unit_id),
+                            reflection_obj=reflection_obj,
+                        )
+                    self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=episode_unit_id)
+                    self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("episode保存に失敗しました", exc_info=exc)
+                _log_client_timing(request_id=request_id, event="クライアント応答エラー", start_perf=start_perf)
+                yield self._sse("error", {"message": str(exc), "code": "db_write_failed"})
+                return
 
-        if not stream_started:
-            _log_client_timing(request_id=request_id, event="クライアント送信開始", start_perf=start_perf)
-        _log_client_timing(request_id=request_id, event="クライアント送信終了", start_perf=start_perf)
-        yield self._sse("done", {"episode_unit_id": episode_unit_id, "reply_text": reply_text, "usage": {}})
+            if not stream_started:
+                _log_client_timing(request_id=request_id, event="クライアント送信開始", start_perf=start_perf)
+            _log_client_timing(request_id=request_id, event="クライアント送信終了", start_perf=start_perf)
+            yield self._sse("done", {"episode_unit_id": episode_unit_id, "reply_text": reply_text, "usage": {}})
+            return
 
     def handle_notification(
         self,
@@ -902,7 +1532,7 @@ class MemoryManager:
                 db,
                 now_ts=now_ts,
                 source="notification",
-                user_text=system_text,
+                input_text=system_text,
                 reply_text=None,
                 image_summary=None,
                 context_note=context_note,
@@ -946,7 +1576,7 @@ class MemoryManager:
         image_summaries = self._summarize_images(list(images), purpose=LlmRequestPurpose.IMAGE_SUMMARY_NOTIFICATION)
         image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
 
-        notification_user_text = "\n".join(
+        notification_input_text = "\n".join(
             [
                 "# notification",
                 f"source_system: {source_system}",
@@ -958,7 +1588,7 @@ class MemoryManager:
         memory_enabled = self.config_store.memory_enabled
 
         # entity抽出の入力は通知文＋画像要約に限定する。
-        entity_text = "\n".join(filter(None, [notification_user_text, *(image_summaries or [])])).strip()
+        entity_text = "\n".join(filter(None, [notification_input_text, *(image_summaries or [])])).strip()
 
         memory_pack = ""
         if memory_enabled:
@@ -973,7 +1603,7 @@ class MemoryManager:
                         recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
                         retriever = Retriever(llm_client=self.llm_client, db=db)
                         relevant_episodes = retriever.retrieve(
-                            notification_user_text,
+                            notification_input_text,
                             recent_conversation,
                             max_results=int(cfg.similar_episodes_limit or 5),
                         )
@@ -983,7 +1613,7 @@ class MemoryManager:
                         matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
                         memory_pack = build_memory_pack(
                             db=db,
-                            user_text=notification_user_text,
+                            input_text=notification_input_text,
                             image_summaries=image_summaries,
                             client_context=None,
                             now_ts=now_ts,
@@ -1013,7 +1643,7 @@ class MemoryManager:
         internal_context_message = _build_internal_context_message(memory_pack)
         if internal_context_message:
             conversation.append(internal_context_message)
-        conversation.append({"role": "user", "content": notification_user_text})
+        conversation.append({"role": "user", "content": notification_input_text})
 
         message = ""
         try:
@@ -1146,7 +1776,7 @@ class MemoryManager:
                         matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
                         memory_pack = build_memory_pack(
                             db=db,
-                            user_text=meta_retrieval_text,
+                            input_text=meta_retrieval_text,
                             image_summaries=image_summaries,
                             client_context=None,
                             now_ts=now_ts,
@@ -1201,7 +1831,7 @@ class MemoryManager:
                     db,
                     now_ts=now_ts,
                     source="proactive",
-                    user_text=None,
+                    input_text=None,
                     reply_text=message,
                     image_summary=None,
                     context_note=None,
@@ -1224,7 +1854,7 @@ class MemoryManager:
         *,
         now_ts: int,
         source: str,
-        user_text: Optional[str],
+        input_text: Optional[str],
         reply_text: Optional[str],
         image_summary: Optional[str],
         context_note: Optional[str],
@@ -1249,7 +1879,7 @@ class MemoryManager:
         db.flush()
         payload = PayloadEpisode(
             unit_id=unit.id,
-            user_text=user_text,
+            input_text=input_text,
             reply_text=reply_text,
             image_summary=image_summary,
             context_note=context_note,
@@ -1268,12 +1898,9 @@ class MemoryManager:
             "extract_facts",
             "extract_loops",
             "upsert_embeddings",
-            "capsule_refresh",
         ]
         for kind in kinds:
             payload = {"unit_id": unit_id}
-            if kind == "capsule_refresh":
-                payload = {"limit": 5}
             db.add(
                 Job(
                     kind=kind,

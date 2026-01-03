@@ -14,10 +14,11 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_utils.tasks import repeat_every
 
 from cocoro_ghost import event_stream, log_stream
-from cocoro_ghost.api import admin, chat, events, logs, meta_request, notification, persona_mood, settings
+from cocoro_ghost.api import admin, chat, events, logs, meta_request, notification, settings, vision
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.logging_config import setup_logging, suppress_uvicorn_access_log_paths
+from cocoro_ghost.desktop_watch import get_desktop_watch_service
 
 # Bearer認証スキーム
 security = HTTPBearer()
@@ -71,7 +72,6 @@ def create_app() -> FastAPI:
     # uvicorn の access log から特定リクエストだけ除外（開発時にノイズになりがち）
     suppress_uvicorn_access_log_paths(
         "/api/health",
-        "GET /api/persona_mood",
     )
 
     # 2. 設定DB初期化
@@ -118,7 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(notification.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(meta_request.router, dependencies=[Depends(verify_token)], prefix="/api")
-    app.include_router(persona_mood.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(vision.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(settings.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(admin.router, dependencies=[Depends(verify_token)], prefix="/api")
     # 認証不要なエンドポイント（ログ/イベントストリーム）
@@ -140,6 +140,13 @@ def create_app() -> FastAPI:
     async def periodic_cleanup() -> None:
         """定期的な不要ファイル掃除（画像など）。10分ごとに実行。"""
         cleanup_old_images()
+
+    @app.on_event("startup")
+    @repeat_every(seconds=1, wait_first=True)
+    async def periodic_desktop_watch() -> None:
+        """デスクトップウォッチ（能動視覚）の定期実行。"""
+        service = get_desktop_watch_service()
+        await asyncio.to_thread(service.tick)
 
     @app.on_event("startup")
     async def start_log_stream_dispatcher() -> None:

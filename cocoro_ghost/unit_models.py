@@ -52,7 +52,7 @@ class PayloadEpisode(UnitBase):
     __tablename__ = "payload_episode"
 
     unit_id: Mapped[int] = mapped_column(ForeignKey("units.id", ondelete="CASCADE"), primary_key=True)  # 親UnitID
-    user_text: Mapped[Optional[str]] = mapped_column(Text)  # ユーザー発話
+    input_text: Mapped[Optional[str]] = mapped_column(Text)  # 入力本文
     reply_text: Mapped[Optional[str]] = mapped_column(Text)  # AI返答
     image_summary: Mapped[Optional[str]] = mapped_column(Text)  # 画像の説明（添付画像がある場合）
     context_note: Mapped[Optional[str]] = mapped_column(Text)  # コンテキスト補足
@@ -93,18 +93,6 @@ class PayloadSummary(UnitBase):
     range_end: Mapped[Optional[int]] = mapped_column(Integer)  # 対象範囲終了
     summary_text: Mapped[str] = mapped_column(Text, nullable=False)  # 要約テキスト
     summary_json: Mapped[Optional[str]] = mapped_column(Text)  # 構造化要約（JSON）
-
-class PayloadCapsule(UnitBase):
-    """
-    Capsule（期限付きメモ）のペイロード。
-
-    有効期限付きの一時的な情報を保持する。
-    """
-    __tablename__ = "payload_capsule"
-
-    unit_id: Mapped[int] = mapped_column(ForeignKey("units.id", ondelete="CASCADE"), primary_key=True)  # 親UnitID
-    expires_at: Mapped[Optional[int]] = mapped_column(Integer)  # 有効期限（UNIXタイムスタンプ）
-    capsule_json: Mapped[str] = mapped_column(Text, nullable=False)  # カプセル内容（JSON）
 
 
 class PayloadLoop(UnitBase):

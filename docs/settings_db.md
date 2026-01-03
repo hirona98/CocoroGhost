@@ -23,8 +23,10 @@
 #### カラム（実装準拠）
 
 - `token`（TEXT）
-- `exclude_keywords`（TEXT: JSON array）
 - `memory_enabled`（INTEGER: 0/1）
+- `desktop_watch_enabled`（INTEGER: 0/1）
+- `desktop_watch_interval_seconds`（INTEGER）
+- `desktop_watch_target_client_id`（TEXT, nullable）
 - `reminders_enabled`（INTEGER: 0/1）
 - `active_llm_preset_id`（TEXT: UUID）
 - `active_embedding_preset_id`（TEXT: UUID / `embedding_preset_id`）
@@ -34,7 +36,6 @@
 - `updated_at`（DATETIME）
 
 補足:
-- `exclude_keywords` は現状未使用（将来の入力フィルタ用途として予約）。
 - `active_*_preset_id` は「アーカイブされていないプリセット」に対してのみ有効。
 
 ### `llm_presets`
@@ -85,6 +86,8 @@ Embedding/検索パラメータの切替単位。
 
 - 記憶DBは `memory_<embedding_preset_id>.db`（`embedding_preset_id` はUUID）として管理する
 - `embedding_dimension` を変える場合は **別id（別DB）** を作るのが安全（同じDBで次元変更すると初期化でエラーになる）。
+- base_url（`llm_base_url` / `embedding_base_url` / `image_llm_base_url`）は、ローカルLLM等の OpenAI互換エンドポイント向けに使用できる（任意）。
+- OpenRouter の embeddings は `embedding_model="openrouter/<model slug>"` として設定でき、この場合は `embedding_base_url` 未指定でもサーバ内部で `https://openrouter.ai/api/v1` を自動設定して呼び出す。
 
 ### `persona_presets`
 

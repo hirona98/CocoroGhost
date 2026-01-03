@@ -24,7 +24,7 @@
 | `IMAGE_SUMMARY_PROMPT`（inline） | `cocoro_ghost/llm_client.py` | 画像を短い日本語で要約（vision） | `cocoro_ghost/llm_client.py::LlmClient.generate_image_summary`（呼び出し: `cocoro_ghost/memory.py::MemoryManager::_summarize_images`） | 同期（chat）/ 同期風（notification/meta-request の BackgroundTasks） |
 
 補足:
-- Capsule（短期状態）は **プロンプトではなく**、Workerジョブ `capsule_refresh`（LLM不要）で更新されます（`cocoro_ghost/worker.py::_handle_capsule_refresh`）。
+- `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` はプロンプトではなく、同期処理で組み立てる「内部コンテキストのセクション」です（`cocoro_ghost/memory_pack_builder.py`）。
 
 ## 2) 全体フロー：どの入口でどのプロンプトが使われるか
 
@@ -60,7 +60,6 @@ flowchart TD
     ENQ --> ENT["extract_entities → ENTITY_EXTRACT_SYSTEM_PROMPT"]
     ENQ --> FACT["extract_facts → FACT_EXTRACT_SYSTEM_PROMPT"]
     ENQ --> LOOP["extract_loops → LOOP_EXTRACT_SYSTEM_PROMPT"]
-    ENQ --> CAPR["capsule_refresh (prompt無し)"]
     ENQ --> EMB["upsert_embeddings (prompt無し)"]
     ENT --> PERS["person_summary_refresh → PERSON_SUMMARY_SYSTEM_PROMPT"]
     ENT --> TOP["topic_summary_refresh → TOPIC_SUMMARY_SYSTEM_PROMPT"]
@@ -78,7 +77,7 @@ flowchart TD
 
 ### 入力
 
-- `user_text`: 今回のユーザー発話
+- `input_text`: 今回の入力
 - `image_summaries`: 今回の画像要約（vision の結果）
 - `client_context`: `active_app` / `window_title` / `locale` など（任意）
 - `relevant_episodes`: Retriever が返した関連エピソード（rank済み + reason付き）
@@ -89,7 +88,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  IN["inputs: user_text / image_summaries / client_context"] --> ENT["resolve entities with LLM\n(names only)"]
+  IN["inputs: input_text / image_summaries / client_context"] --> ENT["resolve entities with LLM\n(names only)"]
   ENT --> ENTFB["ENTITY_NAMES_ONLY_SYSTEM_PROMPT\n(names only)"]
   IN --> RET["Retriever\n(vector + BM25)"]
   RET --> REL["relevant_episodes"]
@@ -100,13 +99,12 @@ flowchart TD
   REL --> DEC{"inject episode evidence\nhigh one or more\nor medium two or more"}
   DEC -->|yes| EVI["build episode evidence\n(strategy: quote/summarize/full)"]
   DEC -->|no| ASM
-  CAPDB["load capsule_json (latest, not expired)"] --> ASM["assemble sections\nCAPSULE/FACTS/SUMMARY/RELATIONSHIP/LOOPS/EVIDENCE"]
+  CC --> ASM["assemble sections\nCONTEXT_CAPSULE/FACTS/SUMMARY/RELATIONSHIP/LOOPS/EVIDENCE"]
   FACTS --> ASM
   LOOPS --> ASM
   SUM --> ASM
-  CC --> ASM
   EVI --> ASM
-  ASM --> TRIM["trim to budget\n(drop evidence → trim loops → trim summaries → trim facts → trim capsule)"]
+  ASM --> TRIM["trim to budget\n(drop evidence → trim loops → trim summaries → trim facts → trim context capsule)"]
   TRIM --> OUT["MemoryPack string"]
 ```
 
@@ -115,8 +113,8 @@ flowchart TD
 - `PERSONA_ANCHOR` は system prompt 側に固定注入する（MemoryPackには含めない）
 - `OUTPUT_FORMAT` は system prompt 側に固定注入する（PERSONA_ANCHORと分離し、出力フォーマット指示として明示）
 - `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>`:
-  - DBの `capsule_json`（最新かつ未expireがあれば先頭に1つ）
   - `now_local: <ISO8601>`
+  - `persona_mood_state: {...}`（重要度×時間減衰で集約した機嫌。会話品質優先のためDBに保存しない）
   - `active_app` / `window_title` / `locale`（あれば）
   - `[ユーザーが今送った画像の内容] <image_summary>`（今回の画像ぶん）
 - `<<<COCORO_GHOST_SECTION:STABLE_FACTS>>>`:
@@ -124,7 +122,7 @@ flowchart TD
   - 絞り込み（entity が取れている場合）: `pin=1` または subject/object がその entity に関連、または subject が `null` のもの
   - 絞り込み（entity が取れない場合）: 直近200件 + pin=1 を混ぜてからスコアで上位
   - スコア: `confidence/salience/recency/pin` を合成して降順
-  - 形式: `- SUBJECT predicate OBJECT`（entity_idが引けると名前に置換、subject未指定は `USER`）
+  - 形式: `- SUBJECT predicate OBJECT`（entity_idが引けると名前に置換、subject未指定は `SPEAKER`）
 - `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>`:
   - 会話の「共有された物語（継続する関係性や背景）」を短く注入するセクション
   - `scope_key=rolling:7d` の bond summary（無ければ latest をfallback）
@@ -142,7 +140,7 @@ flowchart TD
 - `<<<COCORO_GHOST_SECTION:EPISODE_EVIDENCE>>>`:
   - `should_inject_episodes()` が True のときだけ注入（`high>=1` or `medium>=2`）
   - `injection_strategy`:
-  - `quote_key_parts`（既定）: user/reply を短く引用
+  - `quote_key_parts`（既定）: input/reply を短く引用
   - `summarize`: 1行「要点: ...」に寄せる
   - `full`: 長めに引用
   - 各項目に `→ 関連: <reason>` を添える
@@ -176,18 +174,18 @@ sequenceDiagram
   participant DB as memory_<id>.db
   participant Q as jobs
 
-  UI->>API: POST /api/chat (SSE)\n{user_text, images?, client_context?}
+  UI->>API: POST /api/chat (SSE)\n{input_text, images?, client_context?}
   API->>VIS: generate_image_summary(images?)
-  API->>RET: retrieve(user_text, recent_conversation)
+  API->>RET: retrieve(input_text, recent_conversation)
   RET-->>API: relevant_episodes[]
   API->>SCH: build_memory_pack(facts, loops, evidence...)
   SCH-->>API: MemoryPack (<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>> / <<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>> / ...)
   Note over API: system = guard + PERSONA_ANCHOR（persona_text+addon_text） + PERSONA_AFFECT_TRAILER_PROMPT\nMemoryPackはinternal contextとして別メッセージで注入
-  API->>LLM: chat(system, conversation, user_text)\n(stream)
+  API->>LLM: chat(system, conversation, input_text)\n(stream)
   LLM-->>API: streamed tokens
   API-->>UI: SSE stream
-  API->>DB: save Unit(kind=EPISODE)\n(user_text, reply_text, image_summary...)
-  API->>Q: enqueue default jobs\n(reflect/extract/embed/capsule_refresh...)
+  API->>DB: save Unit(kind=EPISODE)\n(input_text, reply_text, image_summary...)
+  API->>Q: enqueue default jobs\n(reflect/extract/embed...)
   API->>Q: maybe enqueue bond_summary\n(bond summary refresh)
 ```
 
@@ -214,7 +212,6 @@ sequenceDiagram
   - JSON生成: `extract_facts`（1回）
   - JSON生成: `extract_loops`（1回）
   - Embedding生成: `upsert_embeddings`（1回。プロンプトではなく埋め込みAPI）
-  - LLM不要: `capsule_refresh`
 - 追加で増えうるジョブ（状況次第）:
   - `extract_entities` の結果に応じて、`person_summary_refresh` 最大3件 + `topic_summary_refresh` 最大3件（= JSON生成 最大6回）
   - `bond_summary`（rolling:7d。クールダウン等により実行されない場合もある）
@@ -240,8 +237,6 @@ flowchart LR
   J --> REFL["reflect_episode"]
   REFL -->|LLM JSON| P1["REFLECTION_SYSTEM_PROMPT"]
   P1 -->|update| U1["units.persona_affect_* / salience / confidence / topic_tags\npayload_episode.reflection_json"]
-  J --> CAPR["capsule_refresh (LLM不要)"]
-  CAPR -->|upsert| CAP["Unit(kind=CAPSULE, source=capsule_refresh)\npayload_capsule.capsule_json"]
 
   J --> ENT["extract_entities"]
   ENT -->|LLM JSON| P3["ENTITY_EXTRACT_SYSTEM_PROMPT"]
@@ -272,12 +267,11 @@ flowchart LR
 
 ## 5) “どの入力で” 各プロンプトが呼ばれるか（要点）
 
-- Reflection / Entities / Facts / Loops: `payload_episode` の `user_text/reply_text/image_summary` を連結して入力にする（`cocoro_ghost/worker.py`）。
-- Bond summary（rolling:7d）: 直近7日程度の `Unit(kind=EPISODE)` を時系列で最大200件抜粋し、`range_start/range_end` + 箇条書き（unit_id + user/reply抜粋）として入力にする（`cocoro_ghost/worker.py::_handle_bond_summary`）。
-- Capsule refresh: 直近の `Unit(kind=EPISODE)`（既定 `limit=5`）の抜粋に加え、「重要度×時間減衰」で集約した `persona_mood_state` を `payload_capsule.capsule_json` に更新する（`cocoro_ghost/worker.py::_handle_capsule_refresh` / `cocoro_ghost/persona_mood.py`）。
-  - デバッグ用途: `PUT /api/persona_mood` による in-memory ランタイム状態が有効な場合、更新される `persona_mood_state` は適用後の値になる。
+- Reflection / Entities / Facts / Loops: `payload_episode` の `input_text/reply_text/image_summary` を連結して入力にする（`cocoro_ghost/worker.py`）。
+- Bond summary（rolling:7d）: 直近7日程度の `Unit(kind=EPISODE)` を時系列で最大200件抜粋し、`range_start/range_end` + 箇条書き（unit_id + input/reply抜粋）として入力にする（`cocoro_ghost/worker.py::_handle_bond_summary`）。
+- 会話品質優先のため、`persona_mood_state` はDBに保存せず、チャット直前に同期計算して `CONTEXT_CAPSULE` に注入する（`cocoro_ghost/memory_pack_builder.py` / `cocoro_ghost/persona_mood.py`）。
 - Notification: `# notification ...` 形式に整形したテキスト（+ 画像要約）を `conversation=[{"role":"user","content":...}]` として渡す（`cocoro_ghost/memory.py`）。
-- Meta request: `# meta-request ...` 形式に整形したテキスト（instruction + payload + 画像要約）を渡す（`cocoro_ghost/memory.py`）。
+- Meta request: `# instruction` / `# payload` / `# images` 形式に整形したテキスト（instruction + payload + 画像要約）を渡す（`cocoro_ghost/memory.py`）。
 - PERSONA_ANCHOR: settings の active preset から読み込み、persona_text + addon_text を連結して system prompt に固定注入する（MemoryPackには含めない）。
 - Persona affect trailer（chatのみ）: 返答本文の末尾に区切り文字 `<<<COCORO_GHOST_PERSONA_AFFECT_JSON_v1>>>` + 内部JSON（Reflectionスキーマ準拠）を付加する。サーバ側は区切り以降をSSEに流さず回収し、`units.persona_affect_* / salience / confidence / topic_tags` と `payload_episode.reflection_json` に即時反映する（`cocoro_ghost/memory.py`）。これにより「その発言で反応する」を同ターンで実現しつつ、Workerの `reflect_episode` は冪等にスキップ可能になる。
 - Person summary: `person_summary_refresh` は注入用の `summary_text` に加えて、`favorability_score`（PERSONA_ANCHORの人物→人物の好感度 0..1）を `summary_json` に保存する。Schedulerは現状 `summary_text` を注入するため、好感度は `summary_text` 先頭に1行で含める運用（`cocoro_ghost/worker.py::_handle_person_summary_refresh`）。

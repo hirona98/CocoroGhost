@@ -128,7 +128,7 @@ def test_chat():
     """
     print("\n=== POST /chat ===")
     payload = {
-        "user_text": "こんにちは、これはテストメッセージです",
+        "input_text": "こんにちは、これはテストメッセージです",
         "images": []
     }
     try:
@@ -194,7 +194,7 @@ def test_chat_with_image():
 
     # 画像付きリクエストペイロード
     payload = {
-        "user_text": "この画像について教えてください（テスト）",
+        "input_text": "この画像について教えてください（テスト）",
         "images": [{"type": "data_uri", "base64": base64_data}]
     }
     try:

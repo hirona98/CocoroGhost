@@ -20,7 +20,6 @@ Episode作成後の反射（reflection）、エンティティ抽出、ファク
 - bond_summary: 絆サマリ生成
 - person_summary_refresh: 人物サマリ更新
 - topic_summary_refresh: トピックサマリ更新
-- capsule_refresh: 短期状態カプセル更新
 """
 
 from __future__ import annotations
@@ -59,7 +58,6 @@ from cocoro_ghost.unit_models import (
     Entity,
     EntityAlias,
     Job,
-    PayloadCapsule,
     PayloadEpisode,
     PayloadFact,
     PayloadLoop,
@@ -69,9 +67,7 @@ from cocoro_ghost.unit_models import (
 )
 from cocoro_ghost.versioning import canonical_json_dumps, record_unit_version
 from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
-from cocoro_ghost.persona_mood import clamp01, compute_persona_mood_state_from_episodes
-from cocoro_ghost.persona_mood_runtime import apply_persona_mood_state_override, set_last_used
-
+from cocoro_ghost.persona_mood import clamp01
 
 logger = logging.getLogger(__name__)
 
@@ -371,8 +367,6 @@ def process_job(
             _handle_person_summary_refresh(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "topic_summary_refresh":
             _handle_topic_summary_refresh(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "capsule_refresh":
-            _handle_capsule_refresh(session=session, payload=payload, now_ts=now_ts)
         else:
             logger.warning("unknown job kind", extra={"job_id": job_id, "kind": job.kind})
 
@@ -421,6 +415,12 @@ def process_due_jobs(
         now_ts = _now_utc_ts()
         session = get_memory_session(embedding_preset_id, embedding_dimension)
         try:
+            # Loopは短期メモとして扱うため、期限切れ（expires_at <= now）は定期的に削除する。
+            # capsule（短期状態）機能を廃止したため、ジョブ処理ループ内で確実に掃除する。
+            try:
+                _cleanup_expired_loops(session=session, now_ts=now_ts)
+            except Exception:  # noqa: BLE001
+                pass
             job_info = claim_next_job_with_kind(session, now_ts=now_ts)
         finally:
             session.close()
@@ -533,8 +533,8 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     if (pe.reflection_json or "").strip() and (unit.persona_affect_label or "").strip():
         return
     ctx_parts = []
-    if pe.user_text:
-        ctx_parts.append(f"user: {pe.user_text}")
+    if pe.input_text:
+        ctx_parts.append(f"speaker: {pe.input_text}")
     if pe.reply_text:
         ctx_parts.append(f"reply: {pe.reply_text}")
     if pe.image_summary:
@@ -546,7 +546,7 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
     system_prompt = _wrap_prompt_with_persona(prompts.get_reflection_prompt())
     resp = llm_client.generate_json_response(
         system_prompt=system_prompt,
-        user_text=context_text,
+        input_text=context_text,
         purpose=LlmRequestPurpose.INTERNAL_THOUGHT,
     )
     raw_text = llm_client.response_content(resp)
@@ -747,7 +747,7 @@ def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload
 
     resp = llm_client.generate_json_response(
         system_prompt=prompts.get_entity_extract_prompt(),
-        user_text=text_in,
+        input_text=text_in,
         purpose=LlmRequestPurpose.ENTITY_EXTRACT,
     )
     # LLMのJSON応答をdictに正規化する。
@@ -912,7 +912,7 @@ def _build_recent_context_input(*, session: Session, unit_id: int, payload: Payl
     """
     parts: list[str] = []
     # まず対象エピソードの本文を先頭に置く。
-    main_text = "\n".join(filter(None, [payload.user_text, payload.reply_text, payload.image_summary]))
+    main_text = "\n".join(filter(None, [payload.input_text, payload.reply_text, payload.image_summary]))
     if main_text.strip():
         parts.append(main_text.strip())
 
@@ -933,10 +933,10 @@ def _build_recent_context_input(*, session: Session, unit_id: int, payload: Payl
     if rows:
         lines: list[str] = []
         for _u, pe in rows:
-            ut = (pe.user_text or "").strip().replace("\n", " ")
+            ut = (pe.input_text or "").strip().replace("\n", " ")
             rt = (pe.reply_text or "").strip().replace("\n", " ")
             if ut:
-                lines.append(f"User: {ut}")
+                lines.append(f"Speaker: {ut}")
             if rt:
                 lines.append(f"Persona: {rt}")
         if lines:
@@ -959,7 +959,7 @@ def _handle_upsert_embeddings(
         pe = session.query(PayloadEpisode).filter(PayloadEpisode.unit_id == unit_id).one_or_none()
         if pe is None:
             return
-        text_to_embed = "\n".join(filter(None, [pe.user_text, pe.reply_text, pe.image_summary]))
+        text_to_embed = "\n".join(filter(None, [pe.input_text, pe.reply_text, pe.image_summary]))
     elif unit.kind == int(UnitKind.FACT):
         pf = session.query(PayloadFact).filter(PayloadFact.unit_id == unit_id).one_or_none()
         if pf is None:
@@ -1093,7 +1093,7 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
 
     resp = llm_client.generate_json_response(
         system_prompt=prompts.get_fact_extract_prompt(),
-        user_text=text_in,
+        input_text=text_in,
         purpose=LlmRequestPurpose.FACT_EXTRACT,
     )
     # LLMのJSON応答をdictに正規化する。
@@ -1209,22 +1209,23 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
 
         subject_entity_id: Optional[int] = None
         subj = f.get("subject")
-        subj_name = "USER"
+        subj_name = "SPEAKER"
         subj_etype_raw = "PERSON"
         if isinstance(subj, dict):
-            subj_name = str(subj.get("name") or "").strip() or "USER"
+            subj_name = str(subj.get("name") or "").strip() or "SPEAKER"
             subj_etype_raw = _normalize_type_label(str(subj.get("type_label") or "").strip() or None) or "PERSON"
 
-        if subj_name.strip().upper() == "USER":
-            user_ent = _get_or_create_entity(
+        # "SPEAKER" は「この会話で直接やりとりしている相手」を表す予約語。
+        if subj_name.strip().upper() == "SPEAKER":
+            speaker_ent = _get_or_create_entity(
                 session,
-                name="USER",
+                name="SPEAKER",
                 type_label="PERSON",
                 roles=["person"],
-                aliases=["USER"],
+                aliases=["SPEAKER"],
                 now_ts=now_ts,
             )
-            subject_entity_id = int(user_ent.id)
+            subject_entity_id = int(speaker_ent.id)
         else:
             ent = _get_or_create_entity(
                 session,
@@ -1471,7 +1472,7 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
     system_prompt = _wrap_prompt_with_persona(prompts.get_loop_extract_prompt())
     resp = llm_client.generate_json_response(
         system_prompt=system_prompt,
-        user_text=text_in,
+        input_text=text_in,
         purpose=LlmRequestPurpose.LOOP_EXTRACT,
     )
     # LLMのJSON応答をdictに正規化する。
@@ -1588,176 +1589,6 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
         )
 
 
-def _handle_capsule_refresh(*, session: Session, payload: Dict[str, Any], now_ts: int) -> None:
-    """短期状態（Capsule）を更新する（LLM不要・軽量）。"""
-    # ついでに期限切れLoopを掃除する（TTLで確実に自動削除する）。
-    try:
-        _cleanup_expired_loops(session=session, now_ts=now_ts)
-    except Exception:  # noqa: BLE001
-        pass
-    limit = int(payload.get("limit") or 5)
-    limit = max(1, min(20, limit))
-    # 感情は、直近エピソード群を「重要度×時間減衰」で積分して作る。
-    persona_mood_scan_limit = int(payload.get("persona_mood_scan_limit") or 500)
-    persona_mood_scan_limit = max(50, min(2000, persona_mood_scan_limit))
-
-    rows = (
-        session.query(Unit, PayloadEpisode)
-        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(Unit.kind == int(UnitKind.EPISODE), Unit.state.in_([0, 1, 2]), Unit.sensitivity <= int(Sensitivity.SECRET))
-        .order_by(Unit.created_at.desc(), Unit.id.desc())
-        .limit(limit)
-        .all()
-    )
-
-    recent = []
-    for u, pe in rows:
-        recent.append(
-            {
-                "unit_id": int(u.id),
-                "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
-                "created_at": int(u.created_at),
-                "source": u.source,
-                "user_text": (pe.user_text or "")[:200],
-                "reply_text": (pe.reply_text or "")[:200],
-                "topic_tags": u.topic_tags,
-                "persona_affect_label": u.persona_affect_label,
-                "persona_affect_intensity": u.persona_affect_intensity,
-                "salience": u.salience,
-                "confidence": u.confidence,
-            }
-        )
-
-    # AI人格の感情（重要度×時間減衰）:
-    #
-    # 直近N件（recent）だけで機嫌を作ると、「大事件が短時間で埋もれて消える」問題が出る。
-    # そこで、別枠で「直近persona_mood_scan_limit件のエピソード」を走査し、各エピソードの影響度を
-    #     impact = persona_affect_intensity × salience × confidence × exp(-Δt/τ(salience))
-    # の形で減衰させて積分し、現在の機嫌（persona_mood_state）を推定する。
-    #
-    # - salience が高いほど τ が長くなるため、「印象的な出来事」は長く残る
-    # - salience が低い雑談は τ が短く、数分で影響が薄れる
-    # - anger 成分が十分高いときは refusal_allowed=True となり、プロンプト側で拒否が選びやすくなる
-    persona_mood_units = (
-        session.query(Unit, PayloadEpisode)
-        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.EPISODE),
-            Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= int(Sensitivity.SECRET),
-            Unit.persona_affect_label.isnot(None),
-        )
-        .order_by(Unit.created_at.desc(), Unit.id.desc())
-        .limit(persona_mood_scan_limit)
-        .all()
-    )
-    persona_mood_episodes = []
-    # persona_response_policy は直近だけ見れば十分なので、JSON parse は上位N件に限定する。
-    persona_response_policy_parse_limit = 60
-    for idx, (u, pe) in enumerate(persona_mood_units):
-        persona_response_policy = None
-        if idx < persona_response_policy_parse_limit and (pe.reflection_json or "").strip():
-            try:
-                obj = json.loads(pe.reflection_json)
-                pp = obj.get("persona_response_policy") if isinstance(obj, dict) else None
-                persona_response_policy = pp if isinstance(pp, dict) else None
-            except Exception:  # noqa: BLE001
-                persona_response_policy = None
-        persona_mood_episodes.append(
-            {
-                "occurred_at": int(u.occurred_at) if u.occurred_at is not None else None,
-                "created_at": int(u.created_at),
-                "persona_affect_label": u.persona_affect_label,
-                "persona_affect_intensity": u.persona_affect_intensity,
-                "salience": u.salience,
-                "confidence": u.confidence,
-                # /api/chat の内部JSONで出た「方針ノブ」を次ターン以降にも効かせる。
-                "persona_response_policy": persona_response_policy,
-            }
-        )
-    persona_mood_state = compute_persona_mood_state_from_episodes(persona_mood_episodes, now_ts=now_ts)
-    # デバッグ用: UI/API から in-memory ランタイム状態を適用する
-    persona_mood_state = apply_persona_mood_state_override(persona_mood_state, now_ts=now_ts)
-
-    # UI向け: 前回使った値（compact）を保存する。
-    # Worker側の更新でも last_used を進めておく。
-    compact_persona_mood_state = {
-        "label": persona_mood_state.get("label"),
-        "intensity": persona_mood_state.get("intensity"),
-        "components": persona_mood_state.get("components"),
-        "response_policy": persona_mood_state.get("response_policy"),
-    }
-    try:
-        set_last_used(now_ts=now_ts, state=compact_persona_mood_state)
-    except Exception:  # noqa: BLE001
-        pass
-
-    capsule_obj = {
-        "generated_at": now_ts,
-        "window": limit,
-        "recent": recent,
-        "persona_mood_state": persona_mood_state,
-    }
-    capsule_json = _json_dumps(capsule_obj)
-    expires_at = now_ts + 3600
-
-    existing = (
-        session.query(Unit, PayloadCapsule)
-        .join(PayloadCapsule, PayloadCapsule.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.CAPSULE),
-            Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= int(Sensitivity.SECRET),
-            PayloadCapsule.expires_at.isnot(None),
-            PayloadCapsule.expires_at > now_ts,
-        )
-        .order_by(Unit.created_at.desc(), Unit.id.desc())
-        .first()
-    )
-
-    if existing is None:
-        cap_unit = Unit(
-            kind=int(UnitKind.CAPSULE),
-            occurred_at=now_ts,
-            created_at=now_ts,
-            updated_at=now_ts,
-            source="capsule_refresh",
-            state=int(UnitState.VALIDATED),
-            confidence=0.5,
-            salience=0.0,
-            sensitivity=int(Sensitivity.PRIVATE),
-            pin=0,
-            topic_tags=None,
-            persona_affect_label=None,
-            persona_affect_intensity=None,
-        )
-        session.add(cap_unit)
-        session.flush()
-        session.add(PayloadCapsule(unit_id=cap_unit.id, expires_at=expires_at, capsule_json=capsule_json))
-        record_unit_version(
-            session,
-            unit_id=int(cap_unit.id),
-            payload_obj={"expires_at": expires_at, "capsule": capsule_obj},
-            patch_reason="capsule_refresh",
-            now_ts=now_ts,
-        )
-        return
-
-    cap_unit, cap = existing
-    cap.expires_at = expires_at
-    cap.capsule_json = capsule_json
-    cap_unit.updated_at = now_ts
-    session.add(cap_unit)
-    session.add(cap)
-    record_unit_version(
-        session,
-        unit_id=int(cap_unit.id),
-        payload_obj={"expires_at": expires_at, "capsule": capsule_obj},
-        patch_reason="capsule_refresh",
-        now_ts=now_ts,
-    )
-
-
 def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
     # 現行: rolling 7 days bond summary（scope_key固定）
     rolling_scope_key = "rolling:7d"
@@ -1786,13 +1617,13 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
 
     lines = []
     for u, pe in ep_rows:
-        ut = (pe.user_text or "").strip().replace("\n", " ")
+        ut = (pe.input_text or "").strip().replace("\n", " ")
         rt = (pe.reply_text or "").strip().replace("\n", " ")
         if not ut and not rt:
             continue
         ut = ut[:200]
         rt = rt[:220]
-        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
+        lines.append(f"- unit_id={int(u.id)} speaker='{ut}' reply='{rt}'")
 
     input_text = (
         f"scope_key: {scope_key}\nrange_start: {range_start_local}\nrange_end: {range_end_local}\n\n"
@@ -1803,7 +1634,7 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
     system_prompt = _wrap_prompt_with_persona(prompts.get_bond_summary_prompt())
     resp = llm_client.generate_json_response(
         system_prompt=system_prompt,
-        user_text=input_text,
+        input_text=input_text,
         purpose=LlmRequestPurpose.BOND_SUMMARY,
     )
     # LLMのJSON応答をdictに正規化する。
@@ -2090,11 +1921,11 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
 
     lines: list[str] = []
     for u, pe in ep_rows:
-        ut = (pe.user_text or "").strip().replace("\n", " ")[:220]
+        ut = (pe.input_text or "").strip().replace("\n", " ")[:220]
         rt = (pe.reply_text or "").strip().replace("\n", " ")[:240]
         if not ut and not rt:
             continue
-        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
+        lines.append(f"- unit_id={int(u.id)} speaker='{ut}' reply='{rt}'")
 
     input_text = _build_summary_payload_input(
         header_lines=[f"scope: person", f"entity_id: {entity_id}", f"entity_name: {ent.name}"],
@@ -2104,7 +1935,7 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
     system_prompt = _wrap_prompt_with_persona(prompts.get_person_summary_prompt())
     resp = llm_client.generate_json_response(
         system_prompt=system_prompt,
-        user_text=input_text,
+        input_text=input_text,
         purpose=LlmRequestPurpose.PERSON_SUMMARY,
     )
     # LLMのJSON応答をdictに正規化する。
@@ -2208,11 +2039,11 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
 
     lines: list[str] = []
     for u, pe in ep_rows:
-        ut = (pe.user_text or "").strip().replace("\n", " ")[:220]
+        ut = (pe.input_text or "").strip().replace("\n", " ")[:220]
         rt = (pe.reply_text or "").strip().replace("\n", " ")[:240]
         if not ut and not rt:
             continue
-        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
+        lines.append(f"- unit_id={int(u.id)} speaker='{ut}' reply='{rt}'")
 
     input_text = _build_summary_payload_input(
         header_lines=[f"scope: topic", f"entity_id: {entity_id}", f"topic_key: {topic_key}", f"topic_name: {ent.name}"],
@@ -2222,7 +2053,7 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
     system_prompt = _wrap_prompt_with_persona(prompts.get_topic_summary_prompt())
     resp = llm_client.generate_json_response(
         system_prompt=system_prompt,
-        user_text=input_text,
+        input_text=input_text,
         purpose=LlmRequestPurpose.TOPIC_SUMMARY,
     )
     # LLMのJSON応答をdictに正規化する。

@@ -75,7 +75,7 @@ select
   u.occurred_at,
   u.confidence,
   u.salience,
-  pe.user_text,
+  pe.input_text,
   pe.reply_text,
   pe.image_summary,
   knn.distance
