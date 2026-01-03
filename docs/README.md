@@ -13,7 +13,7 @@
 
 - LLM/Embedding は **API経由**（LiteLLMで切替可能）
 - ベクター検索は **sqlite-vec（vec0）** を使用する
-- ストレージは SQLite（`settings.db` + `reminders.db` + `memory_<embedding_preset_id>.db`）
+- ストレージは SQLite（`data/settings.db` + `data/reminders.db` + `data/memory_<embedding_preset_id>.db`）
 - **Scheduling（予測・プリロード）** と **Lifecycle（統合・整理）** を中核に取り入れる
 
 ## 制約 / Non-goals（現状の割り切り）
@@ -40,7 +40,7 @@
 
 ## 用語
 
-- **Unit**: 記憶DB（`memory_<embedding_preset_id>.db`）で扱う「1つの記憶/出来事/生成物」の基本単位。共通メタを `units` に1行で持ち、`kind/state/sensitivity/pin/topic_tags` 等で扱いを決める（詳細は `docs/db_schema.md`）。
+- **Unit**: 記憶DB（`data/memory_<embedding_preset_id>.db`）で扱う「1つの記憶/出来事/生成物」の基本単位。共通メタを `units` に1行で持ち、`kind/state/sensitivity/pin/topic_tags` 等で扱いを決める（詳細は `docs/db_schema.md`）。
 - **Payload**: Unitの本文や構造化データを、種別ごとにスキーマ分離したテーブル群（`payload_episode` / `payload_fact` / `payload_summary` / `payload_loop` など）。Unitと同じ `unit_id` で1:1に紐づく（詳細は `docs/db_schema.md`）。
 - **UnitKind / UnitState / Sensitivity**: Unitの「種別」「状態」「取り扱い区分」をenum値で表すもの。検索・注入・Worker処理の対象範囲を決めるための土台（詳細は `docs/db_schema.md` と実装の `cocoro_ghost/unit_enums.py`）。
 - **Canonical / Derived**: “原文（証跡）” と “派生物” を分ける考え方。
@@ -52,9 +52,9 @@
   - persona_text: 人格・口調・価値観の中核（崩れると会話の一貫性が壊れる）。
   - addon_text: 必要なときだけ足す補助指示（例: 表情タグの追加ルール、呼称の追加、距離感の微調整）。
   - 注入上は、persona_text と addon_text を **同一の PERSONA_ANCHOR セクションに連結**して system prompt に固定注入し、MemoryPackは `<<INTERNAL_CONTEXT>>` の内部メッセージとして渡す（`docs/memory_pack_builder.md` / `docs/api.md`）。
-- **Preset（settings）**: `settings.db` に永続化する切替単位。
+- **Preset（settings）**: `data/settings.db` に永続化する切替単位。
   - LLM/Embeddingの接続情報・検索予算に加え、PersonaPreset/AddonPreset をプリセットとして保持し、`active_*_preset_id` でアクティブを選ぶ（`docs/settings_db.md`）。注入時は persona_text + addon_text を PERSONA_ANCHOR として連結する。
-- **embedding_preset_id**: 記憶DBファイル名を選ぶための識別子。`EmbeddingPreset.id`（UUID）を `embedding_preset_id` として扱い、`memory_<embedding_preset_id>.db` を開く（`docs/settings_db.md` / `docs/api.md`）。
+- **embedding_preset_id**: 記憶DBファイル名を選ぶための識別子。`EmbeddingPreset.id`（UUID）を `embedding_preset_id` として扱い、`data/memory_<embedding_preset_id>.db` を開く（`docs/settings_db.md` / `docs/api.md`）。
 
 
 ## LLMの構造化出力について（採用しない理由）
