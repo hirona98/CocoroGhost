@@ -13,7 +13,7 @@
 
 - LLM/Embedding は **API経由**（LiteLLMで切替可能）
 - ベクター検索は **sqlite-vec（vec0）** を使用する
-- ストレージは SQLite（`settings.db` + `memory_<embedding_preset_id>.db`）
+- ストレージは SQLite（`settings.db` + `reminders.db` + `memory_<embedding_preset_id>.db`）
 - **Scheduling（予測・プリロード）** と **Lifecycle（統合・整理）** を中核に取り入れる
 
 ## 制約 / Non-goals（現状の割り切り）
@@ -35,7 +35,8 @@
 10. `docs/prompt_usage_map.md`（プロンプト使用箇所マップ）
 11. `docs/api.md`（API仕様 / SSE）
 12. `docs/vision.md`（視覚: チャット視覚 / デスクトップウォッチ）
-13. `docs/bootstrap.md`（初期DB作成）
+13. `docs/reminders.md`（リマインダー: API/UI仕様）
+14. `docs/bootstrap.md`（初期DB作成）
 
 ## 用語
 

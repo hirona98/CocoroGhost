@@ -28,7 +28,7 @@ from cocoro_ghost.event_stream import publish as publish_event
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 from cocoro_ghost.persona_mood import PERSONA_AFFECT_TRAILER_MARKER, clamp01
-from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt, get_desktop_watch_prompt
+from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt, get_desktop_watch_prompt, get_reminder_prompt
 from cocoro_ghost.retriever import Retriever
 from cocoro_ghost.memory_pack_builder import (
     build_memory_pack,
@@ -821,6 +821,163 @@ class MemoryManager:
             data={"system_text": system_text, "message": message},
             # デスクトップウォッチは「その瞬間に能動で覗いた」イベントのため、
             # クライアント再接続時に過去分を再送しない（バッファしない）。
+            bufferable=False,
+        )
+
+    def run_reminder_once(
+        self,
+        *,
+        reminder_id: str,
+        target_client_id: str,
+        hhmm: str,
+        content: str,
+    ) -> None:
+        """
+        リマインダー発火を1回実行する（文面生成 + 配信 + 任意保存）。
+
+        仕様:
+        - AI人格の文面生成は必須（MemoryPackを使って自然さを上げる）。
+        - memory_enabled=false のときは Episode を保存せず、配信のみ行う。
+        - events/stream への配信は target_client_id 宛てで、バッファしない。
+        """
+
+        embedding_preset_id = self.config_store.embedding_preset_id
+        lock = _get_memory_lock(embedding_preset_id)
+        now_ts = _now_utc_ts()
+
+        # --- 入力正規化 ---
+        cid = str(target_client_id or "").strip()
+        reminder_uuid = str(reminder_id or "").strip()
+        hhmm_clean = str(hhmm or "").strip()
+        content_clean = str(content or "").strip()
+
+        if not cid:
+            logger.warning("reminder target_client_id is empty")
+            return
+        if not reminder_uuid:
+            logger.warning("reminder reminder_id is empty")
+            return
+        if not hhmm_clean:
+            logger.warning("reminder hhmm is empty reminder_id=%s", reminder_uuid)
+            return
+        if not content_clean:
+            logger.warning("reminder content is empty reminder_id=%s", reminder_uuid)
+            return
+
+        # --- client_context（最低限） ---
+        client_context = self._merge_client_context(client_id=cid, client_context=None)
+
+        # --- MemoryPack（検索は内容に寄せる） ---
+        cfg = self.config_store.config
+        memory_pack = ""
+        if self.config_store.memory_enabled:
+            try:
+                with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
+                    recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=None)
+                    retriever = Retriever(llm_client=self.llm_client, db=db)
+                    relevant_episodes = retriever.retrieve(
+                        content_clean,
+                        recent_conversation,
+                        max_results=int(cfg.similar_episodes_limit or 5),
+                    )
+                    memory_pack = build_memory_pack(
+                        db=db,
+                        input_text=content_clean,
+                        image_summaries=[],
+                        client_context=client_context,
+                        now_ts=now_ts,
+                        max_inject_tokens=int(cfg.max_inject_tokens),
+                        relevant_episodes=relevant_episodes,
+                        matched_entity_ids=[],
+                        injection_strategy=retriever.last_injection_strategy,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("MemoryPack生成に失敗しました(reminder)", exc_info=exc)
+                memory_pack = ""
+        else:
+            memory_pack = self._build_simple_memory_pack(
+                client_context=client_context,
+                image_summaries=[],
+                now_ts=now_ts,
+            )
+
+        # --- 文面生成 ---
+        system_prompt = _build_system_prompt_base(
+            persona_text=cfg.persona_text,
+            addon_text=cfg.addon_text,
+            requires_internal_trailer=False,
+            extra_prompt=get_reminder_prompt(),
+        )
+        conversation: List[Dict[str, str]] = []
+        internal_context_message = _build_internal_context_message(memory_pack)
+        if internal_context_message:
+            conversation.append(internal_context_message)
+
+        # NOTE:
+        # - LLM入力は「出ても破綻しない自然文」に寄せる（内部タグを入れない）。
+        # - 時刻は hhmm で渡し、出力も HH:MM 固定になるようにプロンプトで縛る。
+        reminder_generation_text = "\n".join(
+            [
+                "時刻: " + hhmm_clean,
+                "内容: " + content_clean,
+            ]
+        ).strip()
+        conversation.append({"role": "user", "content": reminder_generation_text})
+
+        message = ""
+        try:
+            resp_llm = self.llm_client.generate_reply_response(
+                system_prompt=system_prompt,
+                conversation=conversation,
+                purpose=LlmRequestPurpose.REMINDER,
+                stream=False,
+            )
+            message = (self.llm_client.response_content(resp_llm) or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("reminder message generation failed", exc_info=exc)
+            message = ""
+
+        # --- フォールバック（最低限の出力を確保） ---
+        if not message:
+            message = f"{hhmm_clean}です。{content_clean}".strip()
+        if hhmm_clean not in message:
+            message = f"{hhmm_clean}、{message}".strip()
+        if len(message) > 80:
+            message = message[:80].strip()
+
+        # --- 保存（Episode） ---
+        unit_id = 0
+        if self.config_store.memory_enabled:
+            reminder_input_text = "\n".join(["リマインダー", hhmm_clean, content_clean]).strip()
+            with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
+                unit_id = int(
+                    self._create_episode_unit(
+                        db,
+                        now_ts=now_ts,
+                        source="reminder",
+                        input_text=reminder_input_text,
+                        reply_text=message or None,
+                        image_summary=None,
+                        context_note=None,
+                        sensitivity=int(Sensitivity.NORMAL),
+                    )
+                )
+                # リマインダーは「話した事実」を検索できれば十分なので、埋め込みのみ作る。
+                self._enqueue_embeddings_job(db, now_ts=now_ts, unit_id=int(unit_id))
+                self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
+
+        # --- イベント配信 ---
+        publish_event(
+            type="reminder",
+            embedding_preset_id=embedding_preset_id,
+            unit_id=int(unit_id),
+            data={
+                "reminder_id": reminder_uuid,
+                "hhmm": hhmm_clean,
+                "message": message,
+            },
+            target_client_id=cid,
+            # リマインダーはリアルタイム性が本質で、再接続時に過去分を再送しない（バッファしない）。
             bufferable=False,
         )
 

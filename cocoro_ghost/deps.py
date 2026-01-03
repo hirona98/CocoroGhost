@@ -16,6 +16,7 @@ from cocoro_ghost.config import ConfigStore, get_config_store
 from cocoro_ghost.db import get_memory_session, get_settings_db, init_memory_db
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.memory import MemoryManager
+from cocoro_ghost.reminders_db import get_reminders_db
 
 
 _memory_manager: MemoryManager | None = None
@@ -103,3 +104,12 @@ def get_memory_db_dep() -> Iterator[Session]:
         yield session
     finally:
         session.close()
+
+
+def get_reminders_db_dep() -> Iterator[Session]:
+    """
+    リマインダーDBセッションをFastAPI依存性注入で取得する。
+
+    reminders.db は settings.db と分離しているため、専用の依存性を用意する。
+    """
+    yield from get_reminders_db()

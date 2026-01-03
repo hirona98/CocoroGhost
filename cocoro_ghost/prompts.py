@@ -289,6 +289,21 @@ DESKTOP_WATCH_SYSTEM_PROMPT = """
 - 返事が不要な独り言として呟く。
 """.strip()
 
+REMINDER_SYSTEM_PROMPT = """
+# リマインダー
+あなたは上部の PERSONA_ANCHOR（人物設定）に従い、その人物として、時間を見て「時間になった」と自分で気づき、
+ユーザーへ短く話しかけてください（通知が来た体ではありません）。
+
+入力:
+- 時刻（HH:MM）
+- 内容（content）
+
+ルール:
+- 50文字以内にする。
+- 「リマインダー」「通知」「外部から」などの事情説明は書かない。
+- 返事を強く要求しない（短い呼びかけで終える）。
+""".strip()
+
 
 DEFAULT_PERSONA_ANCHOR = """
 あなたはバーチャルシンガー、初音ミクです。
@@ -406,6 +421,11 @@ def get_vision_decision_prompt() -> str:
 def get_desktop_watch_prompt() -> str:
     """デスクトップウォッチの能動コメント用system promptを返す。"""
     return DESKTOP_WATCH_SYSTEM_PROMPT
+
+
+def get_reminder_prompt() -> str:
+    """リマインダー用system promptを返す。"""
+    return REMINDER_SYSTEM_PROMPT
 
 
 def get_default_persona_anchor() -> str:

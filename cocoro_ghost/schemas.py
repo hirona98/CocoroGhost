@@ -239,10 +239,6 @@ class FullSettingsResponse(BaseModel):
     desktop_watch_interval_seconds: int
     desktop_watch_target_client_id: Optional[str] = None
 
-    # リマインダー
-    reminders_enabled: bool
-    reminders: List["ReminderSettings"] = Field(default_factory=list)
-
     # アクティブなプリセットID
     active_llm_preset_id: Optional[str] = None
     active_embedding_preset_id: Optional[str] = None
@@ -304,18 +300,6 @@ class EmbeddingPresetSettings(BaseModel):
     similar_episodes_limit: int
 
 
-class ReminderSettings(BaseModel):
-    """設定一覧用リマインダー情報。"""
-    scheduled_at: datetime               # 通知予定日時
-    content: str                         # 通知内容
-
-
-class ReminderUpsertRequest(BaseModel):
-    """リマインダーの追加用（IDは扱わない）。"""
-    scheduled_at: datetime               # 通知予定日時
-    content: str                         # 通知内容
-
-
 class FullSettingsUpdateRequest(BaseModel):
     """
     全設定更新リクエスト。
@@ -325,8 +309,6 @@ class FullSettingsUpdateRequest(BaseModel):
     desktop_watch_enabled: bool
     desktop_watch_interval_seconds: int
     desktop_watch_target_client_id: Optional[str] = None
-    reminders_enabled: bool
-    reminders: List[ReminderUpsertRequest]
     active_llm_preset_id: str
     active_embedding_preset_id: str
     active_persona_preset_id: str
@@ -335,3 +317,78 @@ class FullSettingsUpdateRequest(BaseModel):
     embedding_preset: List[EmbeddingPresetSettings]
     persona_preset: List[PersonaPresetSettings]
     addon_preset: List[AddonPresetSettings]
+
+
+# --- リマインダー（専用API: /api/reminders/*） ---
+
+
+class RemindersGlobalSettingsResponse(BaseModel):
+    """リマインダーのグローバル設定レスポンス。"""
+
+    reminders_enabled: bool
+    target_client_id: Optional[str] = None
+
+
+class RemindersGlobalSettingsUpdateRequest(BaseModel):
+    """リマインダーのグローバル設定更新リクエスト。"""
+
+    reminders_enabled: bool
+    target_client_id: Optional[str] = None
+
+
+class ReminderItem(BaseModel):
+    """リマインダー1件（一覧/作成/更新の共通レスポンス）。"""
+
+    id: str
+    enabled: bool
+    repeat_kind: str  # once|daily|weekly
+    time_zone: str
+    content: str
+
+    # --- once ---
+    scheduled_at: Optional[str] = None
+
+    # --- daily/weekly ---
+    time_of_day: Optional[str] = None  # HH:MM
+    weekdays: List[str] = Field(default_factory=list)  # sun..sat（Sun-first）
+
+    # --- state (server-managed) ---
+    next_fire_at_utc: Optional[int] = None
+
+
+class RemindersListResponse(BaseModel):
+    """リマインダー一覧レスポンス。"""
+
+    items: List[ReminderItem] = Field(default_factory=list)
+
+
+class ReminderCreateRequest(BaseModel):
+    """リマインダー作成リクエスト。"""
+
+    time_zone: str
+    enabled: bool = True
+    repeat_kind: str  # once|daily|weekly
+    content: str
+
+    # --- once ---
+    scheduled_at: Optional[str] = None
+
+    # --- daily/weekly ---
+    time_of_day: Optional[str] = None  # HH:MM
+    weekdays: List[str] = Field(default_factory=list)  # weeklyのみ
+
+
+class ReminderUpdateRequest(BaseModel):
+    """リマインダー更新リクエスト（部分更新）。"""
+
+    enabled: Optional[bool] = None
+    repeat_kind: Optional[str] = None  # once|daily|weekly
+    time_zone: Optional[str] = None
+    content: Optional[str] = None
+
+    # --- once ---
+    scheduled_at: Optional[str] = None
+
+    # --- daily/weekly ---
+    time_of_day: Optional[str] = None  # HH:MM
+    weekdays: Optional[List[str]] = None  # weeklyのみ（None=変更なし）

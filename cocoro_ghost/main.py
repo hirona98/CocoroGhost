@@ -14,11 +14,12 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_utils.tasks import repeat_every
 
 from cocoro_ghost import event_stream, log_stream
-from cocoro_ghost.api import admin, chat, events, logs, meta_request, notification, settings, vision
+from cocoro_ghost.api import admin, chat, events, logs, meta_request, notification, reminders, settings, vision
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.logging_config import setup_logging, suppress_uvicorn_access_log_paths
 from cocoro_ghost.desktop_watch import get_desktop_watch_service
+from cocoro_ghost.reminders_service import get_reminder_service
 
 # Bearer認証スキーム
 security = HTTPBearer()
@@ -60,6 +61,8 @@ def create_app() -> FastAPI:
         ensure_initial_settings,
         settings_session_scope,
     )
+    from cocoro_ghost.reminders_db import init_reminders_db, reminders_session_scope
+    from cocoro_ghost.reminders_repo import ensure_initial_reminder_global_settings
 
     # 1. TOML設定読み込み
     toml_config = load_config()
@@ -77,9 +80,16 @@ def create_app() -> FastAPI:
     # 2. 設定DB初期化
     init_settings_db()
 
+    # 2.5 リマインダーDB初期化（settings.db とは別）
+    init_reminders_db()
+
     # 3. 初期設定レコードの作成（プリセットが無ければデフォルト作成）
     with settings_session_scope() as session:
         ensure_initial_settings(session, toml_config)
+
+    # 3.5 リマインダーの初期設定行を作成（単一行）
+    with reminders_session_scope() as session:
+        ensure_initial_reminder_global_settings(session)
 
     # 4. アクティブなプリセットを読み込み
     with settings_session_scope() as session:
@@ -120,6 +130,7 @@ def create_app() -> FastAPI:
     app.include_router(meta_request.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(vision.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(settings.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(reminders.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(admin.router, dependencies=[Depends(verify_token)], prefix="/api")
     # 認証不要なエンドポイント（ログ/イベントストリーム）
     app.include_router(logs.router, prefix="/api")
@@ -146,6 +157,13 @@ def create_app() -> FastAPI:
     async def periodic_desktop_watch() -> None:
         """デスクトップウォッチ（能動視覚）の定期実行。"""
         service = get_desktop_watch_service()
+        await asyncio.to_thread(service.tick)
+
+    @app.on_event("startup")
+    @repeat_every(seconds=1, wait_first=True)
+    async def periodic_reminders() -> None:
+        """リマインダーの定期実行。"""
+        service = get_reminder_service()
         await asyncio.to_thread(service.tick)
 
     @app.on_event("startup")
