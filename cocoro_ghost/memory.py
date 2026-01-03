@@ -808,7 +808,7 @@ class MemoryManager:
             self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
 
         # --- イベント配信 ---
-        system_text = "[desktop_watch]".strip()
+        system_text = "[デスクトップウォッチ]".strip()
         if active_app or window_title:
             system_text = " ".join([x for x in [system_text, active_app, window_title] if x]).strip()
         publish_event(
