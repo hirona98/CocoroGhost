@@ -6,9 +6,13 @@
   - `/api/chat`（SSE）
   - `/api/v2/notification`
   - `/api/v2/meta-request`
+  - `/api/reminders/*`（リマインダー管理）
 - **Memory Store（SQLite: `memory_<embedding_preset_id>.db`）**
   - `units` + `payload_*` による Unit化
   - 版管理（`unit_versions`）と来歴/信頼度を保持
+- **Reminder Store（SQLite: `reminders.db`）**
+  - リマインダーの定義（単発/毎日/毎週）と、次回発火時刻（`next_fire_at`）を保持
+  - リマインダー配信先（`target_client_id`）などのグローバル設定も保持する
 - **Vector Index（sqlite-vec / vec0）**
   - `vec_units` は「索引」（`unit_id` と `embedding`）のみ保持
   - kind partition と metadata filtering を活用（sqlite-vec v0.1.6+）
@@ -65,6 +69,13 @@ flowchart LR
 - `desktop_watch_enabled` がONなら、指定間隔でデスクトップ担当クライアントへキャプチャ要求を送る
 - 取得画像を要約し、人格の能動コメントを生成してEpisodeとして保存する
 - `/api/v2/notification` / `/api/v2/meta-request` とは別系統（人格が「自分で見に行く」想定）
+
+### 能動（リマインダー）
+
+- `reminders_enabled` がONなら、期限到達（または期限超過）したリマインダーを検知する
+- 人格として「自分で時計を見て思い出した」体で、スピーカーへ伝える文面を生成する
+- 生成時は MemoryPack（Retriever + Builder）を使い、自然さを上げる
+- `/api/events/stream` に `type="reminder"` として配信する（宛先は `target_client_id`）
 
 #### Contextual Memory Retrieval（同期・LLMレス）
 
@@ -177,6 +188,9 @@ sequenceDiagram
 
 - 設定は `settings.db`
   - token / active preset / PERSONA_ANCHOR（persona_text + addon_text）/ 注入予算 等
+- リマインダーは `reminders.db`
+  - 単発/毎日/毎週の定義と、次回発火時刻（`next_fire_at`）などの実行状態
+  - 配信先（`target_client_id`）などのグローバル設定
 - 記憶は `memory_<embedding_preset_id>.db`
   - `units` + `payload_*` + `entities` 等
   - `vec_units`（sqlite-vec 仮想テーブル）

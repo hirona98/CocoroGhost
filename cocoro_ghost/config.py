@@ -54,7 +54,6 @@ class RuntimeConfig:
 
     # GlobalSettings由来（DB設定）
     memory_enabled: bool          # 記憶機能の有効/無効
-    reminders_enabled: bool       # リマインダー機能の有効/無効
 
     # 視覚（Vision）: デスクトップウォッチ
     desktop_watch_enabled: bool
@@ -134,11 +133,6 @@ class ConfigStore:
     def memory_enabled(self) -> bool:
         """記憶機能の有効/無効を返す。"""
         return bool(self._runtime.memory_enabled)
-
-    @property
-    def reminders_enabled(self) -> bool:
-        """リマインダー機能の有効/無効を返す。"""
-        return bool(self._runtime.reminders_enabled)
 
 
 def _require(config_dict: dict, key: str) -> str:
@@ -224,7 +218,6 @@ def build_runtime_config(
         log_level=toml_config.log_level,
         # GlobalSettings由来
         memory_enabled=bool(getattr(global_settings, "memory_enabled", True)),
-        reminders_enabled=bool(getattr(global_settings, "reminders_enabled", True)),
         # 視覚（Vision）: デスクトップウォッチ
         desktop_watch_enabled=bool(global_settings.desktop_watch_enabled),
         desktop_watch_interval_seconds=int(global_settings.desktop_watch_interval_seconds),

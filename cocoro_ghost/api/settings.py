@@ -4,7 +4,7 @@
 アプリケーション設定の取得・更新を行うエンドポイント。
 LLM/Embedding/PersonaPreset/AddonPreset各プリセットの管理、
 GlobalSettings（除外キーワード、記憶機能ON/OFF等）の更新、
-リマインダー設定の管理をサポートする。
+デスクトップウォッチ設定の管理をサポートする。
 """
 
 from __future__ import annotations
@@ -44,15 +44,6 @@ def get_settings(
     embedding_presets: list[schemas.EmbeddingPresetSettings] = []
     persona_presets: list[schemas.PersonaPresetSettings] = []
     addon_presets: list[schemas.AddonPresetSettings] = []
-    reminders: list[schemas.ReminderSettings] = []
-
-    for reminder in db.query(models.Reminder).order_by(models.Reminder.scheduled_at.asc(), models.Reminder.id.asc()).all():
-        reminders.append(
-            schemas.ReminderSettings(
-                scheduled_at=reminder.scheduled_at,
-                content=reminder.content,
-            )
-        )
 
     for preset in (
         db.query(models.LlmPreset).filter_by(archived=False).order_by(models.LlmPreset.id.asc()).all()
@@ -121,8 +112,6 @@ def get_settings(
             if global_settings.desktop_watch_target_client_id is not None
             else None
         ),
-        reminders_enabled=global_settings.reminders_enabled,
-        reminders=reminders,
         active_llm_preset_id=global_settings.active_llm_preset_id,
         active_embedding_preset_id=global_settings.active_embedding_preset_id,
         active_persona_preset_id=global_settings.active_persona_preset_id,
@@ -173,17 +162,6 @@ def commit_settings(
     global_settings.desktop_watch_target_client_id = (
         str(request.desktop_watch_target_client_id).strip() if request.desktop_watch_target_client_id else None
     )
-    global_settings.reminders_enabled = request.reminders_enabled
-
-    # リマインダー更新：常に「全置き換え」（IDは作り直される）
-    db.query(models.Reminder).delete(synchronize_session=False)
-    for item in request.reminders:
-        db.add(
-            models.Reminder(
-                scheduled_at=item.scheduled_at,
-                content=item.content,
-            )
-        )
 
     # LLMプリセットの更新（複数件 / 全置換 + アーカイブ）
     llm_existing = db.query(models.LlmPreset).order_by(models.LlmPreset.id.asc()).all()

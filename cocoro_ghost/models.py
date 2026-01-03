@@ -3,7 +3,7 @@ ORM モデル定義
 
 設定DBのテーブル構造を定義するSQLAlchemyモデル。
 GlobalSettings（共通設定）、各種プリセット（LLM, Embedding, Persona, Addon）、
-リマインダーなどを管理する。
+などを管理する。
 """
 
 from __future__ import annotations
@@ -51,8 +51,6 @@ class GlobalSettings(Base):
     desktop_watch_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
     # デスクトップ担当クライアントID（1台指名）
     desktop_watch_target_client_id: Mapped[Optional[str]] = mapped_column(String(_CLIENT_ID_MAX_LEN), nullable=True)
-    # リマインダー機能の有効/無効
-    reminders_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     # アクティブなプリセットへの外部キー
     active_llm_preset_id: Mapped[Optional[str]] = mapped_column(String(_UUID_STR_LEN), ForeignKey("llm_presets.id"))
@@ -185,24 +183,3 @@ class EmbeddingPreset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-
-class Reminder(Base):
-    """
-    リマインダー設定テーブル。
-    指定日時にユーザーに通知する内容を保持する。
-    """
-
-    __tablename__ = "reminders"
-
-    # 主キー（UUID文字列）
-    id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
-    # リマインダーの有効/無効
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    # 通知予定日時
-    scheduled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    # 通知内容
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-
-    # タイムスタンプ
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

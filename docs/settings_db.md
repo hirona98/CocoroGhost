@@ -27,7 +27,6 @@
 - `desktop_watch_enabled`（INTEGER: 0/1）
 - `desktop_watch_interval_seconds`（INTEGER）
 - `desktop_watch_target_client_id`（TEXT, nullable）
-- `reminders_enabled`（INTEGER: 0/1）
 - `active_llm_preset_id`（TEXT: UUID）
 - `active_embedding_preset_id`（TEXT: UUID / `embedding_preset_id`）
 - `active_persona_preset_id`（TEXT: UUID）
@@ -37,6 +36,9 @@
 
 補足:
 - `active_*_preset_id` は「アーカイブされていないプリセット」に対してのみ有効。
+
+注記:
+- リマインダー（`reminders_enabled` / `target_client_id` / リマインダー定義）は `settings.db` ではなく `reminders.db` に分離する（仕様: `docs/reminders.md`）。
 
 ### `llm_presets`
 
@@ -120,20 +122,11 @@ AddonPreset（PERSONA_ANCHORへの任意追加オプション）プロンプト�
 補足:
 - 注入時は `persona_text` と `addon_text` を **同一の PERSONA_ANCHOR セクションに連結**して system prompt に固定注入する。
 
-### `reminders`（任意）
+## `reminders.db`（別DB）
 
-リマインダー（時刻＋内容）を保持する。
+リマインダーは「実行状態（次回発火時刻など）を持つスケジューラ対象」なので、`settings.db` から分離して `reminders.db` として管理する。
 
-#### カラム（実装準拠）
-
-- `id`（TEXT: UUID）
-- `enabled`（INTEGER: 0/1）
-- `scheduled_at`（DATETIME）
-- `content`（TEXT）
-- `created_at` / `updated_at`（DATETIME）
-
-補足:
-- 現状の `/api/settings` 更新は reminders を「全置換」で作り直すため、`enabled` は常にデフォルト（true）になりやすい。
+- 仕様: `docs/reminders.md`
 
 ## 初期化（起動時）
 

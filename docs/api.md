@@ -221,8 +221,9 @@ CocoroConsole等のクライアントが、`/api/events/stream` で受け取っ�
 現行実装に含まれる。
 
 - `/api/settings`（UI向けの設定取得/更新）
+- `/api/reminders/*`（リマインダー設定/一覧/編集）
 - `/api/logs/stream`（WebSocketログ購読）
-- `/api/events/stream`（WebSocketイベント購読: notification/meta-request/desktop_watch + vision command）
+- `/api/events/stream`（WebSocketイベント購読: notification/meta-request/desktop_watch/reminder + vision command）
 - `/api/v2/vision/capture-response`（視覚: 画像取得結果の返却）
 
 ## `/api/settings`
@@ -239,10 +240,6 @@ UI向けの「全設定」取得/更新。
   "desktop_watch_enabled": false,
   "desktop_watch_interval_seconds": 300,
   "desktop_watch_target_client_id": "console-uuid-or-stable-id",
-  "reminders_enabled": true,
-  "reminders": [
-    {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
-  ],
   "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
@@ -292,8 +289,8 @@ UI向けの「全設定」取得/更新。
 }
 ```
 
-- `scheduled_at` はISO 8601のdatetime（Pydanticがパース可能な形式）で返す
 - `memory_enabled` は「記憶機能を使うか」を示す設定値
+- リマインダーは `/api/settings` では扱わず、`/api/reminders/*` を使用する（`docs/reminders.md`）。
 
 ### `PUT /api/settings`
 
@@ -314,10 +311,6 @@ UI向けの「全設定」取得/更新。
   "desktop_watch_enabled": false,
   "desktop_watch_interval_seconds": 300,
   "desktop_watch_target_client_id": "console-uuid-or-stable-id",
-  "reminders_enabled": true,
-  "reminders": [
-    {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
-  ],
   "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
@@ -374,14 +367,26 @@ UI向けの「全設定」取得/更新。
 #### 注意点（実装仕様）
 
 - `llm_preset` / `embedding_preset` / `persona_preset` / `addon_preset` は「配列」で、**複数件を一括確定**する（全置換コミット）
-- `reminders` は **全置き換え**（既存は削除されIDは作り直される）
 - 各配列内で `*_preset_id` が重複している場合は `400`
 - `active_*_preset_id` は **対応する配列に含まれるID**である必要がある（未存在/アーカイブは `400`）
 - `active_embedding_preset_id` は記憶DB識別子（= `embedding_preset_id`）で、変更時はメモリDB初期化を検証する（失敗時 `400`）
 - `desktop_watch_*` はデスクトップウォッチ（視覚/能動監視）の設定。
+- リマインダーは `/api/settings` では扱わず、`/api/reminders/*` で管理する。
 - `max_inject_tokens` / `similar_limit_by_kind` 等の詳細パラメータは現状API外
 - base_url（`llm_base_url` / `embedding_base_url` / `image_llm_base_url`）は、ローカルLLM等の OpenAI互換エンドポイント向けに使用できる（任意）。
 - OpenRouter の embeddings は `embedding_model="openrouter/<model slug>"` を指定すると、`embedding_base_url` 未指定でもサーバ内部で `https://openrouter.ai/api/v1` を自動設定して呼び出す。
+
+## `/api/reminders/*`
+
+リマインダーは `/api/settings` ではなく、専用APIで管理する。
+繰り返し（daily/weekly）と単発（once）、配信先（`target_client_id`）などの仕様は `docs/reminders.md` を参照。
+
+- `GET /api/reminders/settings`
+- `PUT /api/reminders/settings`
+- `GET /api/reminders`
+- `POST /api/reminders`
+- `PATCH /api/reminders/{id}`
+- `DELETE /api/reminders/{id}`
 
 ## `/api/logs/stream`（WebSocket）
 
@@ -408,6 +413,7 @@ UI向けの「全設定」取得/更新。
 - 認証: `Authorization: Bearer <TOKEN>`
 - 目的:
   - `POST /api/v2/notification` / `POST /api/v2/meta-request` を受信したとき、接続中クライアントへ即時にイベントを配信する
+  - リマインダーが発火したとき、`target_client_id` 宛てに `reminder` を配信する
   - 視覚（Vision）のための `vision.capture_request` をクライアントへ送る（命令）
 - 挙動: 接続直後に最大200件のバッファ済みイベントを送信し、その後は新規イベントをリアルタイムでpushする
 
@@ -418,7 +424,7 @@ UI向けの「全設定」取得/更新。
 ```json
 {
   "unit_id": 12345,
-  "type": "notification|meta-request|desktop_watch|vision.capture_request",
+  "type": "notification|meta-request|desktop_watch|reminder|vision.capture_request",
   "data": {
     "system_text": "string",
     "message": "string"
@@ -453,6 +459,16 @@ UI向けの「全設定」取得/更新。
     "message": "AI人格のセリフ"
   }
 }
+
+{
+  "unit_id": 12345,
+  "type": "reminder",
+  "data": {
+    "reminder_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "hhmm": "09:30",
+    "message": "AI人格のセリフ（50文字以内、時刻を含む）"
+  }
+}
 ```
 
 - 視覚（命令）例）
@@ -476,9 +492,10 @@ UI向けの「全設定」取得/更新。
 - `vision.capture_request` は遅延実行を避けるため、サーバ側で **バッファに保持しない**（接続直後のキャッチアップ対象外）。
 - `vision.capture_request` を特定クライアントへ送るため、クライアントは接続直後に `hello` を送って client_id を登録する必要がある（Vision利用時）。
 
-### Client message（必須: Vision利用時 / JSON text）
+### Client message（必須: 宛先配信を受ける場合 / JSON text）
 
 クライアントは接続直後に `hello` を送って client_id を登録する（Client→Ghost）。
+（`reminder` / `vision.capture_request` は `target_client_id` 宛ての宛先配信のため、`hello` が無いと受け取れない）
 
 ```json
 {

@@ -370,6 +370,7 @@ class LlmRequestPurpose:
     IMAGE_SUMMARY_DESKTOP_WATCH = "＜＜ 画像要約（デスクトップウォッチ） ＞＞"
     VISION_DECISION = "＜＜ 視覚判定（チャット） ＞＞"
     DESKTOP_WATCH = "＜＜ デスクトップウォッチ ＞＞"
+    REMINDER = "＜＜ リマインダー ＞＞"
 
 
 def _normalize_purpose(purpose: str) -> str:
