@@ -117,6 +117,13 @@ def get_settings(
     return schemas.FullSettingsResponse(
         exclude_keywords=json.loads(global_settings.exclude_keywords),
         memory_enabled=global_settings.memory_enabled,
+        desktop_watch_enabled=bool(global_settings.desktop_watch_enabled),
+        desktop_watch_interval_seconds=int(global_settings.desktop_watch_interval_seconds),
+        desktop_watch_target_client_id=(
+            str(global_settings.desktop_watch_target_client_id).strip()
+            if global_settings.desktop_watch_target_client_id is not None
+            else None
+        ),
         reminders_enabled=global_settings.reminders_enabled,
         reminders=reminders,
         active_llm_preset_id=global_settings.active_llm_preset_id,
@@ -165,6 +172,11 @@ def commit_settings(
     # 共通設定更新
     global_settings.exclude_keywords = json.dumps(request.exclude_keywords)
     global_settings.memory_enabled = request.memory_enabled
+    global_settings.desktop_watch_enabled = bool(request.desktop_watch_enabled)
+    global_settings.desktop_watch_interval_seconds = int(request.desktop_watch_interval_seconds)
+    global_settings.desktop_watch_target_client_id = (
+        str(request.desktop_watch_target_client_id).strip() if request.desktop_watch_target_client_id else None
+    )
     global_settings.reminders_enabled = request.reminders_enabled
 
     # リマインダー更新：常に「全置き換え」（IDは作り直される）

@@ -23,6 +23,7 @@ from cocoro_ghost.defaults import DEFAULT_EXCLUDE_KEYWORDS_JSON
 
 # UUIDの文字列長（ハイフン含む36文字）
 _UUID_STR_LEN = 36
+_CLIENT_ID_MAX_LEN = 128
 
 
 def _uuid_str() -> str:
@@ -46,6 +47,14 @@ class GlobalSettings(Base):
     exclude_keywords: Mapped[str] = mapped_column(Text, nullable=False, default=DEFAULT_EXCLUDE_KEYWORDS_JSON)
     # 記憶機能の有効/無効
     memory_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # --- 視覚（Vision）: デスクトップウォッチ ---
+    # デスクトップウォッチの有効/無効
+    desktop_watch_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # デスクトップウォッチの実行間隔（秒）
+    desktop_watch_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    # デスクトップ担当クライアントID（1台指名）
+    desktop_watch_target_client_id: Mapped[Optional[str]] = mapped_column(String(_CLIENT_ID_MAX_LEN), nullable=True)
     # リマインダー機能の有効/無効
     reminders_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 

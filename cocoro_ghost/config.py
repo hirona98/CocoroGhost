@@ -58,6 +58,11 @@ class RuntimeConfig:
     memory_enabled: bool          # 記憶機能の有効/無効
     reminders_enabled: bool       # リマインダー機能の有効/無効
 
+    # 視覚（Vision）: デスクトップウォッチ
+    desktop_watch_enabled: bool
+    desktop_watch_interval_seconds: int
+    desktop_watch_target_client_id: Optional[str]
+
     # LlmPreset由来（LLM設定）
     llm_preset_name: str          # LLMプリセット名
     llm_api_key: str              # LLM APIキー
@@ -223,6 +228,14 @@ def build_runtime_config(
         exclude_keywords=json.loads(global_settings.exclude_keywords),
         memory_enabled=bool(getattr(global_settings, "memory_enabled", True)),
         reminders_enabled=bool(getattr(global_settings, "reminders_enabled", True)),
+        # 視覚（Vision）: デスクトップウォッチ
+        desktop_watch_enabled=bool(global_settings.desktop_watch_enabled),
+        desktop_watch_interval_seconds=int(global_settings.desktop_watch_interval_seconds),
+        desktop_watch_target_client_id=(
+            str(global_settings.desktop_watch_target_client_id).strip()
+            if global_settings.desktop_watch_target_client_id is not None
+            else None
+        ),
         # LlmPreset由来
         llm_preset_name=llm_preset.name,
         llm_api_key=llm_preset.llm_api_key,

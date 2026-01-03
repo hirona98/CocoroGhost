@@ -25,6 +25,9 @@
 - `token`（TEXT）
 - `exclude_keywords`（TEXT: JSON array）
 - `memory_enabled`（INTEGER: 0/1）
+- `desktop_watch_enabled`（INTEGER: 0/1）
+- `desktop_watch_interval_seconds`（INTEGER）
+- `desktop_watch_target_client_id`（TEXT, nullable）
 - `reminders_enabled`（INTEGER: 0/1）
 - `active_llm_preset_id`（TEXT: UUID）
 - `active_embedding_preset_id`（TEXT: UUID / `embedding_preset_id`）

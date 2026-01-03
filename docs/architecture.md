@@ -52,12 +52,19 @@ flowchart LR
 ### 同期（/api/chat のSSE中にやること）
 
 - （任意）画像要約（Vision）
+- （Planned）チャット視覚: 必要ならクライアントへカメラ撮影要求→画像要約→同一ターンで返答
 - Retrieverで文脈考慮型の記憶検索（`docs/retrieval.md`）
 - MemoryPack Builderで **MemoryPack** を生成（capsule/facts/summaries/loops + relevant episodes）
 - LLMへ system（guard + PERSONA_ANCHOR〔persona_text + addon_text を連結〕 + 固定プロンプト）を渡し、conversation は会話履歴（max_turns_window）+ `<<INTERNAL_CONTEXT>>`（MemoryPack）+ input_text を渡す
 - 返答をSSEで配信
 - `units(kind=EPISODE)` + `payload_episode` を **RAW** で保存
 - Worker用ジョブを enqueue（reflection/extraction/embedding等）
+
+### 能動（デスクトップウォッチ）
+
+- `desktop_watch_enabled` がONなら、指定間隔でデスクトップ担当クライアントへキャプチャ要求を送る
+- 取得画像を要約し、人格の能動コメントを生成してEpisodeとして保存する
+- `/api/v2/notification` / `/api/v2/meta-request` とは別系統（人格が「自分で見に行く」想定）
 
 #### Contextual Memory Retrieval（同期・LLMレス）
 

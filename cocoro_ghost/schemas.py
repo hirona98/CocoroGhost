@@ -47,9 +47,58 @@ class ChatRequest(BaseModel):
     ユーザーのメッセージと添付画像を受け付ける。
     """
     embedding_preset_id: Optional[str] = None
+    client_id: str                      # 発話者（クライアント）ID（必須）
     input_text: str                      # 入力テキスト
     images: List[Dict[str, str]] = Field(default_factory=list)  # 添付画像リスト
     client_context: Optional[Dict[str, Any]] = None  # クライアント側コンテキスト
+
+    @field_validator("client_id")
+    @classmethod
+    def _validate_client_id_non_empty(cls, v: str) -> str:
+        """
+        client_id を必須・非空として扱う。
+
+        NOTE:
+        - 運用前のため後方互換は付けない（未指定は 422）。
+        - 空白だけの値も不正として弾く。
+        """
+        s = str(v or "").strip()
+        if not s:
+            raise ValueError("client_id must not be empty")
+        return s
+
+
+class VisionCaptureResponseV2Request(BaseModel):
+    """
+    /v2/vision/capture-response 用リクエスト。
+
+    クライアントが取得した画像（data URI）を返す。
+    """
+
+    request_id: str
+    client_id: str
+    images: List[str] = Field(default_factory=list, max_length=5)  # data URI形式の画像（最大5枚）
+    client_context: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+    @field_validator("images")
+    @classmethod
+    def _validate_images(cls, v: List[str]) -> List[str]:
+        """画像リストのバリデーション。"""
+        if len(v) > 5:
+            raise ValueError("images must contain at most 5 items")
+        for item in v:
+            data_uri_image_to_base64(item)
+        return v
+
+    @field_validator("request_id", "client_id")
+    @classmethod
+    def _validate_non_empty(cls, v: str) -> str:
+        """必須IDが空でないことを保証する。"""
+        s = str(v or "").strip()
+        if not s:
+            raise ValueError("must not be empty")
+        return s
 
 
 # --- 通知関連 ---
@@ -188,6 +237,11 @@ class FullSettingsResponse(BaseModel):
     # 記憶機能の有効/無効（UI用）
     memory_enabled: bool
 
+    # 視覚（Vision）: デスクトップウォッチ
+    desktop_watch_enabled: bool
+    desktop_watch_interval_seconds: int
+    desktop_watch_target_client_id: Optional[str] = None
+
     # リマインダー
     reminders_enabled: bool
     reminders: List["ReminderSettings"] = Field(default_factory=list)
@@ -272,6 +326,9 @@ class FullSettingsUpdateRequest(BaseModel):
     """
     exclude_keywords: List[str]
     memory_enabled: bool
+    desktop_watch_enabled: bool
+    desktop_watch_interval_seconds: int
+    desktop_watch_target_client_id: Optional[str] = None
     reminders_enabled: bool
     reminders: List[ReminderUpsertRequest]
     active_llm_preset_id: str

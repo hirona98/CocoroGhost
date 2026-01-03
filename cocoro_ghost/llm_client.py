@@ -367,6 +367,9 @@ class LlmRequestPurpose:
     IMAGE_SUMMARY_CHAT = "＜＜ 画像要約（会話） ＞＞"
     IMAGE_SUMMARY_NOTIFICATION = "＜＜ 画像要約（通知） ＞＞"
     IMAGE_SUMMARY_META_REQUEST = "＜＜ 画像要約（メタ要求対応） ＞＞"
+    IMAGE_SUMMARY_DESKTOP_WATCH = "＜＜ 画像要約（デスクトップウォッチ） ＞＞"
+    VISION_DECISION = "＜＜ 視覚判定（チャット） ＞＞"
+    DESKTOP_WATCH = "＜＜ デスクトップウォッチ ＞＞"
 
 
 def _normalize_purpose(purpose: str) -> str:

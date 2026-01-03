@@ -17,6 +17,7 @@
 ```json
 {
   "embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "client_id": "console-uuid-or-stable-id",
   "input_text": "string",
   "images": [
     {"type": "image", "base64": "..."}
@@ -30,6 +31,7 @@
 ```
 
 - `embedding_preset_id` は必須
+- `client_id` は必須（発話者クライアントの識別子）。視覚（Vision）命令の宛先決定にも使用する。
 - `embedding_preset_id` は embedding_presets.id（UUID）を想定。埋め込み次元が一致しないDBは初期化に失敗するため、次元一致を前提に指定する
 - 注意: `jobs` は `memory_<embedding_preset_id>.db` に作られるが、内蔵Workerの処理対象は `active_embedding_preset_id`（アクティブな `embedding_preset_id`）のみ。非アクティブ `embedding_preset_id` のジョブは処理されない。
 - `images` は省略可能。要素は現状 `base64` のみ参照し、`type` は未使用（`base64` が空/不正な要素は無視される）
@@ -160,6 +162,37 @@ Invoke-RestMethod -Method Post `
 - `instruction` / `payload_text` は **永続化しない**（生成にのみ利用）
 - 生成結果は「ユーザーに話しかけるための本文」であり、`units(kind=EPISODE, source=proactive)` の `payload_episode.reply_text` に保存する
 
+## `/api/v2/vision/capture-response`
+
+CocoroConsole等のクライアントが、`/api/events/stream` で受け取った `vision.capture_request` に対する画像取得結果を返す。
+
+### Request（JSON）
+
+```json
+{
+  "request_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "client_id": "console-uuid-or-stable-id",
+  "images": [
+    "data:image/jpeg;base64,/9j/4AAQ..."
+  ],
+  "client_context": {
+    "active_app": "string",
+    "window_title": "string",
+    "locale": "ja-JP"
+  },
+  "error": null
+}
+```
+
+- `request_id` は `vision.capture_request.data.request_id` と一致させる（相関用）。
+- `images` は Data URI 形式。
+- `error` が非nullの場合、`images` は空でよい。
+- `client_id` は `/api/chat` の `client_id` と一致させる（どのクライアントのキャプチャかを一意にするため）。
+
+### Response
+
+- `204 No Content`
+
 ## 管理API
 
 以下を提供する。
@@ -189,7 +222,8 @@ Invoke-RestMethod -Method Post `
 
 - `/api/settings`（UI向けの設定取得/更新）
 - `/api/logs/stream`（WebSocketログ購読）
-- `/api/events/stream`（WebSocketイベント購読: notification/meta-request）
+- `/api/events/stream`（WebSocketイベント購読: notification/meta-request/desktop_watch + vision command）
+- `/api/v2/vision/capture-response`（視覚: 画像取得結果の返却）
 
 ## `/api/settings`
 
@@ -203,6 +237,9 @@ UI向けの「全設定」取得/更新。
 {
   "exclude_keywords": ["例:除外したい単語"],
   "memory_enabled": true,
+  "desktop_watch_enabled": false,
+  "desktop_watch_interval_seconds": 300,
+  "desktop_watch_target_client_id": "console-uuid-or-stable-id",
   "reminders_enabled": true,
   "reminders": [
     {"scheduled_at": "2025-12-13T12:34:56+09:00", "content": "string"}
@@ -341,6 +378,7 @@ UI向けの「全設定」取得/更新。
 - 各配列内で `*_preset_id` が重複している場合は `400`
 - `active_*_preset_id` は **対応する配列に含まれるID**である必要がある（未存在/アーカイブは `400`）
 - `active_embedding_preset_id` は記憶DB識別子（= `embedding_preset_id`）で、変更時はメモリDB初期化を検証する（失敗時 `400`）
+- `desktop_watch_*` はデスクトップウォッチ（視覚/能動監視）の設定。
 - `max_inject_tokens` / `similar_limit_by_kind` 等の詳細パラメータは現状API外
 - base_url（`llm_base_url` / `embedding_base_url` / `image_llm_base_url`）は、ローカルLLM等の OpenAI互換エンドポイント向けに使用できる（任意）。
 - OpenRouter の embeddings は `embedding_model="openrouter/<model slug>"` を指定すると、`embedding_base_url` 未指定でもサーバ内部で `https://openrouter.ai/api/v1` を自動設定して呼び出す。
@@ -368,7 +406,9 @@ UI向けの「全設定」取得/更新。
 
 - URL: `ws(s)://<host>/api/events/stream`
 - 認証: `Authorization: Bearer <TOKEN>`
-- 目的: `POST /api/v2/notification` / `POST /api/v2/meta-request` を受信したとき、接続中クライアントへ即時にイベントを配信する
+- 目的:
+  - `POST /api/v2/notification` / `POST /api/v2/meta-request` を受信したとき、接続中クライアントへ即時にイベントを配信する
+  - 視覚（Vision）のための `vision.capture_request` をクライアントへ送る（命令）
 - 挙動: 接続直後に最大200件のバッファ済みイベントを送信し、その後は新規イベントをリアルタイムでpushする
 
 ### Event payload（JSON text）
@@ -378,7 +418,7 @@ UI向けの「全設定」取得/更新。
 ```json
 {
   "unit_id": 12345,
-  "type": "notification|meta-request",
+  "type": "notification|meta-request|desktop_watch|vision.capture_request",
   "data": {
     "system_text": "string",
     "message": "string"
@@ -404,9 +444,53 @@ UI向けの「全設定」取得/更新。
     "message": "AI人格のセリフ",
   }
 }
+
+{
+  "unit_id": 12345,
+  "type": "desktop_watch",
+  "data": {
+    "system_text": "[desktop_watch] active_app window_title",
+    "message": "AI人格のセリフ"
+  }
+}
+```
+
+- 視覚（命令）例）
+```json
+{
+  "unit_id": 0,
+  "type": "vision.capture_request",
+  "data": {
+    "request_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "source": "desktop|camera",
+    "mode": "still",
+    "purpose": "chat|desktop_watch",
+    "timeout_ms": 5000
+  }
+}
 ```
 
 - 認証: `Authorization: Bearer <TOKEN>`（HTTPヘッダ）
+
+補足:
+- `vision.capture_request` は遅延実行を避けるため、サーバ側で **バッファに保持しない**（接続直後のキャッチアップ対象外）。
+- `vision.capture_request` を特定クライアントへ送るため、クライアントは接続直後に `hello` を送って client_id を登録する必要がある（Vision利用時）。
+
+### Client message（必須: Vision利用時 / JSON text）
+
+クライアントは接続直後に `hello` を送って client_id を登録する（Client→Ghost）。
+
+```json
+{
+  "type": "hello",
+  "client_id": "console-uuid-or-stable-id",
+  "caps": ["vision.desktop", "vision.camera"]
+}
+```
+
+補足:
+- `client_id` は `/api/chat` の `client_id` と一致させる（発話者＝命令宛先の一意化のため）。
+- `caps` は予約（将来の `video` 等）。現状は未使用。
 
 
 ## `/api/health`

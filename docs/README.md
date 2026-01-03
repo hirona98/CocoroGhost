@@ -34,7 +34,8 @@
 9. `docs/prompts.md`（LLM JSONスキーマ）
 10. `docs/prompt_usage_map.md`（プロンプト使用箇所マップ）
 11. `docs/api.md`（API仕様 / SSE）
-12. `docs/bootstrap.md`（初期DB作成）
+12. `docs/vision.md`（視覚: チャット視覚 / デスクトップウォッチ）
+13. `docs/bootstrap.md`（初期DB作成）
 
 ## 用語
 

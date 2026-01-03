@@ -4,6 +4,10 @@ WebSocket向けアプリイベント配信
 通知完了、メタ要求完了などのアプリケーションイベントを
 WebSocketクライアントにリアルタイム配信する。
 イベントはリングバッファに保持され、新規接続時にキャッチアップ可能。
+
+Planned:
+- 視覚（Vision）のための命令（capture_request）を同じストリームで配信する。
+- 命令は特定クライアント（client_id）宛てに送る（broadcastしない/バッファしない）。
 """
 
 from __future__ import annotations
@@ -38,11 +42,16 @@ class AppEvent:
     embedding_preset_id: str  # 対象EmbeddingPreset ID（= 記憶DB識別子）
     unit_id: int  # 関連UnitID
     data: Dict[str, Any]  # 追加データ
+    target_client_id: Optional[str] = None  # 宛先client_id（指定時はそのクライアントにのみ送る）
+    bufferable: bool = True  # リングバッファに保持するか（命令はFalse）
 
 
 _event_queue: Optional[asyncio.Queue[AppEvent]] = None
 _buffer: Deque[AppEvent] = deque(maxlen=MAX_BUFFER)
 _clients: Set["WebSocket"] = set()
+_ws_to_client_id: dict["WebSocket", str] = {}
+_client_id_to_ws: dict[str, "WebSocket"] = {}
+_ws_to_caps: dict["WebSocket", list[str]] = {}
 _dispatch_task: Optional[asyncio.Task[None]] = None
 _handler_installed = False
 _loop: Optional[asyncio.AbstractEventLoop] = None
@@ -115,11 +124,20 @@ async def stop_dispatcher() -> None:
     _dispatch_task = None
 
 
-def publish(*, type: str, embedding_preset_id: str, unit_id: int, data: Optional[Dict[str, Any]] = None) -> None:
+def publish(
+    *,
+    type: str,
+    embedding_preset_id: str,
+    unit_id: int,
+    data: Optional[Dict[str, Any]] = None,
+    target_client_id: Optional[str] = None,
+    bufferable: bool = True,
+) -> None:
     """
     イベントをキューに投入する。
 
     スレッドセーフにイベントを追加し、dispatcherが配信を行う。
+    target_client_id を指定した場合は、そのクライアントにのみ送る。
     """
     if _event_queue is None or _loop is None:
         return
@@ -130,6 +148,8 @@ def publish(*, type: str, embedding_preset_id: str, unit_id: int, data: Optional
         embedding_preset_id=embedding_preset_id,
         unit_id=int(unit_id),
         data=data or {},
+        target_client_id=(str(target_client_id).strip() if target_client_id else None),
+        bufferable=bool(bufferable),
     )
     _loop.call_soon_threadsafe(_event_queue.put_nowait, event)
 
@@ -160,6 +180,12 @@ async def remove_client(ws: "WebSocket") -> None:
     """
     _clients.discard(ws)
 
+    # --- client_id 登録情報を掃除する ---
+    client_id = _ws_to_client_id.pop(ws, None)
+    _ws_to_caps.pop(ws, None)
+    if client_id and _client_id_to_ws.get(client_id) is ws:
+        _client_id_to_ws.pop(client_id, None)
+
 
 async def send_buffer(ws: "WebSocket") -> None:
     """
@@ -171,21 +197,99 @@ async def send_buffer(ws: "WebSocket") -> None:
         await ws.send_text(_serialize_event(event))
 
 
+def register_client_identity(ws: "WebSocket", *, client_id: str, caps: Optional[list[str]] = None) -> None:
+    """
+    WebSocket接続に client_id を紐づける。
+
+    クライアント（CocoroConsole等）が hello メッセージで自己申告した情報を保持し、
+    視覚（Vision）命令の宛先指定に利用する。
+    """
+    cid = str(client_id or "").strip()
+    if not cid:
+        return
+
+    # --- 既存の紐づけを更新する ---
+    old = _ws_to_client_id.get(ws)
+    if old and _client_id_to_ws.get(old) is ws:
+        _client_id_to_ws.pop(old, None)
+
+    _ws_to_client_id[ws] = cid
+    _client_id_to_ws[cid] = ws
+    _ws_to_caps[ws] = list(caps or [])
+    logger.info("event client registered client_id=%s caps=%s", cid, list(caps or []))
+
+
+def is_client_connected(client_id: str) -> bool:
+    """
+    指定 client_id のクライアントが接続中かを返す。
+
+    視覚（Vision）要求の送信前チェックなどに利用する。
+    """
+    cid = str(client_id or "").strip()
+    if not cid:
+        return False
+    ws = _client_id_to_ws.get(cid)
+    return bool(ws is not None and ws in _clients)
+
+
 async def _dispatch_loop() -> None:
     while True:
         if _event_queue is None:  # pragma: no cover
             await asyncio.sleep(0.1)
             continue
         event = await _event_queue.get()
-        _buffer.append(event)
+
+        # --- バッファリング ---
+        # 命令（例: vision.capture_request）は後から送ると危険なため、基本はバッファしない。
+        if event.bufferable:
+            _buffer.append(event)
         payload = _serialize_event(event)
 
         dead_clients: List["WebSocket"] = []
-        for ws in list(_clients):
-            try:
-                await ws.send_text(payload)
-            except Exception:
-                dead_clients.append(ws)
+
+        # --- 配信 ---
+        # 宛先指定があれば、その client_id のみへ送る。
+        target_id = (event.target_client_id or "").strip()
+        if target_id:
+            ws = _client_id_to_ws.get(target_id)
+            # --- 送信ログ（通常イベント/命令 共通） ---
+            # NOTE: 送信ペイロード（dataの中身）はログに出さず、type/unit_id/宛先だけを記録する。
+            if ws is not None and ws in _clients:
+                logger.info(
+                    "event stream send type=%s unit_id=%s target_client_id=%s bufferable=%s",
+                    event.type,
+                    int(event.unit_id),
+                    target_id,
+                    bool(event.bufferable),
+                )
+            else:
+                logger.info(
+                    "event stream send skipped (target not connected) type=%s unit_id=%s target_client_id=%s bufferable=%s",
+                    event.type,
+                    int(event.unit_id),
+                    target_id,
+                    bool(event.bufferable),
+                )
+            if ws is not None and ws in _clients:
+                try:
+                    await ws.send_text(payload)
+                except Exception:
+                    dead_clients.append(ws)
+        else:
+            # --- 送信ログ（ブロードキャスト） ---
+            # NOTE: ブロードキャストの場合は宛先が複数になり得るため、接続数のみ記録する。
+            logger.info(
+                "event stream broadcast type=%s unit_id=%s clients=%s bufferable=%s",
+                event.type,
+                int(event.unit_id),
+                len(_clients),
+                bool(event.bufferable),
+            )
+            for ws in list(_clients):
+                try:
+                    await ws.send_text(payload)
+                except Exception:
+                    dead_clients.append(ws)
 
         for ws in dead_clients:
             await remove_client(ws)

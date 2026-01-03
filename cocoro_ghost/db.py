@@ -596,6 +596,10 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             token=toml_config.token,
             exclude_keywords=DEFAULT_EXCLUDE_KEYWORDS_JSON,
             memory_enabled=True,
+            # 視覚（Vision）: デスクトップウォッチ（初期は無効）
+            desktop_watch_enabled=False,
+            desktop_watch_interval_seconds=300,
+            desktop_watch_target_client_id=None,
         )
         session.add(global_settings)
         session.flush()
