@@ -8,18 +8,20 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo
 
 
 _HHMM_RE = re.compile(r"^\d{2}:\d{2}$")
+
+DEFAULT_REMINDER_TIME_ZONE = "Asia/Tokyo"
 
 
 WEEKDAYS_SUN_FIRST: list[str] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
 _WEEKDAY_TO_BIT: dict[str, int] = {d: (1 << i) for i, d in enumerate(WEEKDAYS_SUN_FIRST)}
 
 
-def validate_time_zone(tz_name: str) -> ZoneInfo:
+def validate_time_zone(tz_name: str) -> tzinfo:
     """
     IANA time zone を検証して ZoneInfo を返す。
 
@@ -31,9 +33,20 @@ def validate_time_zone(tz_name: str) -> ZoneInfo:
         raise ValueError("time_zone is required")
 
     # --- ZoneInfo の生成で検証する ---
+    # NOTE:
+    # - 環境（特にWindows）によっては IANA timezone DB が見つからず、
+    #   ZoneInfo("Asia/Tokyo") が失敗することがある。
+    # - リマインダーはサーバ側で TZ を固定している（Asia/Tokyo）ため、
+    #   ここで固定オフセットにフォールバックできる。
+    # - 日本はDSTが無いので、+09:00固定でも挙動が変わらない。
     try:
         return ZoneInfo(name)
     except Exception as exc:  # noqa: BLE001
+        # --- 既知TZの救済（IANA DBが無い環境向け） ---
+        if name == "Asia/Tokyo":
+            return timezone(timedelta(hours=9), name="Asia/Tokyo")
+        if name in {"UTC", "Etc/UTC"}:
+            return timezone.utc
         raise ValueError(f"invalid time_zone: {name}") from exc
 
 
@@ -129,14 +142,14 @@ def parse_scheduled_at_to_utc_ts(value: str) -> int:
     return int(dt.astimezone(timezone.utc).timestamp())
 
 
-def utc_ts_to_hhmm(*, utc_ts: int, tz: ZoneInfo) -> str:
+def utc_ts_to_hhmm(*, utc_ts: int, tz: tzinfo) -> str:
     """UTC epoch seconds を指定TZの HH:MM へ変換する。"""
 
     dt = datetime.fromtimestamp(int(utc_ts), tz=tz)
     return dt.strftime("%H:%M")
 
 
-def utc_ts_to_iso_in_tz(*, utc_ts: int, tz: ZoneInfo) -> str:
+def utc_ts_to_iso_in_tz(*, utc_ts: int, tz: tzinfo) -> str:
     """UTC epoch seconds を指定TZの ISO8601 へ変換する（offset付き）。"""
 
     dt = datetime.fromtimestamp(int(utc_ts), tz=tz)
@@ -216,4 +229,3 @@ def compute_next_fire_at_utc(inp: NextFireInput) -> int | None:
 
     # 1週間内で見つからないのは mask 不正のはずだが、保守的に None
     return None
-

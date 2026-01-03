@@ -83,8 +83,36 @@ def init_reminders_db() -> None:
     import cocoro_ghost.reminders_models  # noqa: F401
 
     RemindersBase.metadata.create_all(bind=engine)
+    _assert_expected_schema(engine)
     logger.info("reminders DB initialized: %s", db_url)
 
+
+def _assert_expected_schema(engine) -> None:
+    """
+    reminders.db のスキーマが期待どおりかを検証する（マイグレーションはしない）。
+
+    方針:
+    - 運用前のため、古いスキーマを自動で直さない（後方互換なし）。
+    - 古いDBを掴んだ場合は、明示的に削除して再生成してもらう。
+    """
+
+    # --- PRAGMA table_info で列名だけを見る（追加/削除のマイグレーションは行わない） ---
+    with engine.connect() as conn:
+        rows = conn.exec_driver_sql("PRAGMA table_info(reminder_global_settings)").fetchall()
+        cols = {str(r[1]) for r in rows}
+        if "time_zone" in cols:
+            raise RuntimeError(
+                "reminders.db schema mismatch: reminder_global_settings.time_zone exists (old schema). "
+                "Delete data/reminders.db and restart (no migration)."
+            )
+
+        rows2 = conn.exec_driver_sql("PRAGMA table_info(reminders)").fetchall()
+        cols2 = {str(r[1]) for r in rows2}
+        if "time_zone" in cols2:
+            raise RuntimeError(
+                "reminders.db schema mismatch: reminders.time_zone exists (old schema). "
+                "Delete data/reminders.db and restart (no migration)."
+            )
 
 def get_reminders_db() -> Iterator[Session]:
     """
@@ -121,4 +149,3 @@ def reminders_session_scope() -> Iterator[Session]:
         raise
     finally:
         session.close()
-

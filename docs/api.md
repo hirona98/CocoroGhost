@@ -379,7 +379,7 @@ UI向けの「全設定」取得/更新。
 ## `/api/reminders/*`
 
 リマインダーは `/api/settings` ではなく、専用APIで管理する。
-繰り返し（daily/weekly）と単発（once）、time_zone、配信先（`target_client_id`）などの仕様は `docs/reminders.md` を参照。
+繰り返し（daily/weekly）と単発（once）、配信先（`target_client_id`）などの仕様は `docs/reminders.md` を参照。
 
 - `GET /api/reminders/settings`
 - `PUT /api/reminders/settings`

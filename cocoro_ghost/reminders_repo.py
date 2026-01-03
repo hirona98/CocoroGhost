@@ -35,4 +35,3 @@ def ensure_initial_reminder_global_settings(db: Session) -> ReminderGlobalSettin
     db.add(row)
     db.flush()
     return row
-

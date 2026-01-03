@@ -342,7 +342,6 @@ class ReminderItem(BaseModel):
     id: str
     enabled: bool
     repeat_kind: str  # once|daily|weekly
-    time_zone: str
     content: str
 
     # --- once ---
@@ -365,7 +364,6 @@ class RemindersListResponse(BaseModel):
 class ReminderCreateRequest(BaseModel):
     """リマインダー作成リクエスト。"""
 
-    time_zone: str
     enabled: bool = True
     repeat_kind: str  # once|daily|weekly
     content: str
@@ -383,7 +381,6 @@ class ReminderUpdateRequest(BaseModel):
 
     enabled: Optional[bool] = None
     repeat_kind: Optional[str] = None  # once|daily|weekly
-    time_zone: Optional[str] = None
     content: Optional[str] = None
 
     # --- once ---

@@ -22,7 +22,6 @@ from cocoro_ghost.reminders_db import RemindersBase
 # UUIDの文字列長（ハイフン含む36文字）
 _UUID_STR_LEN = 36
 _CLIENT_ID_MAX_LEN = 128
-_TIME_ZONE_MAX_LEN = 64
 _REPEAT_KIND_MAX_LEN = 16
 _TIME_OF_DAY_MAX_LEN = 5  # "HH:MM"
 
@@ -70,7 +69,6 @@ class Reminder(RemindersBase):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     repeat_kind: Mapped[str] = mapped_column(String(_REPEAT_KIND_MAX_LEN), nullable=False)
-    time_zone: Mapped[str] = mapped_column(String(_TIME_ZONE_MAX_LEN), nullable=False)
 
     # 単発（once）: 発火予定（UTC epoch seconds）
     scheduled_at_utc: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -89,4 +87,3 @@ class Reminder(RemindersBase):
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-

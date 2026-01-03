@@ -565,6 +565,44 @@ class MemoryManager:
         self.llm_client = llm_client
         self.config_store = config_store
 
+    @staticmethod
+    def _normalize_reminder_message(*, hhmm: str, content: str, message: str) -> str:
+        """
+        リマインダー配信用の message を整形して返す。
+
+        仕様:
+        - 時刻（HH:MM）を必ず含める。
+        - 50文字以内に収める（読み上げ想定のため）。
+        - 空/不正な出力でも最低限の自然文を返す。
+        """
+
+        max_len = 50
+
+        # --- 入力正規化 ---
+        hhmm_clean = str(hhmm or "").strip()
+        content_clean = str(content or "").strip()
+        raw = str(message or "").strip()
+
+        # --- 余計な改行/空白を潰す（読み上げ/表示向け） ---
+        # NOTE: split() は連続空白と改行をまとめて扱えるため簡潔。
+        raw = " ".join(raw.split()).strip()
+
+        # --- フォールバック（最低限の出力を確保） ---
+        if not raw:
+            raw = f"{hhmm_clean}です。{content_clean}".strip()
+
+        # --- 時刻（HH:MM）の強制 ---
+        # NOTE:
+        # - LLMが時刻を落とした場合でも仕様を満たすため、先頭に付ける。
+        if hhmm_clean and hhmm_clean not in raw:
+            raw = f"{hhmm_clean}、{raw}".strip()
+
+        # --- 文字数上限（仕様: 50文字以内） ---
+        if len(raw) > max_len:
+            raw = raw[:max_len].strip()
+
+        return raw
+
     def handle_vision_capture_response(self, request: schemas.VisionCaptureResponseV2Request) -> None:
         """
         クライアントからの視覚キャプチャ結果（capture-response）を受け取る。
@@ -938,12 +976,11 @@ class MemoryManager:
             message = ""
 
         # --- フォールバック（最低限の出力を確保） ---
-        if not message:
-            message = f"{hhmm_clean}です。{content_clean}".strip()
-        if hhmm_clean not in message:
-            message = f"{hhmm_clean}、{message}".strip()
-        if len(message) > 80:
-            message = message[:80].strip()
+        message = self._normalize_reminder_message(
+            hhmm=hhmm_clean,
+            content=content_clean,
+            message=message,
+        )
 
         # --- 保存（Episode） ---
         unit_id = 0

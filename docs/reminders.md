@@ -8,7 +8,6 @@
 
 - **client_id**: クライアントの安定ID。`/api/chat` の `client_id` と、`/api/events/stream` の `hello.client_id` は一致させる。
 - **target_client_id**: リマインダー配信先の client_id。サーバ側で **グローバルに1つ**だけ保持する。
-- **time_zone**: IANA timezone（例: `Asia/Tokyo`）。必須。
 - **HH:MM**: リマインダー文面で「読み上げる時刻」表現（例: `09:30`）。秒は使わない。
 
 ## 要件（サーバ挙動）
@@ -113,7 +112,6 @@
 - once:
 ```json
 {
-  "time_zone": "Asia/Tokyo",
   "enabled": true,
   "repeat_kind": "once",
   "scheduled_at": "2026-01-03T09:30:00+09:00",
@@ -124,7 +122,6 @@
 - daily:
 ```json
 {
-  "time_zone": "Asia/Tokyo",
   "enabled": true,
   "repeat_kind": "daily",
   "time_of_day": "09:30",
@@ -135,7 +132,6 @@
 - weekly:
 ```json
 {
-  "time_zone": "Asia/Tokyo",
   "enabled": true,
   "repeat_kind": "weekly",
   "time_of_day": "09:30",
@@ -151,7 +147,6 @@
 更新できる項目:
 - `enabled`
 - `content`
-- `time_zone`
 - `repeat_kind`
 - `scheduled_at`（once）
 - `time_of_day`（daily/weekly）
@@ -172,7 +167,7 @@
   - `target_client_id`（基本は自分の client_id をセットする。複数端末運用は将来）
 - リマインダー編集:
   - 種別: 単発 / 毎日 / 毎週
-  - 単発: 日付 + 時刻（time_zoneに基づく）
+  - 単発: 日付 + 時刻（オフセット付き日時で扱う）
   - 毎日: 時刻（HH:MM）
   - 毎週: 曜日複数選択 + 時刻（HH:MM）
   - 内容（content、必須）

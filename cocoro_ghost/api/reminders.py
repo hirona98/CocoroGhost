@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from cocoro_ghost import schemas
 from cocoro_ghost.deps import get_reminders_db_dep
 from cocoro_ghost.reminders_logic import (
+    DEFAULT_REMINDER_TIME_ZONE,
     NextFireInput,
     compute_next_fire_at_utc,
     mask_to_weekdays,
@@ -54,7 +55,7 @@ def _reminder_to_item(r: Reminder) -> schemas.ReminderItem:
 
     # --- timezone の検証（保存時に弾く想定だが、念のためここでも保守的に扱う） ---
     try:
-        tz = validate_time_zone(r.time_zone)
+        tz = validate_time_zone(str(DEFAULT_REMINDER_TIME_ZONE))
     except Exception:  # noqa: BLE001
         tz = validate_time_zone("UTC")
 
@@ -72,7 +73,6 @@ def _reminder_to_item(r: Reminder) -> schemas.ReminderItem:
         id=str(r.id),
         enabled=bool(r.enabled),
         repeat_kind=str(r.repeat_kind),
-        time_zone=str(r.time_zone),
         content=str(r.content),
         scheduled_at=scheduled_at,
         time_of_day=(str(r.time_of_day) if r.time_of_day else None),
@@ -85,7 +85,6 @@ def _compute_next_fire_or_400(
     *,
     now_utc_ts: int,
     repeat_kind: str,
-    time_zone: str,
     scheduled_at_utc: int | None,
     time_of_day: str | None,
     weekdays_mask: int | None,
@@ -97,7 +96,7 @@ def _compute_next_fire_or_400(
             NextFireInput(
                 now_utc_ts=int(now_utc_ts),
                 repeat_kind=str(repeat_kind),
-                time_zone=str(time_zone),
+                time_zone=str(DEFAULT_REMINDER_TIME_ZONE),
                 scheduled_at_utc=(int(scheduled_at_utc) if scheduled_at_utc is not None else None),
                 time_of_day=(str(time_of_day) if time_of_day else None),
                 weekdays_mask=(int(weekdays_mask) if weekdays_mask is not None else None),
@@ -117,8 +116,6 @@ def _apply_create_request_to_model(
 
     # --- 入力の正規化 ---
     repeat_kind = validate_repeat_kind(request.repeat_kind)
-    tz_name = _require_non_empty(request.time_zone, field="time_zone")
-    validate_time_zone(tz_name)
     content = _require_non_empty(request.content, field="content")
 
     # --- repeat_kind ごとの必須フィールド ---
@@ -142,7 +139,6 @@ def _apply_create_request_to_model(
     next_fire_at_utc = _compute_next_fire_or_400(
         now_utc_ts=now_utc_ts,
         repeat_kind=repeat_kind,
-        time_zone=tz_name,
         scheduled_at_utc=scheduled_at_utc,
         time_of_day=time_of_day,
         weekdays_mask=weekdays_mask,
@@ -152,7 +148,6 @@ def _apply_create_request_to_model(
     return Reminder(
         enabled=bool(request.enabled),
         repeat_kind=repeat_kind,
-        time_zone=tz_name,
         scheduled_at_utc=scheduled_at_utc,
         time_of_day=time_of_day,
         weekdays_mask=weekdays_mask,
@@ -181,10 +176,6 @@ def _apply_update_request_inplace(
         reminder.enabled = bool(request.enabled)
     if request.content is not None:
         reminder.content = _require_non_empty(request.content, field="content")
-    if request.time_zone is not None:
-        tz_name = _require_non_empty(request.time_zone, field="time_zone")
-        validate_time_zone(tz_name)
-        reminder.time_zone = tz_name
     if request.repeat_kind is not None:
         reminder.repeat_kind = validate_repeat_kind(request.repeat_kind)
 
@@ -222,7 +213,6 @@ def _apply_update_request_inplace(
     reminder.next_fire_at_utc = _compute_next_fire_or_400(
         now_utc_ts=now_utc_ts,
         repeat_kind=kind,
-        time_zone=str(reminder.time_zone),
         scheduled_at_utc=(int(reminder.scheduled_at_utc) if reminder.scheduled_at_utc is not None else None),
         time_of_day=(str(reminder.time_of_day) if reminder.time_of_day else None),
         weekdays_mask=(int(reminder.weekdays_mask) if reminder.weekdays_mask is not None else None),

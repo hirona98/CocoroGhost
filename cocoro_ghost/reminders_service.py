@@ -19,7 +19,13 @@ import time
 
 from cocoro_ghost import event_stream
 from cocoro_ghost.deps import get_memory_manager
-from cocoro_ghost.reminders_logic import NextFireInput, compute_next_fire_at_utc, utc_ts_to_hhmm, validate_time_zone
+from cocoro_ghost.reminders_logic import (
+    DEFAULT_REMINDER_TIME_ZONE,
+    NextFireInput,
+    compute_next_fire_at_utc,
+    utc_ts_to_hhmm,
+    validate_time_zone,
+)
 from cocoro_ghost.reminders_models import Reminder
 from cocoro_ghost.reminders_repo import ensure_initial_reminder_global_settings
 from cocoro_ghost.reminders_db import reminders_session_scope
@@ -65,6 +71,7 @@ class ReminderService:
                 settings = ensure_initial_reminder_global_settings(db)
                 enabled = bool(settings.reminders_enabled)
                 target_client_id = str(settings.target_client_id or "").strip()
+                tz_name = str(DEFAULT_REMINDER_TIME_ZONE)
 
                 # --- 初回tick（起動直後） ---
                 # NOTE:
@@ -108,7 +115,13 @@ class ReminderService:
                 # --- 順に発火（まとめない） ---
                 mm = get_memory_manager()
                 for r in due:
-                    self._fire_one(db, mm=mm, reminder=r, target_client_id=target_client_id, now_utc_ts=now_utc_ts)
+                    self._fire_one(
+                        db,
+                        mm=mm,
+                        reminder=r,
+                        target_client_id=target_client_id,
+                        now_utc_ts=now_utc_ts,
+                    )
         finally:
             with self._lock:
                 self._running = False
@@ -153,7 +166,7 @@ class ReminderService:
 
         # --- HH:MM（読み上げ/表示用） ---
         try:
-            tz = validate_time_zone(str(reminder.time_zone))
+            tz = validate_time_zone(str(DEFAULT_REMINDER_TIME_ZONE))
         except Exception:  # noqa: BLE001
             tz = validate_time_zone("UTC")
 
@@ -193,7 +206,7 @@ class ReminderService:
                 NextFireInput(
                     now_utc_ts=int(now_utc_ts),
                     repeat_kind=str(reminder.repeat_kind),
-                    time_zone=str(reminder.time_zone),
+                    time_zone=str(DEFAULT_REMINDER_TIME_ZONE),
                     scheduled_at_utc=(int(reminder.scheduled_at_utc) if reminder.scheduled_at_utc is not None else None),
                     time_of_day=(str(reminder.time_of_day) if reminder.time_of_day else None),
                     weekdays_mask=(int(reminder.weekdays_mask) if reminder.weekdays_mask is not None else None),
