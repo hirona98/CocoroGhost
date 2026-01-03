@@ -816,6 +816,9 @@ class MemoryManager:
             embedding_preset_id=embedding_preset_id,
             unit_id=int(unit_id),
             data={"system_text": system_text, "message": message},
+            # デスクトップウォッチは「その瞬間に能動で覗いた」イベントのため、
+            # クライアント再接続時に過去分を再送しない（バッファしない）。
+            bufferable=False,
         )
 
     def _update_episode_unit(

@@ -194,6 +194,10 @@ async def send_buffer(ws: "WebSocket") -> None:
     新規接続時にキャッチアップとして直近イベントを順に送信する。
     """
     for event in get_buffer_snapshot():
+        # デスクトップウォッチはリアルタイム性が本質で、再接続時に過去分を再送すると
+        # 「今見ている」誤解を招くため、キャッチアップ対象から除外する。
+        if str(event.type) == "desktop_watch":
+            continue
         await ws.send_text(_serialize_event(event))
 
 
