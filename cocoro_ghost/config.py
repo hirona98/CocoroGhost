@@ -7,7 +7,6 @@ TOML設定ファイルの読み込みと、実行時に使用する統合設定�
 
 from __future__ import annotations
 
-import json
 import pathlib
 import threading
 from dataclasses import dataclass
@@ -54,7 +53,6 @@ class RuntimeConfig:
     log_level: str   # ログレベル
 
     # GlobalSettings由来（DB設定）
-    exclude_keywords: List[str]   # 除外キーワードリスト
     memory_enabled: bool          # 記憶機能の有効/無効
     reminders_enabled: bool       # リマインダー機能の有効/無効
 
@@ -225,7 +223,6 @@ def build_runtime_config(
         token=global_settings.token or toml_config.token,
         log_level=toml_config.log_level,
         # GlobalSettings由来
-        exclude_keywords=json.loads(global_settings.exclude_keywords),
         memory_enabled=bool(getattr(global_settings, "memory_enabled", True)),
         reminders_enabled=bool(getattr(global_settings, "reminders_enabled", True)),
         # 視覚（Vision）: デスクトップウォッチ

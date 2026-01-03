@@ -9,8 +9,6 @@ GlobalSettings（除外キーワード、記憶機能ON/OFF等）の更新、
 
 from __future__ import annotations
 
-import json
-
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -115,7 +113,6 @@ def get_settings(
         )
 
     return schemas.FullSettingsResponse(
-        exclude_keywords=json.loads(global_settings.exclude_keywords),
         memory_enabled=global_settings.memory_enabled,
         desktop_watch_enabled=bool(global_settings.desktop_watch_enabled),
         desktop_watch_interval_seconds=int(global_settings.desktop_watch_interval_seconds),
@@ -170,7 +167,6 @@ def commit_settings(
         raise HTTPException(status_code=400, detail="active_addon_preset_id must be included in addon_preset list")
 
     # 共通設定更新
-    global_settings.exclude_keywords = json.dumps(request.exclude_keywords)
     global_settings.memory_enabled = request.memory_enabled
     global_settings.desktop_watch_enabled = bool(request.desktop_watch_enabled)
     global_settings.desktop_watch_interval_seconds = int(request.desktop_watch_interval_seconds)

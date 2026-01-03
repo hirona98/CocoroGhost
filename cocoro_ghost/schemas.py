@@ -231,9 +231,6 @@ class FullSettingsResponse(BaseModel):
     全設定統合レスポンス。
     アプリケーションのすべての設定を一括で返す。
     """
-    # 共通設定
-    exclude_keywords: List[str]          # 記憶から除外するキーワード
-
     # 記憶機能の有効/無効（UI用）
     memory_enabled: bool
 
@@ -324,7 +321,6 @@ class FullSettingsUpdateRequest(BaseModel):
     全設定更新リクエスト。
     すべての設定を一括で更新する際に使用する。
     """
-    exclude_keywords: List[str]
     memory_enabled: bool
     desktop_watch_enabled: bool
     desktop_watch_interval_seconds: int

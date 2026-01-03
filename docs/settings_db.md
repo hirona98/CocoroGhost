@@ -23,7 +23,6 @@
 #### カラム（実装準拠）
 
 - `token`（TEXT）
-- `exclude_keywords`（TEXT: JSON array）
 - `memory_enabled`（INTEGER: 0/1）
 - `desktop_watch_enabled`（INTEGER: 0/1）
 - `desktop_watch_interval_seconds`（INTEGER）
@@ -37,7 +36,6 @@
 - `updated_at`（DATETIME）
 
 補足:
-- `exclude_keywords` は現状未使用（将来の入力フィルタ用途として予約）。
 - `active_*_preset_id` は「アーカイブされていないプリセット」に対してのみ有効。
 
 ### `llm_presets`

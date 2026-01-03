@@ -16,8 +16,6 @@ from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinar
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from cocoro_ghost.db import Base
-from cocoro_ghost.defaults import DEFAULT_EXCLUDE_KEYWORDS_JSON
-
 
 # --- 設定DB用モデル ---
 
@@ -43,8 +41,6 @@ class GlobalSettings(Base):
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     # API認証トークン
     token: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    # 記憶から除外するキーワード（JSON配列形式）
-    exclude_keywords: Mapped[str] = mapped_column(Text, nullable=False, default=DEFAULT_EXCLUDE_KEYWORDS_JSON)
     # 記憶機能の有効/無効
     memory_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 

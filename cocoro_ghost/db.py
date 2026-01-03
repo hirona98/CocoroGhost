@@ -21,8 +21,6 @@ from sqlalchemy import create_engine, event, func, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
-from cocoro_ghost.defaults import DEFAULT_EXCLUDE_KEYWORDS_JSON
-
 logger = logging.getLogger(__name__)
 
 # sqlite-vec 仮想テーブル名（検索用ベクトルインデックス）
@@ -594,7 +592,6 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     if global_settings is None:
         global_settings = models.GlobalSettings(
             token=toml_config.token,
-            exclude_keywords=DEFAULT_EXCLUDE_KEYWORDS_JSON,
             memory_enabled=True,
             # 視覚（Vision）: デスクトップウォッチ（初期は無効）
             desktop_watch_enabled=False,
@@ -603,8 +600,6 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         )
         session.add(global_settings)
         session.flush()
-    elif not global_settings.exclude_keywords:
-        global_settings.exclude_keywords = DEFAULT_EXCLUDE_KEYWORDS_JSON
     if not getattr(global_settings, "token", ""):
         global_settings.token = toml_config.token
 
