@@ -167,10 +167,11 @@ Consoleが `capture_request` の結果を返す。
 
 ### 実行フロー（概要）
 
-1. ONになったら 5秒後に `vision.capture_request(source=desktop,purpose=desktop_watch)` を送る。
-2. 以後、`desktop_watch_interval_seconds` ごとに同様の取得要求を送る。
-3. `capture_response` 受信後、画像要約→能動コメント生成→Episode保存→イベント配信。
-4. 失敗時はログ出力（必要なら控えめにイベントも出す）。
+1. 起動時にすでにONの場合は、`desktop_watch_interval_seconds` が経過してから初回の `vision.capture_request(source=desktop,purpose=desktop_watch)` を送る。
+2. UI操作などで OFF→ON になったら 5秒後に初回の `vision.capture_request(source=desktop,purpose=desktop_watch)` を送る。
+3. 以後、`desktop_watch_interval_seconds` ごとに同様の取得要求を送る。
+4. `capture_response` 受信後、画像要約→能動コメント生成→Episode保存→イベント配信。
+5. 失敗時はログ出力（必要なら控えめにイベントも出す）。
 
 ---
 

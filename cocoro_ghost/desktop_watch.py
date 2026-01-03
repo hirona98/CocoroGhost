@@ -7,6 +7,7 @@
 実装方針:
 - cron無し運用を前提に、サーバ側の定期タスクから tick() を呼び出す。
 - ON/OFF の遷移をメモリ上で検出し、ONになったら5秒後に最初の1枚を確認する。
+- 起動時にすでにONの場合は「設定間隔が経過してから」初回を実行する（起動直後に覗かない）。
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ class DesktopWatchService:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._running = False
+        self._initialized = False
         self._enabled_prev = False
         self._next_run_ts = 0.0
 
@@ -51,6 +53,25 @@ class DesktopWatchService:
 
             now = time.time()
 
+            # --- 初回tick（起動直後） ---
+            # NOTE:
+            # - 起動時に desktop_watch_enabled がすでに True の場合、
+            #   「5秒後に即覗く」ではなく「設定間隔が経過してから」初回実行する。
+            # - UIでのON操作（OFF→ON遷移）とは挙動を分ける。
+            if not self._initialized:
+                self._initialized = True
+                if enabled:
+                    self._enabled_prev = True
+                    self._next_run_ts = float(now) + float(interval)
+                    logger.info(
+                        "desktop_watch enabled at startup; first capture scheduled in_seconds=%s",
+                        int(interval),
+                    )
+                else:
+                    self._enabled_prev = False
+                    self._next_run_ts = 0.0
+                return
+
             # --- OFF時は状態をリセット ---
             if not enabled:
                 self._enabled_prev = False
@@ -61,7 +82,7 @@ class DesktopWatchService:
             if not self._enabled_prev:
                 self._enabled_prev = True
                 self._next_run_ts = float(now) + 5.0
-                logger.info("desktop_watch enabled; first capture scheduled", extra={"in_seconds": 5})
+                logger.info("desktop_watch enabled; first capture scheduled in_seconds=%s", 5)
                 return
 
             # --- 実行タイミング待ち ---
@@ -90,4 +111,3 @@ _desktop_watch_service = DesktopWatchService()
 def get_desktop_watch_service() -> DesktopWatchService:
     """デスクトップウォッチサービスのシングルトンを返す。"""
     return _desktop_watch_service
-
