@@ -23,7 +23,7 @@
 - `extract_facts(unit_id)`
 - `extract_loops(unit_id)`
 - `upsert_embeddings(unit_id)`（episode/fact/summary/loop…必要種別）
-- `bond_summary(scope_key=rolling:7d)`（定期 / `embedding_preset_id` は Worker が扱うDBで暗黙）
+- `shared_narrative_summary(scope_key=rolling:7d)`（定期 / `embedding_preset_id` は Worker が扱うDBで暗黙）
 - `person_summary_refresh(entity_id)`（人物サマリ更新）
 - `topic_summary_refresh(entity_id)`（トピックサマリ更新）
 
@@ -32,7 +32,7 @@
 
 ## 実装ステータス（Current/Planned）
 
-- Current: bond summary（rolling:7d）は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり）。
+- Current: 背景共有サマリ（rolling:7d）は Episode保存後に必要なら自動enqueue（重複抑制・クールダウンあり）。
 - Current: person/topic summary は `extract_entities` 後に重要度上位（最大3件ずつ）を自動enqueue（重複抑制あり）。
 - Current: cron無し運用のため、Worker内で定期enqueue（weekly/person/topic）も実施できる（固定値: 30秒ごとに判定）。
 - Current: 起動コマンドは `run.py` のみ（内蔵Workerがバックグラウンドで動作）。
@@ -68,7 +68,7 @@
 
 cron が無い環境向けに、Worker（jobs処理ループ）内で定期的に jobs を enqueue する。
 
-- enqueue 対象: `bond_summary` / `person_summary_refresh` / `topic_summary_refresh`
+- enqueue 対象: `shared_narrative_summary` / `person_summary_refresh` / `topic_summary_refresh`
 - 重複抑制: queued/running の同種ジョブがあれば enqueue しない
 - クールダウン: summary の更新頻度を抑制（デフォルト: 30秒ごとに判定）
 
@@ -89,7 +89,7 @@ python -X utf8 run.py
 ## Weekly Summary の保存（推奨）
 
 - `payload_summary.summary_text` は注入用のプレーンテキスト
-- `payload_summary.summary_json` に LLM 出力JSON（`summary_text/key_events/bond_state`）を丸ごと保存する
+- `payload_summary.summary_json` に LLM 出力JSON（`summary_text/key_events/shared_state`）を丸ごと保存する
 
 ## Workerループ（実装指針）
 

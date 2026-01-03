@@ -52,7 +52,7 @@ Persona: 「...」
 - `<<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>` には `now_local` / `client_context` 等に加え、`persona_mood_state: {...}`（重要度×時間減衰で集約した機嫌）を注入する（実装: `cocoro_ghost/memory_pack_builder.py` / 計算: `cocoro_ghost/persona_mood.py`）。
    - LLMに渡す時刻はローカル時刻に変換して注入する（now_local/episode日付/persona_mood_state など）。
 - `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>` は「共有された物語」を注入するセクション。
-   - 週次の bond summary（`scope_key=rolling:7d`。無ければ最新）を1本入れる。
+   - 週次の 背景共有サマリ（`scope_label=shared_narrative, scope_key=rolling:7d`。無ければ最新）を1本入れる。
    - 今回の entity に応じて、人物サマリ（`scope_label=person`）やトピックサマリ（`scope_label=topic`）を追加する。
    - 目的は「関係性や背景の継続性」を保ち、会話の一貫性を補強すること。
 - `<<<COCORO_GHOST_SECTION:RELATIONSHIP_STATE>>>` は「関係性の数値サマリ」を注入するセクション。
@@ -74,8 +74,8 @@ Persona: 「...」
 4. **Facts優先取得**
    - 関連entityのfactを信頼度・鮮度・pinでスコアリング
 5. **Summaries取得**
-   - 週次（BOND）＋該当topic/person
-   - Current: BOND週次 + person/topic を注入対象として運用（生成は自動enqueue）
+   - 週次（背景共有サマリ）＋該当topic/person
+   - Current: 背景共有サマリ週次 + person/topic を注入対象として運用（生成は自動enqueue）
 6. **OpenLoops取得**
    - 期限切れ（`expires_at <= now_ts`）は除外し、due順、entity一致を優先
 - 期限切れのLoopは Worker のジョブ処理ループで自動削除される

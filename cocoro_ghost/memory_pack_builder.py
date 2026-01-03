@@ -531,7 +531,7 @@ def build_memory_pack(
     rolling_scope_key = "rolling:7d"
     summary_texts: List[str] = []
     relationship_lines: List[str] = []
-    scopes = ["bond", "person", "topic"]
+    scopes = ["shared_narrative", "person", "topic"]
 
     def add_summary(scope_label: str, scope_key: Optional[str], *, fallback_latest: bool = False) -> None:
         """指定スコープのサマリを1つ取り出してsummary_textsへ追加する（無ければ何もしない）。"""
@@ -561,9 +561,9 @@ def build_memory_pack(
             if text_:
                 summary_texts.append(text_)
 
-    if "bond" in scopes:
-        # rolling（直近7日）のbondサマリが無い場合は最新のbondサマリを注入する
-        add_summary("bond", rolling_scope_key, fallback_latest=True)
+    if "shared_narrative" in scopes:
+        # rolling（直近7日）の背景共有サマリが無い場合は最新の背景共有サマリを注入する
+        add_summary("shared_narrative", rolling_scope_key, fallback_latest=True)
 
     if matched_entity_ids and ("person" in scopes or "topic" in scopes):
         # LLMで抽出されたentity名に一致するものだけを扱う（余計な人物は入れない）。

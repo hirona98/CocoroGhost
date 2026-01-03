@@ -17,7 +17,7 @@ Episode作成後の反射（reflection）、エンティティ抽出、ファク
 - extract_facts: ファクト（安定知識）抽出
 - extract_loops: オープンループ（未完了事項）抽出
 - upsert_embeddings: 埋め込みベクトル生成/更新
-- bond_summary: 絆サマリ生成
+- shared_narrative_summary: 背景共有サマリ生成
 - person_summary_refresh: 人物サマリ更新
 - topic_summary_refresh: トピックサマリ更新
 """
@@ -361,8 +361,8 @@ def process_job(
             _handle_extract_loops(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "extract_entities":
             _handle_extract_entities(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "bond_summary":
-            _handle_bond_summary(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
+        elif job.kind == "shared_narrative_summary":
+            _handle_shared_narrative_summary(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "person_summary_refresh":
             _handle_person_summary_refresh(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
         elif job.kind == "topic_summary_refresh":
@@ -1589,8 +1589,8 @@ def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: D
         )
 
 
-def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    # 現行: rolling 7 days bond summary（scope_key固定）
+def _handle_shared_narrative_summary(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
+    # 現行: rolling 7 days shared narrative summary（scope_key固定）
     rolling_scope_key = "rolling:7d"
     scope_key = str(payload.get("scope_key") or "").strip() or rolling_scope_key
     window_days = 7
@@ -1631,11 +1631,11 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
         + "\n".join(lines)
     )
 
-    system_prompt = _wrap_prompt_with_persona(prompts.get_bond_summary_prompt())
+    system_prompt = _wrap_prompt_with_persona(prompts.get_shared_narrative_summary_prompt())
     resp = llm_client.generate_json_response(
         system_prompt=system_prompt,
         input_text=input_text,
-        purpose=LlmRequestPurpose.BOND_SUMMARY,
+        purpose=LlmRequestPurpose.SHARED_NARRATIVE_SUMMARY,
     )
     # LLMのJSON応答をdictに正規化する。
     data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
@@ -1660,11 +1660,11 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
             key_events.append({"unit_id": unit_id, "why": why})
     key_events = key_events[:5]
 
-    bond_state = str(data.get("bond_state") or "").strip()
+    shared_state = str(data.get("shared_state") or "").strip()
     summary_obj = {
         "summary_text": summary_text,
         "key_events": key_events,
-        "bond_state": bond_state,
+        "shared_state": shared_state,
     }
     summary_json = canonical_json_dumps(summary_obj)
 
@@ -1673,7 +1673,7 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
         .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
         .filter(
             Unit.kind == int(UnitKind.SUMMARY),
-            PayloadSummary.scope_label == "bond",
+            PayloadSummary.scope_label == "shared_narrative",
             PayloadSummary.scope_key == scope_key,
         )
         .order_by(Unit.created_at.desc())
@@ -1681,7 +1681,7 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
     )
 
     payload_obj = {
-        "scope_label": "bond",
+        "scope_label": "shared_narrative",
         "scope_key": scope_key,
         "range_start": range_start,
         "range_end": range_end,
@@ -1694,7 +1694,7 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
             occurred_at=range_end - 1,
             created_at=now_ts,
             updated_at=now_ts,
-            source="bond_summary",
+            source="shared_narrative_summary",
             state=int(UnitState.RAW),
             confidence=0.5,
             salience=0.0,
@@ -1706,7 +1706,7 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
         session.add(
             PayloadSummary(
                 unit_id=unit.id,
-                scope_label="bond",
+                scope_label="shared_narrative",
                 scope_key=scope_key,
                 range_start=range_start,
                 range_end=range_end,
@@ -1718,7 +1718,7 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
             session,
             unit_id=int(unit.id),
             payload_obj=payload_obj,
-            patch_reason="bond_summary",
+            patch_reason="shared_narrative_summary",
             now_ts=now_ts,
         )
         session.add(
@@ -1749,7 +1749,7 @@ def _handle_bond_summary(*, session: Session, llm_client: LlmClient, payload: Di
         session,
         unit_id=int(unit.id),
         payload_obj=payload_obj,
-        patch_reason="bond_summary",
+        patch_reason="shared_narrative_summary",
         now_ts=now_ts,
     )
     sync_unit_vector_metadata(

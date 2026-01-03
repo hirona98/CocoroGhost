@@ -45,7 +45,7 @@
 
 補足（重要）:
 - `jobs` は **外部クライアント向けの汎用「ジョブ投入API」ではない**。
-- 現状、ジョブは「APIプロセスが内部でenqueueする」か「管理APIで bond サマリ（`rolling:7d`）のみ手動enqueueできる」だけ。
+- 現状、ジョブは「APIプロセスが内部でenqueueする」か「管理APIで 背景共有サマリ（`rolling:7d`）のみ手動enqueueできる」だけ。
 - つまりこの“契約”は **API（同期）⇄ 内蔵Worker（非同期）** の内部契約を指す。
 
 ### 6) state / sensitivity で「運用上のガード」を表現する
@@ -279,12 +279,12 @@ create index if not exists idx_fact_subject_pred on payload_fact(subject_entity_
 ```sql
 create table if not exists payload_summary (
   unit_id      integer primary key references units(id) on delete cascade,
-  scope_label  text not null,       -- 自由ラベル（例: bond/person/topic/...）
+  scope_label  text not null,       -- 自由ラベル（例: shared_narrative/person/topic/...）
   scope_key    text not null,       -- "rolling:7d", "person:123", "topic:unity" ...
   range_start  integer,
   range_end    integer,
   summary_text text not null,
-  summary_json text              -- JSON string（LLM出力を丸ごと保存、例: {"summary_text":...,"key_events":[...],"bond_state":...}）
+  summary_json text              -- JSON string（LLM出力を丸ごと保存、例: {"summary_text":...,"key_events":[...],"shared_state":...}）
 );
 
 create index if not exists idx_summary_scope on payload_summary(scope_label, scope_key);
@@ -293,7 +293,7 @@ create index if not exists idx_summary_scope on payload_summary(scope_label, sco
 #### 使い方（Summary）
 
   - `scope_label` と `scope_key` で「どの範囲の要約か」を表す。
-    - bond: `rolling:7d`（直近7日ローリング）
+    - shared_narrative: `rolling:7d`（直近7日ローリング）
     - person: `person:<entity_id>`
     - topic: `topic:<normalized>`
 - `summary_text` は注入用のプレーンテキスト（Schedulerが `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>` に入れる）。
@@ -343,7 +343,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 | column | 意味/使い方 |
 |---|---|
-| `kind` | ジョブ種別（例: `reflect_episode`, `extract_entities`, `upsert_embeddings`, `bond_summary` など）。 |
+| `kind` | ジョブ種別（例: `reflect_episode`, `extract_entities`, `upsert_embeddings`, `shared_narrative_summary` など）。 |
 | `payload_json` | 入力（例: `{"unit_id":123}` / `{"scope_key":"rolling:7d"}`）。 |
 | `status` | 0 queued / 1 running / 2 done / 3 failed。 |
 | `run_after` | 実行可能時刻（UTC epoch sec）。バックオフに使う。 |
@@ -366,18 +366,18 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
   - `/api/chat` の完了時（SSE done直前の保存）
   - `/api/v2/notification` の処理完了時（reply生成後の保存更新）
 
-**B. bond サマリ（現行: `rolling:7d`）の更新**
+**B. 背景共有サマリ（現行: `rolling:7d`）の更新**
 
-- 対象: `payload_summary(scope_label=bond, scope_key=rolling:7d)` を作成/更新する `bond_summary` job
+- 対象: `payload_summary(scope_label=shared_narrative, scope_key=rolling:7d)` を作成/更新する `shared_narrative_summary` job
 - Workerの生成内容（現行）:
   - 対象Episode: 直近7日（`occurred_at`）のEPISODEを最大200件（`sensitivity <= SECRET`）
-  - 出力: `payload_summary.summary_text`（注入用） + `payload_summary.summary_json`（例: `{summary_text,key_events,bond_state}`）
-  - メタ: `units.source=bond_summary`、更新時は `units.state=VALIDATED`、`range_start/range_end` を保存
+  - 出力: `payload_summary.summary_text`（注入用） + `payload_summary.summary_json`（例: `{summary_text,key_events,shared_state}`）
+  - メタ: `units.source=shared_narrative_summary`、更新時は `units.state=VALIDATED`、`range_start/range_end` を保存
 - enqueue経路:
   - Episode保存時に必要なら自動enqueue（重複抑制あり / クールダウンあり）
   - 定期実行ユーティリティ（cron無し）から必要ならenqueue（重複抑制あり / クールダウンあり）
   - 判定ロジック（共通の意図）:
-    - `bond_summary` が `queued/running` なら enqueue しない
+    - `shared_narrative_summary` が `queued/running` なら enqueue しない
     - サマリが無い場合は enqueue
     - サマリ最終更新から一定時間（現行: 6h）未満なら enqueue しない
     - 最終更新以降の新規Episode（`occurred_at` があり、`occurred_at > summary.updated_at`）がある場合のみ enqueue
@@ -458,7 +458,7 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 
 固定の SummaryScopeType（enum値）は運用で破綻しやすいため廃止し、`payload_summary.scope_label`（TEXT）で表現する。
 
-- 推奨ラベル: `bond` / `person` / `topic`（必要なら `daily` / `monthly` などを追加）
+- 推奨ラベル: `shared_narrative` / `person` / `topic`（必要なら `daily` / `monthly` などを追加）
 
 ### EntityRole
 

@@ -359,7 +359,7 @@ class LlmRequestPurpose:
     FACT_EXTRACT = "＜＜ 事実抽出 ＞＞"
     LOOP_EXTRACT = "＜＜ 未完了事項抽出 ＞＞"
     ENTITY_NAME_EXTRACT = "＜＜ エンティティ（実体）名抽出 ＞＞"
-    BOND_SUMMARY = "＜＜ 絆サマリ生成 ＞＞"
+    SHARED_NARRATIVE_SUMMARY = "＜＜ 背景共有サマリ生成 ＞＞"
     PERSON_SUMMARY = "＜＜ 人物サマリ生成 ＞＞"
     TOPIC_SUMMARY = "＜＜ トピックサマリ生成 ＞＞"
     RETRIEVAL_QUERY_EMBEDDING = "＜＜ 記憶検索用クエリの埋め込み取得 ＞＞"

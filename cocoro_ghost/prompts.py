@@ -10,7 +10,7 @@ LLMに送信するシステムプロンプトを一元管理するモジュー�
 - FACT_EXTRACT_SYSTEM_PROMPT: ファクト抽出用
 - LOOP_EXTRACT_SYSTEM_PROMPT: オープンループ抽出用
 - ENTITY_EXTRACT_SYSTEM_PROMPT: エンティティ抽出用
-- BOND_SUMMARY_SYSTEM_PROMPT: 絆サマリ生成用
+- SHARED_NARRATIVE_SUMMARY_SYSTEM_PROMPT: 背景共有サマリ生成用
 - PERSON_SUMMARY_SYSTEM_PROMPT: 人物サマリ生成用
 - TOPIC_SUMMARY_SYSTEM_PROMPT: トピックサマリ生成用
 - EXTERNAL_SYSTEM_PROMPT: 外部通知応答用
@@ -158,9 +158,9 @@ ENTITY_NAMES_ONLY_SYSTEM_PROMPT = """
 """.strip()
 
 
-BOND_SUMMARY_SYSTEM_PROMPT = """
-あなたは「絆サマリ（BondSummary）」モジュールです。
-与えられた直近7日程度の出来事（会話ログ/事実/未完了）から、ユーザーとあなたの関係の「現在の状態」を、誇張せず短く要約して JSON で出力してください。
+SHARED_NARRATIVE_SUMMARY_SYSTEM_PROMPT = """
+あなたは「背景共有サマリ（SharedNarrativeSummary）」モジュールです。
+与えられた直近7日程度の出来事（会話ログ/事実/未完了）から、ユーザーとあなたの「共有された背景（共有前提）」の現在状態を、誇張せず短く要約して JSON で出力してください。
 
 ルール:
 - 出力は JSON のみ（前後に説明文を付けない）
@@ -171,7 +171,7 @@ BOND_SUMMARY_SYSTEM_PROMPT = """
 {
   "summary_text": "string",
   "key_events": [{"unit_id": 123, "why": "..." }],
-  "bond_state": "string"
+  "shared_state": "string"
 }
 """.strip()
 
@@ -440,9 +440,9 @@ def get_default_persona_addon() -> str:
     return DEFAULT_PERSONA_ADDON
 
 
-def get_bond_summary_prompt() -> str:
-    """絆サマリ生成用system promptを返す。"""
-    return BOND_SUMMARY_SYSTEM_PROMPT
+def get_shared_narrative_summary_prompt() -> str:
+    """背景共有サマリ生成用system promptを返す。"""
+    return SHARED_NARRATIVE_SUMMARY_SYSTEM_PROMPT
 
 
 def get_person_summary_prompt() -> str:

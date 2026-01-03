@@ -2,7 +2,7 @@
 cron無しの定期実行ユーティリティ
 
 Workerから定期的に呼び出され、必要なジョブをenqueueする。
-bond_summary、entity_summaryなどの
+shared_narrative_summary、entity_summaryなどの
 定期ジョブを重複抑制・クールダウン付きで管理する。
 """
 
@@ -97,7 +97,7 @@ def _latest_summary_updated_at(
     return ts if ts > 0 else None
 
 
-def maybe_enqueue_bond_summary(
+def maybe_enqueue_shared_narrative_summary(
     session: Session,
     *,
     now_ts: int,
@@ -106,7 +106,7 @@ def maybe_enqueue_bond_summary(
     max_sensitivity: Optional[int] = int(Sensitivity.PRIVATE),
 ) -> bool:
     """
-    bond summary ジョブを必要に応じてenqueueする。
+    背景共有サマリ（shared_narrative_summary）ジョブを必要に応じてenqueueする。
 
     重複抑制とクールダウンを考慮し、新規エピソードがある場合のみ実行する。
     max_sensitivity が None の場合は sensitivity フィルタを行わない。
@@ -114,14 +114,14 @@ def maybe_enqueue_bond_summary(
 
     if _has_pending_job(
         session,
-        kind="bond_summary",
+        kind="shared_narrative_summary",
         predicate=lambda p: (str(p.get("scope_key") or "").strip() in {"", scope_key}),
     ):
         return False
 
     updated_at = _latest_summary_updated_at(
         session,
-        scope_label="bond",
+        scope_label="shared_narrative",
         scope_key=scope_key,
         max_sensitivity=max_sensitivity,
     )
@@ -153,7 +153,7 @@ def maybe_enqueue_bond_summary(
         )
         if any_episode_line is None:
             return False
-        _enqueue_job(session, kind="bond_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
+        _enqueue_job(session, kind="shared_narrative_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
         return True
 
     if int(now_ts) - int(updated_at) < int(cooldown_seconds):
@@ -172,7 +172,7 @@ def maybe_enqueue_bond_summary(
     if new_episode is None:
         return False
 
-    _enqueue_job(session, kind="bond_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
+    _enqueue_job(session, kind="shared_narrative_summary", payload={"scope_key": scope_key}, now_ts=now_ts)
     return True
 
 
@@ -371,18 +371,18 @@ def enqueue_periodic_jobs(session: Session, *, now_ts: int, config: PeriodicEnqu
     """
     cfg = config or PeriodicEnqueueConfig()
     stats: dict[str, Any] = {
-        "bond_summary": 0,
+        "shared_narrative_summary": 0,
         "person_summary_refresh": 0,
         "topic_summary_refresh": 0,
     }
 
-    if maybe_enqueue_bond_summary(
+    if maybe_enqueue_shared_narrative_summary(
         session,
         now_ts=now_ts,
         cooldown_seconds=cfg.weekly_cooldown_seconds,
         max_sensitivity=cfg.max_sensitivity,
     ):
-        stats["bond_summary"] += 1
+        stats["shared_narrative_summary"] += 1
 
     entity_stats = maybe_enqueue_entity_summaries(
         session,

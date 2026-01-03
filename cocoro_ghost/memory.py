@@ -56,7 +56,7 @@ _request_id_lock = threading.Lock()
 _request_id_seq = 0
 
 _SUMMARY_REFRESH_INTERVAL_SECONDS = 6 * 3600
-_BOND_SUMMARY_SCOPE_KEY = "rolling:7d"
+_SHARED_NARRATIVE_SUMMARY_SCOPE_KEY = "rolling:7d"
 
 
 @dataclass(frozen=True)
@@ -846,7 +846,7 @@ class MemoryManager:
                 sensitivity=int(Sensitivity.NORMAL),
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=int(unit_id))
-            self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
+            self._maybe_enqueue_shared_narrative_summary(db, now_ts=now_ts)
 
         # --- イベント配信 ---
         system_text = "[デスクトップウォッチ]".strip()
@@ -1001,7 +1001,7 @@ class MemoryManager:
                 )
                 # リマインダーは「話した事実」を検索できれば十分なので、埋め込みのみ作る。
                 self._enqueue_embeddings_job(db, now_ts=now_ts, unit_id=int(unit_id))
-                self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
+                self._maybe_enqueue_shared_narrative_summary(db, now_ts=now_ts)
 
         # --- イベント配信 ---
         publish_event(
@@ -1110,18 +1110,18 @@ class MemoryManager:
         """SSE（Server-Sent Events）形式の1メッセージを構築する。"""
         return f"event: {event}\ndata: {_json_dumps(payload)}\n\n"
 
-    def _maybe_enqueue_bond_summary(self, db, *, now_ts: int) -> None:
+    def _maybe_enqueue_shared_narrative_summary(self, db, *, now_ts: int) -> None:
         if not self.config_store.memory_enabled:
             return
 
         # enqueue判定ロジックは periodic.py 側に集約する。
         # ここでは従来の挙動を維持するため、sensitivity フィルタは行わない（max_sensitivity=None）。
-        from cocoro_ghost.periodic import maybe_enqueue_bond_summary  # noqa: PLC0415
+        from cocoro_ghost.periodic import maybe_enqueue_shared_narrative_summary  # noqa: PLC0415
 
-        maybe_enqueue_bond_summary(
+        maybe_enqueue_shared_narrative_summary(
             db,
             now_ts=int(now_ts),
-            scope_key=_BOND_SUMMARY_SCOPE_KEY,
+            scope_key=_SHARED_NARRATIVE_SUMMARY_SCOPE_KEY,
             cooldown_seconds=_SUMMARY_REFRESH_INTERVAL_SECONDS,
             max_sensitivity=None,
         )
@@ -1694,7 +1694,7 @@ class MemoryManager:
                             reflection_obj=reflection_obj,
                         )
                     self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=episode_unit_id)
-                    self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
+                    self._maybe_enqueue_shared_narrative_summary(db, now_ts=now_ts)
             except Exception as exc:  # noqa: BLE001
                 logger.error("episode保存に失敗しました", exc_info=exc)
                 _log_client_timing(request_id=request_id, event="クライアント応答エラー", start_perf=start_perf)
@@ -1861,7 +1861,7 @@ class MemoryManager:
                 image_summary=image_summary_text,
             )
             self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
-            self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
+            self._maybe_enqueue_shared_narrative_summary(db, now_ts=now_ts)
 
         publish_event(
             type="notification",
@@ -2033,7 +2033,7 @@ class MemoryManager:
                 )
                 # 能動メッセージは「検索で思い出す」だけで十分なため、埋め込みのみ作る。
                 self._enqueue_embeddings_job(db, now_ts=now_ts, unit_id=int(episode_unit_id))
-                self._maybe_enqueue_bond_summary(db, now_ts=now_ts)
+                self._maybe_enqueue_shared_narrative_summary(db, now_ts=now_ts)
 
         publish_event(
             type="meta-request",

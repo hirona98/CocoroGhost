@@ -133,7 +133,7 @@
   - 既定: `due_at` が未来なら `expires_at=due_at`、無ければ `expires_at=now+7日`
   - 上限: `due_at/expires_at` は最大30日までに丸める
 
-## Bond Summary（絆サマリ）
+## Shared Narrative Summary（背景共有サマリ）
 
 ### 出力JSON
 
@@ -141,11 +141,11 @@
 {
   "summary_text": "string",
   "key_events": [{"unit_id": 123, "why": "..."}],
-  "bond_state": "string"
+  "shared_state": "string"
 }
 ```
 
-- `units(kind=SUMMARY, scope_label=bond, scope_key=rolling:7d)` + `payload_summary`
+- `units(kind=SUMMARY, scope_label=shared_narrative, scope_key=rolling:7d)` + `payload_summary`
 - `payload_summary.summary_json` に LLM の出力JSONを丸ごと保存（`summary_text` は注入用のプレーンテキストとして残す）
 
 ## Person Summary（人物サマリ）

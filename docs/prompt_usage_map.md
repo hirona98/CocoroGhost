@@ -15,7 +15,7 @@
 | `LOOP_EXTRACT_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 未完了事項（open loops）をJSON抽出 | `cocoro_ghost/worker.py::_handle_extract_loops` | 非同期（Worker Job） |
 | `PERSON_SUMMARY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 人物の会話注入用サマリをJSON生成 | `cocoro_ghost/worker.py::_handle_person_summary_refresh` | 非同期（Worker Job） |
 | `TOPIC_SUMMARY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | トピックの会話注入用サマリをJSON生成 | `cocoro_ghost/worker.py::_handle_topic_summary_refresh` | 非同期（Worker Job） |
-| `BOND_SUMMARY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 絆サマリ（BondSummary/bond, rolling:7d）をJSON生成 | `cocoro_ghost/worker.py::_handle_bond_summary`（enqueue: `cocoro_ghost/memory.py::MemoryManager::_maybe_enqueue_bond_summary` / `cocoro_ghost/periodic.py::maybe_enqueue_bond_summary`） | 非同期（Worker Job） |
+| `SHARED_NARRATIVE_SUMMARY_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 背景共有サマリ（shared_narrative, rolling:7d）をJSON生成 | `cocoro_ghost/worker.py::_handle_shared_narrative_summary`（enqueue: `cocoro_ghost/memory.py::MemoryManager::_maybe_enqueue_shared_narrative_summary` / `cocoro_ghost/periodic.py::maybe_enqueue_shared_narrative_summary`） | 非同期（Worker Job） |
 | `EXTERNAL_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | 通知（notification）から“自然な返答文”を生成 | `cocoro_ghost/memory.py::MemoryManager::_process_notification_async` | 同期風（API応答後のBackgroundTasks） |
 | `META_PROACTIVE_MESSAGE_SYSTEM_PROMPT` | `cocoro_ghost/prompts.py` | meta-request（指示+材料）から能動メッセージ生成 | `cocoro_ghost/memory.py::MemoryManager::_process_meta_request_async` | 同期風（API応答後のBackgroundTasks） |
 | `DEFAULT_PERSONA_ANCHOR` | `cocoro_ghost/prompts.py` | PersonaPreset の初期値（未設定時の雛形） | `cocoro_ghost/db.py`（settings初期化） | 起動時/初期化 |
@@ -52,7 +52,7 @@ flowchart TD
     LLM_META --> SAVE_EP
 
     SAVE_EP --> ENQ["DB: enqueue default jobs"]
-    SAVE_EP --> ENQW_MAYBE["DB: maybe enqueue bond_summary"]
+    SAVE_EP --> ENQW_MAYBE["DB: maybe enqueue shared_narrative_summary"]
   end
 
   subgraph WORKER["Worker（jobs）"]
@@ -63,11 +63,11 @@ flowchart TD
     ENQ --> EMB["upsert_embeddings (prompt無し)"]
     ENT --> PERS["person_summary_refresh → PERSON_SUMMARY_SYSTEM_PROMPT"]
     ENT --> TOP["topic_summary_refresh → TOPIC_SUMMARY_SYSTEM_PROMPT"]
-    ENQW_MAYBE --> WEEK["bond_summary → BOND_SUMMARY_SYSTEM_PROMPT"]
+    ENQW_MAYBE --> WEEK["shared_narrative_summary → SHARED_NARRATIVE_SUMMARY_SYSTEM_PROMPT"]
   end
 
   subgraph OTHER["その他の入口（enqueueのみ）"]
-    PERIODIC["periodic: maybe_enqueue_bond_summary()"] --> ENQW_MAYBE
+    PERIODIC["periodic: maybe_enqueue_shared_narrative_summary()"] --> ENQW_MAYBE
   end
 ```
 
@@ -125,7 +125,7 @@ flowchart TD
   - 形式: `- SUBJECT predicate OBJECT`（entity_idが引けると名前に置換、subject未指定は `SPEAKER`）
 - `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>`:
   - 会話の「共有された物語（継続する関係性や背景）」を短く注入するセクション
-  - `scope_key=rolling:7d` の bond summary（無ければ latest をfallback）
+  - `scope_label=shared_narrative, scope_key=rolling:7d` の 背景共有サマリ（無ければ latest をfallback）
   - 今回マッチした entity に応じて追加:
     - roles に `person` を含む: `scope_label=person, scope_key=person:<entity_id>`
     - roles に `topic` を含む: `scope_label=topic, scope_key=topic:<normalized-or-name-lower>`
@@ -186,7 +186,7 @@ sequenceDiagram
   API-->>UI: SSE stream
   API->>DB: save Unit(kind=EPISODE)\n(input_text, reply_text, image_summary...)
   API->>Q: enqueue default jobs\n(reflect/extract/embed...)
-  API->>Q: maybe enqueue bond_summary\n(bond summary refresh)
+  API->>Q: maybe enqueue shared_narrative_summary\n(shared narrative summary refresh)
 ```
 
 ## 4) 非同期フロー（Worker jobs）：派生物ごとに使うプロンプト
@@ -214,7 +214,7 @@ sequenceDiagram
   - Embedding生成: `upsert_embeddings`（1回。プロンプトではなく埋め込みAPI）
 - 追加で増えうるジョブ（状況次第）:
   - `extract_entities` の結果に応じて、`person_summary_refresh` 最大3件 + `topic_summary_refresh` 最大3件（= JSON生成 最大6回）
-  - `bond_summary`（rolling:7d。クールダウン等により実行されない場合もある）
+- `shared_narrative_summary`（rolling:7d。クールダウン等により実行されない場合もある）
 
 ### 4.2) PERSONA_ANCHOR（persona_text + addon_text）を付けるプロンプト・付けないプロンプト
 
@@ -223,7 +223,7 @@ Workerはジョブによって `persona_text` と `addon_text` を **同一の P
 - PERSONA_ANCHOR を合成する（`wrap_prompt_with_persona(...)`）
   - `reflect_episode`（`REFLECTION_SYSTEM_PROMPT`）
   - `extract_loops`（`LOOP_EXTRACT_SYSTEM_PROMPT`）
-  - `bond_summary`（`BOND_SUMMARY_SYSTEM_PROMPT`）
+- `shared_narrative_summary`（`SHARED_NARRATIVE_SUMMARY_SYSTEM_PROMPT`）
   - `person_summary_refresh`（`PERSON_SUMMARY_SYSTEM_PROMPT`）
   - `topic_summary_refresh`（`TOPIC_SUMMARY_SYSTEM_PROMPT`）
 - PERSONA_ANCHOR を合成しない（固定タスクとして素の system prompt を使う）
@@ -259,16 +259,16 @@ flowchart LR
   TOP -->|LLM JSON| P7["TOPIC_SUMMARY_SYSTEM_PROMPT"]
   P7 --> S2["Unit(kind=SUMMARY, scope=topic) + payload_summary"]
 
-  J --> WS["bond_summary"]
-  WS -->|LLM JSON| P8["BOND_SUMMARY_SYSTEM_PROMPT"]
-  P8 --> S3["Unit(kind=SUMMARY, scope=bond, scope_key=rolling:7d) + payload_summary"]
+  J --> WS["shared_narrative_summary"]
+  WS -->|LLM JSON| P8["SHARED_NARRATIVE_SUMMARY_SYSTEM_PROMPT"]
+  P8 --> S3["Unit(kind=SUMMARY, scope=shared_narrative, scope_key=rolling:7d) + payload_summary"]
   S3 --> EMB2["enqueue upsert_embeddings (if changed)"]
 ```
 
 ## 5) “どの入力で” 各プロンプトが呼ばれるか（要点）
 
 - Reflection / Entities / Facts / Loops: `payload_episode` の `input_text/reply_text/image_summary` を連結して入力にする（`cocoro_ghost/worker.py`）。
-- Bond summary（rolling:7d）: 直近7日程度の `Unit(kind=EPISODE)` を時系列で最大200件抜粋し、`range_start/range_end` + 箇条書き（unit_id + input/reply抜粋）として入力にする（`cocoro_ghost/worker.py::_handle_bond_summary`）。
+- 背景共有サマリ（rolling:7d）: 直近7日程度の `Unit(kind=EPISODE)` を時系列で最大200件抜粋し、`range_start/range_end` + 箇条書き（unit_id + input/reply抜粋）として入力にする（`cocoro_ghost/worker.py::_handle_shared_narrative_summary`）。
 - 会話品質優先のため、`persona_mood_state` はDBに保存せず、チャット直前に同期計算して `CONTEXT_CAPSULE` に注入する（`cocoro_ghost/memory_pack_builder.py` / `cocoro_ghost/persona_mood.py`）。
 - Notification: `# notification ...` 形式に整形したテキスト（+ 画像要約）を `conversation=[{"role":"user","content":...}]` として渡す（`cocoro_ghost/memory.py`）。
 - Meta request: `# instruction` / `# payload` / `# images` 形式に整形したテキスト（instruction + payload + 画像要約）を渡す（`cocoro_ghost/memory.py`）。
