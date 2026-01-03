@@ -723,14 +723,17 @@ class MemoryManager:
         image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
 
         # --- 入力テキスト（検索/保存用） ---
+        # NOTE:
+        # - desktop_watch は「ユーザー発話」ではないため、内部タグ（例: # desktop_watch）を入れると
+        #   通常チャットの会話履歴に混入したときに、LLMがそれを根拠として引用してしまう。
+        # - ここでは「出ても破綻しない自然文」にし、区別は Unit.source="desktop_watch" で行う。
         active_app = str(client_context.get("active_app") or "").strip()
         window_title = str(client_context.get("window_title") or "").strip()
-        watch_lines: list[str] = ["# desktop_watch"]
-        if active_app:
-            watch_lines.append(f"active_app: {active_app}")
-        if window_title:
-            watch_lines.append(f"window_title: {window_title}")
-        watch_input_text = "\n".join([x for x in watch_lines if x]).strip()
+        details = " / ".join([x for x in [active_app, window_title] if x]).strip()
+        watch_lines: list[str] = ["デスクトップを確認"]
+        if details:
+            watch_lines.append(details)
+        watch_input_text = "\n".join(watch_lines).strip()
 
         # --- MemoryPack ---
         memory_pack = ""
@@ -1017,9 +1020,40 @@ class MemoryManager:
         rows.reverse()
 
         messages: List[Dict[str, str]] = []
-        for _u, pe in rows:
+        for u, pe in rows:
+            source = str(getattr(u, "source", "") or "").strip()
             ut = (pe.input_text or "").strip()
             rt = (pe.reply_text or "").strip()
+
+            # --- desktop_watch は「観測メモ」として扱う ---
+            # NOTE:
+            # - desktop_watch を role="user" で混ぜると、LLMが「ユーザーが発話した」と誤解しやすい。
+            # - さらに、過去に内部タグ（例: # desktop_watch / active_app:）が混入していると、
+            #   LLMがそれを根拠として引用してしまう。
+            # - ここでは「デスクトップを確認」という自然語ラベルに寄せて、1つのassistantメッセージに畳む。
+            if source == "desktop_watch":
+                active_app = ""
+                window_title = ""
+                try:
+                    if pe.context_note:
+                        ctx = json.loads(pe.context_note)
+                        if isinstance(ctx, dict):
+                            active_app = str(ctx.get("active_app") or "").strip()
+                            window_title = str(ctx.get("window_title") or "").strip()
+                except Exception:  # noqa: BLE001
+                    active_app = ""
+                    window_title = ""
+
+                details = " / ".join([x for x in [active_app, window_title] if x]).strip()
+                memo_lines: list[str] = ["（観測メモ）デスクトップを確認"]
+                if details:
+                    memo_lines.append(f"見えていたもの: {details}")
+                if rt:
+                    memo_lines.append(f"独り言: {rt}")
+                messages.append({"role": "assistant", "content": "\n".join(memo_lines).strip()})
+                continue
+
+            # --- 通常の会話（user/assistant） ---
             if ut:
                 messages.append({"role": "user", "content": ut})
             if rt:
