@@ -31,7 +31,7 @@ REM 設定ファイルの確認とコピー
 echo.
 if not exist config\setting.toml (
     echo 設定ファイルを作成します...
-    copy config\setting.toml.example config\setting.toml
+    copy config\setting.toml.release config\setting.toml
     if errorlevel 1 (
         echo エラー: 設定ファイルのコピーに失敗しました
         pause

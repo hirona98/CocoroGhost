@@ -51,7 +51,7 @@ setup.bat
 
 3. **設定ファイルの準備**
    ```bash
-   copy config\setting.toml.example config\setting.toml
+   copy config\setting.toml.release config\setting.toml
    ```
 
 4. **設定ファイルの編集**
@@ -116,7 +116,7 @@ start.bat
 
 `config/setting.toml` が存在することを確認してください。存在しない場合：
 ```bash
-copy config\setting.toml.example config\setting.toml
+copy config\setting.toml.release config\setting.toml
 ```
 
 ## Windows配布（PyInstaller）
@@ -129,7 +129,7 @@ copy config\setting.toml.example config\setting.toml
 ### フォルダ構成（配布後）
 
 - `CocoroGhost.exe`
-- `config/setting.toml`（ユーザーが作成。テンプレ: `config/setting.toml.example`）
+- `config/setting.toml`（ユーザーが作成。テンプレ: `config/setting.toml.release`）
 - `data/settings.db`（自動作成）
 - `data/memory_<embedding_preset_id>.db`（自動作成）
 - `data/reminders.db`（自動作成）
@@ -166,4 +166,4 @@ NOTE:
 
 補足:
 
-- 初回起動前に `config/setting.toml.example` を `config/setting.toml` にコピーし、`token` 等を編集してください。
+- 初回起動前に `config/setting.toml.release` を `config/setting.toml` にコピーし、`token` 等を編集してください。

@@ -8,10 +8,6 @@
 
 from __future__ import annotations
 
-import shutil
-import sys
-from pathlib import Path
-
 
 def main() -> None:
     """配布版のサーバー起動処理。"""
@@ -19,31 +15,16 @@ def main() -> None:
     # --- 先にディレクトリを確実に作る（初回起動時の事故防止） ---
     from cocoro_ghost import paths
 
-    config_dir = paths.get_config_dir()
+    paths.get_config_dir()
     paths.get_data_dir()
     paths.get_logs_dir()
-
-    # --- 設定テンプレートを exe 隣へ配置する ---
-    # PyInstaller(on dir) では datas が _internal 配下になることがあるため、
-    # 起動時にユーザーが編集できる場所（exe隣の config/）へコピーしておく。
-    try:
-        external_example = config_dir / "setting.toml.example"
-        if not external_example.exists():
-            meipass = getattr(sys, "_MEIPASS", None)
-            if meipass:
-                bundled_example = Path(meipass) / "config" / "setting.toml.example"
-                if bundled_example.exists():
-                    shutil.copy2(bundled_example, external_example)
-    except Exception:
-        # テンプレは利便性のための補助なので、失敗しても起動は継続する。
-        pass
 
     # --- 設定ファイルが無い場合は、案内して終了 ---
     # 初回起動時に stacktrace を出すよりも、ユーザーが取るべき行動を明確にする。
     config_path = paths.get_default_config_file_path()
     if not config_path.exists():
         print("[CocoroGhost] config/setting.toml が見つかりません。")
-        print("[CocoroGhost] config/setting.toml.example を参考に作成してください。")
+        print("[CocoroGhost] config/setting.toml を作成してください。")
         print(f"[CocoroGhost] 期待パス: {config_path}")
         return
 

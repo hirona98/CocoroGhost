@@ -2,29 +2,40 @@
 setlocal
 
 REM ========================================
-REM CocoroGhost Windowsé…å¸ƒãƒ“ãƒ«ãƒ‰ï¼ˆonedirï¼‰
+REM CocoroGhost Windows ”z•zƒrƒ‹ƒhionedirj
 REM
-REM - PyInstaller spec ã‹ã‚‰ dist\CocoroGhost\ ã‚’ç”Ÿæˆ
-REM - dist\CocoroGhost.exeï¼ˆãƒ«ãƒ¼ãƒˆç›´ä¸‹ã®å˜ä½“exeï¼‰ã¯é…å¸ƒå¯¾è±¡å¤–ãªã®ã§å‰Šé™¤
+REM - PyInstaller spec ‚©‚ç dist\CocoroGhost\ ‚ð¶¬
+REM - dist\CocoroGhost.exeidist’¼‰º‚Ì’P‘Ìexej‚Ííœ
 REM ========================================
 
-REM --- ãƒ—ãƒ­ã‚¸ã‚§ã‚¯ãƒˆãƒ«ãƒ¼ãƒˆã¸ç§»å‹•ï¼ˆã“ã®batã®å ´æ‰€åŸºæº–ï¼‰ ---
+REM --- ƒvƒƒWƒFƒNƒgƒ‹[ƒg‚ÖˆÚ“®i‚±‚Ìbat‚ÌêŠŠî€j ---
 cd /d "%~dp0"
 
-REM --- venv æœ‰åŠ¹åŒ–ï¼ˆç„¡ã„å ´åˆã¯ãã®ã¾ã¾é€²ã‚€ï¼‰ ---
+REM --- venv —LŒø‰»i–³‚¢ê‡‚Í‚»‚Ì‚Ü‚Üi‚Þj ---
 if exist ".venv\Scripts\activate.bat" (
   call ".venv\Scripts\activate.bat"
 )
 
-REM --- ãƒ¦ãƒ¼ã‚¶ãƒ¼site-packagesæ··å…¥ã‚’é˜²ãï¼ˆPyInstallerã®hookãŒæ‹¾ã£ã¦å£Šã‚Œã‚‹ã®ã‚’é¿ã‘ã‚‹ï¼‰ ---
+REM --- ƒ†[ƒU[site-packages¬“ü‚ð–h‚®iPyInstaller‚Ìhook‚ªE‚Á‚Ä‰ó‚ê‚é‚Ì‚ð”ð‚¯‚éj ---
 set PYTHONNOUSERSITE=1
 
-REM --- PyInstaller å®Ÿè¡Œï¼ˆç¢ºèªãƒ—ãƒ­ãƒ³ãƒ—ãƒˆç„¡ã—ï¼‰ ---
+REM --- dist ‚ªŽg—p’†‚ÅÁ‚¹‚¸‚Éƒrƒ‹ƒh‚ªŽ¸”s‚·‚é‚Ì‚ð–h‚® ---
+REM ¦ CocoroGhost.exe ‚ð‹N“®‚µ‚½‚Ü‚Üƒrƒ‹ƒh‚·‚é‚Æ dist\CocoroGhost ‚ªƒƒbƒN‚³‚ê‚é‚±‚Æ‚ª‚ ‚è‚Ü‚·
+taskkill /f /im CocoroGhost.exe >nul 2>&1
+
+set "DISTROOT=dist"
+set "WORKROOT=build\cocoro_ghost_windows"
+
+if not exist "%DISTROOT%" (
+  mkdir "%DISTROOT%" || exit /b 1
+)
+
+REM --- PyInstaller ŽÀsiŠm”Fƒvƒƒ“ƒvƒg–³‚µj ---
 if exist ".venv\Scripts\pyinstaller.exe" (
-  ".venv\Scripts\pyinstaller.exe" --noconfirm cocoro_ghost_windows.spec
+  ".venv\Scripts\pyinstaller.exe" --noconfirm --distpath "%DISTROOT%" --workpath "%WORKROOT%" cocoro_ghost_windows.spec
 ) else (
-  REM venvãŒç„¡ã„å ´åˆã¯PATHä¸Šã®pyinstaller.exeã‚’ä½¿ã†
-  pyinstaller.exe --noconfirm cocoro_ghost_windows.spec
+  REM venv‚ª–³‚¢ê‡‚ÍPATHã‚Ìpyinstaller.exe‚ðŽg‚¤
+  pyinstaller.exe --noconfirm --distpath "%DISTROOT%" --workpath "%WORKROOT%" cocoro_ghost_windows.spec
 )
 if errorlevel 1 (
   echo.
@@ -32,13 +43,32 @@ if errorlevel 1 (
   exit /b 1
 )
 
-REM --- onediré…å¸ƒã§ã¯ dist\CocoroGhost\ ã‚’ä½¿ã†ãŸã‚ã€ãƒ«ãƒ¼ãƒˆã® exe ã¯å‰Šé™¤ ---
-if exist "dist\CocoroGhost.exe" (
-  del /f /q "dist\CocoroGhost.exe"
+REM --- onedir”z•z‚Å‚Í %DISTROOT%\CocoroGhost\ ‚ðŽg‚¤‚½‚ßA%DISTROOT% ’¼‰º‚Ì exe ‚Ííœ ---
+if exist "%DISTROOT%\CocoroGhost.exe" (
+  del /f /q "%DISTROOT%\CocoroGhost.exe"
 )
+
+set "OUTDIR=%DISTROOT%\CocoroGhost"
+
+REM --- setting.toml.release ‚ð dist ‘¤‚ÖƒRƒs[iexe‚Ì—×‚Ì config ‚É’u‚­j ---
+if not exist "config\setting.toml.release" (
+  echo.
+  echo [ERROR] config\setting.toml.release not found.
+  exit /b 1
+)
+if not exist "%OUTDIR%\config" (
+  mkdir "%OUTDIR%\config" || exit /b 1
+)
+copy /y "config\setting.toml.release" "%OUTDIR%\config\setting.toml" >nul
+if errorlevel 1 (
+  echo.
+  echo [ERROR] Failed to copy setting.toml.release to dist.
+  exit /b 1
+)
+
 
 echo.
 echo [OK] Build finished.
-echo [OK] Distribute: dist\CocoroGhost\
+echo [OK] Distribute: %OUTDIR%\
 
 endlocal
