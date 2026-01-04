@@ -659,17 +659,42 @@ class MemoryManager:
         )
         if resp is None:
             return [], None, "見えない（タイムアウト）"
+
+        # --- errorコードでサーバー側の判断を行う ---
+        # 仕様:
+        # - 成功: error=None かつ images>=1
+        # - スキップ（正常系）: images=[] かつ error が所定文字列
+        # - 失敗（異常系）: images=[] かつ error が上記以外
         if resp.error:
+            err = str(resp.error).strip()
+            if not resp.images and vision_bridge.is_capture_skipped_idle(err):
+                logger.info(
+                    "vision capture skipped (chat, idle) client_id=%s source=%s",
+                    str(user_client_id),
+                    str(source),
+                )
+                return [], resp.client_context, "見えない（アイドルのためスキップ）"
+            if not resp.images and vision_bridge.is_capture_skipped_excluded_window_title(err):
+                logger.info(
+                    "vision capture skipped (chat, excluded window title) client_id=%s source=%s",
+                    str(user_client_id),
+                    str(source),
+                )
+                return [], resp.client_context, "見えない（対象外ウィンドウのためスキップ）"
+
             logger.info(
                 "vision capture failed (chat) client_id=%s source=%s error=%s",
                 str(user_client_id),
                 str(source),
-                str(resp.error),
+                err,
             )
             return [], resp.client_context, "見えない（取得失敗）"
+
         if not resp.images:
+            # NOTE:
+            # - 仕様上は「images=[] の場合は error 必須」だが、念のため防御する。
             logger.info(
-                "vision capture returned empty images (chat) client_id=%s source=%s",
+                "vision capture invalid response (chat) empty images without error client_id=%s source=%s",
                 str(user_client_id),
                 str(source),
             )
@@ -692,7 +717,7 @@ class MemoryManager:
             return [], resp.client_context, "見えない（画像が不正）"
         return internal_images, resp.client_context, None
 
-    def run_desktop_watch_once(self, *, target_client_id: str) -> None:
+    def run_desktop_watch_once(self, *, target_client_id: str) -> str:
         """
         デスクトップウォッチを1回実行する。
 
@@ -709,7 +734,7 @@ class MemoryManager:
         cid = str(target_client_id or "").strip()
         if not cid:
             logger.warning("desktop_watch target_client_id is empty")
-            return
+            return "invalid_target_client_id"
 
         # --- キャプチャ要求 ---
         resp = vision_bridge.request_capture_and_wait(
@@ -722,13 +747,26 @@ class MemoryManager:
         )
         if resp is None:
             logger.info("desktop_watch capture timeout client_id=%s", cid)
-            return
+            return "timeout"
+
+        # --- errorコードでサーバー側の判断を行う ---
         if resp.error:
-            logger.info("desktop_watch capture failed client_id=%s error=%s", cid, str(resp.error))
-            return
+            err = str(resp.error).strip()
+            if not resp.images and vision_bridge.is_capture_skipped_idle(err):
+                logger.info("desktop_watch capture skipped (idle) client_id=%s", cid)
+                return "skipped_idle"
+            if not resp.images and vision_bridge.is_capture_skipped_excluded_window_title(err):
+                logger.info("desktop_watch capture skipped (excluded window title) client_id=%s", cid)
+                return "skipped_excluded_window_title"
+
+            logger.info("desktop_watch capture failed client_id=%s error=%s", cid, err)
+            return "failed"
+
         if not resp.images:
-            logger.info("desktop_watch capture empty images client_id=%s", cid)
-            return
+            # NOTE:
+            # - 仕様上は「images=[] の場合は error 必須」だが、念のため防御する。
+            logger.info("desktop_watch capture invalid response empty images without error client_id=%s", cid)
+            return "invalid_empty_images"
 
         # --- data URI -> base64（内部形式） ---
         images_internal: list[Dict[str, str]] = []
@@ -740,7 +778,7 @@ class MemoryManager:
             images_internal.append({"type": "data_uri", "base64": b64})
         if not images_internal:
             logger.info("desktop_watch capture invalid images client_id=%s", cid)
-            return
+            return "invalid_images"
 
         # --- client_context ---
         client_context = self._merge_client_context(client_id=cid, client_context=resp.client_context)
@@ -850,6 +888,7 @@ class MemoryManager:
             # クライアント再接続時に過去分を再送しない（バッファしない）。
             bufferable=False,
         )
+        return "success"
 
     def run_reminder_once(
         self,

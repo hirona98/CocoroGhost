@@ -54,7 +54,6 @@ class DesktopWatchService:
             now = time.time()
 
             # --- 初回tick（起動直後） ---
-            # NOTE:
             # - 起動時に desktop_watch_enabled がすでに True の場合、
             #   「5秒後に即覗く」ではなく「設定間隔が経過してから」初回実行する。
             # - UIでのON操作（OFF→ON遷移）とは挙動を分ける。
@@ -96,9 +95,15 @@ class DesktopWatchService:
                 return
 
             mm = get_memory_manager()
-            mm.run_desktop_watch_once(target_client_id=target_client_id)
+            result = mm.run_desktop_watch_once(target_client_id=target_client_id)
 
             # --- 次回予約 ---
+            # - アイドル等でスキップされた場合は60秒間隔で再要求
+            if result in {"skipped_idle", "skipped_excluded_window_title"}:
+                cooldown = max(float(interval), float(60))
+                self._next_run_ts = float(now) + float(cooldown)
+                return
+
             self._next_run_ts = float(now) + float(interval)
         finally:
             with self._lock:
