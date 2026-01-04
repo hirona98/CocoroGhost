@@ -571,7 +571,6 @@ class MemoryManager:
         リマインダー配信用の message を整形して返す。
 
         仕様:
-        - 時刻（HH:MM）を必ず含める。
         - 50文字以内に収める（読み上げ想定のため）。
         - 空/不正な出力でも最低限の自然文を返す。
         """
@@ -579,27 +578,17 @@ class MemoryManager:
         max_len = 50
 
         # --- 入力正規化 ---
-        hhmm_clean = str(hhmm or "").strip()
         content_clean = str(content or "").strip()
         raw = str(message or "").strip()
 
         # --- 余計な改行/空白を潰す（読み上げ/表示向け） ---
-        # NOTE: split() は連続空白と改行をまとめて扱えるため簡潔。
         raw = " ".join(raw.split()).strip()
 
         # --- フォールバック（最低限の出力を確保） ---
         if not raw:
-            raw = f"{hhmm_clean}です。{content_clean}".strip()
+            # - 生成に失敗した場合でも、最低限「内容」を伝える。
+            raw = f"{content_clean}です。".strip()
 
-        # --- 時刻（HH:MM）の強制 ---
-        # NOTE:
-        # - LLMが時刻を落とした場合でも仕様を満たすため、先頭に付ける。
-        if hhmm_clean and hhmm_clean not in raw:
-            raw = f"{hhmm_clean}、{raw}".strip()
-
-        # --- 文字数上限（仕様: 50文字以内） ---
-        if len(raw) > max_len:
-            raw = raw[:max_len].strip()
 
         return raw
 
@@ -951,9 +940,6 @@ class MemoryManager:
         if internal_context_message:
             conversation.append(internal_context_message)
 
-        # NOTE:
-        # - LLM入力は「出ても破綻しない自然文」に寄せる（内部タグを入れない）。
-        # - 時刻は hhmm で渡し、出力も HH:MM 固定になるようにプロンプトで縛る。
         reminder_generation_text = "\n".join(
             [
                 "時刻: " + hhmm_clean,
