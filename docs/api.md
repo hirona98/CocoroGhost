@@ -186,8 +186,21 @@ CocoroConsole等のクライアントが、`/api/events/stream` で受け取っ�
 
 - `request_id` は `vision.capture_request.data.request_id` と一致させる（相関用）。
 - `images` は Data URI 形式。
-- `error` が非nullの場合、`images` は空でよい。
+- `error` が非nullの場合、`images` は空でよい（スキップ/失敗の区別は `error` の値で行う）。
 - `client_id` は `/api/chat` の `client_id` と一致させる（どのクライアントのキャプチャかを一意にするため）。
+
+### `error` の仕様（重要）
+
+`error` は「サーバー側が次の行動を判断するためのコード/理由」を入れる。
+
+- **成功**: `error: null` かつ `images` が1枚以上
+- **スキップ（正常系）**: `images: []` かつ `error` が以下のいずれか
+  - `capture skipped (idle)`（クライアント側でアイドル判定したため未キャプチャ。サーバーはリトライ/抑制などを判断する）
+  - `capture skipped (excluded window title)`（除外パターンに一致したため未キャプチャ。サーバーはリトライせず抑制するのが推奨）
+- **失敗（異常系）**: `images: []` かつ `error` が上記以外の任意文字列（例: `unsupported source: ...` / 例外メッセージ）
+
+補足:
+- `client_context` はスキップ/失敗時も送ってよい（サーバー側のログ/判断材料）。
 
 ### Response
 
@@ -491,6 +504,7 @@ UI向けの「全設定」取得/更新。
 補足:
 - `vision.capture_request` は遅延実行を避けるため、サーバ側で **バッファに保持しない**（接続直後のキャッチアップ対象外）。
 - `vision.capture_request` を特定クライアントへ送るため、クライアントは接続直後に `hello` を送って client_id を登録する必要がある（Vision利用時）。
+- `vision.capture_request` の応答は `/api/v2/vision/capture-response`。クライアントがアイドル等でキャプチャしない場合は、`error="capture skipped (idle)"` 等の **スキップ理由**を返し、サーバ側が次の行動（リトライ/抑制）を判断する。
 
 ### Client message（必須: 宛先配信を受ける場合 / JSON text）
 
