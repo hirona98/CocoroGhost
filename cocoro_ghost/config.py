@@ -33,6 +33,7 @@ class Config:
     TOML起動設定（起動時のみ使用、変更不可）。
     起動時に固定されるログや認証の設定を保持する。
     """
+    cocoro_ghost_port: int  # CocoroGhost API の待受ポート
     token: str           # API認証用トークン
     log_level: str       # ログレベル（DEBUG, INFO, WARNING, ERROR）
     llm_log_level: str   # LLM送受信ログレベル（DEBUG, INFO, OFF）
@@ -165,6 +166,7 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
 
     # 許可されたキーのみを受け付ける
     allowed_keys = {
+        "cocoro_ghost_port",
         "token",
         "log_level",
         "llm_log_level",
@@ -187,6 +189,8 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
     resolved_log_file_path = str(paths.resolve_path_under_app_root(raw_log_file_path))
 
     config = Config(
+        # --- サーバー待受ポート（必須） ---
+        cocoro_ghost_port=int(_require(data, "cocoro_ghost_port")),
         token=_require(data, "token"),
         log_level=_require(data, "log_level"),
         llm_log_level=data.get("llm_log_level", "INFO"),

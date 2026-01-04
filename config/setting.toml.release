@@ -1,4 +1,8 @@
 # CocoroGhost 起動設定
+
+# CocoroGhost API の待受ポート
+cocoro_ghost_port = 55601
+
 token = "cocoro_token"
 
 # ログレベル

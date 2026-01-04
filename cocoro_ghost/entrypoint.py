@@ -34,9 +34,14 @@ def main() -> None:
     # app を直接 import して渡すことで、配布物への取り込みを確実にする。
     from cocoro_ghost.main import app
 
+    # --- setting.toml から待受ポートを取得する ---
+    from cocoro_ghost.config import load_config
+
+    toml_config = load_config(config_path)
+
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=55601, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=toml_config.cocoro_ghost_port, reload=False)
 
 
 if __name__ == "__main__":

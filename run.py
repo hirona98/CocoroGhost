@@ -13,11 +13,17 @@ def main() -> None:
     # --- 依存の import は main 内に寄せて PyInstaller 解析を安定させる ---
     import uvicorn
 
+    # --- setting.toml から待受ポートを取得する ---
+    from cocoro_ghost.config import load_config
+
+    toml_config = load_config()
+
+    # --- 開発用: コード変更を自動でリロードする ---
     uvicorn.run(
         "cocoro_ghost.main:app",
         host="0.0.0.0",
-        port=55601,
-        reload=False,
+        port=toml_config.cocoro_ghost_port,
+        reload=True,
     )
 
 
