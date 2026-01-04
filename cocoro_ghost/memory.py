@@ -651,7 +651,7 @@ class MemoryManager:
         self,
         *,
         embedding_preset_id: str,
-        speaker_client_id: str,
+        user_client_id: str,
         source: str,
     ) -> tuple[list[Dict[str, str]], Dict[str, Any] | None, str | None]:
         """
@@ -662,7 +662,7 @@ class MemoryManager:
         """
         resp = vision_bridge.request_capture_and_wait(
             embedding_preset_id=str(embedding_preset_id),
-            target_client_id=str(speaker_client_id),
+            target_client_id=str(user_client_id),
             source=str(source),
             purpose="chat",
             timeout_seconds=_VISION_CAPTURE_TIMEOUT_SECONDS,
@@ -673,7 +673,7 @@ class MemoryManager:
         if resp.error:
             logger.info(
                 "vision capture failed (chat) client_id=%s source=%s error=%s",
-                str(speaker_client_id),
+                str(user_client_id),
                 str(source),
                 str(resp.error),
             )
@@ -681,7 +681,7 @@ class MemoryManager:
         if not resp.images:
             logger.info(
                 "vision capture returned empty images (chat) client_id=%s source=%s",
-                str(speaker_client_id),
+                str(user_client_id),
                 str(source),
             )
             return [], resp.client_context, "見えない（画像が空）"
@@ -697,7 +697,7 @@ class MemoryManager:
         if not internal_images:
             logger.info(
                 "vision capture returned invalid images (chat) client_id=%s source=%s",
-                str(speaker_client_id),
+                str(user_client_id),
                 str(source),
             )
             return [], resp.client_context, "見えない（画像が不正）"
@@ -1324,20 +1324,19 @@ class MemoryManager:
             image_timeout_seconds=cfg.image_timeout_seconds,
         )
 
-        # --- 発話者 client_id（必須） ---
-        # NOTE: /api/chat は「発話者＝視覚命令の宛先」を一意に決める必要があるため、
-        # client_id を必須とし、推定やフォールバックは行わない。
-        speaker_client_id = str(request.client_id or "").strip()
+        # --- user client_id（必須） ---
+        # /api/chat は視覚命令の宛先を一意に決める必要があるため、client_id 必須
+        user_client_id = str(request.client_id or "").strip()
 
         # --- 入力テキスト ---
         input_text = (request.input_text or "").strip()
 
         # --- client_context（保存/注入用） ---
-        effective_client_context = self._merge_client_context(client_id=speaker_client_id, client_context=request.client_context)
+        effective_client_context = self._merge_client_context(client_id=user_client_id, client_context=request.client_context)
         logger.info(
-            "chat request received request_id=%s speaker_client_id=%s has_images=%s vision_preamble_enabled=%s",
+            "chat request received request_id=%s user_client_id=%s has_images=%s vision_preamble_enabled=%s",
             request_id,
-            speaker_client_id,
+            user_client_id,
             bool(request.images),
             not bool(request.images),
         )
@@ -1519,7 +1518,7 @@ class MemoryManager:
                             logger.info(
                                 "vision request detected in preamble source=%s client_id=%s",
                                 str(vr.get("source") or ""),
-                                speaker_client_id,
+                                user_client_id,
                             )
                             break
                         preamble_done = True
@@ -1595,11 +1594,11 @@ class MemoryManager:
                 source = str(vision_request.get("source") or "").strip()
                 cap_images, cap_ctx, cap_err = self._request_capture_for_chat(
                     embedding_preset_id=embedding_preset_id,
-                    speaker_client_id=speaker_client_id,
+                    user_client_id=user_client_id,
                     source=source,
                 )
                 if cap_ctx:
-                    effective_client_context = self._merge_client_context(client_id=speaker_client_id, client_context=cap_ctx)
+                    effective_client_context = self._merge_client_context(client_id=user_client_id, client_context=cap_ctx)
                 if cap_err:
                     vision_capture_error_for_user = cap_err
                     images_input = []

@@ -278,7 +278,7 @@ reason = f"heuristic rerank: score={final:.3f} rrf={rrf_norm:.3f} lex={lex:.3f} 
 以下は現在の会話に関連する過去のやりとりです。
 
 [2024-12-01] プロジェクトXの進捗について
-Speaker: 「今週中に完成させたい」
+User: 「今週中に完成させたい」
 Persona: 「締切は金曜日でしたね。サポートしますよ」
 → 関連: heuristic rerank: score=0.42 ...
 ```

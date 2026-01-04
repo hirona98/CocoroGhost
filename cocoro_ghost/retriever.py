@@ -109,7 +109,7 @@ def _format_recent_conversation(recent_conversation: Sequence[Message], *, max_m
         if not content:
             continue
         if role == "user":
-            label = "Speaker"
+            label = "User"
         elif role in {"assistant", "persona"}:
             label = "Persona"
         else:

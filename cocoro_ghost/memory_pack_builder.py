@@ -125,7 +125,7 @@ def _format_fact_line(
     - predicate は制御語彙（正規形）を想定する。
     - obj_text は表示のための補助であり、同一性判定には別ロジックを使う。
     """
-    s = subject or "SPEAKER"
+    s = subject or "USER"
     o = obj_text or ""
     o = o.strip()
     if o:
@@ -381,15 +381,15 @@ def match_entity_ids(candidate_names: Sequence[str], alias_rows: Sequence[tuple[
     return ids
 
 
-def _get_speaker_entity_id(db: Session) -> Optional[int]:
+def _get_user_entity_id(db: Session) -> Optional[int]:
     """
-    「直接やりとりしている相手（SPEAKER）」に対応する Entity.id を返す。
+    「直接やりとりしている相手（USER）」に対応する Entity.id を返す。
 
     見つからない場合は None。
     """
     row = (
         db.query(Entity.id)
-        .filter(Entity.normalized == "speaker")
+        .filter(Entity.normalized == "user")
         .order_by(Entity.id.asc())
         .limit(1)
         .scalar()
@@ -479,10 +479,10 @@ def build_memory_pack(
 
     # Facts（intent→entity解決→スコアで上位）
     matched_entity_ids = {int(eid) for eid in matched_entity_ids if eid is not None}
-    speaker_entity_id = _get_speaker_entity_id(db)
+    user_entity_id = _get_user_entity_id(db)
     fact_entity_ids = set(matched_entity_ids)
-    if speaker_entity_id is not None:
-        fact_entity_ids.add(speaker_entity_id)
+    if user_entity_id is not None:
+        fact_entity_ids.add(user_entity_id)
 
     fact_q = (
         db.query(Unit, PayloadFact)
@@ -710,7 +710,7 @@ def build_memory_pack(
                 evidence_lines.append(f"要点: {combined}")
             else:
                 if ut:
-                    evidence_lines.append(f'Speaker: 「{ut}」')
+                    evidence_lines.append(f'User: 「{ut}」')
                 if rt:
                     evidence_lines.append(f'Persona: 「{rt}」')
 

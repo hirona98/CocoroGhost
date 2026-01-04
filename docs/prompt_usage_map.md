@@ -122,7 +122,7 @@ flowchart TD
   - 絞り込み（entity が取れている場合）: `pin=1` または subject/object がその entity に関連、または subject が `null` のもの
   - 絞り込み（entity が取れない場合）: 直近200件 + pin=1 を混ぜてからスコアで上位
   - スコア: `confidence/salience/recency/pin` を合成して降順
-  - 形式: `- SUBJECT predicate OBJECT`（entity_idが引けると名前に置換、subject未指定は `SPEAKER`）
+  - 形式: `- SUBJECT predicate OBJECT`（entity_idが引けると名前に置換、subject未指定は `USER`）
 - `<<<COCORO_GHOST_SECTION:SHARED_NARRATIVE>>>`:
   - 会話の「共有された物語（継続する関係性や背景）」を短く注入するセクション
   - `scope_label=shared_narrative, scope_key=rolling:7d` の 背景共有サマリ（無ければ latest をfallback）

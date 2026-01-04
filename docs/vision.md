@@ -98,7 +98,7 @@
 }
 ```
 
-- 宛先は「desktop担当」または「当該チャットのspeaker client」を client_id で指定する（配信側が選ぶ）。
+- 宛先は「desktop担当」または「当該チャットのuser client」を client_id で指定する（配信側が選ぶ）。
 - `timeout_ms` は5秒固定（今回）。
 
 ### HTTP: `POST /api/v2/vision/capture-response`
@@ -147,7 +147,7 @@ Consoleが `capture_request` の結果を返す。
 5. 失敗時は、人格として「見えない」等を返す（画像無しで再生成する）。
 
 補足:
-- `/api/chat` は `client_id` を必須とし、視覚要求の宛先（speaker）に使用する。
+- `/api/chat` は `client_id` を必須とし、視覚要求の宛先に使用する。
 
 ---
 

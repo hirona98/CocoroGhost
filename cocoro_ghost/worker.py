@@ -534,7 +534,7 @@ def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload:
         return
     ctx_parts = []
     if pe.input_text:
-        ctx_parts.append(f"speaker: {pe.input_text}")
+        ctx_parts.append(f"user: {pe.input_text}")
     if pe.reply_text:
         ctx_parts.append(f"reply: {pe.reply_text}")
     if pe.image_summary:
@@ -936,7 +936,7 @@ def _build_recent_context_input(*, session: Session, unit_id: int, payload: Payl
             ut = (pe.input_text or "").strip().replace("\n", " ")
             rt = (pe.reply_text or "").strip().replace("\n", " ")
             if ut:
-                lines.append(f"Speaker: {ut}")
+                lines.append(f"User: {ut}")
             if rt:
                 lines.append(f"Persona: {rt}")
         if lines:
@@ -1209,23 +1209,23 @@ def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: D
 
         subject_entity_id: Optional[int] = None
         subj = f.get("subject")
-        subj_name = "SPEAKER"
+        subj_name = "USER"
         subj_etype_raw = "PERSON"
         if isinstance(subj, dict):
-            subj_name = str(subj.get("name") or "").strip() or "SPEAKER"
+            subj_name = str(subj.get("name") or "").strip() or "USER"
             subj_etype_raw = _normalize_type_label(str(subj.get("type_label") or "").strip() or None) or "PERSON"
 
-        # "SPEAKER" は「この会話で直接やりとりしている相手」を表す予約語。
-        if subj_name.strip().upper() == "SPEAKER":
-            speaker_ent = _get_or_create_entity(
+        # "USER" は「この会話で直接やりとりしている相手」を表す予約語。
+        if subj_name.strip().upper() == "USER":
+            user_ent = _get_or_create_entity(
                 session,
-                name="SPEAKER",
+                name="USER",
                 type_label="PERSON",
                 roles=["person"],
-                aliases=["SPEAKER"],
+                aliases=["USER"],
                 now_ts=now_ts,
             )
-            subject_entity_id = int(speaker_ent.id)
+            subject_entity_id = int(user_ent.id)
         else:
             ent = _get_or_create_entity(
                 session,
@@ -1623,7 +1623,7 @@ def _handle_shared_narrative_summary(*, session: Session, llm_client: LlmClient,
             continue
         ut = ut[:200]
         rt = rt[:220]
-        lines.append(f"- unit_id={int(u.id)} speaker='{ut}' reply='{rt}'")
+        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
 
     input_text = (
         f"scope_key: {scope_key}\nrange_start: {range_start_local}\nrange_end: {range_end_local}\n\n"
@@ -1925,7 +1925,7 @@ def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, p
         rt = (pe.reply_text or "").strip().replace("\n", " ")[:240]
         if not ut and not rt:
             continue
-        lines.append(f"- unit_id={int(u.id)} speaker='{ut}' reply='{rt}'")
+        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
 
     input_text = _build_summary_payload_input(
         header_lines=[f"scope: person", f"entity_id: {entity_id}", f"entity_name: {ent.name}"],
@@ -2043,7 +2043,7 @@ def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, pa
         rt = (pe.reply_text or "").strip().replace("\n", " ")[:240]
         if not ut and not rt:
             continue
-        lines.append(f"- unit_id={int(u.id)} speaker='{ut}' reply='{rt}'")
+        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
 
     input_text = _build_summary_payload_input(
         header_lines=[f"scope: topic", f"entity_id: {entity_id}", f"topic_key: {topic_key}", f"topic_name: {ent.name}"],
