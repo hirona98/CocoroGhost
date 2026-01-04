@@ -1,9 +1,9 @@
 """実行時パス解決（配布/開発 共通）。
 
 このプロジェクトは Windows 配布（PyInstaller onedir）を主目的にしており、
-設定・ログなどの可変データは **exe の隣** に集約する。
+設定ファイルは **exe の隣**（config/）に置く。
 
-DB（settings.db / memory_*.db / reminders.db）は「ユーザーデータ」として扱い、
+可変データ（DB/キャッシュ/一時ファイルなど）は「ユーザーデータ」として扱い、
 配布物と分離するため、PyInstaller(frozen) の場合は `..\\UserData\\Ghost\\` に保存する。
 
 方針:
@@ -42,6 +42,26 @@ def get_app_root_dir() -> Path:
     return Path.cwd().resolve()
 
 
+def get_user_data_root_dir() -> Path:
+    """ユーザーデータのルートディレクトリを返し、存在しなければ作成する。
+
+    方針:
+    - PyInstaller(frozen) の場合は `..\\UserData\\Ghost\\` を使用する（配布物と分離する）
+    - 通常実行の場合は app_root 直下の `data/` を使用する
+    """
+
+    # --- PyInstaller (frozen) の場合は exe の 1 つ上へ退避する ---
+    if getattr(sys, "frozen", False):
+        user_data_root_dir = (get_app_root_dir().parent / "UserData" / "Ghost").resolve()
+        user_data_root_dir.mkdir(parents=True, exist_ok=True)
+        return user_data_root_dir
+
+    # --- 通常実行は app_root/data をユーザーデータのルートとして扱う ---
+    user_data_root_dir = (get_app_root_dir() / "data").resolve()
+    user_data_root_dir.mkdir(parents=True, exist_ok=True)
+    return user_data_root_dir
+
+
 def get_config_dir() -> Path:
     """設定ディレクトリ（config/）を返し、存在しなければ作成する。"""
 
@@ -51,33 +71,24 @@ def get_config_dir() -> Path:
 
 
 def get_data_dir() -> Path:
-    """データディレクトリ（data/）を返し、存在しなければ作成する。"""
+    """可変データ用のディレクトリを返し、存在しなければ作成する。
 
-    data_dir = get_app_root_dir() / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir
+    NOTE:
+    - PyInstaller(frozen) の場合に exe 隣へ `data/` を作らない（空フォルダ生成を防ぐ）
+    """
+
+    return get_user_data_root_dir()
 
 
 def get_db_dir() -> Path:
-        """DB 保存先ディレクトリを返し、存在しなければ作成する。
+    """DB 保存先ディレクトリを返し、存在しなければ作成する。
 
-        方針:
-        - PyInstaller(frozen) の場合は、exe の 1 つ上の階層に `UserData/Ghost/` を作り、そこへ保存する。
-            つまり exe から見て `..\\UserData\\Ghost\\` となる。
-        - 通常実行の場合は、従来どおり app_root 直下の `data/` を使用する。
+    NOTE:
+    - DB はユーザーデータとして扱うため、可変データのルート（get_data_dir）に統一する。
+    """
 
-        NOTE:
-        - DB はユーザーデータとして扱い、配布物（exe 隣の data/）と分離する。
-        """
-
-        # --- PyInstaller (frozen) だけ配置を変える ---
-        if getattr(sys, "frozen", False):
-                db_dir = (get_app_root_dir().parent / "UserData" / "Ghost").resolve()
-                db_dir.mkdir(parents=True, exist_ok=True)
-                return db_dir
-
-        # --- 通常実行は data/ のまま ---
-        return get_data_dir()
+    # --- DB 保存先は「可変データのルート」と同一にする ---
+    return get_data_dir()
 
 
 def get_logs_dir() -> Path:

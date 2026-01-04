@@ -4,7 +4,8 @@
 方針:
 - onedir を前提にしてトラブルを減らす
 - sqlite-vec の loadable extension（vec0）を同梱する
-- 設定/DB/ログは exe の隣（config/data/logs）に集約する（コード側で対応）
+- 設定は exe の隣（config/）に置く（build.bat 側で配置）
+- 可変データ（DB/キャッシュ等）は `..\\UserData\\Ghost\\` に保存する（コード側で対応）
 """
 
 from __future__ import annotations
