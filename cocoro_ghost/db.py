@@ -638,7 +638,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     if llm_preset is None:
         logger.warning("LLMプリセットが無いため、空の default プリセットを作成します")
         llm_preset = models.LlmPreset(
-            name="miku-default-llm",
+            name="sample-llm",
             archived=False,
             llm_api_key="",
             llm_model="openai/gpt-5-mini",
@@ -660,7 +660,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         embedding_preset = session.query(models.EmbeddingPreset).filter_by(archived=False).first()
     if embedding_preset is None:
         embedding_preset = models.EmbeddingPreset(
-            name="miku-default-emmbedding",
+            name="sample-emmbedding",
             archived=False,
             embedding_model="openai/text-embedding-3-large",
             embedding_api_key=None,
@@ -685,7 +685,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         persona_preset = session.query(models.PersonaPreset).filter_by(archived=False).first()
     if persona_preset is None:
         persona_preset = models.PersonaPreset(
-            name="miku-default-persona_prompt",
+            name="miku-sample-persona_prompt",
             archived=False,
             persona_text=prompts.get_default_persona_anchor(),
         )
@@ -703,7 +703,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         addon_preset = session.query(models.AddonPreset).filter_by(archived=False).first()
     if addon_preset is None:
         addon_preset = models.AddonPreset(
-            name="miku-default-addon_prompt",
+            name="VRM-BlendShape-Prompt",
             archived=False,
             addon_text=prompts.get_default_persona_addon(),
         )
