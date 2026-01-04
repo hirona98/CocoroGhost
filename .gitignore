@@ -7,7 +7,6 @@ settings.local.json
 # CocoroGhost specific
 config/setting.toml
 data/
-check_sqlite.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

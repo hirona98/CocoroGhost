@@ -1,0 +1,59 @@
+{
+    "version": "0.2.0",
+    "compounds": [
+        {
+            "name": "cocoro_ghost: API + Worker",
+            "configurations": [
+                "cocoro_ghost: FastAPI",
+                "cocoro_ghost: Worker"
+            ],
+            "stopAll": true
+        }
+    ],
+    "configurations": [
+        {
+            "name": "cocoro_ghost: FastAPI",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "cocoro_ghost.main:app",
+                "--host", "0.0.0.0",
+                "--port", "55601",
+                "--reload"
+            ],
+            "jinja": true,
+            "env": {
+                "PYTHONUTF8": "1"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "cocoro_ghost: Worker",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/run_worker.py",
+            "pythonArgs": [
+                "-X",
+                "utf8"
+            ],
+            "env": {
+                "PYTHONUTF8": "1"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "cocoro_ghost: run.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/run.py",
+            "env": {
+                "PYTHONUTF8": "1"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        }
+    ]
+}
