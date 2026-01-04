@@ -30,31 +30,30 @@ RemindersSessionLocal: sessionmaker | None = None
 class RemindersDbPaths:
     """reminders.db のパス群（将来の分離に備えた薄いラッパ）。"""
 
-    data_dir: Path
+    db_dir: Path
     reminders_db_path: Path
 
 
-def get_data_dir() -> Path:
-    """
-    data ディレクトリを返す。
+def get_db_dir() -> Path:
+    """DB 保存先ディレクトリを返す。
 
     NOTE:
-    - settings.db / memory_*.db と同じ data/ 配下に置く。
+    - reminders.db は settings.db / memory_*.db と同じ場所に置く。
     """
 
-    # --- DB保存先は設定DB/記憶DBと統一（exe隣の data/） ---
-    from cocoro_ghost.paths import get_data_dir as _get_data_dir
+    # --- DB保存先は paths に集約 ---
+    from cocoro_ghost.paths import get_db_dir as _get_db_dir
 
-    return _get_data_dir()
+    return _get_db_dir()
 
 
 def get_reminders_db_paths() -> RemindersDbPaths:
     """reminders.db のパス情報を返す。"""
 
-    data_dir = get_data_dir()
+    db_dir = get_db_dir()
     return RemindersDbPaths(
-        data_dir=data_dir,
-        reminders_db_path=(data_dir / "reminders.db"),
+        db_dir=db_dir,
+        reminders_db_path=(db_dir / "reminders.db"),
     )
 
 
@@ -99,12 +98,13 @@ def _assert_expected_schema(engine) -> None:
 
     # --- PRAGMA table_info で列名だけを見る（追加/削除のマイグレーションは行わない） ---
     with engine.connect() as conn:
+        reminders_db_path = str(get_reminders_db_paths().reminders_db_path)
         rows = conn.exec_driver_sql("PRAGMA table_info(reminder_global_settings)").fetchall()
         cols = {str(r[1]) for r in rows}
         if "time_zone" in cols:
             raise RuntimeError(
                 "reminders.db schema mismatch: reminder_global_settings.time_zone exists (old schema). "
-                "Delete data/reminders.db and restart (no migration)."
+                f"Delete {reminders_db_path} and restart (no migration)."
             )
 
         rows2 = conn.exec_driver_sql("PRAGMA table_info(reminders)").fetchall()
@@ -112,7 +112,7 @@ def _assert_expected_schema(engine) -> None:
         if "time_zone" in cols2:
             raise RuntimeError(
                 "reminders.db schema mismatch: reminders.time_zone exists (old schema). "
-                "Delete data/reminders.db and restart (no migration)."
+                f"Delete {reminders_db_path} and restart (no migration)."
             )
 
 def get_reminders_db() -> Iterator[Session]:

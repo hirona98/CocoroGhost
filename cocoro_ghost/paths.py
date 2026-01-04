@@ -1,7 +1,10 @@
 """実行時パス解決（配布/開発 共通）。
 
 このプロジェクトは Windows 配布（PyInstaller onedir）を主目的にしており、
-設定・DB・ログなどの可変データは **exe の隣** に集約する。
+設定・ログなどの可変データは **exe の隣** に集約する。
+
+DB（settings.db / memory_*.db / reminders.db）は「ユーザーデータ」として扱い、
+配布物と分離するため、PyInstaller(frozen) の場合は `..\\UserData\\Ghost\\` に保存する。
 
 方針:
 - PyInstaller(frozen) の場合: exe のあるフォルダをアプリルートとする
@@ -53,6 +56,28 @@ def get_data_dir() -> Path:
     data_dir = get_app_root_dir() / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir
+
+
+def get_db_dir() -> Path:
+        """DB 保存先ディレクトリを返し、存在しなければ作成する。
+
+        方針:
+        - PyInstaller(frozen) の場合は、exe の 1 つ上の階層に `UserData/Ghost/` を作り、そこへ保存する。
+            つまり exe から見て `..\\UserData\\Ghost\\` となる。
+        - 通常実行の場合は、従来どおり app_root 直下の `data/` を使用する。
+
+        NOTE:
+        - DB はユーザーデータとして扱い、配布物（exe 隣の data/）と分離する。
+        """
+
+        # --- PyInstaller (frozen) だけ配置を変える ---
+        if getattr(sys, "frozen", False):
+                db_dir = (get_app_root_dir().parent / "UserData" / "Ghost").resolve()
+                db_dir.mkdir(parents=True, exist_ok=True)
+                return db_dir
+
+        # --- 通常実行は data/ のまま ---
+        return get_data_dir()
 
 
 def get_logs_dir() -> Path:
