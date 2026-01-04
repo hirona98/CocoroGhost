@@ -51,29 +51,30 @@ class _MemorySessionEntry:
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
-def get_data_dir() -> Path:
-    """データディレクトリを取得する。
+def get_db_dir() -> Path:
+    """DB 保存先ディレクトリを取得する。
 
-    配布（PyInstaller）では exe の隣の data/ を使用する。
+    - settings.db / memory_*.db の保存先を一元化する。
+    - 配布（PyInstaller）では `..\\UserData\\Ghost\\` を使用する。
     """
 
     # --- パス解決は paths に集約する ---
-    from cocoro_ghost.paths import get_data_dir as _get_data_dir
+    from cocoro_ghost.paths import get_db_dir as _get_db_dir
 
-    return _get_data_dir()
+    return _get_db_dir()
 
 
 def get_settings_db_path() -> str:
     """設定DBのパスを取得。SQLAlchemy用のURL形式で返す。"""
 
-    db_path = (get_data_dir() / "settings.db").resolve()
+    db_path = (get_db_dir() / "settings.db").resolve()
     return f"sqlite:///{db_path}"
 
 
 def get_memory_db_path(embedding_preset_id: str) -> str:
     """記憶DBのパスを取得。embedding_preset_idごとに別ファイルとなる。"""
 
-    db_path = (get_data_dir() / f"memory_{embedding_preset_id}.db").resolve()
+    db_path = (get_db_dir() / f"memory_{embedding_preset_id}.db").resolve()
     return f"sqlite:///{db_path}"
 
 

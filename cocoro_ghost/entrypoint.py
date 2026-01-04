@@ -17,6 +17,7 @@ def main() -> None:
 
     paths.get_config_dir()
     paths.get_data_dir()
+    paths.get_db_dir()
     paths.get_logs_dir()
 
     # --- 設定ファイルが無い場合は、案内して終了 ---
