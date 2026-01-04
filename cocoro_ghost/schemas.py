@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # data URI 形式の画像を検出する正規表現
 _DATA_URI_IMAGE_RE = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.*)$", re.DOTALL)
@@ -80,6 +80,34 @@ class VisionCaptureResponseV2Request(BaseModel):
     images: List[str] = Field(default_factory=list, max_length=5)  # data URI形式の画像（最大5枚）
     client_context: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_success_or_error(self) -> "VisionCaptureResponseV2Request":
+        """
+        画像取得結果の整合性を検証する。
+
+        仕様:
+        - 成功: error が null かつ images が1枚以上
+        - スキップ/失敗: images が空 かつ error が非空文字列
+
+        NOTE:
+        - 運用前のため後方互換は付けない（曖昧な組み合わせは 422）。
+        """
+
+        # --- 値を正規化（空白だけの error は無効） ---
+        images = list(self.images or [])
+        err = str(self.error or "").strip()
+
+        # --- 成功: 画像があるなら error は禁止 ---
+        if images:
+            if err:
+                raise ValueError("error must be null when images is non-empty")
+            return self
+
+        # --- 失敗/スキップ: 画像が無いなら error を必須 ---
+        if not err:
+            raise ValueError("error must be provided when images is empty")
+        return self
 
     @field_validator("images")
     @classmethod

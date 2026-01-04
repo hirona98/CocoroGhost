@@ -23,6 +23,13 @@ from cocoro_ghost import event_stream
 
 logger = logging.getLogger(__name__)
 
+# --- capture-response error codes（サーバー側の判断材料） ---
+# NOTE:
+# - クライアントが「未キャプチャを正常系としてスキップ」した場合は、images=[] と組み合わせて返す。
+# - サーバーはこの文字列を見て、リトライ/抑制等の次の行動を判断する。
+CAPTURE_SKIPPED_IDLE_ERROR = "capture skipped (idle)"
+CAPTURE_SKIPPED_EXCLUDED_WINDOW_TITLE_ERROR = "capture skipped (excluded window title)"
+
 
 @dataclass(frozen=True)
 class VisionCaptureRequest:
@@ -165,3 +172,27 @@ def request_capture_and_wait(
         )
         return None
     return _pop_response(request_id)
+
+
+def is_capture_skipped_error(error: str | None) -> bool:
+    """capture-response の error が「スキップ（正常系）」かを判定する。"""
+
+    s = str(error or "").strip()
+    if not s:
+        return False
+    return s in {
+        CAPTURE_SKIPPED_IDLE_ERROR,
+        CAPTURE_SKIPPED_EXCLUDED_WINDOW_TITLE_ERROR,
+    }
+
+
+def is_capture_skipped_idle(error: str | None) -> bool:
+    """capture-response の error が「アイドルによるスキップ」かを判定する。"""
+
+    return str(error or "").strip() == CAPTURE_SKIPPED_IDLE_ERROR
+
+
+def is_capture_skipped_excluded_window_title(error: str | None) -> bool:
+    """capture-response の error が「除外タイトル一致によるスキップ」かを判定する。"""
+
+    return str(error or "").strip() == CAPTURE_SKIPPED_EXCLUDED_WINDOW_TITLE_ERROR
