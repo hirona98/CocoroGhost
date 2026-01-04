@@ -66,6 +66,20 @@ if errorlevel 1 (
   exit /b 1
 )
 
+REM --- THIRD_PARTY_LICENSES.txt を dist 側へコピー（exeの隣に置く） ---
+if not exist "docs\THIRD_PARTY_LICENSES.txt" (
+  echo.
+  echo [ERROR] docs\THIRD_PARTY_LICENSES.txt not found.
+  echo [HINT] Run: .venv\Scripts\python.exe scripts\generate_third_party_licenses.py
+  exit /b 1
+)
+copy /y "docs\THIRD_PARTY_LICENSES.txt" "%OUTDIR%\THIRD_PARTY_LICENSES.txt" >nul
+if errorlevel 1 (
+  echo.
+  echo [ERROR] Failed to copy docs\THIRD_PARTY_LICENSES.txt to dist.
+  exit /b 1
+)
+
 
 echo.
 echo [OK] Build finished.
