@@ -14,7 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_utils.tasks import repeat_every
 
 from cocoro_ghost import event_stream, log_stream
-from cocoro_ghost.api import admin, chat, events, logs, meta_request, notification, reminders, settings, vision
+from cocoro_ghost.api import admin, chat, control, events, logs, meta_request, notification, reminders, settings, vision
 from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.logging_config import setup_logging, suppress_uvicorn_access_log_paths
@@ -132,6 +132,7 @@ def create_app() -> FastAPI:
     app.include_router(settings.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(reminders.router, dependencies=[Depends(verify_token)], prefix="/api")
     app.include_router(admin.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(control.router, dependencies=[Depends(verify_token)], prefix="/api")
     # 認証不要なエンドポイント（ログ/イベントストリーム）
     app.include_router(logs.router, prefix="/api")
     app.include_router(events.router, prefix="/api")

@@ -223,6 +223,30 @@ class UnitUpdateRequest(BaseModel):
     salience: Optional[float] = None     # 顕著性
 
 
+# --- 制御関連 ---
+
+
+class ControlRequest(BaseModel):
+    """
+    /control 用リクエスト。
+
+    CocoroGhost プロセス自体の制御コマンドを受け付ける。
+    現状は shutdown のみ対応する（運用前のため後方互換は付けない）。
+    """
+
+    action: str
+    reason: Optional[str] = None
+
+    @field_validator("action")
+    @classmethod
+    def _validate_action(cls, v: str) -> str:
+        """action は shutdown のみ許可する。"""
+        s = str(v or "").strip()
+        if s != "shutdown":
+            raise ValueError("action must be 'shutdown'")
+        return s
+
+
 # --- 設定関連 ---
 
 

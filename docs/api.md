@@ -520,6 +520,35 @@ UI向けの「全設定」取得/更新。
 { "status": "healthy" }
 ```
 
+## `/api/control`（管理: プロセス制御）
+
+CocoroGhost プロセス自体の制御コマンドを受け付ける。
+UI（CocoroConsole 等）から「終了」を実現するための管理API。
+
+### `POST /api/control`
+
+- 認証: `Authorization: Bearer <TOKEN>`
+
+#### Request（JSON）
+
+```json
+{
+  "action": "shutdown",
+  "reason": "任意（省略可）"
+}
+```
+
+- `action` は現状 `shutdown` のみ許可
+
+#### Response
+
+- `204 No Content`
+
+#### 補足（実装仕様）
+
+- 受理後、CocoroGhost は自プロセスへ `SIGTERM` を送って終了する
+- 通常のシャットダウンフローが走り、`shutdown` イベントで dispatcher / internal worker が停止する
+
 ## `/`（参考）
 
 APIベースパス外だが、簡易確認用に提供している。
