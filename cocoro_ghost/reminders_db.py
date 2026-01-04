@@ -42,9 +42,10 @@ def get_data_dir() -> Path:
     - settings.db / memory_*.db と同じ data/ 配下に置く。
     """
 
-    data_dir = Path(__file__).parent.parent / "data"
-    data_dir.mkdir(exist_ok=True)
-    return data_dir
+    # --- DB保存先は設定DB/記憶DBと統一（exe隣の data/） ---
+    from cocoro_ghost.paths import get_data_dir as _get_data_dir
+
+    return _get_data_dir()
 
 
 def get_reminders_db_paths() -> RemindersDbPaths:

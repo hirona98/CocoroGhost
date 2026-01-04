@@ -61,7 +61,7 @@ setup.bat
    - `token`: API認証トークン
    - `log_level`: ログレベル
 
-   ※ DBファイルは `data/settings.db` と `data/memory_<embedding_preset_id>.db` に自動作成されます
+   ※ DBファイルは（実行場所の）`data/settings.db` と `data/memory_<embedding_preset_id>.db` に自動作成されます
 
 ## 起動方法
 
@@ -118,3 +118,52 @@ start.bat
 ```bash
 copy config\setting.toml.example config\setting.toml
 ```
+
+## Windows配布（PyInstaller）
+
+配布方針:
+
+- PyInstaller は `onedir` 前提（**設定/DB/ログを exe の隣に置く**ため）
+- 実行時に `config/` `data/` `logs/` が exe と同じフォルダに作成/利用されます
+
+### フォルダ構成（配布後）
+
+- `CocoroGhost.exe`
+- `config/setting.toml`（ユーザーが作成。テンプレ: `config/setting.toml.example`）
+- `data/settings.db`（自動作成）
+- `data/memory_<embedding_preset_id>.db`（自動作成）
+- `data/reminders.db`（自動作成）
+- `logs/`（ファイルログ有効時に作成）
+
+### ビルド手順
+
+1) 依存を入れる（開発環境）
+
+```bash
+.venv\Scripts\activate
+pip install pyinstaller
+```
+
+2) ビルド（推奨: バッチ）
+
+```bash
+build_windows.bat
+```
+
+（補足）手動で spec からビルドする場合
+
+```bash
+pyinstaller.exe --noconfirm cocoro_ghost_windows.spec
+```
+
+3) 生成物
+
+`dist/CocoroGhost/` 配下をそのまま配布してください。
+
+NOTE:
+
+- `dist/CocoroGhost.exe` も生成されることがありますが、`onedir` 配布では不要です（`build_windows.bat` は自動削除します）。
+
+補足:
+
+- 初回起動前に `config/setting.toml.example` を `config/setting.toml` にコピーし、`token` 等を編集してください。

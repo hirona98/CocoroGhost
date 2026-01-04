@@ -12,7 +12,10 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+import json
 import tomli
+
+from cocoro_ghost import paths
 
 if TYPE_CHECKING:
     from cocoro_ghost.models import (
@@ -145,12 +148,14 @@ def _require(config_dict: dict, key: str) -> str:
     return config_dict[key]
 
 
-def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
+def load_config(path: str | pathlib.Path | None = None) -> Config:
     """
     TOML設定ファイルを読み込む。
     許可されていないキーが含まれる場合はエラーを発生させる。
     """
-    config_path = pathlib.Path(path)
+    # --- 設定ファイルは exe の隣（config/setting.toml）を既定にする ---
+    config_path = pathlib.Path(paths.get_default_config_file_path() if path is None else path)
+    config_path = paths.resolve_path_under_app_root(config_path)
     if not config_path.exists():
         raise FileNotFoundError(f"config file not found: {config_path}")
 
@@ -177,12 +182,16 @@ def load_config(path: str | pathlib.Path = "config/setting.toml") -> Config:
         raise ValueError(f"unknown config key(s): {keys} (allowed: {allowed_keys})")
 
     # Configオブジェクトを構築
+    # --- ログファイルパスは相対指定なら app_root 基準に解決する ---
+    raw_log_file_path = str(data.get("log_file_path", str(paths.get_logs_dir() / "cocoro_ghost.log")))
+    resolved_log_file_path = str(paths.resolve_path_under_app_root(raw_log_file_path))
+
     config = Config(
         token=_require(data, "token"),
         log_level=_require(data, "log_level"),
         llm_log_level=data.get("llm_log_level", "INFO"),
         log_file_enabled=bool(data.get("log_file_enabled", False)),
-        log_file_path=str(data.get("log_file_path", "logs/cocoro_ghost.log")),
+        log_file_path=resolved_log_file_path,
         log_file_max_bytes=int(data.get("log_file_max_bytes", 200_000)),
         llm_log_console_max_chars=int(data.get("llm_log_console_max_chars", 2000)),
         llm_log_file_max_chars=int(data.get("llm_log_file_max_chars", 8000)),

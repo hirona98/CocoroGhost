@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from cocoro_ghost.db import get_data_dir
+from cocoro_ghost.paths import get_data_dir
 
 
 logger = logging.getLogger(__name__)

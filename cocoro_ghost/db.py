@@ -52,23 +52,29 @@ _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
 def get_data_dir() -> Path:
+    """データディレクトリを取得する。
+
+    配布（PyInstaller）では exe の隣の data/ を使用する。
     """
-    データディレクトリを取得する。
-    存在しなければ作成する。
-    """
-    data_dir = Path(__file__).parent.parent / "data"
-    data_dir.mkdir(exist_ok=True)
-    return data_dir
+
+    # --- パス解決は paths に集約する ---
+    from cocoro_ghost.paths import get_data_dir as _get_data_dir
+
+    return _get_data_dir()
 
 
 def get_settings_db_path() -> str:
     """設定DBのパスを取得。SQLAlchemy用のURL形式で返す。"""
-    return f"sqlite:///{get_data_dir() / 'settings.db'}"
+
+    db_path = (get_data_dir() / "settings.db").resolve()
+    return f"sqlite:///{db_path}"
 
 
 def get_memory_db_path(embedding_preset_id: str) -> str:
     """記憶DBのパスを取得。embedding_preset_idごとに別ファイルとなる。"""
-    return f"sqlite:///{get_data_dir() / f'memory_{embedding_preset_id}.db'}"
+
+    db_path = (get_data_dir() / f"memory_{embedding_preset_id}.db").resolve()
+    return f"sqlite:///{db_path}"
 
 
 def _create_engine_with_vec_support(db_url: str):
@@ -87,6 +93,24 @@ def _create_engine_with_vec_support(db_url: str):
         vec_path = getattr(sqlite_vec, "loadable_path", None)
         vec_path = vec_path() if callable(vec_path) else str(Path(sqlite_vec.__file__).parent / "vec0")
         vec_path = str(vec_path)
+
+        # --- PyInstaller ではバイナリの配置が変わることがあるためフォールバック探索 ---
+        # 期待パスに実体が無い場合は、exe隣/パッケージ隣から vec0.* を探す。
+        p = Path(vec_path)
+        if not p.exists():
+            try:
+                from cocoro_ghost.paths import get_app_root_dir
+
+                search_dirs = [get_app_root_dir(), Path(sqlite_vec.__file__).resolve().parent]
+                candidates: list[Path] = []
+                for d in search_dirs:
+                    # Windows では vec0.dll が主。将来の拡張子差も吸収する。
+                    candidates.extend(sorted(d.glob("vec0.*")))
+                if candidates:
+                    vec_path = str(candidates[0].resolve())
+                    logger.info("sqlite-vec extension path resolved by fallback", extra={"path": vec_path})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sqlite-vec extension path fallback failed", exc_info=exc)
 
         @event.listens_for(engine, "connect")
         def load_sqlite_vec_extension(dbapi_conn, connection_record):
