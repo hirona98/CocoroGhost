@@ -147,7 +147,7 @@ pip install pyinstaller
 2) ビルド（推奨: バッチ）
 
 ```bash
-build_windows.bat
+build.bat
 ```
 
 （補足）手動で spec からビルドする場合
@@ -162,7 +162,7 @@ pyinstaller.exe --noconfirm cocoro_ghost_windows.spec
 
 NOTE:
 
-- `dist/CocoroGhost.exe` も生成されることがありますが、`onedir` 配布では不要です（`build_windows.bat` は自動削除します）。
+- `dist/CocoroGhost.exe` も生成されることがありますが、`onedir` 配布では不要です（`build.bat` は自動削除します）。
 
 補足:
 

@@ -225,7 +225,7 @@ class UnitMeta(BaseModel):
     salience: float                      # 顕著性（0.0-1.0）
     sensitivity: int                     # 機密レベル
     pin: int                             # ピン留めフラグ
-    topic_tags: Optional[str] = None     # トピックタグ（カンマ区切り）
+    topic_tags: Optional[str] = None     # トピックタグ（JSON array文字列）
     persona_affect_label: Optional[str] = None      # AI人格の感情ラベル
     persona_affect_intensity: Optional[float] = None  # 感情の強度
 
@@ -246,7 +246,7 @@ class UnitUpdateRequest(BaseModel):
     pin: Optional[int] = None            # ピン留めフラグ
     sensitivity: Optional[int] = None    # 機密レベル
     state: Optional[int] = None          # 状態
-    topic_tags: Optional[str] = None     # トピックタグ
+    topic_tags: Optional[str] = None     # トピックタグ（JSON array文字列）
     confidence: Optional[float] = None   # 確信度
     salience: Optional[float] = None     # 顕著性
 

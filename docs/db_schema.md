@@ -435,8 +435,8 @@ create index if not exists idx_jobs_status_run_after on jobs(status, run_after);
 | name | value | 意味 |
 |---|---:|---|
 | NORMAL | 0 | 通常 |
-| PRIVATE | 1 | UI/外部連携で取り扱い注意 |
-| SECRET | 2 | 原則注入しない（明示要求時のみ） |
+| PRIVATE | 1 | UI/外部連携で取り扱い注意（内部注入は可） |
+| SECRET | 2 | 外部UI/外部連携では原則表示しない（内部注入は可） |
 
 ### EntityType
 

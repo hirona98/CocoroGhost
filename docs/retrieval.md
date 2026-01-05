@@ -138,8 +138,11 @@ all_queries = [input_text, original_query]  # 重複時は1本
 | `k` (Vector) | 20 | 各クエリあたりのKNN取得件数 |
 | `k` (BM25) | 20 | 各クエリあたりのBM25取得件数 |
 | `kind` | EPISODE | 検索対象の Unit 種別 |
-| `max_sensitivity` | PRIVATE | 検索対象の最大感度 |
+| `max_sensitivity` | SECRET | 検索対象の最大感度（MemoryPack 注入は SECRET まで許可） |
 | `occurred_day_range` | 過去365日 | 検索対象期間 |
+
+補足:
+- **定期サマリ生成（shared_narrative 等）**は既定で `PRIVATE` までを対象にする（`docs/db_schema.md` / `docs/worker.md`）。
 
 ### BM25 インデックス（FTS5）
 
@@ -365,7 +368,7 @@ class Retriever:
 _RECENT_CONVERSATION_TURNS = 3      # 直近会話ターン数
 _KNN_K_PER_QUERY = 20               # Vector検索1クエリあたり
 _BM25_K_PER_QUERY = 20              # BM25検索1クエリあたり
-_MAX_SENSITIVITY = PRIVATE          # 検索対象の最大sensitivity
+_MAX_SENSITIVITY = SECRET           # 検索対象の最大sensitivity
 _OCCURRED_DAY_RANGE = 365           # 検索対象期間（日）
 _RRF_K = 60                         # RRFマージパラメータ
 
