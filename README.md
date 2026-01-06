@@ -7,9 +7,7 @@ CocoroConsoleやCocoroShell無しでの単独動作も可能とする
 
 - FastAPIによるREST APIサーバー
 - LLMとの対話処理
-- SQLiteベースのUnit記憶管理（Episode/Fact/Summary/Capsule/Loop）
-- sqlite-vecによるベクトル検索
-- プリセット機能によるLLM/Embedding/プロンプト設定の動的切り替え
+- SQLite/sqlite-vecによる記憶管理
 
 ## 特徴
 
@@ -160,9 +158,6 @@ pyinstaller.exe --noconfirm cocoro_ghost_windows.spec
 
 `dist/CocoroGhost/` 配下をそのまま配布してください。
 
-NOTE:
-
-- `dist/CocoroGhost.exe` も生成されることがありますが、`onedir` 配布では不要です（`build.bat` は自動削除します）。
 
 補足:
 
