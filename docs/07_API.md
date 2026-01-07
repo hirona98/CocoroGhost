@@ -148,6 +148,8 @@ Invoke-RestMethod -Method Post `
 
 - HTTPレスポンスは先に返り、AI人格のセリフ（`data.message`）は `/api/events/stream` で後から届く
 - `instruction` / `payload_text` は永続化しない（生成にのみ利用）
+- ただし、**それをきっかけに AI 人格が「自分で思いついて動いた」結果（出来事ログ）は永続化する**（外部要求の存在を想起させる情報は残さない）
+  - その出来事ログは `events.source="meta_proactive"` として区別する
 
 ## `/api/v2/vision/capture-response`
 
@@ -186,6 +188,11 @@ Invoke-RestMethod -Method Post `
 ### レスポンス
 
 - `204 No Content`
+
+補足:
+
+- `images` は保持しない（DBに保存しない）
+- 画像は LLM で **詳細な説明テキスト**に変換し、それを出来事ログ（`events`）に残す
 
 ## `/api/settings`
 
@@ -465,7 +472,7 @@ UI向けの「全設定」取得/更新。
 補足:
 
 - `vision.capture_request` はバッファに保持しない（接続直後のキャッチアップ対象外）
-- `reminder` はリアルタイム性が高いため、バッファに保持しない運用でよい
+- `reminder` はリアルタイム性が高いため、バッファに保持しない
 
 ### クライアント→サーバ（必須: 宛先配信を受ける場合）
 
