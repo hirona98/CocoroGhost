@@ -104,7 +104,6 @@ def fulfill_capture_response(resp: VisionCaptureResponse) -> bool:
 
 def request_capture_and_wait(
     *,
-    embedding_preset_id: str,
     target_client_id: str,
     source: str,
     purpose: str,
@@ -137,8 +136,7 @@ def request_capture_and_wait(
     )
     event_stream.publish(
         type="vision.capture_request",
-        embedding_preset_id=str(embedding_preset_id),
-        unit_id=0,
+        event_id=0,
         data={
             "request_id": req.request_id,
             "source": req.source,

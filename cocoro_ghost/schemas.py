@@ -162,11 +162,6 @@ class NotificationV2Request(BaseModel):
         return v
 
 
-class NotificationResponse(BaseModel):
-    """通知の保存結果（作成したepisode unit_id）。"""
-    unit_id: int
-
-
 # --- メタリクエスト関連 ---
 
 
@@ -199,56 +194,6 @@ class MetaRequestV2Request(BaseModel):
         for item in v:
             data_uri_image_to_base64(item)
         return v
-
-
-class MetaRequestResponse(BaseModel):
-    """メタリクエストの保存結果（作成したepisode unit_id）。"""
-    unit_id: int
-
-
-# --- Unit関連（記憶ユニット） ---
-
-
-class UnitMeta(BaseModel):
-    """
-    Unitのメタ情報（一覧/詳細共通）。
-    記憶ユニットの基本属性を表現する。
-    """
-    id: int                              # ユニットID
-    kind: int                            # 種別（エピソード、ファクト等）
-    occurred_at: Optional[int] = None    # 発生日時（UNIXタイムスタンプ）
-    created_at: int                      # 作成日時
-    updated_at: int                      # 更新日時
-    source: Optional[str] = None         # ソース識別子
-    state: int                           # 状態（有効/無効等）
-    confidence: float                    # 確信度（0.0-1.0）
-    salience: float                      # 顕著性（0.0-1.0）
-    sensitivity: int                     # 機密レベル
-    pin: int                             # ピン留めフラグ
-    topic_tags: Optional[str] = None     # トピックタグ（JSON array文字列）
-    persona_affect_label: Optional[str] = None      # AI人格の感情ラベル
-    persona_affect_intensity: Optional[float] = None  # 感情の強度
-
-
-class UnitListResponse(BaseModel):
-    """Unit一覧レスポンス。"""
-    items: List[UnitMeta]                # ユニットのリスト
-
-
-class UnitDetailResponse(BaseModel):
-    """Unit詳細レスポンス（payloadはkindに応じて可変）。"""
-    unit: UnitMeta                       # ユニットのメタ情報
-    payload: Dict[str, Any] = Field(default_factory=dict)  # 種別固有のペイロード
-
-
-class UnitUpdateRequest(BaseModel):
-    """管理APIでのUnitメタ更新リクエスト。"""
-    pin: Optional[int] = None            # ピン留めフラグ
-    sensitivity: Optional[int] = None    # 機密レベル
-    state: Optional[int] = None          # 状態
-    topic_tags: Optional[str] = None     # トピックタグ（JSON array文字列）
-    confidence: Optional[float] = None   # 確信度
-    salience: Optional[float] = None     # 顕著性
 
 
 # --- 制御関連 ---

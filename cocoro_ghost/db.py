@@ -3,7 +3,7 @@ DB 接続とセッション管理（設定DB・記憶DB分離版）
 
 SQLite+sqlite-vecを使用したデータベース管理モジュール。
 設定DBと記憶DBを分離し、それぞれ独立して管理する。
-ベクトル検索（sqlite-vec）とBM25検索（FTS5）をサポート。
+ベクトル検索（sqlite-vec）と文字検索（FTS5 `trigram`）をサポートする。
 """
 
 from __future__ import annotations
@@ -24,17 +24,16 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 logger = logging.getLogger(__name__)
 
 # sqlite-vec 仮想テーブル名（検索用ベクトルインデックス）
-# vec_units は本文を置かず unit_id で JOIN して取得する
-VEC_UNITS_TABLE_NAME = "vec_units"
+VEC_ITEMS_TABLE_NAME = "vec_items"
 
-# FTS5 仮想テーブル名（BM25インデックス）
-EPISODE_FTS_TABLE_NAME = "episode_fts"
+# FTS5 仮想テーブル名（文字検索インデックス）
+EVENTS_FTS_TABLE_NAME = "events_fts"
 
 # 設定DB用 Base（GlobalSettings, LlmPreset, EmbeddingPreset）
 Base = declarative_base()
 
-# 記憶DB用 Base（Unit/payload/entities/jobs 等：新仕様）
-UnitBase = declarative_base()
+# 記憶DB用 Base（events/state/revisions 等：新仕様）
+MemoryBase = declarative_base()
 
 # グローバルセッション（設定DB用）
 SettingsSessionLocal: sessionmaker | None = None
@@ -49,6 +48,9 @@ class _MemorySessionEntry:
 
 # 記憶DBセッションのキャッシュ（embedding_preset_id -> sessionmaker）
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
+
+
+_MEMORY_DB_USER_VERSION = 1
 
 
 def get_db_dir() -> Path:
@@ -145,7 +147,7 @@ def _enable_sqlite_vec(engine, dimension: int) -> None:
             text(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name = :name"
             ),
-            {"name": VEC_UNITS_TABLE_NAME},
+            {"name": VEC_ITEMS_TABLE_NAME},
         ).fetchone()
 
         # 次元数の一致確認
@@ -155,39 +157,40 @@ def _enable_sqlite_vec(engine, dimension: int) -> None:
                 found = int(m.group(1))
                 if found != int(dimension):
                     raise RuntimeError(
-                        f"{VEC_UNITS_TABLE_NAME} embedding dimension mismatch: db={found}, expected={dimension}. "
+                        f"{VEC_ITEMS_TABLE_NAME} embedding dimension mismatch: db={found}, expected={dimension}. "
                         "次元数を変える場合は別DBへ移行/再構築してください。"
                     )
             else:
-                logger.warning("vec_units schema parse failed", extra={"sql": str(existing[0])})
+                logger.warning("vec_items schema parse failed", extra={"sql": str(existing[0])})
 
         # ベクトル検索用仮想テーブルを作成
         conn.execute(
             text(
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS {VEC_UNITS_TABLE_NAME} USING vec0("
-                f"unit_id integer primary key, "
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS {VEC_ITEMS_TABLE_NAME} USING vec0("
+                f"item_id integer primary key, "
                 f"embedding float[{dimension}] distance_metric=cosine, "
                 f"kind integer partition key, "
-                f"occurred_day integer, "
-                f"state integer, "
-                f"sensitivity integer"
+                f"rank_day integer, "
+                f"active integer"
                 f")"
             )
         )
         conn.commit()
 
 
-def _enable_episode_fts(engine) -> None:
+def _enable_events_fts(engine) -> None:
     """
-    EpisodeのBM25検索用にFTS5仮想テーブルと同期トリガーを用意する。
-    payload_episodeテーブルの変更に自動追従する。
+    eventsの文字検索用にFTS5仮想テーブル（tokenize=trigram）と同期トリガーを用意する。
+
+    - 外部コンテンツ方式（content='events'）を使用する
+    - eventsのINSERT/UPDATE/DELETEに自動追従する
     """
     with engine.connect() as conn:
         # FTSテーブルの存在確認
         existed = (
             conn.execute(
                 text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:name"),
-                {"name": EPISODE_FTS_TABLE_NAME},
+                {"name": EVENTS_FTS_TABLE_NAME},
             ).fetchone()
             is not None
         )
@@ -196,63 +199,63 @@ def _enable_episode_fts(engine) -> None:
         conn.execute(
             text(
                 f"""
-                CREATE VIRTUAL TABLE IF NOT EXISTS {EPISODE_FTS_TABLE_NAME} USING fts5(
-                    input_text,
-                    reply_text,
-                    content='payload_episode',
-                    content_rowid='unit_id',
-                    tokenize='unicode61'
+                CREATE VIRTUAL TABLE IF NOT EXISTS {EVENTS_FTS_TABLE_NAME} USING fts5(
+                    user_text,
+                    assistant_text,
+                    content='events',
+                    content_rowid='event_id',
+                    tokenize='trigram'
                 )
                 """
             )
         )
 
-        # external content FTS はトリガーで追従させる
-        # INSERT用トリガー
+        # --- external content FTS はトリガーで追従させる ---
+        # INSERT用
         conn.execute(
             text(
                 f"""
-                CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_ai
-                AFTER INSERT ON payload_episode
+                CREATE TRIGGER IF NOT EXISTS {EVENTS_FTS_TABLE_NAME}_ai
+                AFTER INSERT ON events
                 BEGIN
-                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, input_text, reply_text)
-                    VALUES (new.unit_id, new.input_text, new.reply_text);
+                    INSERT INTO {EVENTS_FTS_TABLE_NAME}(rowid, user_text, assistant_text)
+                    VALUES (new.event_id, new.user_text, new.assistant_text);
                 END;
                 """
             )
         )
-        # DELETE用トリガー
+        # DELETE用
         conn.execute(
             text(
                 f"""
-                CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_ad
-                AFTER DELETE ON payload_episode
+                CREATE TRIGGER IF NOT EXISTS {EVENTS_FTS_TABLE_NAME}_ad
+                AFTER DELETE ON events
                 BEGIN
-                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, input_text, reply_text)
-                    VALUES ('delete', old.unit_id, old.input_text, old.reply_text);
+                    INSERT INTO {EVENTS_FTS_TABLE_NAME}({EVENTS_FTS_TABLE_NAME}, rowid, user_text, assistant_text)
+                    VALUES ('delete', old.event_id, old.user_text, old.assistant_text);
                 END;
                 """
             )
         )
-        # UPDATE用トリガー（DELETE + INSERT）
+        # UPDATE用（DELETE + INSERT）
         conn.execute(
             text(
                 f"""
-                CREATE TRIGGER IF NOT EXISTS {EPISODE_FTS_TABLE_NAME}_au
-                AFTER UPDATE ON payload_episode
+                CREATE TRIGGER IF NOT EXISTS {EVENTS_FTS_TABLE_NAME}_au
+                AFTER UPDATE ON events
                 BEGIN
-                    INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}, rowid, input_text, reply_text)
-                    VALUES ('delete', old.unit_id, old.input_text, old.reply_text);
-                    INSERT INTO {EPISODE_FTS_TABLE_NAME}(rowid, input_text, reply_text)
-                    VALUES (new.unit_id, new.input_text, new.reply_text);
+                    INSERT INTO {EVENTS_FTS_TABLE_NAME}({EVENTS_FTS_TABLE_NAME}, rowid, user_text, assistant_text)
+                    VALUES ('delete', old.event_id, old.user_text, old.assistant_text);
+                    INSERT INTO {EVENTS_FTS_TABLE_NAME}(rowid, user_text, assistant_text)
+                    VALUES (new.event_id, new.user_text, new.assistant_text);
                 END;
                 """
             )
         )
 
-        # 初回作成時のみ rebuild（既存の payload_episode を索引化）
+        # 初回作成時のみ rebuild（既存の events を索引化）
         if not existed:
-            conn.execute(text(f"INSERT INTO {EPISODE_FTS_TABLE_NAME}({EPISODE_FTS_TABLE_NAME}) VALUES ('rebuild')"))
+            conn.execute(text(f"INSERT INTO {EVENTS_FTS_TABLE_NAME}({EVENTS_FTS_TABLE_NAME}) VALUES ('rebuild')"))
 
         conn.commit()
 
@@ -270,26 +273,88 @@ def _apply_memory_pragmas(engine) -> None:
 def _create_memory_indexes(engine) -> None:
     """記憶DBの検索性能向上用インデックスを作成する。"""
     stmts = [
-        "CREATE INDEX IF NOT EXISTS idx_units_kind_created ON units(kind, created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_units_occurred ON units(occurred_at)",
-        "CREATE INDEX IF NOT EXISTS idx_units_state ON units(state)",
-        "CREATE INDEX IF NOT EXISTS idx_entities_label_name ON entities(type_label, name)",
-        "CREATE INDEX IF NOT EXISTS idx_entities_normalized ON entities(normalized)",
-        "CREATE INDEX IF NOT EXISTS idx_entity_aliases_alias ON entity_aliases(alias)",
-        "CREATE INDEX IF NOT EXISTS idx_unit_entities_entity ON unit_entities(entity_id)",
-        "CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_entity_id)",
-        "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_entity_id)",
-        "CREATE INDEX IF NOT EXISTS idx_fact_subject_pred ON payload_fact(subject_entity_id, predicate)",
-        "CREATE INDEX IF NOT EXISTS idx_summary_scope ON payload_summary(scope_label, scope_key)",
-        # open loops は短期メモ（TTL）として扱い、loop_text で一意に扱う（重複抑制）。
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_loop_text_unique ON payload_loop(loop_text)",
-        "CREATE INDEX IF NOT EXISTS idx_loop_due ON payload_loop(due_at)",
-        "CREATE INDEX IF NOT EXISTS idx_loop_expires ON payload_loop(expires_at)",
+        # --- events ---
+        "CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_events_client_created_at ON events(client_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_events_source_created_at ON events(source, created_at)",
+        # --- state ---
+        "CREATE INDEX IF NOT EXISTS idx_state_kind_last_confirmed ON state(kind, last_confirmed_at)",
+        "CREATE INDEX IF NOT EXISTS idx_state_valid_range ON state(valid_from_ts, valid_to_ts)",
+        # --- event_links / event_threads ---
+        "CREATE INDEX IF NOT EXISTS idx_event_links_from ON event_links(from_event_id)",
+        "CREATE INDEX IF NOT EXISTS idx_event_links_to ON event_links(to_event_id)",
+        "CREATE INDEX IF NOT EXISTS idx_event_threads_event ON event_threads(event_id)",
+        "CREATE INDEX IF NOT EXISTS idx_event_threads_thread ON event_threads(thread_key)",
+        # --- revisions ---
+        "CREATE INDEX IF NOT EXISTS idx_revisions_entity ON revisions(entity_type, entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_revisions_created ON revisions(created_at)",
+        # --- retrieval_runs ---
+        "CREATE INDEX IF NOT EXISTS idx_retrieval_runs_event ON retrieval_runs(event_id)",
+        "CREATE INDEX IF NOT EXISTS idx_retrieval_runs_created ON retrieval_runs(created_at)",
+        # --- event_affects ---
+        "CREATE INDEX IF NOT EXISTS idx_event_affects_event ON event_affects(event_id)",
+        "CREATE INDEX IF NOT EXISTS idx_event_affects_created ON event_affects(created_at)",
+        # --- jobs ---
         "CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after)",
     ]
     with engine.connect() as conn:
         for stmt in stmts:
             conn.execute(text(stmt))
+        conn.commit()
+
+
+# --- 記憶DB: 形状チェック（マイグレーションしない） ---
+
+
+def _assert_memory_db_is_new_schema(engine) -> None:
+    """記憶DBが新スキーマであることを確認する。
+
+    運用前のため、旧スキーマ（Unit/payload）はサポートしない。
+    旧スキーマが見つかった場合は例外にして、DBファイルの削除/再作成を要求する。
+    """
+    with engine.connect() as conn:
+        # --- 旧スキーマの痕跡を検出する ---
+        old_tables = [
+            "units",
+            "payload_episode",
+            "payload_fact",
+            "payload_summary",
+            "payload_loop",
+            "entities",
+            "unit_entities",
+            "edges",
+            "episode_fts",
+            "vec_units",
+            "unit_versions",
+        ]
+        rows = conn.execute(
+            text(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ("
+                + ",".join([f"'{t}'" for t in old_tables])
+                + ")"
+            )
+        ).fetchall()
+        if rows:
+            found = sorted({str(r[0]) for r in rows})
+            raise RuntimeError(
+                "旧スキーマ（Unit/payload）の記憶DBはサポートしません。"
+                f"DBファイルを削除して作り直してください。found_tables={found}"
+            )
+
+        # --- user_version で新スキーマを識別する ---
+        uv = conn.execute(text("PRAGMA user_version")).fetchone()
+        current = int(uv[0]) if uv and uv[0] is not None else 0
+        if current not in (0, _MEMORY_DB_USER_VERSION):
+            raise RuntimeError(
+                f"memory DB user_version mismatch: db={current}, expected={_MEMORY_DB_USER_VERSION}. "
+                "運用前のためマイグレーションは行いません。DBを削除して作り直してください。"
+            )
+
+
+def _set_memory_db_user_version(engine) -> None:
+    """記憶DBの user_version を新スキーマに固定する。"""
+    with engine.connect() as conn:
+        conn.execute(text(f"PRAGMA user_version={_MEMORY_DB_USER_VERSION}"))
         conn.commit()
 
 
@@ -371,16 +436,22 @@ def init_memory_db(embedding_preset_id: str, embedding_dimension: int) -> sessio
     # パフォーマンス設定を適用
     _apply_memory_pragmas(engine)
 
-    # 記憶用テーブルを作成（Unitベース新仕様）
-    import cocoro_ghost.unit_models  # noqa: F401
+    # --- 旧スキーマを拒否する（運用前のためマイグレーションしない） ---
+    _assert_memory_db_is_new_schema(engine)
 
-    UnitBase.metadata.create_all(bind=engine)
+    # --- 記憶用テーブルを作成（events/state中心の新仕様） ---
+    import cocoro_ghost.memory_models  # noqa: F401
+
+    MemoryBase.metadata.create_all(bind=engine)
     _create_memory_indexes(engine)
-    _enable_episode_fts(engine)
+    _enable_events_fts(engine)
 
     # sqlite-vec拡張を有効化
     if db_url.startswith("sqlite"):
         _enable_sqlite_vec(engine, embedding_dimension)
+
+    # user_version を固定する（新スキーマ識別）
+    _set_memory_db_user_version(engine)
 
     # セッションファクトリをキャッシュ
     session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
@@ -396,36 +467,6 @@ def get_memory_session(embedding_preset_id: str, embedding_dimension: int) -> Se
     """指定されたembedding_preset_idの記憶DBセッションを取得する。"""
     session_factory = init_memory_db(embedding_preset_id, embedding_dimension)
     return session_factory()
-
-
-def upsert_edges(session: Session, *, rows: list[dict]) -> None:
-    """edges をUPSERTする。
-
-    - edges は (src_entity_id, relation_label, dst_entity_id) が主キー。
-    - Worker側が冪等に動けるのが本来あるべき姿なので、UNIQUE違反で落とさない。
-    - 同一キーが既に存在する場合は、weight/first_seen_at/last_seen_at を自然に統合する。
-    """
-    if not rows:
-        return
-
-    # 循環importを避けるため、ここでimportする。
-    from cocoro_ghost.unit_models import Edge
-
-    stmt = sqlite_insert(Edge).values(rows)
-    excluded = stmt.excluded
-    stmt = stmt.on_conflict_do_update(
-        index_elements=[Edge.src_entity_id, Edge.relation_label, Edge.dst_entity_id],
-        set_={
-            # 強さは「強い方」を採用（過去情報を弱めて消さない）。
-            "weight": func.max(Edge.weight, excluded.weight),
-            # 初出は早い方 / 最終確認は遅い方。
-            "first_seen_at": func.min(func.coalesce(Edge.first_seen_at, excluded.first_seen_at), excluded.first_seen_at),
-            "last_seen_at": func.max(func.coalesce(Edge.last_seen_at, excluded.last_seen_at), excluded.last_seen_at),
-            # evidence は最新のUnitに更新（単一列なので履歴は持てない）。
-            "evidence_unit_id": excluded.evidence_unit_id,
-        },
-    )
-    session.execute(stmt)
 
 
 @contextlib.contextmanager
@@ -448,126 +489,119 @@ def memory_session_scope(embedding_preset_id: str, embedding_dimension: int) -> 
 # --- 埋め込みベクトル操作 ---
 
 
-def upsert_unit_vector(
+def upsert_vec_item(
     session: Session,
     *,
-    unit_id: int,
+    item_id: int,
     embedding: list[float],
     kind: int,
-    occurred_at: int | None,
-    state: int,
-    sensitivity: int,
+    rank_at: int,
+    active: int = 1,
 ) -> None:
     """
-    Unitの検索用ベクトルを更新または挿入する（sqlite-vec仮想テーブル）。
+    ベクトル索引を更新または挿入する（sqlite-vec仮想テーブル）。
     既存のベクトルがあれば削除してから挿入する。
     """
     embedding_json = json.dumps(embedding)
     # 日付をエポック日数に変換（検索フィルタ用）
-    occurred_day = (occurred_at // 86400) if occurred_at is not None else None
+    rank_day = int(rank_at) // 86400
 
     # 既存レコードを削除してから挿入
-    session.execute(text(f"DELETE FROM {VEC_UNITS_TABLE_NAME} WHERE unit_id = :unit_id"), {"unit_id": unit_id})
+    session.execute(text(f"DELETE FROM {VEC_ITEMS_TABLE_NAME} WHERE item_id = :item_id"), {"item_id": int(item_id)})
     session.execute(
         text(
             f"""
-            INSERT INTO {VEC_UNITS_TABLE_NAME}(unit_id, embedding, kind, occurred_day, state, sensitivity)
-            VALUES (:unit_id, :embedding, :kind, :occurred_day, :state, :sensitivity)
+            INSERT INTO {VEC_ITEMS_TABLE_NAME}(item_id, embedding, kind, rank_day, active)
+            VALUES (:item_id, :embedding, :kind, :rank_day, :active)
             """
         ),
         {
-            "unit_id": unit_id,
+            "item_id": int(item_id),
             "embedding": embedding_json,
             "kind": kind,
-            "occurred_day": occurred_day,
-            "state": state,
-            "sensitivity": sensitivity,
+            "rank_day": rank_day,
+            "active": int(active),
         },
     )
 
 
-def delete_unit_vector(session: Session, *, unit_id: int) -> None:
+def delete_vec_item(session: Session, *, item_id: int) -> None:
     """
-    Unitの検索用ベクトルを削除する（sqlite-vec仮想テーブル）。
+    ベクトル索引を削除する（sqlite-vec仮想テーブル）。
 
-    Unit本体の削除はFKカスケードで payload_* 等が消えるが、vec0の仮想テーブルは
+    本体テーブルの削除はFKカスケードで消えるが、vec0の仮想テーブルは
     外部キーでカスケードできないため、明示的に削除する。
     """
-    session.execute(text(f"DELETE FROM {VEC_UNITS_TABLE_NAME} WHERE unit_id = :unit_id"), {"unit_id": int(unit_id)})
+    session.execute(text(f"DELETE FROM {VEC_ITEMS_TABLE_NAME} WHERE item_id = :item_id"), {"item_id": int(item_id)})
 
 
-def sync_unit_vector_metadata(
+def sync_vec_item_metadata(
     session: Session,
     *,
-    unit_id: int,
-    occurred_at: int | None,
-    state: int,
-    sensitivity: int,
+    item_id: int,
+    rank_at: int,
+    active: int = 1,
 ) -> None:
     """
-    vec_unitsのメタデータカラムをunitsと同期する（埋め込みは更新しない）。
-    状態変更や日付変更時にフィルタ条件を更新するために使用。
+    vec_itemsのメタデータカラムを同期する（埋め込みは更新しない）。
     """
-    occurred_day = (occurred_at // 86400) if occurred_at is not None else None
+    rank_day = int(rank_at) // 86400
     session.execute(
         text(
             f"""
-            UPDATE {VEC_UNITS_TABLE_NAME}
-               SET occurred_day = :occurred_day,
-                   state = :state,
-                   sensitivity = :sensitivity
-             WHERE unit_id = :unit_id
+            UPDATE {VEC_ITEMS_TABLE_NAME}
+               SET rank_day = :rank_day,
+                   active = :active
+             WHERE item_id = :item_id
             """
         ),
         {
-            "unit_id": unit_id,
-            "occurred_day": occurred_day,
-            "state": state,
-            "sensitivity": sensitivity,
+            "item_id": int(item_id),
+            "rank_day": rank_day,
+            "active": int(active),
         },
     )
 
 
-def search_similar_unit_ids(
+def search_similar_item_ids(
     session: Session,
     *,
     query_embedding: list[float],
     k: int,
     kind: int,
-    max_sensitivity: int,
-    occurred_day_range: tuple[int, int] | None = None,
+    rank_day_range: tuple[int, int] | None = None,
+    active_only: bool = True,
 ) -> list:
     """
-    類似Unit IDを検索する（sqlite-vec仮想テーブル）。
-    コサイン距離に基づいてk件の類似ユニットを返す。
+    類似 item_id を検索する（sqlite-vec仮想テーブル）。
+    コサイン距離に基づいてk件を返す。
     """
     query_json = json.dumps(query_embedding)
 
     # 日付範囲フィルタの構築
-    day_filter = ""
+    where_extra = ""
     params = {
         "query": query_json,
         "k": k,
         "kind": kind,
-        "max_sensitivity": max_sensitivity,
     }
-    if occurred_day_range is not None:
-        day_filter = "AND occurred_day BETWEEN :d0 AND :d1"
-        params["d0"] = occurred_day_range[0]
-        params["d1"] = occurred_day_range[1]
+    if rank_day_range is not None:
+        where_extra += " AND rank_day BETWEEN :d0 AND :d1"
+        params["d0"] = int(rank_day_range[0])
+        params["d1"] = int(rank_day_range[1])
+    if active_only:
+        where_extra += " AND active = 1"
 
     # ベクトル類似検索を実行
     rows = session.execute(
         text(
             f"""
-            SELECT unit_id, distance
-            FROM {VEC_UNITS_TABLE_NAME}
+            SELECT item_id, distance
+            FROM {VEC_ITEMS_TABLE_NAME}
             WHERE embedding MATCH :query
               AND k = :k
               AND kind = :kind
-              AND state IN (0, 1, 2)
-              AND sensitivity <= :max_sensitivity
-              {day_filter}
+              {where_extra}
             ORDER BY distance ASC
             """
         ),

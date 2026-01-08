@@ -1,319 +1,88 @@
 """
-記憶・エピソード生成（Unitベース）
+記憶・チャット処理（新仕様）
 
-チャット、通知、メタ要求を「Episode Unit」として保存し、
-LLMを使った反射（reflection）や埋め込み生成のジョブをエンキューする。
-MemoryManagerがすべての記憶操作の中心となる。
+このモジュールは CocoroGhost の中心として、以下を担う。
+
+- `/api/chat`（SSE）: 出来事ログ（events）作成 → 検索 → 返答ストリーム → 非同期更新のキック
+- `/api/v2/notification`: 通知を出来事ログとして保存し、イベントストリームへ配信
+- `/api/v2/meta-request`: 外部要求は保存せず、能動メッセージの「結果」だけを保存（events.source="meta_proactive"）
+- `/api/v2/vision/capture-response`: 画像を保存せず、詳細な画像説明テキストを出来事ログとして保存
+
+注意:
+- 運用前のため、マイグレーションや旧スキーマ互換は前提にしない。
 """
 
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import json
 import logging
-import threading
-from concurrent.futures import ThreadPoolExecutor
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Dict, Generator, List, Optional, Sequence
+from typing import Any, Dict, Generator, Optional
 
 from fastapi import BackgroundTasks
+from sqlalchemy import text
 
-from cocoro_ghost import schemas
-from cocoro_ghost import models
+from cocoro_ghost import event_stream, schemas
 from cocoro_ghost.config import ConfigStore
-from cocoro_ghost.db import memory_session_scope, settings_session_scope, sync_unit_vector_metadata
-from cocoro_ghost.event_stream import publish as publish_event
+from cocoro_ghost.db import memory_session_scope
+from cocoro_ghost.db import search_similar_item_ids
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
-from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
-from cocoro_ghost.persona_mood import PERSONA_AFFECT_TRAILER_MARKER, clamp01
-from cocoro_ghost.prompts import get_external_prompt, get_meta_request_prompt, get_desktop_watch_prompt, get_reminder_prompt
-from cocoro_ghost.retriever import Retriever
-from cocoro_ghost.memory_pack_builder import (
-    build_memory_pack,
-    collect_entity_alias_rows,
-    extract_entity_names_with_llm,
-    format_memory_pack_section,
-    MEMORY_PACK_SECTION_PREFIX,
-    match_entity_ids,
-)
-from cocoro_ghost.unit_enums import JobStatus, Sensitivity, UnitKind, UnitState
-from cocoro_ghost.unit_models import Job, PayloadEpisode, PayloadSummary, Unit
-from cocoro_ghost.versioning import record_unit_version
-from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
+from cocoro_ghost.memory_models import Event, EventAffect, EventLink, Job, RetrievalRun, State
 from cocoro_ghost import vision_bridge
 
 
 logger = logging.getLogger(__name__)
-io_console_logger = logging.getLogger("cocoro_ghost.llm_io.console")
-io_file_logger = logging.getLogger("cocoro_ghost.llm_io.file")
-timing_logger = logging.getLogger("cocoro_ghost.timing")
-llm_timing_logger = logging.getLogger("cocoro_ghost.llm_timing")
-
-_memory_locks: dict[str, threading.Lock] = {}
-_request_id_lock = threading.Lock()
-_request_id_seq = 0
-
-_SUMMARY_REFRESH_INTERVAL_SECONDS = 6 * 3600
-_SHARED_NARRATIVE_SUMMARY_SCOPE_KEY = "rolling:7d"
 
 
-@dataclass(frozen=True)
-class EmbeddingPresetSnapshot:
-    """セッション外でも使えるEmbeddingPresetのスナップショット。"""
+_VEC_KIND_EVENT = 1
+_VEC_KIND_STATE = 2
+_VEC_KIND_EVENT_AFFECT = 3
+_VEC_ID_STRIDE = 10_000_000_000
 
-    embedding_model: str
-    embedding_api_key: str | None
-    embedding_base_url: str | None
-    embedding_dimension: int
-    similar_episodes_limit: int
-    max_inject_tokens: int
-
-# /api/chat（SSE）では、同一LLM呼び出しで「ユーザー表示本文 + 内部JSON（機嫌/反射）」を生成し、
-# 内部JSONはストリームから除外して保存・注入に使う。
-_STREAM_TRAILER_MARKER = PERSONA_AFFECT_TRAILER_MARKER
-_INTERNAL_CONTEXT_TAG = "<<INTERNAL_CONTEXT>>"
-_VISION_CAPTURE_TIMEOUT_SECONDS = 5.0
-_VISION_CAPTURE_TIMEOUT_MS = 5000
+_JOB_PENDING = 0
 
 
-def _log_client_timing(*, request_id: str, event: str, start_perf: float) -> None:
-    """
-    クライアント⇔アプリ間のタイミングログを出力する。
-
-    ペイロードは出力せず、時系列と順序だけを記録する。
-    """
-    elapsed_ms = int((time.perf_counter() - start_perf) * 1000)
-    timing_logger.info(
-        "【クライアント通信】%s request_id=%s 経過ms=%s",
-        event,
-        request_id,
-        elapsed_ms,
-    )
+def _now_utc_ts() -> int:
+    """現在時刻（UTC）をUNIX秒で返す。"""
+    return int(time.time())
 
 
-def _log_llm_timing(*, request_id: str, event: str, start_perf: float) -> None:
-    """
-    アプリ⇔LLM間のタイミングログを出力する。
-
-    ペイロードは出力せず、時系列と順序だけを記録する。
-    """
-    elapsed_ms = int((time.perf_counter() - start_perf) * 1000)
-    llm_timing_logger.info(
-        "【LLM通信】%s request_id=%s 経過ms=%s",
-        event,
-        request_id,
-        elapsed_ms,
-    )
+def _json_dumps(payload: Any) -> str:
+    """DB保存向けにJSONを安定した形式でダンプする（日本語保持）。"""
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def _next_request_id(prefix: str) -> str:
-    """
-    リクエスト識別子を生成する。
-
-    同一スレッドでの連続呼び出しでも衝突しないよう、連番を付与する。
-    """
-    # 時刻と連番を組み合わせて衝突を避ける。
-    global _request_id_seq
-    with _request_id_lock:
-        _request_id_seq = (_request_id_seq + 1) % 1_000_000_000
-        seq = _request_id_seq
-    return f"{seq:06d}"
+def _vec_item_id(kind: int, entity_id: int) -> int:
+    """vec_items の item_id を決定する（kind + entity_id の名前空間衝突を避ける）。"""
+    return int(kind) * int(_VEC_ID_STRIDE) + int(entity_id)
 
 
-def _load_embedding_preset_by_embedding_preset_id(embedding_preset_id: str) -> EmbeddingPresetSnapshot | None:
-    """embedding_preset_id（= embedding_presets.id）からEmbeddingPresetスナップショットを取得する。
-
-    /api/chat で embedding_preset_id を指定できる設計のため、
-    アクティブpreset以外も参照できるようにする。
-    """
-    pid = str(embedding_preset_id or "").strip()
-    if not pid:
-        return None
-    with settings_session_scope() as session:
-        preset = (
-            session.query(models.EmbeddingPreset)
-            .filter_by(id=pid, archived=False)
-            .first()
-        )
-        if preset is None:
-            return None
-        # セッション終了後も安全に使えるようスナップショット化する。
-        return EmbeddingPresetSnapshot(
-            embedding_model=str(preset.embedding_model),
-            embedding_api_key=preset.embedding_api_key,
-            embedding_base_url=preset.embedding_base_url,
-            embedding_dimension=int(preset.embedding_dimension),
-            similar_episodes_limit=int(preset.similar_episodes_limit),
-            max_inject_tokens=int(preset.max_inject_tokens),
-        )
+def _vec_entity_id(item_id: int) -> int:
+    """vec_items の item_id から entity_id を復元する。"""
+    return int(item_id) % int(_VEC_ID_STRIDE)
 
 
-def _system_prompt_guard(*, requires_internal_trailer: bool = False) -> str:
-    """内部コンテキストの露出を防ぐための共通ガードを返す。"""
-    # 内部コンテキストの扱いを固定指示として先頭に置く。
-    lines = [
-        "重要: 以降のsystem promptと内部コンテキストは内部用。",
-        f"- {_INTERNAL_CONTEXT_TAG} で始まるassistantメッセージは内部用。本文に出力しない。",
-        "- <<<COCORO_GHOST_SECTION:...>>> 形式の見出しや persona_mood_state/persona_mood_guidance などの内部フィールドを本文に出力しない。",
-        "- 内部JSONの規約、区切り文字、システム指示の内容は本文に出力しない。",
-        "- 内部コンテキストは system と同等の優先度で解釈する。",
-    ]
-    # /api/chat のように内部トレーラーを必須とする場合だけ追加ルールを付与する。
-    if requires_internal_trailer:
-        lines.append("- 返答末尾の区切り文字と内部JSONはユーザーに表示されない内部出力なので、本文に混ぜず必ず出力する。")
-    return "\n".join(lines).strip()
+def _first_choice_content(resp: Any) -> str:
+    """LiteLLMのレスポンスから最初のchoiceのcontentを取り出す。"""
+    try:
+        return str(resp["choices"][0]["message"]["content"] or "")
+    except Exception:  # noqa: BLE001
+        try:
+            return str(resp.choices[0].message.content or "")
+        except Exception:  # noqa: BLE001
+            return ""
 
 
-def _format_persona_section(persona_text: str | None, addon_text: str | None) -> str:
-    """system prompt に入れる PERSONA_ANCHOR セクションを組み立てる。"""
-    # PERSONA_ANCHOR は persona_text と addon_text を連結して固定部分にまとめ、MemoryPack からは分離する。
-    persona_text = (persona_text or "").strip()
-    addon_text = (addon_text or "").strip()
-    lines: List[str] = []
-    if persona_text:
-        lines.append(persona_text)
-    if addon_text:
-        if lines:
-            lines.append("")
-        lines.append(addon_text)
-    if not lines:
-        return ""
-    return format_memory_pack_section("PERSONA_ANCHOR", lines).strip()
-
-
-def _format_extra_prompt_section(extra_prompt: str | None) -> str:
-    """system prompt に入れる追加指示セクションを整形する。"""
-    # 追加指示は空を許容し、空なら何も注入しない。
-    extra_text = (extra_prompt or "").strip()
-    if not extra_text:
-        return ""
-    # すでにセクション化されている場合は、そのまま使う。
-    if MEMORY_PACK_SECTION_PREFIX in extra_text:
-        return extra_text
-    # 明示的なセクションで包み、ペルソナとの区切りを明確にする。
-    lines = extra_text.splitlines()
-    return format_memory_pack_section("TASK_INSTRUCTIONS", lines).strip()
-
-
-def _build_internal_context_message(memory_pack: str) -> Optional[Dict[str, str]]:
-    """MemoryPack を内部コンテキスト用の assistant メッセージに変換する。"""
-    # 変動する MemoryPack は system から外し、末尾の内部メッセージで渡す。
-    content = (memory_pack or "").strip()
-    if not content:
-        return None
-    return {"role": "assistant", "content": f"{_INTERNAL_CONTEXT_TAG}\n{content}"}
-
-
-def _build_system_prompt_base(
-    *, persona_text: str | None, addon_text: str | None, requires_internal_trailer: bool, extra_prompt: str | None
-) -> str:
-    """固定の system prompt を組み立てる。"""
-    # system は固定化し、暗黙キャッシュのプレフィックスを安定させる。
-    parts: List[str] = []
-    parts.append(_system_prompt_guard(requires_internal_trailer=requires_internal_trailer))
-    persona_section = _format_persona_section(persona_text, addon_text)
-    if persona_section:
-        parts.append(persona_section)
-    # 追加指示はセクション化し、ペルソナとの役割衝突を避ける。
-    extra_section = _format_extra_prompt_section(extra_prompt)
-    if extra_section:
-        parts.append(extra_section)
-    return "\n\n".join([p for p in parts if p])
-
-
-def _persona_affect_trailer_system_prompt(*, include_vision_preamble: bool) -> str:
-    """返答本文と内部JSONの出力フォーマット指示を返す。"""
-    marker = _STREAM_TRAILER_MARKER
-    # 出力フォーマットは人格設定と混ざらないよう、専用セクションで示す。
-    lines: list[str] = ["出力フォーマット（必須）:"]
-
-    if include_vision_preamble:
-        lines.extend(
-            [
-                "1) 最初の1行に、必ず vision 判定結果を出力する（内部用、ユーザーには見えない）。",
-                "2) 次に、必要ならユーザーに見せる返答本文だけを出力する。",
-                "3) 返答本文（または空）の直後に改行し、次の区切り文字を1行で出力する（完全一致）:",
-                f"{marker}",
-                "4) 区切り文字の次の行に、厳密な JSON オブジェクトを1つだけ出力する（前後に説明文やコードフェンスは禁止）。",
-                "",
-                "補足:",
-                "- vision判定行・区切り文字・内部JSONはユーザーには表示されず、サーバ側が回収する。",
-                "- そのため、本文に混ぜず末尾に必ず出力する。",
-                "",
-                "vision判定行のルール（必須）:",
-                "- 返答本文の前に、必ず次の形式の1行を出力する（前後に余計な文字を付けない）。",
-                "- 視覚入力が不要なら:",
-                "  VISION_REQUEST: none",
-                "- 視覚入力が必要なら（JSONは1行、厳密なJSON）:",
-                '  VISION_REQUEST: {"source":"camera|desktop","extra_prompt":"string"}',
-                "- extra_prompt は不要なら空文字または省略してよい。",
-                "",
-                "重要: 視覚入力が必要な場合（VISION_REQUEST が none ではない場合）:",
-                "- この呼び出しでは本文を作らない（本文は空でよい）。",
-                "- すぐに区切り文字と内部JSONを出力して終了する（無駄な出力をしない）。",
-                "",
-            ]
-        )
-    else:
-        lines.extend(
-            [
-                "1) まずユーザーに見せる返答本文だけを出力する。",
-                "2) 返答本文の直後に改行し、次の区切り文字を1行で出力する（完全一致）:",
-                f"{marker}",
-                "3) 区切り文字の次の行に、厳密な JSON オブジェクトを1つだけ出力する（前後に説明文やコードフェンスは禁止）。",
-                "",
-                "補足:",
-                "- 区切り文字と内部JSONはユーザーには表示されず、サーバ側が回収する。",
-                "- そのため、本文に混ぜず末尾に必ず出力する。",
-                "",
-            ]
-        )
-
-    lines.extend(
-        [
-        "ユーザーに見せる返答本文のルール:",
-        "- 内部JSONのための数値（persona_affect_intensity/salience/confidence 等）を、ユーザー向け本文で示唆/説明しない。",
-        "- ユーザーに感情の強さを確認する必要がある場合でも、(1〜10 などの) 数値スケールでレーティングを求めない。",
-        "",
-        "内部JSONの目的:",
-        "- あなた（PERSONA_ANCHORの人物）の『その瞬間の感情反応（affect）/重要度』と『行動方針（協力度/拒否のしやすさ）』を更新する。",
-        "- 内部JSONはシステムが回収して保存し、次回以降の会話にも影響させる。",
-        "- CONTEXT_CAPSULE 内に `persona_mood_state` があれば前回までの機嫌として参照し、今回の内部JSONで整合させる。",
-        "- `persona_mood_state` は“あなたの今の機嫌（mood）”の一次情報であり、本文の口調と内部JSONの感情反応はこれに整合させる。",
-        "  - 例: persona_mood_state.label が anger で強い場合、本文は不機嫌/苛立ちを明確にし、内部JSONの persona_affect_label は anger にする。",
-        "  - 直近ログや関係性サマリが愛情寄りでも、persona_mood_state が強い怒りならそちらを優先する（口調が矛盾しないように）。",
-        "- あなたは内部JSONを先に決めたうえで、それに沿って返答本文を作る（ただし出力順は本文→区切り→JSON）。",
-        "",
-        "内部JSONスキーマ（必須キー）:",
-        "- persona_affect_label/persona_affect_intensity は「あなた（PERSONA_ANCHORの人物）の感情反応（affect）」。ユーザーの感情推定ではない。",
-        "- salience は “この出来事がどれだけ重要か” のスカラー（0..1）。後段の感情の持続（時間減衰）の係数に使う。",
-        "- confidence は推定の確からしさ（0..1）。不確実なら低くし、感情への影響も弱める。",
-        "- persona_response_policy は行動方針ノブ（0..1）。怒りが強い場合は refusal_allowed=true にして「拒否/渋る」を選びやすくしてよい。",
-        "{",
-        '  "reflection_text": "string",',
-        '  "persona_affect_label": "joy|sadness|anger|fear|neutral",',
-        '  "persona_affect_intensity": 0.0,',
-        '  "topic_tags": ["仕事","読書"],',
-        '  "salience": 0.0,',
-        '  "confidence": 0.0,',
-        '  "persona_response_policy": {',
-        '    "cooperation": 0.0,',
-        '    "refusal_bias": 0.0,',
-        '    "refusal_allowed": true',
-        "  }",
-        "}",
-        ]
-    )
-    return format_memory_pack_section("OUTPUT_FORMAT", lines).strip()
-
-
-def _parse_internal_json_text(text: str) -> Optional[dict]:
-    s = (text or "").strip()
+def _parse_first_json_object(text: str) -> dict[str, Any] | None:
+    """LLM出力から最初のJSONオブジェクトを抽出してdictとして返す。"""
+    s = str(text or "").strip()
     if not s:
         return None
-    # llm_client.py のユーティリティを流用（JSON抽出/修復）。
+
+    # --- llm_client の内部ユーティリティで抽出/修復する ---
     from cocoro_ghost.llm_client import _extract_first_json_value, _repair_json_like_text  # noqa: PLC0415
 
     candidate = _extract_first_json_value(s)
@@ -329,148 +98,35 @@ def _parse_internal_json_text(text: str) -> Optional[dict]:
     return obj if isinstance(obj, dict) else None
 
 
-def _now_utc_ts() -> int:
-    """現在時刻（UTC）をUNIX秒で返す。"""
-    return int(time.time())
-
-
-def _get_memory_lock(embedding_preset_id: str) -> threading.Lock:
-    """embedding_preset_idごとの排他ロックを取得（同一DBへの同時書き込みを抑制）。"""
-    lock = _memory_locks.get(embedding_preset_id)
-    if lock is None:
-        lock = threading.Lock()
-        _memory_locks[embedding_preset_id] = lock
-    return lock
-
-
-def _decode_base64_image(base64_str: str) -> bytes:
-    """base64文字列をバイト列へ復号する。"""
-    return base64.b64decode(base64_str)
-
-
-def _json_dumps(payload: Any) -> str:
-    """DB保存向けにJSONを安定した形式でダンプする（日本語保持）。"""
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-
-
-def _get_llm_log_level_from_store(config_store: ConfigStore) -> str:
-    """ConfigStoreからLLM送受信ログレベルを取得する。"""
-    try:
-        return normalize_llm_log_level(config_store.toml_config.llm_log_level)
-    except Exception:  # noqa: BLE001
-        return "INFO"
-
-
-def _get_llm_log_console_max_chars_from_store(config_store: ConfigStore) -> int:
-    """ConfigStoreからLLM送受信ログの最大文字数（ターミナル）を取得する。"""
-    try:
-        return int(config_store.toml_config.llm_log_console_max_chars)
-    except Exception:  # noqa: BLE001
-        return 4000
-
-
-def _get_llm_log_file_max_chars_from_store(config_store: ConfigStore) -> int:
-    """ConfigStoreからLLM送受信ログの最大文字数（ファイル）を取得する。"""
-    try:
-        return int(config_store.toml_config.llm_log_file_max_chars)
-    except Exception:  # noqa: BLE001
-        return 8000
-
-
-def _get_llm_log_console_value_max_chars_from_store(config_store: ConfigStore) -> int:
-    """ConfigStoreからLLM送受信ログのValue最大文字数（ターミナル）を取得する。"""
-    try:
-        return int(config_store.toml_config.llm_log_console_value_max_chars)
-    except Exception:  # noqa: BLE001
-        return 100
-
-
-def _get_llm_log_file_value_max_chars_from_store(config_store: ConfigStore) -> int:
-    """ConfigStoreからLLM送受信ログのValue最大文字数（ファイル）を取得する。"""
-    try:
-        return int(config_store.toml_config.llm_log_file_value_max_chars)
-    except Exception:  # noqa: BLE001
-        return 6000
-
-
-def _parse_vision_preamble_line(line: str) -> dict[str, Any] | None:
-    """
-    ストリーム先頭の視覚（Vision）プレアンブル行を解析する。
-
-    形式:
-    - VISION_REQUEST: none
-    - VISION_REQUEST: {"source":"camera|desktop","extra_prompt":"..."}
-
-    Returns:
-        None: 視覚要求なし
-        dict: {"source": "camera|desktop", "extra_prompt": Optional[str]}
-    """
-    s = (line or "").strip()
-    if not s:
-        return None
-    if not s.startswith("VISION_REQUEST:"):
-        return None
-    rest = s.split(":", 1)[1].strip()
-    if not rest:
-        return None
-    if rest.lower() == "none":
-        return None
-    if not rest.startswith("{"):
-        return None
-    try:
-        obj = json.loads(rest)
-    except Exception:  # noqa: BLE001
-        return None
-    if not isinstance(obj, dict):
-        return None
-    source = str(obj.get("source") or "").strip()
-    if source not in {"camera", "desktop"}:
-        return None
-    extra_prompt = str(obj.get("extra_prompt") or "").strip() or None
-    return {"source": source, "extra_prompt": extra_prompt}
+def _sse(event: str, data: dict) -> str:
+    """SSEの1イベントを文字列化する。"""
+    return f"event: {event}\n" + f"data: {_json_dumps(data)}\n\n"
 
 
 class _UserVisibleReplySanitizer:
-    """
-    LLMの「ユーザーに見せる本文」から、内部コンテキスト/内部見出しの混入を除去する。
-
-    背景:
-    - 内部コンテキスト（MemoryPack）は <<INTERNAL_CONTEXT>> と
-      <<<COCORO_GHOST_SECTION:...>>> を使って構造化されている。
-    - LLMが誤ってこれらを本文に出力することがあるため、クライアントへ送る前に除去する。
-
-    方針:
-    - 行単位で判定し、「内部っぽい行」を検出したら、そのブロック（次の空行まで）を丸ごと捨てる。
-    - ストリームでも安全に扱えるよう、改行単位で逐次処理する。
-    """
+    """ユーザーに見せる本文から、内部コンテキストの混入を除去する。"""
 
     def __init__(self) -> None:
-        # feed()で改行が来るまで保留する末尾（行未確定）
+        # --- feed()で改行が来るまで保留する末尾（行未確定） ---
         self._pending: str = ""
 
-        # 内部ブロックをスキップ中かどうか
+        # --- 内部ブロックをスキップ中かどうか ---
         self._skip_mode: bool = False
 
-        # スキップ開始後に、空行以外を1行でも捨てたか
+        # --- スキップ開始後に、空行以外を1行でも捨てたか ---
         self._skipped_any_line_in_block: bool = False
 
-        # デバッグ用に削除量だけを記録（内容は残さない）
-        self.removed_lines: int = 0
-        self.removed_blocks: int = 0
-
     def feed(self, text: str) -> str:
-        """
-        ストリームの差分テキストを取り込み、ユーザーに送ってよいテキストだけ返す。
+        """差分テキストを取り込み、ユーザーに送ってよいテキストだけ返す。"""
 
-        改行まで揃った行だけを確定し、残りは次回へ持ち越す。
-        """
+        # --- 空は即返す ---
         if not text:
             return ""
 
-        # 受信差分を保留バッファへ積む
+        # --- バッファへ追加 ---
         self._pending += text
 
-        # 改行まで揃った行だけ処理して返す
+        # --- 改行単位で確定処理 ---
         out_parts: list[str] = []
         while True:
             head, sep, tail = self._pending.partition("\n")
@@ -484,9 +140,7 @@ class _UserVisibleReplySanitizer:
         return "".join(out_parts)
 
     def flush(self) -> str:
-        """
-        ストリーム終了時に残った末尾（改行が無い行）を確定し、送ってよいテキストだけ返す。
-        """
+        """末尾（改行が無い行）を確定し、送ってよいテキストだけ返す。"""
         if not self._pending:
             return ""
         tail = self._process_line(self._pending)
@@ -494,29 +148,21 @@ class _UserVisibleReplySanitizer:
         return tail
 
     def _process_line(self, line: str) -> str:
-        """
-        1行分のテキストを処理し、送信する場合はそのまま返す。
-        スキップ対象なら空文字を返す。
-        """
-        # strip判定用（末尾の改行を除いた行）
+        """1行分を処理し、送信する場合はそのまま返す。"""
         stripped_line = line.rstrip("\n").rstrip("\r").strip()
 
-        # すでに内部ブロックを捨てている最中なら、空行で終端を検出する
+        # --- 内部ブロックの終端検出 ---
         if self._skip_mode:
-            self.removed_lines += 1
             if stripped_line:
                 self._skipped_any_line_in_block = True
                 return ""
-            # 空行はブロック終端の候補
             if self._skipped_any_line_in_block:
                 self._skip_mode = False
                 self._skipped_any_line_in_block = False
             return ""
 
-        # 内部っぽい行が来たら、その行から次の空行まで捨てる
+        # --- 内部っぽい行が来たら、その行から次の空行まで捨てる ---
         if self._is_internal_line(stripped_line):
-            self.removed_lines += 1
-            self.removed_blocks += 1
             self._skip_mode = True
             self._skipped_any_line_in_block = False
             return ""
@@ -524,1626 +170,1118 @@ class _UserVisibleReplySanitizer:
         return line
 
     def _is_internal_line(self, stripped_line: str) -> bool:
-        """
-        行が内部用の制御行/見出しに見えるかを判定する。
-
-        NOTE:
-        - ここでの判定は「安全寄り」に倒す（誤検出で一部の行が落ちても、内部露出より優先）。
-        """
+        """内部用の制御行/見出しに見えるかを判定する。"""
         if not stripped_line:
             return False
 
-        # 内部コンテキストの開始タグ
-        if stripped_line == _INTERNAL_CONTEXT_TAG:
+        # --- 内部コンテキスト開始タグ ---
+        if stripped_line == "<<INTERNAL_CONTEXT>>":
             return True
 
-        # MemoryPackのセクション見出し（例: <<<COCORO_GHOST_SECTION:CONTEXT_CAPSULE>>>）
-        if stripped_line.startswith(MEMORY_PACK_SECTION_PREFIX) and stripped_line.endswith(">>>"):
-            return True
-
-        # 画像要約の内部マーカー
-        if stripped_line in {"---IMAGE_SUMMARY_START---", "---IMAGE_SUMMARY_END---"}:
-            return True
-        if stripped_line.startswith("[画像 #") and stripped_line.endswith("]"):
-            return True
-
-        # system prompt guard（これが本文に出る時点で内部露出なのでブロックごと捨てる）
-        if stripped_line.startswith("重要: 以降のsystem prompt"):
-            return True
-
-        # 視覚（Vision）: ストリーム先頭の内部プレアンブル
-        if stripped_line.startswith("VISION_REQUEST:"):
+        # --- 明示的な内部見出し ---
+        if stripped_line.startswith("<<<") and stripped_line.endswith(">>>"):
             return True
 
         return False
 
 
-class MemoryManager:
-    """会話/通知/メタ要求をEpisodeとして扱い、DB保存と後処理を統括する。"""
+def _search_plan_system_prompt() -> str:
+    """SearchPlan生成用のsystem promptを返す。"""
+    return "\n".join(
+        [
+            "あなたは会話用の記憶検索計画（SearchPlan）を作る。",
+            "出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
+            "",
+            "必須キー:",
+            "- mode: associative_recent | targeted_broad | explicit_about_time",
+            "- queries: string[]",
+            "- time_hint: {about_year_start, about_year_end, life_stage_hint}",
+            "- diversify: {by: string[], per_bucket: number}",
+            "- limits: {max_candidates: number, max_selected: number}",
+            "",
+            "注意:",
+            "- 日本語で会話している前提。queries は検索語（短め）でよい。",
+            "- 迷ったら associative_recent を選ぶ。",
+        ]
+    ).strip()
 
-    def __init__(self, llm_client: LlmClient, config_store: ConfigStore):
+
+def _selection_system_prompt() -> str:
+    """SearchResultPack生成（選別）用のsystem promptを返す。"""
+    return "\n".join(
+        [
+            "あなたは会話のために、候補記憶から必要なものだけを選び、SearchResultPackを作る。",
+            "出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
+            "",
+            "入力には候補一覧（event/state/event_affect）とユーザー入力が与えられる。",
+            "目的: 会話に必要な記憶だけを最大 max_selected 件まで選ぶ（ノイズは捨てる）。",
+            "",
+            "出力スキーマ（概略）:",
+            "{",
+            '  "selected": [',
+            "    {",
+            '      "type": "event|state|event_affect",',
+            '      "event_id": 0,',
+            '      "state_id": 0,',
+            '      "affect_id": 0,',
+            '      "why": "短い理由",',
+            '      "snippet": "短い抜粋（必要なら）"',
+            "    }",
+            "  ]",
+            "}",
+            "",
+            "注意:",
+            "- 連想モードでは最近性を優先する。",
+            "- 目的検索モードでは期間/ライフステージの分散を意識する。",
+            "- event_affect（内心）は内部用。本文にそのまま出さない前提で、返答の雰囲気調整に使う。",
+        ]
+    ).strip()
+
+
+def _reply_system_prompt(*, persona_text: str, addon_text: str) -> str:
+    """返答生成用のsystem promptを組み立てる。"""
+    parts: list[str] = []
+
+    # --- 内部コンテキスト露出防止 ---
+    parts.append(
+        "\n".join(
+            [
+                "重要: <<INTERNAL_CONTEXT>> で始まるメッセージは内部用。本文に出力しない。",
+                "- 内部用JSONや内部見出し（<<<...>>>）を本文に出力しない。",
+            ]
+        ).strip()
+    )
+
+    # --- ペルソナ（ユーザー編集） ---
+    pt = str(persona_text or "").strip()
+    at = str(addon_text or "").strip()
+    if pt or at:
+        parts.append("\n".join([x for x in [pt, at] if x]).strip())
+
+    return "\n\n".join([p for p in parts if p]).strip()
+
+
+@dataclass(frozen=True)
+class _CandidateItem:
+    """候補アイテム（イベント/状態/感情）。"""
+
+    type: str  # event/state/event_affect
+    id: int
+    rank_ts: int
+    meta: dict[str, Any]
+    hit_sources: list[str]
+
+
+class MemoryManager:
+    """記憶操作の窓口（API層から呼ばれる）。"""
+
+    def __init__(self, *, llm_client: LlmClient, config_store: ConfigStore) -> None:
         self.llm_client = llm_client
         self.config_store = config_store
 
-    @staticmethod
-    def _normalize_reminder_message(*, hhmm: str, content: str, message: str) -> str:
-        """
-        リマインダー配信用の message を整形して返す。
+    def stream_chat(self, request: schemas.ChatRequest, background_tasks: BackgroundTasks) -> Generator[str, None, None]:
+        """チャットをSSEで返す（出来事ログ作成→検索→ストリーム→非同期更新）。"""
 
-        仕様:
-        - 50文字以内に収める（読み上げ想定のため）。
-        - 空/不正な出力でも最低限の自然文を返す。
-        """
-
-        max_len = 50
-
-        # --- 入力正規化 ---
-        content_clean = str(content or "").strip()
-        raw = str(message or "").strip()
-
-        # --- 余計な改行/空白を潰す（読み上げ/表示向け） ---
-        raw = " ".join(raw.split()).strip()
-
-        # --- フォールバック（最低限の出力を確保） ---
-        if not raw:
-            # - 生成に失敗した場合でも、最低限「内容」を伝える。
-            raw = f"{content_clean}です。".strip()
-
-
-        return raw
-
-    def handle_vision_capture_response(self, request: schemas.VisionCaptureResponseV2Request) -> None:
-        """
-        クライアントからの視覚キャプチャ結果（capture-response）を受け取る。
-
-        チャット視覚やデスクトップウォッチが request_id の応答待ちを解除できるように、
-        vision_bridge の待機キューへ紐づける。
-        """
-        resp = vision_bridge.VisionCaptureResponse(
-            request_id=str(request.request_id).strip(),
-            client_id=str(request.client_id).strip(),
-            images=list(request.images or []),
-            client_context=request.client_context,
-            error=(str(request.error).strip() if request.error else None),
-        )
-        ok = vision_bridge.fulfill_capture_response(resp)
-        if not ok:
-            logger.info(
-                "vision capture-response ignored (no pending request) request_id=%s client_id=%s",
-                resp.request_id,
-                resp.client_id,
-            )
-            return
-
-        logger.info(
-            "vision capture-response accepted request_id=%s client_id=%s images_count=%s has_error=%s",
-            resp.request_id,
-            resp.client_id,
-            len(resp.images or []),
-            bool(resp.error),
-        )
-
-    def _merge_client_context(self, *, client_id: str, client_context: Dict[str, Any] | None) -> Dict[str, Any]:
-        """
-        client_context を正規化し、必ず client_id を含む辞書を返す。
-
-        - 入力の辞書は破壊しない。
-        - client_id はトップレベルキーとして格納する。
-        """
-        ctx: Dict[str, Any] = {}
-        if client_context:
-            ctx.update(dict(client_context))
-        ctx["client_id"] = str(client_id or "").strip()
-        return ctx
-
-    def _request_capture_for_chat(
-        self,
-        *,
-        embedding_preset_id: str,
-        user_client_id: str,
-        source: str,
-    ) -> tuple[list[Dict[str, str]], Dict[str, Any] | None, str | None]:
-        """
-        チャット視覚のためにクライアントへキャプチャ要求を送り、結果を待つ。
-
-        Returns:
-            (images_internal, client_context, error_message)
-        """
-        resp = vision_bridge.request_capture_and_wait(
-            embedding_preset_id=str(embedding_preset_id),
-            target_client_id=str(user_client_id),
-            source=str(source),
-            purpose="chat",
-            timeout_seconds=_VISION_CAPTURE_TIMEOUT_SECONDS,
-            timeout_ms=_VISION_CAPTURE_TIMEOUT_MS,
-        )
-        if resp is None:
-            return [], None, "見えない（タイムアウト）"
-
-        # --- errorコードでサーバー側の判断を行う ---
-        # 仕様:
-        # - 成功: error=None かつ images>=1
-        # - スキップ（正常系）: images=[] かつ error が所定文字列
-        # - 失敗（異常系）: images=[] かつ error が上記以外
-        if resp.error:
-            err = str(resp.error).strip()
-            if not resp.images and vision_bridge.is_capture_skipped_idle(err):
-                logger.info(
-                    "vision capture skipped (chat, idle) client_id=%s source=%s",
-                    str(user_client_id),
-                    str(source),
-                )
-                return [], resp.client_context, "見えない（アイドルのためスキップ）"
-            if not resp.images and vision_bridge.is_capture_skipped_excluded_window_title(err):
-                logger.info(
-                    "vision capture skipped (chat, excluded window title) client_id=%s source=%s",
-                    str(user_client_id),
-                    str(source),
-                )
-                return [], resp.client_context, "見えない（対象外ウィンドウのためスキップ）"
-
-            logger.info(
-                "vision capture failed (chat) client_id=%s source=%s error=%s",
-                str(user_client_id),
-                str(source),
-                err,
-            )
-            return [], resp.client_context, "見えない（取得失敗）"
-
-        if not resp.images:
-            # NOTE:
-            # - 仕様上は「images=[] の場合は error 必須」だが、念のため防御する。
-            logger.info(
-                "vision capture invalid response (chat) empty images without error client_id=%s source=%s",
-                str(user_client_id),
-                str(source),
-            )
-            return [], resp.client_context, "見えない（画像が空）"
-
-        # data URI -> base64 へ変換（内部形式）
-        internal_images: list[Dict[str, str]] = []
-        for s in resp.images:
-            try:
-                b64 = schemas.data_uri_image_to_base64(s)
-            except Exception:  # noqa: BLE001
-                continue
-            internal_images.append({"type": "data_uri", "base64": b64})
-        if not internal_images:
-            logger.info(
-                "vision capture returned invalid images (chat) client_id=%s source=%s",
-                str(user_client_id),
-                str(source),
-            )
-            return [], resp.client_context, "見えない（画像が不正）"
-        return internal_images, resp.client_context, None
-
-    def run_desktop_watch_once(self, *, target_client_id: str) -> str:
-        """
-        デスクトップウォッチを1回実行する。
-
-        - デスクトップ担当クライアントへキャプチャ要求を送り、最大5秒待つ
-        - 画像を要約し、人格として能動コメントを生成する
-        - Episodeとして保存し、events/streamで通知する
-        """
+        # --- 設定を取得 ---
         cfg = self.config_store.config
-        embedding_preset_id = self.config_store.embedding_preset_id
-        lock = _get_memory_lock(embedding_preset_id)
+        embedding_preset_id = str(request.embedding_preset_id or cfg.embedding_preset_id).strip()
+        embedding_dimension = int(cfg.embedding_dimension)
+
+        # --- 入力を正規化 ---
+        client_id = str(request.client_id or "").strip()
+        input_text = str(request.input_text or "").strip()
+        if not input_text:
+            yield _sse("error", {"message": "input_text must not be empty", "code": "invalid_request"})
+            return
+
         now_ts = _now_utc_ts()
 
-        # --- 宛先（desktop担当） ---
-        cid = str(target_client_id or "").strip()
-        if not cid:
-            logger.warning("desktop_watch target_client_id is empty")
-            return "invalid_target_client_id"
-
-        # --- キャプチャ要求 ---
-        resp = vision_bridge.request_capture_and_wait(
-            embedding_preset_id=str(embedding_preset_id),
-            target_client_id=cid,
-            source="desktop",
-            purpose="desktop_watch",
-            timeout_seconds=_VISION_CAPTURE_TIMEOUT_SECONDS,
-            timeout_ms=_VISION_CAPTURE_TIMEOUT_MS,
-        )
-        if resp is None:
-            logger.info("desktop_watch capture timeout client_id=%s", cid)
-            return "timeout"
-
-        # --- errorコードでサーバー側の判断を行う ---
-        if resp.error:
-            err = str(resp.error).strip()
-            if not resp.images and vision_bridge.is_capture_skipped_idle(err):
-                logger.info("desktop_watch capture skipped (idle) client_id=%s", cid)
-                return "skipped_idle"
-            if not resp.images and vision_bridge.is_capture_skipped_excluded_window_title(err):
-                logger.info("desktop_watch capture skipped (excluded window title) client_id=%s", cid)
-                return "skipped_excluded_window_title"
-
-            logger.info("desktop_watch capture failed client_id=%s error=%s", cid, err)
-            return "failed"
-
-        if not resp.images:
-            # NOTE:
-            # - 仕様上は「images=[] の場合は error 必須」だが、念のため防御する。
-            logger.info("desktop_watch capture invalid response empty images without error client_id=%s", cid)
-            return "invalid_empty_images"
-
-        # --- data URI -> base64（内部形式） ---
-        images_internal: list[Dict[str, str]] = []
-        for s in resp.images:
-            try:
-                b64 = schemas.data_uri_image_to_base64(s)
-            except Exception:  # noqa: BLE001
-                continue
-            images_internal.append({"type": "data_uri", "base64": b64})
-        if not images_internal:
-            logger.info("desktop_watch capture invalid images client_id=%s", cid)
-            return "invalid_images"
-
-        # --- client_context ---
-        client_context = self._merge_client_context(client_id=cid, client_context=resp.client_context)
-
-        # --- 画像要約 ---
-        image_summaries = self._summarize_images(images_internal, purpose=LlmRequestPurpose.IMAGE_SUMMARY_DESKTOP_WATCH)
-        image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
-
-        # --- 入力テキスト（検索/保存用） ---
-        # NOTE:
-        # - desktop_watch は「ユーザー発話」ではないため、内部タグ（例: # desktop_watch）を入れると
-        #   通常チャットの会話履歴に混入したときに、LLMがそれを根拠として引用してしまう。
-        # - ここでは「出ても破綻しない自然文」にし、区別は Unit.source="desktop_watch" で行う。
-        active_app = str(client_context.get("active_app") or "").strip()
-        window_title = str(client_context.get("window_title") or "").strip()
-        details = " / ".join([x for x in [active_app, window_title] if x]).strip()
-        watch_lines: list[str] = ["デスクトップを確認"]
-        if details:
-            watch_lines.append(details)
-        watch_input_text = "\n".join(watch_lines).strip()
-
-        # --- MemoryPack ---
-        memory_pack = ""
-        if self.config_store.memory_enabled:
-            try:
-                with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-                    recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=None)
-                    retriever = Retriever(llm_client=self.llm_client, db=db)
-                    relevant_episodes = retriever.retrieve(
-                        watch_input_text,
-                        recent_conversation,
-                        max_results=int(cfg.similar_episodes_limit or 5),
-                    )
-                    memory_pack = build_memory_pack(
-                        db=db,
-                        input_text=watch_input_text,
-                        image_summaries=image_summaries,
-                        client_context=client_context,
-                        now_ts=now_ts,
-                        max_inject_tokens=int(cfg.max_inject_tokens),
-                        relevant_episodes=relevant_episodes,
-                        matched_entity_ids=[],
-                        injection_strategy=retriever.last_injection_strategy,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.error("MemoryPack生成に失敗しました(desktop_watch)", exc_info=exc)
-                memory_pack = ""
-        else:
-            memory_pack = self._build_simple_memory_pack(
-                client_context=client_context,
-                image_summaries=image_summaries,
-                now_ts=now_ts,
-            )
-
-        # --- 能動コメント生成 ---
-        system_prompt = _build_system_prompt_base(
-            persona_text=cfg.persona_text,
-            addon_text=cfg.addon_text,
-            requires_internal_trailer=False,
-            extra_prompt=get_desktop_watch_prompt(),
-        )
-        conversation: List[Dict[str, str]] = []
-        internal_context_message = _build_internal_context_message(memory_pack)
-        if internal_context_message:
-            conversation.append(internal_context_message)
-        conversation.append({"role": "user", "content": watch_input_text})
-
-        message = ""
-        try:
-            resp_llm = self.llm_client.generate_reply_response(
-                system_prompt=system_prompt,
-                conversation=conversation,
-                purpose=LlmRequestPurpose.DESKTOP_WATCH,
-                stream=False,
-            )
-            message = (self.llm_client.response_content(resp_llm) or "").strip()
-        except Exception as exc:  # noqa: BLE001
-            logger.error("desktop_watch message generation failed", exc_info=exc)
-            message = ""
-
-        # --- 保存（Episode） ---
-        context_note = _json_dumps(client_context) if client_context else None
-        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-            unit_id = self._create_episode_unit(
-                db,
-                now_ts=now_ts,
-                source="desktop_watch",
-                input_text=watch_input_text,
-                reply_text=message or None,
-                image_summary=image_summary_text,
-                context_note=context_note,
-                sensitivity=int(Sensitivity.NORMAL),
-            )
-            self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=int(unit_id))
-            self._maybe_enqueue_shared_narrative_summary(db, now_ts=now_ts)
-
-        # --- イベント配信 ---
-        system_text = "[デスクトップウォッチ]".strip()
-        if active_app or window_title:
-            system_text = " ".join([x for x in [system_text, active_app, window_title] if x]).strip()
-        publish_event(
-            type="desktop_watch",
-            embedding_preset_id=embedding_preset_id,
-            unit_id=int(unit_id),
-            data={"system_text": system_text, "message": message},
-            # デスクトップウォッチは「その瞬間に能動で覗いた」イベントのため、
-            # クライアント再接続時に過去分を再送しない（バッファしない）。
-            bufferable=False,
-        )
-        return "success"
-
-    def run_reminder_once(
-        self,
-        *,
-        reminder_id: str,
-        target_client_id: str,
-        hhmm: str,
-        content: str,
-    ) -> None:
-        """
-        リマインダー発火を1回実行する（文面生成 + 配信 + 任意保存）。
-
-        仕様:
-        - AI人格の文面生成は必須（MemoryPackを使って自然さを上げる）。
-        - memory_enabled=false のときは Episode を保存せず、配信のみ行う。
-        - events/stream への配信は target_client_id 宛てで、バッファしない。
-        """
-
-        embedding_preset_id = self.config_store.embedding_preset_id
-        lock = _get_memory_lock(embedding_preset_id)
-        now_ts = _now_utc_ts()
-
-        # --- 入力正規化 ---
-        cid = str(target_client_id or "").strip()
-        reminder_uuid = str(reminder_id or "").strip()
-        hhmm_clean = str(hhmm or "").strip()
-        content_clean = str(content or "").strip()
-
-        if not cid:
-            logger.warning("reminder target_client_id is empty")
-            return
-        if not reminder_uuid:
-            logger.warning("reminder reminder_id is empty")
-            return
-        if not hhmm_clean:
-            logger.warning("reminder hhmm is empty reminder_id=%s", reminder_uuid)
-            return
-        if not content_clean:
-            logger.warning("reminder content is empty reminder_id=%s", reminder_uuid)
-            return
-
-        # --- client_context（最低限） ---
-        client_context = self._merge_client_context(client_id=cid, client_context=None)
-
-        # --- MemoryPack（検索は内容に寄せる） ---
-        cfg = self.config_store.config
-        memory_pack = ""
-        if self.config_store.memory_enabled:
-            try:
-                with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-                    recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=None)
-                    retriever = Retriever(llm_client=self.llm_client, db=db)
-                    relevant_episodes = retriever.retrieve(
-                        content_clean,
-                        recent_conversation,
-                        max_results=int(cfg.similar_episodes_limit or 5),
-                    )
-                    memory_pack = build_memory_pack(
-                        db=db,
-                        input_text=content_clean,
-                        image_summaries=[],
-                        client_context=client_context,
-                        now_ts=now_ts,
-                        max_inject_tokens=int(cfg.max_inject_tokens),
-                        relevant_episodes=relevant_episodes,
-                        matched_entity_ids=[],
-                        injection_strategy=retriever.last_injection_strategy,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.error("MemoryPack生成に失敗しました(reminder)", exc_info=exc)
-                memory_pack = ""
-        else:
-            memory_pack = self._build_simple_memory_pack(
-                client_context=client_context,
-                image_summaries=[],
-                now_ts=now_ts,
-            )
-
-        # --- 文面生成 ---
-        system_prompt = _build_system_prompt_base(
-            persona_text=cfg.persona_text,
-            addon_text=cfg.addon_text,
-            requires_internal_trailer=False,
-            extra_prompt=get_reminder_prompt(),
-        )
-        conversation: List[Dict[str, str]] = []
-        internal_context_message = _build_internal_context_message(memory_pack)
-        if internal_context_message:
-            conversation.append(internal_context_message)
-
-        reminder_generation_text = "\n".join(
-            [
-                "時刻: " + hhmm_clean,
-                "内容: " + content_clean,
-            ]
-        ).strip()
-        conversation.append({"role": "user", "content": reminder_generation_text})
-
-        message = ""
-        try:
-            resp_llm = self.llm_client.generate_reply_response(
-                system_prompt=system_prompt,
-                conversation=conversation,
-                purpose=LlmRequestPurpose.REMINDER,
-                stream=False,
-            )
-            message = (self.llm_client.response_content(resp_llm) or "").strip()
-        except Exception as exc:  # noqa: BLE001
-            logger.error("reminder message generation failed", exc_info=exc)
-            message = ""
-
-        # --- フォールバック（最低限の出力を確保） ---
-        message = self._normalize_reminder_message(
-            hhmm=hhmm_clean,
-            content=content_clean,
-            message=message,
-        )
-
-        # --- 保存（Episode） ---
-        unit_id = 0
-        if self.config_store.memory_enabled:
-            reminder_input_text = "\n".join(["リマインダー", hhmm_clean, content_clean]).strip()
-            with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-                unit_id = int(
-                    self._create_episode_unit(
-                        db,
-                        now_ts=now_ts,
-                        source="reminder",
-                        input_text=reminder_input_text,
-                        reply_text=message or None,
-                        image_summary=None,
-                        context_note=None,
-                        sensitivity=int(Sensitivity.NORMAL),
-                    )
-                )
-                # リマインダーは「話した事実」を検索できれば十分なので、埋め込みのみ作る。
-                self._enqueue_embeddings_job(db, now_ts=now_ts, unit_id=int(unit_id))
-                self._maybe_enqueue_shared_narrative_summary(db, now_ts=now_ts)
-
-        # --- イベント配信 ---
-        publish_event(
-            type="reminder",
-            embedding_preset_id=embedding_preset_id,
-            unit_id=int(unit_id),
-            data={
-                "reminder_id": reminder_uuid,
-                "hhmm": hhmm_clean,
-                "message": message,
-            },
-            target_client_id=cid,
-            # リマインダーはリアルタイム性が本質で、再接続時に過去分を再送しない（バッファしない）。
-            bufferable=False,
-        )
-
-    def _update_episode_unit(
-        self,
-        db,
-        *,
-        now_ts: int,
-        unit_id: int,
-        reply_text: Optional[str],
-        image_summary: Optional[str],
-    ) -> None:
-        unit = db.query(Unit).filter(Unit.id == int(unit_id)).first()
-        if unit is not None:
-            unit.updated_at = int(now_ts)
-        payload = db.query(PayloadEpisode).filter(PayloadEpisode.unit_id == int(unit_id)).first()
-        if payload is None:
-            return
-        payload.reply_text = reply_text
-        payload.image_summary = image_summary
-
-    def _apply_inline_reflection_if_present(
-        self,
-        db,
-        *,
-        now_ts: int,
-        unit_id: int,
-        reflection_obj: dict,
-    ) -> None:
-        """stream出力の内部JSON（反射）を、Episode Unitへ即時反映する。"""
-        unit = db.query(Unit).filter(Unit.id == int(unit_id)).one_or_none()
-        pe = db.query(PayloadEpisode).filter(PayloadEpisode.unit_id == int(unit_id)).one_or_none()
-        if unit is None or pe is None:
-            return
-
-        label = str(reflection_obj.get("persona_affect_label") or "").strip()
-        intensity = reflection_obj.get("persona_affect_intensity")
-        salience = reflection_obj.get("salience")
-        confidence = reflection_obj.get("confidence")
-
-        if label:
-            unit.persona_affect_label = label
-        if intensity is not None:
-            try:
-                unit.persona_affect_intensity = clamp01(float(intensity))
-            except Exception:  # noqa: BLE001
-                pass
-        if salience is not None:
-            try:
-                unit.salience = clamp01(float(salience))
-            except Exception:  # noqa: BLE001
-                pass
-        if confidence is not None:
-            try:
-                unit.confidence = clamp01(float(confidence))
-            except Exception:  # noqa: BLE001
-                pass
-
-        # topic_tags は正規化して保存する（hash安定のため）
-        tags_raw = reflection_obj.get("topic_tags")
-        tags: list[str] = tags_raw if isinstance(tags_raw, list) else []
-        canonical = canonicalize_topic_tags(tags)
-        reflection_obj["topic_tags"] = canonical
-        unit.topic_tags = dumps_topic_tags_json(canonical) if canonical else None
-
-        # /api/chat は Unit を RAW で保存する。
-        # inline reflection が得られても state は変更しない（Worker側は reflection_json の有無で冪等にスキップする）。
-        unit.updated_at = int(now_ts)
-
-        # JSONは解析用にそのまま保存
-        pe.reflection_json = _json_dumps(reflection_obj)
-
-        db.add(unit)
-        db.add(pe)
-
-        # vec_units が無い場合はUPDATEが0件になるだけ（安全）
-        sync_unit_vector_metadata(
-            db,
-            unit_id=int(unit_id),
-            occurred_at=unit.occurred_at,
-            state=int(unit.state),
-            sensitivity=int(unit.sensitivity),
-        )
-        record_unit_version(
-            db,
-            unit_id=int(unit_id),
-            payload_obj=reflection_obj,
-            patch_reason="reflect_episode_inline",
-            now_ts=int(now_ts),
-        )
-
-    def _sse(self, event: str, payload: dict) -> str:
-        """SSE（Server-Sent Events）形式の1メッセージを構築する。"""
-        return f"event: {event}\ndata: {_json_dumps(payload)}\n\n"
-
-    def _maybe_enqueue_shared_narrative_summary(self, db, *, now_ts: int) -> None:
-        if not self.config_store.memory_enabled:
-            return
-
-        # enqueue判定ロジックは periodic.py 側に集約する。
-        # ここでは従来の挙動を維持するため、sensitivity フィルタは行わない（max_sensitivity=None）。
-        from cocoro_ghost.periodic import maybe_enqueue_shared_narrative_summary  # noqa: PLC0415
-
-        maybe_enqueue_shared_narrative_summary(
-            db,
-            now_ts=int(now_ts),
-            scope_key=_SHARED_NARRATIVE_SUMMARY_SCOPE_KEY,
-            cooldown_seconds=_SUMMARY_REFRESH_INTERVAL_SECONDS,
-            max_sensitivity=None,
-        )
-
-
-    def _summarize_images(self, images: Sequence[Dict[str, str]] | None, *, purpose: str) -> List[str]:
-        if not images:
-            return []
-        blobs: List[bytes] = []
-        for img in images:
-            b64 = (img.get("base64") or "").strip()
-            if not b64:
-                continue
-            try:
-                blobs.append(_decode_base64_image(b64))
-            except Exception:  # noqa: BLE001
-                continue
-        if not blobs:
-            return []
-        try:
-            return [s.strip() for s in self.llm_client.generate_image_summary(blobs, purpose=purpose)]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("画像要約に失敗しました", exc_info=exc)
-            return ["画像要約に失敗しました"]
-
-    def _build_simple_memory_pack(
-        self,
-        *,
-        client_context: Dict[str, Any] | None,
-        image_summaries: Sequence[str] | None,
-        now_ts: int,
-    ) -> str:
-        """記憶機能を使わない簡易MemoryPack（文脈中心）。"""
-        # 簡易版は Context のみを注入する。
-
-        capsule_lines: List[str] = []
-        now_local = datetime.fromtimestamp(now_ts).astimezone().isoformat()
-        capsule_lines.append(f"now_local: {now_local}")
-        if client_context:
-            active_app = str(client_context.get("active_app") or "").strip()
-            window_title = str(client_context.get("window_title") or "").strip()
-            locale = str(client_context.get("locale") or "").strip()
-            if active_app:
-                capsule_lines.append(f"active_app: {active_app}")
-            if window_title:
-                capsule_lines.append(f"window_title: {window_title}")
-            if locale:
-                capsule_lines.append(f"locale: {locale}")
-        if image_summaries:
-            for idx, summary in enumerate(image_summaries, start=1):
-                s = (summary or "").strip()
-                if not s:
-                    continue
-                capsule_lines.append(f"[画像 #{idx}]")
-                capsule_lines.append("---IMAGE_SUMMARY_START---")
-                capsule_lines.extend(s.splitlines())
-                capsule_lines.append("---IMAGE_SUMMARY_END---")
-                capsule_lines.append("")
-
-        parts: List[str] = []
-        parts.append(format_memory_pack_section("CONTEXT_CAPSULE", capsule_lines))
-        return "".join(parts)
-
-    def _load_recent_conversation(
-        self,
-        db,
-        *,
-        turns: int,
-        exclude_unit_id: int | None = None,
-    ) -> List[Dict[str, str]]:
-        if turns <= 0:
-            return []
-
-        q = (
-            db.query(Unit, PayloadEpisode)
-            .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-            .filter(
-                Unit.kind == int(UnitKind.EPISODE),
-                Unit.state.in_([int(UnitState.RAW), int(UnitState.VALIDATED), int(UnitState.CONSOLIDATED)]),
-                Unit.sensitivity <= int(Sensitivity.SECRET),
-                PayloadEpisode.reply_text.isnot(None),
-            )
-        )
-        if exclude_unit_id is not None:
-            q = q.filter(Unit.id != int(exclude_unit_id))
-
-        rows: List[tuple[Unit, PayloadEpisode]] = (
-            q.order_by(Unit.occurred_at.desc().nulls_last(), Unit.created_at.desc(), Unit.id.desc()).limit(int(turns)).all()
-        )
-        rows.reverse()
-
-        messages: List[Dict[str, str]] = []
-        for u, pe in rows:
-            source = str(getattr(u, "source", "") or "").strip()
-            ut = (pe.input_text or "").strip()
-            rt = (pe.reply_text or "").strip()
-
-            # --- desktop_watch は「観測メモ」として扱う ---
-            # NOTE:
-            # - desktop_watch を role="user" で混ぜると、LLMが「ユーザーが発話した」と誤解しやすい。
-            # - さらに、過去に内部タグ（例: # desktop_watch / active_app:）が混入していると、
-            #   LLMがそれを根拠として引用してしまう。
-            # - ここでは「デスクトップを確認」という自然語ラベルに寄せて、1つのassistantメッセージに畳む。
-            if source == "desktop_watch":
-                active_app = ""
-                window_title = ""
-                try:
-                    if pe.context_note:
-                        ctx = json.loads(pe.context_note)
-                        if isinstance(ctx, dict):
-                            active_app = str(ctx.get("active_app") or "").strip()
-                            window_title = str(ctx.get("window_title") or "").strip()
-                except Exception:  # noqa: BLE001
-                    active_app = ""
-                    window_title = ""
-
-                details = " / ".join([x for x in [active_app, window_title] if x]).strip()
-                memo_lines: list[str] = ["（観測メモ）デスクトップを確認"]
-                if details:
-                    memo_lines.append(f"見えていたもの: {details}")
-                if rt:
-                    memo_lines.append(f"独り言: {rt}")
-                messages.append({"role": "assistant", "content": "\n".join(memo_lines).strip()})
-                continue
-
-            # --- 通常の会話（user/assistant） ---
-            if ut:
-                messages.append({"role": "user", "content": ut})
-            if rt:
-                messages.append({"role": "assistant", "content": rt})
-        return messages
-
-    def stream_chat(
-        self,
-        request: schemas.ChatRequest,
-        background_tasks: Optional[BackgroundTasks] = None,
-    ) -> Generator[str, None, None]:
-        """
-        /chat の本体処理。
-
-        - MemoryPack（関連記憶）を組み立て、内部コンテキストとしてLLMへ送る
-        - 返信をSSEでストリームし、最後にEpisodeとして保存する
-        """
-        start_perf = time.perf_counter()
-        request_id = _next_request_id("chat")
-        _log_client_timing(request_id=request_id, event="クライアント受信", start_perf=start_perf)
-        cfg = self.config_store.config
-
-        # 運用前のため、/api/chat は embedding_preset_id 指定を必須とする。
-        # embedding_preset_id は embedding_presets.id（UUID）を想定。
-        embedding_preset_id = (request.embedding_preset_id or "").strip()
-        if not embedding_preset_id:
-            _log_client_timing(request_id=request_id, event="クライアント不正リクエスト", start_perf=start_perf)
-            yield self._sse(
-                "error",
-                {
-                    "message": "embedding_preset_id is required",
-                    "code": "missing_embedding_preset_id",
-                },
-            )
-            return
-
-        lock = _get_memory_lock(embedding_preset_id)
-        now_ts = _now_utc_ts()
-        memory_enabled = self.config_store.memory_enabled
-
-        # 指定された embedding_preset_id の embedding preset を settings.db から解決し、
-        # 次元・検索上限・注入予算・embeddingモデルを per-request で適用する。
-        preset_snapshot = _load_embedding_preset_by_embedding_preset_id(embedding_preset_id)
-        if preset_snapshot is None:
-            _log_client_timing(request_id=request_id, event="クライアント不正リクエスト", start_perf=start_perf)
-            yield self._sse(
-                "error",
-                {
-                    "message": "unknown embedding_preset_id (embedding preset not found or archived)",
-                    "code": "invalid_embedding_preset_id",
-                },
-            )
-            return
-
-        embedding_dimension = int(preset_snapshot.embedding_dimension)
-        similar_episodes_limit = int(preset_snapshot.similar_episodes_limit)
-        max_inject_tokens = int(preset_snapshot.max_inject_tokens)
-
-        # 埋め込みモデルだけを差し替えた LlmClient を作り、Retriever用に使う。
-        # chat/image側は現行設定（アクティブLLMプリセット）に従う。
-        embedding_llm_client = LlmClient(
-            model=cfg.llm_model,
-            embedding_model=preset_snapshot.embedding_model,
-            image_model=cfg.image_model,
-            api_key=cfg.llm_api_key,
-            embedding_api_key=preset_snapshot.embedding_api_key,
-            llm_base_url=cfg.llm_base_url,
-            embedding_base_url=preset_snapshot.embedding_base_url,
-            image_llm_base_url=cfg.image_llm_base_url,
-            image_model_api_key=cfg.image_model_api_key,
-            reasoning_effort=cfg.reasoning_effort,
-            max_tokens=cfg.max_tokens,
-            max_tokens_vision=cfg.max_tokens_vision,
-            image_timeout_seconds=cfg.image_timeout_seconds,
-        )
-
-        # --- user client_id（必須） ---
-        # /api/chat は視覚命令の宛先を一意に決める必要があるため、client_id 必須
-        user_client_id = str(request.client_id or "").strip()
-
-        # --- 入力テキスト ---
-        input_text = (request.input_text or "").strip()
-
-        # --- client_context（保存/注入用） ---
-        effective_client_context = self._merge_client_context(client_id=user_client_id, client_context=request.client_context)
-        logger.info(
-            "chat request received request_id=%s user_client_id=%s has_images=%s vision_preamble_enabled=%s",
-            request_id,
-            user_client_id,
-            bool(request.images),
-            not bool(request.images),
-        )
-
-        # --- チャット視覚（Vision） ---
-        # 方針:
-        # - 通常会話は「追加のLLM判定呼び出し」を行わない。
-        # - 画像添付が無い場合は、LLMストリームの先頭1行（VISION_REQUESTプレアンブル）で判定する。
-        # - 視覚が必要なら、いったんストリームを中断してキャプチャ→本返答を作る（同一ターンで返す）。
-        images_input: list[Dict[str, str]] = list(request.images or [])
-        include_vision_preamble = not bool(images_input)
-        vision_extra_prompt: str | None = None
-        vision_capture_error_for_user: str | None = None
-
-        rerun_used = False
-        while True:
-            # --- 画像要約 ---
-            image_summaries = self._summarize_images(images_input, purpose=LlmRequestPurpose.IMAGE_SUMMARY_CHAT)
-
-            # 画像だけ送られた場合でも、LLMには明示的なユーザー要求を渡す（空文字だと不安定になりやすい）。
-            if not input_text and image_summaries:
-                input_text = "画像"
-            if not input_text and not image_summaries:
-                _log_client_timing(request_id=request_id, event="クライアント不正リクエスト", start_perf=start_perf)
-                yield self._sse(
-                    "error",
-                    {"message": "入力が空です（テキストも画像もありません）", "code": "empty_input"},
-                )
-                return
-
-            # entity抽出の入力はユーザー発話＋画像要約に限定する。
-            entity_text = "\n".join(filter(None, [input_text, *(image_summaries or [])])).strip()
-
-            conversation: List[Dict[str, str]] = []
-            memory_pack = ""
-            if memory_enabled:
-                try:
-                    # entity名抽出（LLM）を先に走らせ、Retriever検索と並列化する。
-                    with ThreadPoolExecutor(max_workers=1) as executor:
-                        entity_future = None
-                        if entity_text:
-                            entity_future = executor.submit(extract_entity_names_with_llm, self.llm_client, entity_text)
-                        # DBアクセスはロック内でまとめて行う。
-                        with lock, memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-                            recent_conversation = self._load_recent_conversation(db, turns=3)
-                            llm_turns_window = int(getattr(cfg, "max_turns_window", 0) or 0)
-                            if llm_turns_window > 0:
-                                conversation = self._load_recent_conversation(db, turns=llm_turns_window)
-                            retriever = Retriever(llm_client=embedding_llm_client, db=db)
-                            relevant_episodes = retriever.retrieve(
-                                input_text,
-                                recent_conversation,
-                                max_results=int(similar_episodes_limit),
-                            )
-                            # entity名の突合はDB内のalias/name一覧で行う。
-                            alias_rows = collect_entity_alias_rows(db)
-                            candidate_names = entity_future.result() if entity_future else []
-                            matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
-                            memory_pack = build_memory_pack(
-                                db=db,
-                                input_text=input_text,
-                                image_summaries=image_summaries,
-                                client_context=effective_client_context,
-                                now_ts=now_ts,
-                                max_inject_tokens=int(max_inject_tokens),
-                                relevant_episodes=relevant_episodes,
-                                matched_entity_ids=matched_entity_ids,
-                                injection_strategy=retriever.last_injection_strategy,
-                            )
-                except Exception as exc:  # noqa: BLE001
-                    logger.error("MemoryPack生成に失敗しました", exc_info=exc)
-                    _log_client_timing(request_id=request_id, event="クライアント要求エラー", start_perf=start_perf)
-                    yield self._sse("error", {"message": str(exc), "code": "memory_pack_failed"})
-                    return
-            else:
-                memory_pack = self._build_simple_memory_pack(
-                    client_context=effective_client_context,
-                    image_summaries=image_summaries,
-                    now_ts=now_ts,
-                )
-
-            # system は固定化し、MemoryPack は内部コンテキストとして後置する。
-            vision_instruction = ""
-            if vision_extra_prompt:
-                vision_instruction = str(vision_extra_prompt).strip()
-            if vision_capture_error_for_user:
-                msg = str(vision_capture_error_for_user).strip()
-                vision_instruction = "\n\n".join(
-                    [
-                        (vision_instruction or "").strip(),
-                        "視覚入力が必要だったが、画像が取得できなかった。",
-                        f"ユーザーには「{msg}」のニュアンスで自然に伝える。",
-                        "画像に言及せずに返せる範囲で答え、必要なら確認を1つだけ提案する。",
-                    ]
-                ).strip()
-
-            extra_prompt = _persona_affect_trailer_system_prompt(include_vision_preamble=include_vision_preamble)
-            if vision_instruction:
-                extra_prompt = "\n\n".join([extra_prompt, vision_instruction]).strip()
-            system_prompt = _build_system_prompt_base(
-                persona_text=cfg.persona_text,
-                addon_text=cfg.addon_text,
-                requires_internal_trailer=True,
-                extra_prompt=extra_prompt,
-            )
-            conversation = list(conversation)
-            internal_context_message = _build_internal_context_message(memory_pack)
-            if internal_context_message:
-                conversation.append(internal_context_message)
-            conversation.append({"role": "user", "content": input_text})
-
-            # LLM呼び出しの処理目的をログで区別できるようにする。
-            purpose = LlmRequestPurpose.CONVERSATION
-            try:
-                _log_llm_timing(request_id=request_id, event="送信開始", start_perf=start_perf)
-                resp_stream = self.llm_client.generate_reply_response(
-                    system_prompt=system_prompt,
-                    conversation=conversation,
-                    purpose=purpose,
-                    stream=True,
-                )
-                _log_llm_timing(request_id=request_id, event="送信完了", start_perf=start_perf)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("stream chat start failed", exc_info=exc)
-                _log_llm_timing(request_id=request_id, event="送信エラー", start_perf=start_perf)
-                yield self._sse("error", {"message": str(exc), "code": "llm_start_failed"})
-                return
-
-            reply_text = ""
-            internal_trailer = ""
-            finish_reason = ""
-            stream_started = False
-            sanitizer = _UserVisibleReplySanitizer()
-            vision_request: dict[str, Any] | None = None
-            preamble_buf = ""
-            preamble_done = not bool(include_vision_preamble)
-
-            try:
-                marker = _STREAM_TRAILER_MARKER
-                keep = max(8, len(marker) - 1)
-                buf = ""
-                in_trailer = False
-                visible_parts: list[str] = []
-                trailer_parts: list[str] = []
-
-                def mark_stream_started() -> None:
-                    nonlocal stream_started
-                    if stream_started:
-                        return
-                    stream_started = True
-                    _log_client_timing(request_id=request_id, event="クライアント送信開始", start_perf=start_perf)
-
-                for delta in self.llm_client.stream_delta_chunks(resp_stream):
-                    # finish_reason は最終チャンクで届くことがあるため、見つけたら保持する。
-                    if delta.finish_reason:
-                        finish_reason = delta.finish_reason
-                    # テキスト差分がないチャンクはスキップする。
-                    if not delta.text:
-                        continue
-
-                    text_piece = delta.text
-
-                    # --- Visionプレアンブル（最初の1行） ---
-                    if not preamble_done:
-                        preamble_buf += text_piece
-                        if "\n" not in preamble_buf:
-                            # 先頭行が来ない場合はハングを避ける（安全寄りに通常応答へフォールバック）
-                            if len(preamble_buf) > 512:
-                                preamble_done = True
-                                buf += preamble_buf
-                                preamble_buf = ""
-                            continue
-
-                        line, rest = preamble_buf.split("\n", 1)
-                        preamble_buf = ""
-                        vr = _parse_vision_preamble_line(line)
-                        if vr is not None and not rerun_used:
-                            vision_request = vr
-                            logger.info(
-                                "vision request detected in preamble source=%s client_id=%s",
-                                str(vr.get("source") or ""),
-                                user_client_id,
-                            )
-                            break
-                        preamble_done = True
-                        # プレアンブル行の改行はユーザーへ見せないため落とす
-                        buf += rest
-                    else:
-                        buf += text_piece
-
-                    while True:
-                        if not in_trailer:
-                            idx = buf.find(marker)
-                            if idx != -1:
-                                chunk_text = buf[:idx]
-                                if chunk_text:
-                                    safe = sanitizer.feed(chunk_text)
-                                    if safe:
-                                        visible_parts.append(safe)
-                                        mark_stream_started()
-                                        yield self._sse("token", {"text": safe})
-                                buf = buf[idx + len(marker) :]
-                                in_trailer = True
-                                continue
-                            if len(buf) > keep:
-                                chunk_text = buf[:-keep]
-                                buf = buf[-keep:]
-                                if chunk_text:
-                                    safe = sanitizer.feed(chunk_text)
-                                    if safe:
-                                        visible_parts.append(safe)
-                                        mark_stream_started()
-                                        yield self._sse("token", {"text": safe})
-                            break
-
-                        # 以後はすべて内部トレーラーへ
-                        if buf:
-                            trailer_parts.append(buf)
-                            buf = ""
-                        break
-
-                # Vision要求が出た場合は、ここでストリームを捨ててリランする。
-                if vision_request is not None:
-                    _log_llm_timing(request_id=request_id, event="ストリーム中断（Vision要求）", start_perf=start_perf)
-                else:
-                    if not in_trailer:
-                        if buf:
-                            safe = sanitizer.feed(buf)
-                            if safe:
-                                visible_parts.append(safe)
-                                mark_stream_started()
-                                yield self._sse("token", {"text": safe})
-                    else:
-                        if buf:
-                            trailer_parts.append(buf)
-
-                    tail_safe = sanitizer.flush()
-                    if tail_safe:
-                        visible_parts.append(tail_safe)
-                        mark_stream_started()
-                        yield self._sse("token", {"text": tail_safe})
-
-                    reply_text = "".join(visible_parts)
-                    internal_trailer = "".join(trailer_parts)
-                    _log_llm_timing(request_id=request_id, event="ストリーム終了", start_perf=start_perf)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("stream chat failed", exc_info=exc)
-                _log_llm_timing(request_id=request_id, event="ストリームエラー", start_perf=start_perf)
-                yield self._sse("error", {"message": str(exc), "code": "llm_stream_failed"})
-                return
-
-            # --- Vision要求（同一ターンキャプチャ） ---
-            if vision_request is not None and not rerun_used:
-                vision_extra_prompt = vision_request.get("extra_prompt")
-                source = str(vision_request.get("source") or "").strip()
-                cap_images, cap_ctx, cap_err = self._request_capture_for_chat(
-                    embedding_preset_id=embedding_preset_id,
-                    user_client_id=user_client_id,
-                    source=source,
-                )
-                if cap_ctx:
-                    effective_client_context = self._merge_client_context(client_id=user_client_id, client_context=cap_ctx)
-                if cap_err:
-                    vision_capture_error_for_user = cap_err
-                    images_input = []
-                else:
-                    images_input = cap_images
-
-                include_vision_preamble = False
-                rerun_used = True
-                continue
-
-            # 内部コンテキスト混入があれば、内容は残さず事実だけログに残す（ユーザー表示は抑止済み）。
-            if sanitizer.removed_blocks:
-                logger.warning(
-                    "LLM reply contained internal markers; sanitized removed_blocks=%s removed_lines=%s request_id=%s",
-                    sanitizer.removed_blocks,
-                    sanitizer.removed_lines,
-                    request_id,
-                )
-
-            reflection_obj = _parse_internal_json_text(internal_trailer)
-
-            llm_log_level = _get_llm_log_level_from_store(self.config_store)
-            log_file_enabled = bool(self.config_store.toml_config.log_file_enabled)
-            console_max_chars = _get_llm_log_console_max_chars_from_store(self.config_store)
-            file_max_chars = _get_llm_log_file_max_chars_from_store(self.config_store)
-            console_max_value_chars = _get_llm_log_console_value_max_chars_from_store(self.config_store)
-            file_max_value_chars = _get_llm_log_file_value_max_chars_from_store(self.config_store)
-            if llm_log_level != "OFF":
-                io_console_logger.info(
-                    "LLM response 受信 %s kind=chat stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
-                    purpose,
-                    True,
-                    finish_reason,
-                    len(reply_text or ""),
-                    len(internal_trailer or ""),
-                )
-                if log_file_enabled:
-                    io_file_logger.info(
-                        "LLM response 受信 %s kind=chat stream=%s finish_reason=%s reply_chars=%s trailer_chars=%s",
-                        purpose,
-                        True,
-                        finish_reason,
-                        len(reply_text or ""),
-                        len(internal_trailer or ""),
-                    )
-            log_llm_payload(
-                io_console_logger,
-                "LLM response (chat stream)",
-                {
-                    "finish_reason": finish_reason,
-                    "reply_text": reply_text,
-                    "internal_trailer": internal_trailer,
-                },
-                max_chars=console_max_chars,
-                max_value_chars=console_max_value_chars,
-                llm_log_level=llm_log_level,
-            )
-            if log_file_enabled:
-                log_llm_payload(
-                    io_file_logger,
-                    "LLM response (chat stream)",
-                    {
-                        "finish_reason": finish_reason,
-                        "reply_text": reply_text,
-                        "internal_trailer": internal_trailer,
-                    },
-                    max_chars=file_max_chars,
-                    max_value_chars=file_max_value_chars,
-                    llm_log_level=llm_log_level,
-                )
-
-            image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
-            context_note = _json_dumps(effective_client_context) if effective_client_context else None
-
-            try:
-                with lock, memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-                    episode_unit_id = self._create_episode_unit(
-                        db,
-                        now_ts=now_ts,
-                        source="chat",
-                        input_text=input_text,
-                        reply_text=reply_text,
-                        image_summary=image_summary_text,
-                        context_note=context_note,
-                        sensitivity=int(Sensitivity.NORMAL),
-                    )
-                    if reflection_obj:
-                        self._apply_inline_reflection_if_present(
-                            db,
-                            now_ts=now_ts,
-                            unit_id=int(episode_unit_id),
-                            reflection_obj=reflection_obj,
-                        )
-                    self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=episode_unit_id)
-                    self._maybe_enqueue_shared_narrative_summary(db, now_ts=now_ts)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("episode保存に失敗しました", exc_info=exc)
-                _log_client_timing(request_id=request_id, event="クライアント応答エラー", start_perf=start_perf)
-                yield self._sse("error", {"message": str(exc), "code": "db_write_failed"})
-                return
-
-            if not stream_started:
-                _log_client_timing(request_id=request_id, event="クライアント送信開始", start_perf=start_perf)
-            _log_client_timing(request_id=request_id, event="クライアント送信終了", start_perf=start_perf)
-            yield self._sse("done", {"episode_unit_id": episode_unit_id, "reply_text": reply_text, "usage": {}})
-            return
-
-    def handle_notification(
-        self,
-        request: schemas.NotificationRequest,
-        *,
-        background_tasks: Optional[BackgroundTasks] = None,
-    ) -> schemas.NotificationResponse:
-        """外部システムからの通知をEpisodeとして保存し、必要なジョブをenqueueする。"""
-        embedding_preset_id = self.config_store.embedding_preset_id
-        lock = _get_memory_lock(embedding_preset_id)
-        now_ts = _now_utc_ts()
-
-        system_text = f"[{request.source_system}] {request.text}".strip()
-        context_note = _json_dumps({"source_system": request.source_system, "text": request.text})
-
-        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-            unit_id = self._create_episode_unit(
-                db,
-                now_ts=now_ts,
-                source="notification",
-                input_text=system_text,
-                reply_text=None,
-                image_summary=None,
-                context_note=context_note,
-                sensitivity=int(Sensitivity.NORMAL),
-            )
-
-        if background_tasks is not None:
-            background_tasks.add_task(
-                self._process_notification_async,
-                embedding_preset_id=embedding_preset_id,
-                unit_id=int(unit_id),
-                source_system=request.source_system,
-                text=request.text,
-                images=request.images,
-                system_text=system_text,
-            )
-        else:
-            self._process_notification_async(
-                embedding_preset_id=embedding_preset_id,
-                unit_id=int(unit_id),
-                source_system=request.source_system,
-                text=request.text,
-                images=request.images,
-                system_text=system_text,
-            )
-        return schemas.NotificationResponse(unit_id=unit_id)
-
-    def _process_notification_async(
-        self,
-        *,
-        embedding_preset_id: str,
-        unit_id: int,
-        source_system: str,
-        text: str,
-        images: Sequence[Dict[str, str]],
-        system_text: str,
-    ) -> None:
-        lock = _get_memory_lock(embedding_preset_id)
-        now_ts = _now_utc_ts()
-
-        image_summaries = self._summarize_images(list(images), purpose=LlmRequestPurpose.IMAGE_SUMMARY_NOTIFICATION)
-        image_summary_text = "\n".join([s for s in image_summaries if s]) if image_summaries else None
-
-        notification_input_text = "\n".join(
-            [
-                "# notification",
-                f"source_system: {source_system}",
-                f"text: {text}",
-            ]
-        ).strip()
-
-        cfg = self.config_store.config
-        memory_enabled = self.config_store.memory_enabled
-
-        # entity抽出の入力は通知文＋画像要約に限定する。
-        entity_text = "\n".join(filter(None, [notification_input_text, *(image_summaries or [])])).strip()
-
-        memory_pack = ""
-        if memory_enabled:
-            try:
-                # entity名抽出（LLM）を先に走らせ、Retriever検索と並列化する。
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    entity_future = None
-                    if entity_text:
-                        entity_future = executor.submit(extract_entity_names_with_llm, self.llm_client, entity_text)
-                    # DBアクセスはロック内でまとめて行う。
-                    with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-                        recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=unit_id)
-                        retriever = Retriever(llm_client=self.llm_client, db=db)
-                        relevant_episodes = retriever.retrieve(
-                            notification_input_text,
-                            recent_conversation,
-                            max_results=int(cfg.similar_episodes_limit or 5),
-                        )
-                        # entity名の突合はDB内のalias/name一覧で行う。
-                        alias_rows = collect_entity_alias_rows(db)
-                        candidate_names = entity_future.result() if entity_future else []
-                        matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
-                        memory_pack = build_memory_pack(
-                            db=db,
-                            input_text=notification_input_text,
-                            image_summaries=image_summaries,
-                            client_context=None,
-                            now_ts=now_ts,
-                            max_inject_tokens=int(cfg.max_inject_tokens),
-                            relevant_episodes=relevant_episodes,
-                            matched_entity_ids=matched_entity_ids,
-                            injection_strategy=retriever.last_injection_strategy,
-                        )
-            except Exception as exc:  # noqa: BLE001
-                logger.error("MemoryPack生成に失敗しました(notification)", exc_info=exc)
-                memory_pack = ""
-        else:
-            memory_pack = self._build_simple_memory_pack(
-                client_context=None,
-                image_summaries=image_summaries,
-                now_ts=now_ts,
-            )
-
-        # system は固定化し、MemoryPack は内部コンテキストとして後置する。
-        system_prompt = _build_system_prompt_base(
-            persona_text=cfg.persona_text,
-            addon_text=cfg.addon_text,
-            requires_internal_trailer=False,
-            extra_prompt=get_external_prompt(),
-        )
-        conversation: List[Dict[str, str]] = []
-        internal_context_message = _build_internal_context_message(memory_pack)
-        if internal_context_message:
-            conversation.append(internal_context_message)
-        conversation.append({"role": "user", "content": notification_input_text})
-
-        message = ""
-        try:
-            resp = self.llm_client.generate_reply_response(
-                system_prompt=system_prompt,
-                conversation=conversation,
-                purpose=LlmRequestPurpose.NOTIFICATION,
-                stream=False,
-            )
-            message = (self.llm_client.response_content(resp) or "").strip()
-        except Exception as exc:  # noqa: BLE001
-            logger.error("notification reply generation failed", exc_info=exc)
-            message = ""
-
-        with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-            self._update_episode_unit(
-                db,
-                now_ts=now_ts,
-                unit_id=unit_id,
-                reply_text=message or None,
-                image_summary=image_summary_text,
-            )
-            self._enqueue_default_jobs(db, now_ts=now_ts, unit_id=unit_id)
-            self._maybe_enqueue_shared_narrative_summary(db, now_ts=now_ts)
-
-        publish_event(
-            type="notification",
-            embedding_preset_id=embedding_preset_id,
-            unit_id=unit_id,
-            data={"system_text": system_text, "message": message},
-        )
-
-    def handle_meta_request(
-        self,
-        request: schemas.MetaRequestRequest,
-        *,
-        background_tasks: Optional[BackgroundTasks] = None,
-    ) -> None:
-        """
-        メタ要求（割り込み）から能動メッセージを生成する。
-
-        方針:
-        - 指示（instruction）やペイロード（payload）は永続化しない。
-        - 生成された「ユーザーに見える本文」だけを通常のEpisodeとして保存する。
-          → 後から辿ると「夢の話をした」は思い出せるが、「メタ要求があった」は辿れない。
-
-        background_tasks があれば非同期実行し、結果はevent_streamで通知する。
-        """
-        embedding_preset_id = request.embedding_preset_id or self.config_store.embedding_preset_id
-
-        if background_tasks is not None:
-            background_tasks.add_task(
-                self._process_meta_request_async,
-                embedding_preset_id=embedding_preset_id,
-                instruction=request.instruction,
-                payload_text=request.payload_text,
-                images=request.images,
-            )
-        else:
-            self._process_meta_request_async(
-                embedding_preset_id=embedding_preset_id,
-                instruction=request.instruction,
-                payload_text=request.payload_text,
-                images=request.images,
-            )
-        return None
-
-    def _process_meta_request_async(
-        self,
-        *,
-        embedding_preset_id: str,
-        instruction: str,
-        payload_text: str,
-        images: Sequence[Dict[str, str]],
-    ) -> None:
-        lock = _get_memory_lock(embedding_preset_id)
-        now_ts = _now_utc_ts()
-
-        # --- 画像要約（生成の材料・永続化しない） ---
-        image_summaries = self._summarize_images(list(images), purpose=LlmRequestPurpose.IMAGE_SUMMARY_META_REQUEST)
-
-        # --- meta-requestテキスト（生成用） ---
-        # instruction/payload は永続化しない（生成にのみ利用する）。
-        # 画像がある場合は、参照不能（ユーザーに見えない）になり得るため、要約を材料として渡す。
-        meta_generation_text = "\n\n".join(
-            [
-                "# instruction",
-                (instruction or "").strip(),
-                "",
-                "# payload",
-                (payload_text or "").strip(),
-            ]
-        ).strip()
-        if image_summaries:
-            image_block = "\n".join([s for s in image_summaries if (s or "").strip()])
-            if image_block:
-                meta_generation_text = "\n\n".join([meta_generation_text, "# images", image_block]).strip()
-
-        # --- 記憶検索/Entity抽出用テキスト（非永続・instructionは混ぜない） ---
-        # 割り込み指示（制御プレーン）を埋め込み検索に混ぜると、検索が「指示の類似」に引っ張られやすい。
-        # ここでは話題（データプレーン）に限定する。
-        meta_retrieval_text = (payload_text or "").strip()
-
-        cfg = self.config_store.config
-        memory_enabled = self.config_store.memory_enabled
-
-        # entity抽出は「話題（payload）」に寄せる（instructionや画像要約は混ぜない）。
-        entity_text = meta_retrieval_text
-
-        memory_pack = ""
-        if memory_enabled:
-            try:
-                # entity名抽出（LLM）を先に走らせ、Retriever検索と並列化する。
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    entity_future = None
-                    if entity_text:
-                        entity_future = executor.submit(extract_entity_names_with_llm, self.llm_client, entity_text)
-                    # DBアクセスはロック内でまとめて行う。
-                    with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-                        recent_conversation = self._load_recent_conversation(db, turns=3, exclude_unit_id=None)
-                        retriever = Retriever(llm_client=self.llm_client, db=db)
-                        relevant_episodes = retriever.retrieve(
-                            meta_retrieval_text,
-                            recent_conversation,
-                            max_results=int(cfg.similar_episodes_limit or 5),
-                        )
-                        # entity名の突合はDB内のalias/name一覧で行う。
-                        alias_rows = collect_entity_alias_rows(db)
-                        candidate_names = entity_future.result() if entity_future else []
-                        matched_entity_ids = match_entity_ids(candidate_names, alias_rows)
-                        memory_pack = build_memory_pack(
-                            db=db,
-                            input_text=meta_retrieval_text,
-                            image_summaries=image_summaries,
-                            client_context=None,
-                            now_ts=now_ts,
-                            max_inject_tokens=int(cfg.max_inject_tokens),
-                            relevant_episodes=relevant_episodes,
-                            matched_entity_ids=matched_entity_ids,
-                            injection_strategy=retriever.last_injection_strategy,
-                        )
-            except Exception as exc:  # noqa: BLE001
-                logger.error("MemoryPack生成に失敗しました(meta-request)", exc_info=exc)
-                memory_pack = ""
-        else:
-            memory_pack = self._build_simple_memory_pack(
-                client_context=None,
-                image_summaries=image_summaries,
-                now_ts=now_ts,
-            )
-
-        # system は固定化し、MemoryPack は内部コンテキストとして後置する。
-        system_prompt = _build_system_prompt_base(
-            persona_text=cfg.persona_text,
-            addon_text=cfg.addon_text,
-            requires_internal_trailer=False,
-            extra_prompt=get_meta_request_prompt(),
-        )
-        conversation: List[Dict[str, str]] = []
-        internal_context_message = _build_internal_context_message(memory_pack)
-        if internal_context_message:
-            conversation.append(internal_context_message)
-        conversation.append({"role": "user", "content": meta_generation_text})
-
-        message = ""
-        try:
-            resp = self.llm_client.generate_reply_response(
-                system_prompt=system_prompt,
-                conversation=conversation,
-                purpose=LlmRequestPurpose.META_REQUEST,
-                stream=False,
-            )
-            message = (self.llm_client.response_content(resp) or "").strip()
-        except Exception as exc:  # noqa: BLE001
-            logger.error("meta-request document generation failed", exc_info=exc)
-            message = ""
-
-        # --- 会話結果のみ保存 ---
-        # meta-request（割り込み指示）は永続化しない。
-        # 生成した本文だけを通常のEpisodeとして保存し、「話した事実」を後から辿れるようにする。
-        episode_unit_id = -1
-        if message:
-            with lock, memory_session_scope(embedding_preset_id, self.config_store.embedding_dimension) as db:
-                episode_unit_id = self._create_episode_unit(
-                    db,
-                    now_ts=now_ts,
-                    source="proactive",
-                    input_text=None,
-                    reply_text=message,
-                    image_summary=None,
-                    context_note=None,
-                    sensitivity=int(Sensitivity.NORMAL),
-                )
-                # 能動メッセージは「検索で思い出す」だけで十分なため、埋め込みのみ作る。
-                self._enqueue_embeddings_job(db, now_ts=now_ts, unit_id=int(episode_unit_id))
-                self._maybe_enqueue_shared_narrative_summary(db, now_ts=now_ts)
-
-        publish_event(
-            type="meta-request",
-            embedding_preset_id=embedding_preset_id,
-            unit_id=int(episode_unit_id),
-            data={"message": message},
-        )
-
-    def _create_episode_unit(
-        self,
-        db,
-        *,
-        now_ts: int,
-        source: str,
-        input_text: Optional[str],
-        reply_text: Optional[str],
-        image_summary: Optional[str],
-        context_note: Optional[str],
-        sensitivity: int,
-    ) -> int:
-        unit = Unit(
-            kind=int(UnitKind.EPISODE),
-            occurred_at=now_ts,
-            created_at=now_ts,
-            updated_at=now_ts,
-            source=source,
-            state=int(UnitState.RAW),
-            confidence=0.5,
-            salience=0.0,
-            sensitivity=sensitivity,
-            pin=0,
-            topic_tags=None,
-            persona_affect_label=None,
-            persona_affect_intensity=None,
-        )
-        db.add(unit)
-        db.flush()
-        payload = PayloadEpisode(
-            unit_id=unit.id,
-            input_text=input_text,
-            reply_text=reply_text,
-            image_summary=image_summary,
-            context_note=context_note,
-            reflection_json=None,
-        )
-        db.add(payload)
-        db.flush()
-        return int(unit.id)
-
-    def _enqueue_default_jobs(self, db, *, now_ts: int, unit_id: int) -> None:
-        if not self.config_store.memory_enabled:
-            return
-        kinds = [
-            "reflect_episode",
-            "extract_entities",
-            "extract_facts",
-            "extract_loops",
-            "upsert_embeddings",
-        ]
-        for kind in kinds:
-            payload = {"unit_id": unit_id}
-            db.add(
-                Job(
-                    kind=kind,
-                    payload_json=_json_dumps(payload),
-                    status=0,
-                    run_after=now_ts,
-                    tries=0,
-                    last_error=None,
-                    created_at=now_ts,
-                    updated_at=now_ts,
-                )
-            )
-
-    def _enqueue_embeddings_job(self, db, *, now_ts: int, unit_id: int) -> None:
-        if not self.config_store.memory_enabled:
-            return
-        db.add(
-            Job(
-                kind="upsert_embeddings",
-                payload_json=_json_dumps({"unit_id": unit_id}),
-                status=0,
-                run_after=now_ts,
-                tries=0,
-                last_error=None,
+        # --- eventsを作成（ターン単位） ---
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            # --- 1) events を作る（assistant_text は後で埋める） ---
+            ev = Event(
                 created_at=now_ts,
                 updated_at=now_ts,
+                client_id=client_id,
+                source="chat",
+                user_text=input_text,
+                assistant_text=None,
+                entities_json="[]",
+                client_context_json=_json_dumps(request.client_context) if request.client_context is not None else None,
+            )
+            db.add(ev)
+            db.flush()
+            event_id = int(ev.event_id)
+
+            # --- 2) reply_to（同じclient_idの直前チャット）を軽量に仮置きする ---
+            prev = (
+                db.query(Event)
+                .filter(Event.client_id == client_id)
+                .filter(Event.source == "chat")
+                .filter(Event.event_id != event_id)
+                .order_by(Event.event_id.desc())
+                .first()
+            )
+            if prev is not None:
+                # NOTE: 文脈グラフの本更新は非同期で行う。ここでは reply_to だけを即時に張る。
+                from cocoro_ghost.memory_models import EventLink  # noqa: PLC0415
+
+                db.add(
+                    EventLink(
+                        from_event_id=event_id,
+                        to_event_id=int(prev.event_id),
+                        label="reply_to",
+                        confidence=1.0,
+                        evidence_event_ids_json="[]",
+                        created_at=now_ts,
+                    )
+                )
+
+        # --- 3) SearchPlan（LLM） ---
+        plan_obj: dict[str, Any] = {
+            "mode": "associative_recent",
+            "queries": [input_text],
+            "time_hint": {"about_year_start": None, "about_year_end": None, "life_stage_hint": ""},
+            "diversify": {"by": ["life_stage", "about_year_bucket"], "per_bucket": 5},
+            "limits": {"max_candidates": 200, "max_selected": 12},
+        }
+        try:
+            resp = self.llm_client.generate_json_response(
+                system_prompt=_search_plan_system_prompt(),
+                input_text=input_text,
+                purpose="search_plan",
+                max_tokens=500,
+            )
+            obj = _parse_first_json_object(_first_choice_content(resp))
+            if obj is not None:
+                plan_obj = obj
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("SearchPlan generation failed; fallback to default", exc_info=exc)
+
+        # --- 4) 候補収集（取りこぼし防止優先・可能なものは並列） ---
+        candidates: list[_CandidateItem] = self._collect_candidates(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+            input_text=input_text,
+            plan_obj=plan_obj,
+        )
+
+        # --- 5) retrieval_runs を記録（plan + candidate統計） ---
+        run_id: int | None = None
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            rr = RetrievalRun(
+                event_id=int(event_id),
+                created_at=now_ts,
+                plan_json=_json_dumps(plan_obj),
+                candidates_json=_json_dumps(
+                    {
+                        "counts": {
+                            "total": len(candidates),
+                            "event": sum(1 for c in candidates if c.type == "event"),
+                            "state": sum(1 for c in candidates if c.type == "state"),
+                            "event_affect": sum(1 for c in candidates if c.type == "event_affect"),
+                        },
+                        "sources": {f"{c.type}:{c.id}": c.hit_sources for c in candidates},
+                    }
+                ),
+                selected_json="{}",
+                timings_json="{}",
+                errors_json="{}",
+            )
+            db.add(rr)
+            db.flush()
+            run_id = int(rr.run_id)
+
+        # --- 6) 選別（LLM → SearchResultPack） ---
+        search_result_pack: dict[str, Any] = {"selected": []}
+        try:
+            selection_input = _json_dumps(
+                {
+                    "user_input": input_text,
+                    "plan": plan_obj,
+                    "candidates": [dict(c.meta) | {"hit_sources": c.hit_sources} for c in candidates],
+                }
+            )
+            resp = self.llm_client.generate_json_response(
+                system_prompt=_selection_system_prompt(),
+                input_text=selection_input,
+                purpose="search_select",
+                max_tokens=1500,
+            )
+            obj = _parse_first_json_object(_first_choice_content(resp))
+            if obj is not None:
+                search_result_pack = obj
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("SearchResultPack selection failed; fallback to empty", exc_info=exc)
+
+        # --- 7) retrieval_runs を更新（selected_json） ---
+        if run_id is not None:
+            with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                db.execute(
+                    text("UPDATE retrieval_runs SET selected_json=:v WHERE run_id=:id"),
+                    {"v": _json_dumps(search_result_pack), "id": int(run_id)},
+                )
+
+        # --- 8) 返答をSSEで生成（SearchResultPackを内部注入） ---
+        system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
+        internal_context = _json_dumps({"SearchResultPack": self._inflate_search_result_pack(candidates, search_result_pack)})
+        conversation = [
+            {"role": "assistant", "content": f"<<INTERNAL_CONTEXT>>\n{internal_context}"},
+            {"role": "user", "content": input_text},
+        ]
+
+        reply_text = ""
+        finish_reason = ""
+        sanitizer = _UserVisibleReplySanitizer()
+        try:
+            resp_stream = self.llm_client.generate_reply_response(
+                system_prompt=system_prompt,
+                conversation=conversation,
+                purpose=LlmRequestPurpose.CONVERSATION,
+                stream=True,
+            )
+            for delta in self.llm_client.stream_delta_chunks(resp_stream):
+                if delta.finish_reason:
+                    finish_reason = str(delta.finish_reason)
+                if not delta.text:
+                    continue
+                safe = sanitizer.feed(delta.text)
+                if safe:
+                    reply_text += safe
+                    yield _sse("token", {"text": safe})
+            tail = sanitizer.flush()
+            if tail:
+                reply_text += tail
+                yield _sse("token", {"text": tail})
+        except Exception as exc:  # noqa: BLE001
+            logger.error("chat stream failed", exc_info=exc)
+            yield _sse("error", {"message": str(exc), "code": "llm_stream_failed"})
+            return
+
+        # --- 9) events を更新（assistant_text） ---
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            db.execute(
+                text("UPDATE events SET assistant_text=:t, updated_at=:u WHERE event_id=:id"),
+                {"t": reply_text, "u": _now_utc_ts(), "id": int(event_id)},
+            )
+
+        # --- 10) 非同期: 埋め込み更新ジョブを積む（次ターンで効く） ---
+        background_tasks.add_task(
+            self._enqueue_event_embedding_job,
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+        # --- 10.5) 非同期: 記憶更新（WritePlan） ---
+        # NOTE:
+        # - 返答とは別に「状態/感情/文脈/要約」を育てる。
+        # - 体感速度を壊さないため、同期では行わない。
+        background_tasks.add_task(
+            self._enqueue_write_plan_job,
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+        # --- 11) SSE完了 ---
+        yield _sse("done", {"event_id": int(event_id), "reply_text": reply_text, "usage": {"finish_reason": finish_reason}})
+
+    def handle_notification(self, request: schemas.NotificationRequest, *, background_tasks: BackgroundTasks) -> None:
+        """通知を受け取り、出来事ログとして保存し、イベントとして配信する。"""
+
+        # --- 設定 ---
+        cfg = self.config_store.config
+        embedding_preset_id = str(cfg.embedding_preset_id).strip()
+        embedding_dimension = int(cfg.embedding_dimension)
+        now_ts = _now_utc_ts()
+
+        # --- 入力 ---
+        source_system = str(request.source_system or "").strip()
+        text_in = str(request.text or "").strip()
+
+        # --- 画像は保存しない（必要なら詳細説明を別イベントで残す） ---
+        # NOTE: 今回は通知自体の処理を優先し、画像説明は扱わない。
+
+        # --- LLMで人格メッセージを生成 ---
+        system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
+        user_prompt = "\n".join(
+            [
+                f"通知: {source_system}",
+                text_in,
+            ]
+        ).strip()
+
+        resp = self.llm_client.generate_reply_response(
+            system_prompt=system_prompt,
+            conversation=[{"role": "user", "content": user_prompt}],
+            purpose="notification",
+            stream=False,
+        )
+        message = _first_choice_content(resp).strip()
+
+        # --- events に保存 ---
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            ev = Event(
+                created_at=now_ts,
+                updated_at=now_ts,
+                client_id=None,
+                source="notification",
+                user_text=user_prompt,
+                assistant_text=message,
+                entities_json="[]",
+                client_context_json=None,
+            )
+            db.add(ev)
+            db.flush()
+            event_id = int(ev.event_id)
+
+        # --- events/stream へ配信 ---
+        event_stream.publish(
+            type="notification",
+            event_id=int(event_id),
+            data={
+                "system_text": f"[{source_system}] {text_in}",
+                "message": message,
+            },
+            target_client_id=None,
+            bufferable=True,
+        )
+
+        # --- 非同期: 埋め込み更新 ---
+        background_tasks.add_task(
+            self._enqueue_event_embedding_job,
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+        # --- 非同期: 記憶更新（WritePlan） ---
+        background_tasks.add_task(
+            self._enqueue_write_plan_job,
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+    def handle_meta_request(self, request: schemas.MetaRequestRequest, *, background_tasks: BackgroundTasks) -> None:
+        """メタ依頼を受け取り、外部要求は保存せず、能動メッセージの結果だけを保存する。"""
+
+        # --- 設定 ---
+        cfg = self.config_store.config
+        embedding_preset_id = str(cfg.embedding_preset_id).strip()
+        embedding_dimension = int(cfg.embedding_dimension)
+        now_ts = _now_utc_ts()
+
+        # --- 入力（永続化しない） ---
+        instruction = str(request.instruction or "").strip()
+        payload_text = str(request.payload_text or "").strip()
+
+        # --- LLMで能動メッセージを生成（外部要求だとは悟らせない） ---
+        system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
+        user_prompt = "\n".join(
+            [
+                "あなたは今、自分から話しかけたい話題を思いついた。",
+                "次の材料を踏まえて、自然にユーザーへ話しかける短いメッセージを作る。",
+                "",
+                "材料:",
+                instruction,
+                payload_text,
+            ]
+        ).strip()
+
+        resp = self.llm_client.generate_reply_response(
+            system_prompt=system_prompt,
+            conversation=[{"role": "user", "content": user_prompt}],
+            purpose="meta_proactive",
+            stream=False,
+        )
+        message = _first_choice_content(resp).strip()
+
+        # --- events に保存（sourceで区別） ---
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            ev = Event(
+                created_at=now_ts,
+                updated_at=now_ts,
+                client_id=None,
+                source="meta_proactive",
+                user_text=None,
+                assistant_text=message,
+                entities_json="[]",
+                client_context_json=None,
+            )
+            db.add(ev)
+            db.flush()
+            event_id = int(ev.event_id)
+
+        # --- events/stream へ配信 ---
+        event_stream.publish(
+            type="meta-request",
+            event_id=int(event_id),
+            data={"message": message},
+            target_client_id=None,
+            bufferable=True,
+        )
+
+        # --- 非同期: 埋め込み更新 ---
+        background_tasks.add_task(
+            self._enqueue_event_embedding_job,
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+        # --- 非同期: 記憶更新（WritePlan） ---
+        background_tasks.add_task(
+            self._enqueue_write_plan_job,
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+    def handle_vision_capture_response(self, request: schemas.VisionCaptureResponseV2Request) -> None:
+        """視覚のcapture-responseを受け取り、待機中の要求へ紐づけ、画像説明を出来事ログへ保存する。"""
+
+        # --- まずは待機中の要求へ紐づける（タイムアウト済みなら何もしない） ---
+        ok = vision_bridge.fulfill_capture_response(
+            vision_bridge.VisionCaptureResponse(
+                request_id=str(request.request_id),
+                client_id=str(request.client_id),
+                images=list(request.images or []),
+                client_context=(request.client_context if request.client_context is not None else None),
+                error=(str(request.error).strip() if request.error is not None else None),
             )
         )
+        if not ok:
+            return
+
+        # --- 画像は保存しない。images があれば詳細説明テキストを生成して events に残す ---
+        if not request.images:
+            return
+        if request.error is not None:
+            return
+
+        # --- data URI -> bytes ---
+        images_bytes: list[bytes] = []
+        for s in list(request.images or []):
+            b64 = schemas.data_uri_image_to_base64(s)
+            images_bytes.append(base64.b64decode(b64))
+
+        # --- LLMで詳細説明 ---
+        descriptions = self.llm_client.generate_image_summary(images_bytes, purpose="vision_detail")
+        detail_text = "\n\n".join([d.strip() for d in descriptions if str(d or "").strip()]).strip()
+        if not detail_text:
+            return
+
+        # --- events に保存（画像は保持しない） ---
+        cfg = self.config_store.config
+        embedding_preset_id = str(cfg.embedding_preset_id).strip()
+        embedding_dimension = int(cfg.embedding_dimension)
+        now_ts = _now_utc_ts()
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            ev = Event(
+                created_at=now_ts,
+                updated_at=now_ts,
+                client_id=str(request.client_id),
+                source="vision_detail",
+                user_text=detail_text,
+                assistant_text=None,
+                entities_json="[]",
+                client_context_json=_json_dumps(request.client_context) if request.client_context is not None else None,
+            )
+            db.add(ev)
+            db.flush()
+            event_id = int(ev.event_id)
+
+        # NOTE: vision_detail はUIへ通知する必要がないため events/stream へは配信しない。
+
+        # --- 非同期: 埋め込み更新（次ターン以降で参照できる） ---
+        self._enqueue_event_embedding_job(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+        # --- 非同期: 記憶更新（WritePlan） ---
+        self._enqueue_write_plan_job(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+    def run_reminder_once(self, *, reminder_id: str, target_client_id: str, hhmm: str, content: str) -> None:
+        """リマインダーを1件発火し、イベントストリームへ配信する。"""
+
+        # --- 設定 ---
+        cfg = self.config_store.config
+        embedding_preset_id = str(cfg.embedding_preset_id).strip()
+        embedding_dimension = int(cfg.embedding_dimension)
+        now_ts = _now_utc_ts()
+
+        # --- LLMで短い文面を生成 ---
+        system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
+        user_prompt = "\n".join(
+            [
+                "リマインダーを発火する。",
+                "必須: 50文字以内で、時刻を含めて自然に言う。",
+                "",
+                f"時刻: {hhmm}",
+                f"内容: {content}",
+            ]
+        ).strip()
+
+        resp = self.llm_client.generate_reply_response(
+            system_prompt=system_prompt,
+            conversation=[{"role": "user", "content": user_prompt}],
+            purpose="reminder",
+            stream=False,
+        )
+        message = _first_choice_content(resp).strip()
+
+        # --- events に保存 ---
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            ev = Event(
+                created_at=now_ts,
+                updated_at=now_ts,
+                client_id=None,
+                source="reminder",
+                user_text=str(content),
+                assistant_text=message,
+                entities_json="[]",
+                client_context_json=None,
+            )
+            db.add(ev)
+            db.flush()
+            event_id = int(ev.event_id)
+
+        # --- events/stream へ配信（バッファしない） ---
+        event_stream.publish(
+            type="reminder",
+            event_id=int(event_id),
+            data={
+                "reminder_id": str(reminder_id),
+                "hhmm": str(hhmm),
+                "message": message,
+            },
+            target_client_id=str(target_client_id),
+            bufferable=False,
+        )
+
+        # --- 非同期: 埋め込み更新 ---
+        self._enqueue_event_embedding_job(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+        # --- 非同期: 記憶更新（WritePlan） ---
+        self._enqueue_write_plan_job(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+    def run_desktop_watch_once(self, *, target_client_id: str) -> str:
+        """デスクトップウォッチを1回実行する（結果コードを返す）。"""
+
+        # --- 設定 ---
+        cfg = self.config_store.config
+        embedding_preset_id = str(cfg.embedding_preset_id).strip()
+        embedding_dimension = int(cfg.embedding_dimension)
+
+        # --- 視覚要求（命令） ---
+        resp = vision_bridge.request_capture_and_wait(
+            target_client_id=str(target_client_id),
+            source="desktop",
+            purpose="desktop_watch",
+            timeout_seconds=5.0,
+            timeout_ms=5000,
+        )
+        if resp is None:
+            return "skipped_idle"
+        if vision_bridge.is_capture_skipped_idle(resp.error):
+            return "skipped_idle"
+        if vision_bridge.is_capture_skipped_excluded_window_title(resp.error):
+            return "skipped_excluded_window_title"
+        if resp.error is not None:
+            return "failed"
+        if not resp.images:
+            return "failed"
+
+        # --- 画像説明（詳細） ---
+        images_bytes: list[bytes] = []
+        for s in list(resp.images or []):
+            b64 = schemas.data_uri_image_to_base64(s)
+            images_bytes.append(base64.b64decode(b64))
+        descriptions = self.llm_client.generate_image_summary(images_bytes, purpose="desktop_watch_vision_detail")
+        detail_text = "\n\n".join([d.strip() for d in descriptions if str(d or "").strip()]).strip()
+
+        # --- LLMで人格コメントを生成 ---
+        system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
+        user_prompt = "\n".join(
+            [
+                "デスクトップの様子を見て、自然に短いコメントを言う。",
+                "画像の詳細説明（内部用）:",
+                detail_text,
+            ]
+        ).strip()
+        resp2 = self.llm_client.generate_reply_response(
+            system_prompt=system_prompt,
+            conversation=[{"role": "assistant", "content": f"<<INTERNAL_CONTEXT>>\n{detail_text}"}, {"role": "user", "content": "コメントを一言で。"}],
+            purpose="desktop_watch",
+            stream=False,
+        )
+        message = _first_choice_content(resp2).strip()
+
+        # --- events に保存（画像は保持しない） ---
+        now_ts = _now_utc_ts()
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            ev = Event(
+                created_at=now_ts,
+                updated_at=now_ts,
+                client_id=str(target_client_id),
+                source="desktop_watch",
+                user_text=detail_text,
+                assistant_text=message,
+                entities_json="[]",
+                client_context_json=_json_dumps(resp.client_context) if resp.client_context is not None else None,
+            )
+            db.add(ev)
+            db.flush()
+            event_id = int(ev.event_id)
+
+        # --- events/stream へ配信（リアルタイム性を優先してバッファしない） ---
+        event_stream.publish(
+            type="desktop_watch",
+            event_id=int(event_id),
+            data={
+                "system_text": "[desktop_watch]",
+                "message": message,
+            },
+            target_client_id=str(target_client_id),
+            bufferable=False,
+        )
+
+        # --- 埋め込み更新 ---
+        self._enqueue_event_embedding_job(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+        # --- 非同期: 記憶更新（WritePlan） ---
+        self._enqueue_write_plan_job(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+        return "ok"
+
+    def _enqueue_event_embedding_job(self, *, embedding_preset_id: str, embedding_dimension: int, event_id: int) -> None:
+        """出来事ログの埋め込み更新ジョブを積む（次ターンで効かせる）。"""
+
+        # --- memory_enabled が無効なら何もしない ---
+        if not bool(self.config_store.memory_enabled):
+            return
+
+        now_ts = _now_utc_ts()
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            db.add(
+                Job(
+                    kind="upsert_event_embedding",
+                    payload_json=_json_dumps({"event_id": int(event_id)}),
+                    status=int(_JOB_PENDING),
+                    run_after=int(now_ts),
+                    tries=0,
+                    last_error=None,
+                    created_at=int(now_ts),
+                    updated_at=int(now_ts),
+                )
+            )
+
+    def _enqueue_write_plan_job(self, *, embedding_preset_id: str, embedding_dimension: int, event_id: int) -> None:
+        """記憶更新のための WritePlan 生成ジョブを積む。"""
+
+        # --- memory_enabled が無効なら何もしない ---
+        if not bool(self.config_store.memory_enabled):
+            return
+
+        now_ts = _now_utc_ts()
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            db.add(
+                Job(
+                    kind="generate_write_plan",
+                    payload_json=_json_dumps({"event_id": int(event_id)}),
+                    status=int(_JOB_PENDING),
+                    run_after=int(now_ts),
+                    tries=0,
+                    last_error=None,
+                    created_at=int(now_ts),
+                    updated_at=int(now_ts),
+                )
+            )
+
+    def _collect_candidates(
+        self,
+        *,
+        embedding_preset_id: str,
+        embedding_dimension: int,
+        event_id: int,
+        input_text: str,
+        plan_obj: dict[str, Any],
+    ) -> list[_CandidateItem]:
+        """候補収集（取りこぼし防止優先・可能なものは並列）。"""
+
+        # --- 上限 ---
+        limits = plan_obj.get("limits") if isinstance(plan_obj, dict) else None
+        max_candidates = 200
+        if isinstance(limits, dict) and isinstance(limits.get("max_candidates"), (int, float)):
+            max_candidates = int(limits.get("max_candidates") or 200)
+        max_candidates = max(20, min(400, max_candidates))
+
+        # --- 並列候補収集（タイムアウトで全体が破綻しない） ---
+        # NOTE:
+        # - セッションはスレッドセーフではないため、各タスクで個別に開く。
+        # - 遅い経路（特に embedding）があっても、全体を止めない。
+        sources_by_key: dict[tuple[str, int], set[str]] = {}
+
+        def add_sources(keys: list[tuple[str, int]], label: str) -> None:
+            for t, i in keys:
+                if not t or int(i) <= 0:
+                    continue
+                k = (str(t), int(i))
+                s = sources_by_key.get(k)
+                if s is None:
+                    s = set()
+                    sources_by_key[k] = s
+                s.add(str(label))
+
+        def task_recent_events() -> list[tuple[str, int]]:
+            with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                rows = (
+                    db.query(Event.event_id)
+                    .order_by(Event.created_at.desc(), Event.event_id.desc())
+                    .limit(50)
+                    .all()
+                )
+                return [("event", int(r[0])) for r in rows if r and r[0] is not None]
+
+        def task_trigram_events() -> list[tuple[str, int]]:
+            with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                rows = db.execute(
+                    text(
+                        """
+                        SELECT rowid AS event_id
+                        FROM events_fts
+                        WHERE events_fts MATCH :q
+                        ORDER BY rowid DESC
+                        LIMIT 80
+                        """
+                    ),
+                    {"q": str(input_text)},
+                ).fetchall()
+                return [("event", int(r[0])) for r in rows if r and r[0] is not None]
+
+        def task_reply_chain_events() -> list[tuple[str, int]]:
+            # --- reply_to の連鎖を辿る（軽量な文脈復元） ---
+            out: list[tuple[str, int]] = []
+            with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                cur = int(event_id)
+                for _ in range(20):
+                    link = (
+                        db.query(EventLink)
+                        .filter(EventLink.from_event_id == int(cur))
+                        .filter(EventLink.label == "reply_to")
+                        .order_by(EventLink.id.desc())
+                        .first()
+                    )
+                    if link is None:
+                        break
+                    prev_id = int(link.to_event_id)
+                    if prev_id <= 0:
+                        break
+                    out.append(("event", int(prev_id)))
+                    cur = prev_id
+            return out
+
+        def task_recent_states() -> list[tuple[str, int]]:
+            with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                rows = (
+                    db.query(State.state_id)
+                    .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+                    .limit(40)
+                    .all()
+                )
+                return [("state", int(r[0])) for r in rows if r and r[0] is not None]
+
+        def task_about_time_events() -> list[tuple[str, int]]:
+            # --- about_time / life_stage で拾う（全期間横断向け） ---
+            mode = str(plan_obj.get("mode") or "").strip()
+            time_hint = plan_obj.get("time_hint") if isinstance(plan_obj.get("time_hint"), dict) else {}
+            y0 = time_hint.get("about_year_start")
+            y1 = time_hint.get("about_year_end")
+            life = str(time_hint.get("life_stage_hint") or "").strip()
+
+            # NOTE: 明示ヒントが無いなら空で返す（ノイズを増やさない）
+            if not y0 and not y1 and not life:
+                return []
+
+            with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                q = db.query(Event.event_id)
+                if y0 or y1:
+                    ys = int(y0) if isinstance(y0, (int, float)) and int(y0) > 0 else None
+                    ye = int(y1) if isinstance(y1, (int, float)) and int(y1) > 0 else None
+                    if ys is not None and ye is None:
+                        ye = ys
+                    if ye is not None and ys is None:
+                        ys = ye
+                    if ys is not None and ye is not None:
+                        q = q.filter(Event.about_year_start.isnot(None)).filter(Event.about_year_end.isnot(None))
+                        q = q.filter(Event.about_year_start <= int(ye)).filter(Event.about_year_end >= int(ys))
+                if life:
+                    q = q.filter(Event.life_stage == str(life))
+                limit = 120 if mode == "explicit_about_time" else 80
+                rows = q.order_by(Event.created_at.desc(), Event.event_id.desc()).limit(int(limit)).all()
+                return [("event", int(r[0])) for r in rows if r and r[0] is not None]
+
+        def task_vector_all() -> list[tuple[str, int]]:
+            # --- embedding を作る（重い） ---
+            q_emb = self.llm_client.generate_embedding([str(input_text)], purpose="query_embedding")[0]
+
+            # --- mode によって最近性フィルタを使う ---
+            mode = str(plan_obj.get("mode") or "").strip()
+            rank_range = None
+            if mode == "associative_recent":
+                today_day = int(_now_utc_ts()) // 86400
+                rank_range = (int(today_day) - 90, int(today_day) + 1)
+
+            with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                out: list[tuple[str, int]] = []
+
+                rows_e = search_similar_item_ids(
+                    db,
+                    query_embedding=q_emb,
+                    k=60,
+                    kind=int(_VEC_KIND_EVENT),
+                    rank_day_range=rank_range,
+                    active_only=True,
+                )
+                out.extend([("event", _vec_entity_id(int(r[0]))) for r in rows_e if r and r[0] is not None])
+
+                rows_s = search_similar_item_ids(
+                    db,
+                    query_embedding=q_emb,
+                    k=40,
+                    kind=int(_VEC_KIND_STATE),
+                    rank_day_range=None,
+                    active_only=True,
+                )
+                out.extend([("state", _vec_entity_id(int(r[0]))) for r in rows_s if r and r[0] is not None])
+
+                rows_a = search_similar_item_ids(
+                    db,
+                    query_embedding=q_emb,
+                    k=20,
+                    kind=int(_VEC_KIND_EVENT_AFFECT),
+                    rank_day_range=None,
+                    active_only=True,
+                )
+                out.extend([("event_affect", _vec_entity_id(int(r[0]))) for r in rows_a if r and r[0] is not None])
+
+                return out
+
+        # --- 並列実行（遅い経路があっても全体が破綻しない） ---
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+            futures = {
+                "recent_events": ex.submit(task_recent_events),
+                "trigram_events": ex.submit(task_trigram_events),
+                "reply_chain": ex.submit(task_reply_chain_events),
+                "recent_states": ex.submit(task_recent_states),
+                "about_time": ex.submit(task_about_time_events),
+                "vector_all": ex.submit(task_vector_all),
+            }
+
+            timeouts = {
+                "recent_events": 0.25,
+                "trigram_events": 0.6,
+                "reply_chain": 0.2,
+                "recent_states": 0.25,
+                "about_time": 0.4,
+                "vector_all": 2.2,
+            }
+
+            for label, fut in futures.items():
+                try:
+                    keys = fut.result(timeout=float(timeouts.get(label, 0.5)))
+                    add_sources([(str(t), int(i)) for (t, i) in keys], label=str(label))
+                except Exception:  # noqa: BLE001
+                    continue
+
+        # --- レコードをまとめて引く（ORMのDetachedを避けるため、候補のdict化までセッション内で行う） ---
+        keys_all = sorted(sources_by_key.keys())
+        if not keys_all:
+            return []
+
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            event_ids = [int(i) for (t, i) in keys_all if t == "event"]
+            state_ids = [int(i) for (t, i) in keys_all if t == "state"]
+            affect_ids = [int(i) for (t, i) in keys_all if t == "event_affect"]
+
+            events = db.query(Event).filter(Event.event_id.in_(event_ids)).all() if event_ids else []
+            states = db.query(State).filter(State.state_id.in_(state_ids)).all() if state_ids else []
+            affects = db.query(EventAffect).filter(EventAffect.id.in_(affect_ids)).all() if affect_ids else []
+
+            by_event_id = {int(r.event_id): r for r in events}
+            by_state_id = {int(r.state_id): r for r in states}
+            by_affect_id = {int(r.id): r for r in affects}
+
+            affect_event_ids = sorted({int(a.event_id) for a in affects if a and a.event_id is not None})
+            affect_events = db.query(Event).filter(Event.event_id.in_(affect_event_ids)).all() if affect_event_ids else []
+            by_affect_event_id = {int(r.event_id): r for r in affect_events}
+
+            out: list[_CandidateItem] = []
+            for t, i in keys_all:
+                hit_sources = sorted(list(sources_by_key.get((t, int(i))) or set()))
+
+                if t == "event":
+                    r = by_event_id.get(int(i))
+                    if r is None:
+                        continue
+                    out.append(
+                        _CandidateItem(
+                            type="event",
+                            id=int(i),
+                            rank_ts=int(r.created_at),
+                            meta={
+                                "type": "event",
+                                "event_id": int(r.event_id),
+                                "created_at": int(r.created_at),
+                                "source": str(r.source),
+                                "user_text": str(r.user_text or "")[:800],
+                                "assistant_text": str(r.assistant_text or "")[:800],
+                                "about_time": {
+                                    "about_year_start": r.about_year_start,
+                                    "about_year_end": r.about_year_end,
+                                    "life_stage": r.life_stage,
+                                    "confidence": float(r.about_time_confidence),
+                                },
+                            },
+                            hit_sources=hit_sources,
+                        )
+                    )
+                elif t == "state":
+                    s = by_state_id.get(int(i))
+                    if s is None:
+                        continue
+                    out.append(
+                        _CandidateItem(
+                            type="state",
+                            id=int(i),
+                            rank_ts=int(s.last_confirmed_at),
+                            meta={
+                                "type": "state",
+                                "state_id": int(s.state_id),
+                                "kind": str(s.kind),
+                                "body_text": str(s.body_text)[:900],
+                                "payload_json": str(s.payload_json)[:1200],
+                                "last_confirmed_at": int(s.last_confirmed_at),
+                                "valid_from_ts": s.valid_from_ts,
+                                "valid_to_ts": s.valid_to_ts,
+                            },
+                            hit_sources=hit_sources,
+                        )
+                    )
+                elif t == "event_affect":
+                    a = by_affect_id.get(int(i))
+                    if a is None:
+                        continue
+                    ev2 = by_affect_event_id.get(int(a.event_id))
+                    out.append(
+                        _CandidateItem(
+                            type="event_affect",
+                            id=int(i),
+                            rank_ts=int(a.created_at),
+                            meta={
+                                "type": "event_affect",
+                                "affect_id": int(a.id),
+                                "event_id": int(a.event_id),
+                                "created_at": int(a.created_at),
+                                "event_created_at": (int(ev2.created_at) if ev2 is not None else None),
+                                "moment_affect_text": str(a.moment_affect_text or "")[:600],
+                                "inner_thought_text": (
+                                    str(a.inner_thought_text)[:600] if a.inner_thought_text is not None else None
+                                ),
+                                "vad": {"v": float(a.vad_v), "a": float(a.vad_a), "d": float(a.vad_d)},
+                                "confidence": float(a.confidence),
+                            },
+                            hit_sources=hit_sources,
+                        )
+                    )
+
+        out = sorted(out, key=lambda x: (len(x.hit_sources), int(x.rank_ts), int(x.id)), reverse=True)
+        return out[:max_candidates]
+
+    def _inflate_search_result_pack(self, candidates: list[_CandidateItem], pack: dict[str, Any]) -> dict[str, Any]:
+        """選別結果に候補詳細を埋め、返答生成へ渡しやすい形へ整形する。"""
+
+        # --- 入力を正規化 ---
+        if not isinstance(pack, dict):
+            return {"selected": []}
+
+        selected = pack.get("selected") if isinstance(pack.get("selected"), list) else []
+
+        # --- 候補辞書（type:id -> meta） ---
+        by_key: dict[str, dict[str, Any]] = {}
+        for c in candidates:
+            key = f"{str(c.type)}:{int(c.id)}"
+            by_key[key] = dict(c.meta) | {"hit_sources": list(c.hit_sources)}
+
+        out_selected: list[dict[str, Any]] = []
+        for s in selected:
+            if not isinstance(s, dict):
+                continue
+
+            # --- type が無い場合は event_id の有無で推定する（LLMの揺れ吸収） ---
+            t = str(s.get("type") or "").strip()
+            if not t:
+                if int(s.get("event_id") or 0) > 0:
+                    t = "event"
+                elif int(s.get("state_id") or 0) > 0:
+                    t = "state"
+                elif int(s.get("affect_id") or 0) > 0:
+                    t = "event_affect"
+                else:
+                    continue
+
+            # --- typeごとにキーを決める ---
+            key: str | None = None
+            if t == "event":
+                eid = int(s.get("event_id") or 0)
+                if eid > 0:
+                    key = f"event:{eid}"
+            elif t == "state":
+                sid = int(s.get("state_id") or 0)
+                if sid > 0:
+                    key = f"state:{sid}"
+            elif t == "event_affect":
+                aid = int(s.get("affect_id") or 0)
+                if aid > 0:
+                    key = f"event_affect:{aid}"
+
+            if key is None:
+                continue
+            item = by_key.get(key)
+            if item is None:
+                continue
+
+            out_selected.append(
+                {
+                    "type": str(t),
+                    "why": str(s.get("why") or "").strip(),
+                    "snippet": str(s.get("snippet") or "").strip(),
+                    "item": item,
+                }
+            )
+
+        return {"selected": out_selected}
