@@ -15,7 +15,6 @@ from fastapi_utils.tasks import repeat_every
 
 from cocoro_ghost import event_stream, log_stream
 from cocoro_ghost.api import admin, chat, control, events, logs, meta_request, notification, reminders, settings, vision
-from cocoro_ghost.cleanup import cleanup_old_images
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.logging_config import setup_logging, suppress_uvicorn_access_log_paths
 from cocoro_ghost.desktop_watch import get_desktop_watch_service
@@ -146,12 +145,6 @@ def create_app() -> FastAPI:
     async def root():
         """ルートの簡易応答（動作確認用）。"""
         return {"message": "CocoroGhost API is running"}
-
-    @app.on_event("startup")
-    @repeat_every(seconds=600, wait_first=True)
-    async def periodic_cleanup() -> None:
-        """定期的な不要ファイル掃除（画像など）。10分ごとに実行。"""
-        cleanup_old_images()
 
     @app.on_event("startup")
     @repeat_every(seconds=1, wait_first=True)

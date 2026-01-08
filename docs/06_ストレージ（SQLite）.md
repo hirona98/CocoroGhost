@@ -8,7 +8,7 @@
   - リマインダー状態
 - `data/memory_<embedding_preset_id>.db`
   - 出来事ログ（`events`）
-  - 状態（`facts`/`relations`/`tasks`/`summaries`）
+  - 状態（`state`、`kind` で種別を持つ）
   - 改訂履歴（`revisions`）
   - 検索インデックス（ベクトル/文字n-gram）
   - 観測ログ（`retrieval_runs`）
@@ -103,10 +103,7 @@
 
 最小セット:
 
-- `facts`
-- `relations`
-- `tasks`
-- `summaries`
+- `state`（単一テーブル、`kind` で種別を表現）
 
 共通で持ちたい列:
 
@@ -122,7 +119,7 @@
 注記:
 
 - テーブル名は `revisions` とする
-- 通常の会話検索は「出来事ログ（`events`）/状態/要約（`summaries`）」を中心にし、`revisions` は「なぜ変えた？」の説明・デバッグに寄せる
+- 通常の会話検索は「出来事ログ（`events`）/状態（`state`）/要約（`state.kind="summary"`）」を中心にし、`revisions` は「なぜ変えた？」の説明・デバッグに寄せる
 
 ### 文字検索（文字n-gram / FTS5 `trigram`）
 

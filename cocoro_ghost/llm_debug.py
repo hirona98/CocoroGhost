@@ -153,52 +153,37 @@ def _escape_control_chars_in_json_strings(text: str) -> str:
 
 
 _INTERNAL_CONTEXT_TAG = "<<INTERNAL_CONTEXT>>"
-_MEMORY_PACK_SECTION_RE = re.compile(r"^<<<COCORO_GHOST_SECTION:([A-Z0-9_]+)>>>$")
 
 
-def _parse_internal_context_sections(content: str) -> dict[str, list[Any]] | None:
-    """
-    <<INTERNAL_CONTEXT>> 内のMemoryPackをセクション単位で分解する。
-    """
+def _parse_internal_context_json(content: str) -> dict[str, Any] | None:
+    """<<INTERNAL_CONTEXT>> の本文をJSONとして読めるならdictで返す（読めなければNone）。"""
     if not content:
         return None
-    head, sep, tail = content.partition("\n")
+
+    head, _sep, tail = content.partition("\n")
     if head.strip() != _INTERNAL_CONTEXT_TAG:
         return None
-    body = tail
-    sections: dict[str, list[Any]] = {}
-    current_key: str | None = None
-    for raw in body.splitlines():
-        line = raw.rstrip()
-        if not line and current_key is None:
-            continue
-        m = _MEMORY_PACK_SECTION_RE.match(line.strip())
-        if m:
-            current_key = m.group(1)
-            sections.setdefault(current_key, [])
-            continue
-        if current_key is None:
-            continue
-        text = line.strip()
-        if not text:
-            sections[current_key].append(line)
-            continue
-        parsed = None
-        for prefix in ("persona_mood_state:", "persona_mood_guidance:"):
-            if text.startswith(prefix):
-                payload = text[len(prefix) :].strip()
-                if prefix == "persona_mood_state:":
-                    try:
-                        parsed = json.loads(payload)
-                    except Exception:
-                        parsed = payload
-                else:
-                    parsed = payload
-                sections[current_key].append({prefix[:-1]: parsed})
-                break
-        if parsed is None:
-            sections[current_key].append(line)
-    return sections or {}
+
+    body = tail.strip()
+    if not body:
+        return {}
+
+    # --- JSONの抜粋（LLMが余計な前後文を付ける可能性に備える） ---
+    candidate = _extract_first_json_value(body)
+    if not candidate:
+        return {"raw": body[:2000]}
+
+    # --- JSONとしてパースする（必要なら最低限の修復も試す） ---
+    try:
+        obj = json.loads(candidate)
+        return obj if isinstance(obj, dict) else {"value": obj}
+    except json.JSONDecodeError:
+        repaired = _repair_json_like_text(candidate)
+        try:
+            obj = json.loads(repaired)
+            return obj if isinstance(obj, dict) else {"value": obj}
+        except Exception:  # noqa: BLE001
+            return {"raw": body[:2000]}
 
 
 def _reshape_messages_for_debug(value: Any) -> Any:
@@ -216,7 +201,7 @@ def _reshape_messages_for_debug(value: Any) -> Any:
             new_messages.append(m)
             continue
         content = m.get("content")
-        parsed = _parse_internal_context_sections(content) if isinstance(content, str) else None
+        parsed = _parse_internal_context_json(content) if isinstance(content, str) else None
         if parsed is None:
             new_messages.append(m)
             continue
