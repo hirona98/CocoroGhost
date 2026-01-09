@@ -29,6 +29,7 @@ from cocoro_ghost import event_stream, schemas
 from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.db import search_similar_item_ids
+from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.memory_models import Event, EventAffect, EventLink, Job, RetrievalRun, State
 from cocoro_ghost import vision_bridge
@@ -279,6 +280,37 @@ class MemoryManager:
     def __init__(self, *, llm_client: LlmClient, config_store: ConfigStore) -> None:
         self.llm_client = llm_client
         self.config_store = config_store
+
+    def _log_retrieval_debug(self, label: str, payload: Any) -> None:
+        """検索（候補収集）まわりのデバッグ情報を LLM I/O ログへ出力する。"""
+
+        # --- LLMログレベル（TOML）に従う ---
+        llm_log_level = normalize_llm_log_level(self.config_store.toml_config.llm_log_level)
+        if llm_log_level != "DEBUG":
+            return
+
+        # --- 出力先（console/file） ---
+        console_logger = logging.getLogger("cocoro_ghost.llm_io.console")
+        file_logger = logging.getLogger("cocoro_ghost.llm_io.file")
+
+        # --- トリミングはTOML設定に従う ---
+        tc = self.config_store.toml_config
+        log_llm_payload(
+            console_logger,
+            label,
+            payload,
+            llm_log_level=llm_log_level,
+            max_chars=int(tc.llm_log_console_max_chars),
+            max_value_chars=int(tc.llm_log_console_value_max_chars),
+        )
+        log_llm_payload(
+            file_logger,
+            label,
+            payload,
+            llm_log_level=llm_log_level,
+            max_chars=int(tc.llm_log_file_max_chars),
+            max_value_chars=int(tc.llm_log_file_value_max_chars),
+        )
 
     def stream_chat(self, request: schemas.ChatRequest, background_tasks: BackgroundTasks) -> Generator[str, None, None]:
         """チャットをSSEで返す（出来事ログ作成→検索→ストリーム→非同期更新）。"""
@@ -1046,7 +1078,7 @@ class MemoryManager:
                 rows = q.order_by(Event.created_at.desc(), Event.event_id.desc()).limit(int(limit)).all()
                 return [("event", int(r[0])) for r in rows if r and r[0] is not None]
 
-        def task_vector_all() -> list[tuple[str, int]]:
+        def task_vector_all() -> tuple[list[tuple[str, int]], dict[str, Any]]:
             # --- embedding を作る（重い） ---
             q_emb = self.llm_client.generate_embedding([str(input_text)], purpose=LlmRequestPurpose.RETRIEVAL_QUERY_EMBEDDING)[0]
 
@@ -1059,6 +1091,12 @@ class MemoryManager:
 
             with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
                 out: list[tuple[str, int]] = []
+                dbg: dict[str, Any] = {
+                    "embedding_preset_id": str(embedding_preset_id),
+                    "mode": str(mode),
+                    "rank_day_range": (list(rank_range) if rank_range is not None else None),
+                    "hits": {"event": [], "state": [], "event_affect": []},
+                }
 
                 rows_e = search_similar_item_ids(
                     db,
@@ -1068,7 +1106,14 @@ class MemoryManager:
                     rank_day_range=rank_range,
                     active_only=True,
                 )
-                out.extend([("event", _vec_entity_id(int(r[0]))) for r in rows_e if r and r[0] is not None])
+                for r in rows_e:
+                    if not r or r[0] is None:
+                        continue
+                    item_id = int(r[0])
+                    distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
+                    event_id2 = _vec_entity_id(item_id)
+                    out.append(("event", int(event_id2)))
+                    dbg["hits"]["event"].append({"event_id": int(event_id2), "distance": distance, "item_id": int(item_id)})
 
                 rows_s = search_similar_item_ids(
                     db,
@@ -1078,7 +1123,14 @@ class MemoryManager:
                     rank_day_range=None,
                     active_only=True,
                 )
-                out.extend([("state", _vec_entity_id(int(r[0]))) for r in rows_s if r and r[0] is not None])
+                for r in rows_s:
+                    if not r or r[0] is None:
+                        continue
+                    item_id = int(r[0])
+                    distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
+                    state_id2 = _vec_entity_id(item_id)
+                    out.append(("state", int(state_id2)))
+                    dbg["hits"]["state"].append({"state_id": int(state_id2), "distance": distance, "item_id": int(item_id)})
 
                 rows_a = search_similar_item_ids(
                     db,
@@ -1088,9 +1140,18 @@ class MemoryManager:
                     rank_day_range=None,
                     active_only=True,
                 )
-                out.extend([("event_affect", _vec_entity_id(int(r[0]))) for r in rows_a if r and r[0] is not None])
+                for r in rows_a:
+                    if not r or r[0] is None:
+                        continue
+                    item_id = int(r[0])
+                    distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
+                    affect_id2 = _vec_entity_id(item_id)
+                    out.append(("event_affect", int(affect_id2)))
+                    dbg["hits"]["event_affect"].append(
+                        {"affect_id": int(affect_id2), "distance": distance, "item_id": int(item_id)}
+                    )
 
-                return out
+                return out, dbg
 
         # --- 並列実行（遅い経路があっても全体が破綻しない） ---
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
@@ -1112,11 +1173,18 @@ class MemoryManager:
                 "vector_all": 2.2,
             }
 
+            vector_debug: dict[str, Any] | None = None
             for label, fut in futures.items():
                 try:
-                    keys = fut.result(timeout=float(timeouts.get(label, 0.5)))
+                    result = fut.result(timeout=float(timeouts.get(label, 0.5)))
+                    if label == "vector_all":
+                        keys, vector_debug = result
+                    else:
+                        keys = result
                     add_sources([(str(t), int(i)) for (t, i) in keys], label=str(label))
                 except Exception:  # noqa: BLE001
+                    if label == "vector_all":
+                        vector_debug = {"error": "vector_all failed or timed out"}
                     continue
 
         # --- レコードをまとめて引く（ORMのDetachedを避けるため、候補のdict化までセッション内で行う） ---
@@ -1224,6 +1292,22 @@ class MemoryManager:
                             hit_sources=hit_sources,
                         )
                     )
+
+        # --- デバッグ: 埋め込みDB（vec_items）由来の候補を表示する ---
+        # NOTE:
+        # - ここはLLMへ投げる情報の一部なので、LLM I/O ログ（DEBUG）へ揃えて出す。
+        # - vector_all の経路でヒットした候補を中心に表示する（取りこぼしと重複の確認用）。
+        vector_loaded_preview = [c.meta for c in out if "vector_all" in (c.hit_sources or [])][:30]
+        if vector_debug is not None:
+            self._log_retrieval_debug(
+                "（（埋め込みDBから候補取得））",
+                {
+                    "query_text": str(input_text),
+                    "mode": str(plan_obj.get("mode") or ""),
+                    "vector_debug": vector_debug,
+                    "loaded_preview": vector_loaded_preview,
+                },
+            )
 
         out = sorted(out, key=lambda x: (len(x.hit_sources), int(x.rank_ts), int(x.id)), reverse=True)
         return out[:max_candidates]
