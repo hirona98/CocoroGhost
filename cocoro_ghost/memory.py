@@ -350,7 +350,7 @@ class MemoryManager:
             resp = self.llm_client.generate_json_response(
                 system_prompt=_search_plan_system_prompt(),
                 input_text=input_text,
-                purpose="search_plan",
+                purpose=LlmRequestPurpose.SEARCH_PLAN,
                 max_tokens=500,
             )
             obj = _parse_first_json_object(_first_choice_content(resp))
@@ -407,7 +407,7 @@ class MemoryManager:
             resp = self.llm_client.generate_json_response(
                 system_prompt=_selection_system_prompt(),
                 input_text=selection_input,
-                purpose="search_select",
+                purpose=LlmRequestPurpose.SEARCH_SELECT,
                 max_tokens=1500,
             )
             obj = _parse_first_json_object(_first_choice_content(resp))
@@ -517,7 +517,7 @@ class MemoryManager:
         resp = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
             conversation=[{"role": "user", "content": user_prompt}],
-            purpose="notification",
+            purpose=LlmRequestPurpose.NOTIFICATION,
             stream=False,
         )
         message = _first_choice_content(resp).strip()
@@ -595,7 +595,7 @@ class MemoryManager:
         resp = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
             conversation=[{"role": "user", "content": user_prompt}],
-            purpose="meta_proactive",
+            purpose=LlmRequestPurpose.META_REQUEST,
             stream=False,
         )
         message = _first_choice_content(resp).strip()
@@ -670,7 +670,7 @@ class MemoryManager:
             images_bytes.append(base64.b64decode(b64))
 
         # --- LLMで詳細説明 ---
-        descriptions = self.llm_client.generate_image_summary(images_bytes, purpose="vision_detail")
+        descriptions = self.llm_client.generate_image_summary(images_bytes, purpose=LlmRequestPurpose.IMAGE_DETAIL)
         detail_text = "\n\n".join([d.strip() for d in descriptions if str(d or "").strip()]).strip()
         if not detail_text:
             return
@@ -735,7 +735,7 @@ class MemoryManager:
         resp = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
             conversation=[{"role": "user", "content": user_prompt}],
-            purpose="reminder",
+            purpose=LlmRequestPurpose.REMINDER,
             stream=False,
         )
         message = _first_choice_content(resp).strip()
@@ -815,7 +815,7 @@ class MemoryManager:
         for s in list(resp.images or []):
             b64 = schemas.data_uri_image_to_base64(s)
             images_bytes.append(base64.b64decode(b64))
-        descriptions = self.llm_client.generate_image_summary(images_bytes, purpose="desktop_watch_vision_detail")
+        descriptions = self.llm_client.generate_image_summary(images_bytes, purpose=LlmRequestPurpose.IMAGE_SUMMARY_DESKTOP_WATCH)
         detail_text = "\n\n".join([d.strip() for d in descriptions if str(d or "").strip()]).strip()
 
         # --- LLMで人格コメントを生成 ---
@@ -830,7 +830,7 @@ class MemoryManager:
         resp2 = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
             conversation=[{"role": "assistant", "content": f"<<INTERNAL_CONTEXT>>\n{detail_text}"}, {"role": "user", "content": "コメントを一言で。"}],
-            purpose="desktop_watch",
+            purpose=LlmRequestPurpose.DESKTOP_WATCH,
             stream=False,
         )
         message = _first_choice_content(resp2).strip()
@@ -1048,7 +1048,7 @@ class MemoryManager:
 
         def task_vector_all() -> list[tuple[str, int]]:
             # --- embedding を作る（重い） ---
-            q_emb = self.llm_client.generate_embedding([str(input_text)], purpose="query_embedding")[0]
+            q_emb = self.llm_client.generate_embedding([str(input_text)], purpose=LlmRequestPurpose.RETRIEVAL_QUERY_EMBEDDING)[0]
 
             # --- mode によって最近性フィルタを使う ---
             mode = str(plan_obj.get("mode") or "").strip()

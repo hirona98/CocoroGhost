@@ -22,7 +22,7 @@ import time
 from typing import Any
 
 from cocoro_ghost.db import memory_session_scope, upsert_vec_item
-from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.memory_models import Event, EventAffect, EventLink, EventThread, Job, Revision, State
 from cocoro_ghost.time_utils import format_iso8601_local
 
@@ -472,7 +472,7 @@ def _handle_upsert_event_embedding(
         return
 
     # --- embedding を作る ---
-    emb = llm_client.generate_embedding([text_in], purpose="event_embedding")[0]
+    emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.EVENT_EMBEDDING)[0]
 
     # --- vec_items へ書く（kind+entity_idの衝突を避ける） ---
     item_id = _vec_item_id(int(_VEC_KIND_EVENT), int(event_id))
@@ -561,7 +561,7 @@ def _handle_generate_write_plan(
     resp = llm_client.generate_json_response(
         system_prompt=_write_plan_system_prompt(),
         input_text=_json_dumps(input_obj),
-        purpose="write_plan",
+        purpose=LlmRequestPurpose.WRITE_PLAN,
         max_tokens=2400,
     )
     content = ""
@@ -1025,7 +1025,7 @@ def _handle_upsert_state_embedding(
     if not text_in:
         return
 
-    emb = llm_client.generate_embedding([text_in], purpose="state_embedding")[0]
+    emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.STATE_EMBEDDING)[0]
     item_id = _vec_item_id(int(_VEC_KIND_STATE), int(state_id))
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         upsert_vec_item(
@@ -1061,7 +1061,7 @@ def _handle_upsert_event_affect_embedding(
     if not text_in:
         return
 
-    emb = llm_client.generate_embedding([text_in], purpose="event_affect_embedding")[0]
+    emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.EVENT_AFFECT_EMBEDDING)[0]
     item_id = _vec_item_id(int(_VEC_KIND_EVENT_AFFECT), int(affect_id))
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         upsert_vec_item(
