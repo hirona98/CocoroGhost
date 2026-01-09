@@ -363,19 +363,33 @@ class LlmRequestPurpose:
     PERSON_SUMMARY = "＜＜ 人物サマリ生成 ＞＞"
     TOPIC_SUMMARY = "＜＜ トピックサマリ生成 ＞＞"
     RETRIEVAL_QUERY_EMBEDDING = "＜＜ 記憶検索用クエリの埋め込み取得 ＞＞"
-    UNIT_EMBEDDING = "＜＜ ユニット埋め込み ＞＞"
+    EVENT_EMBEDDING = "＜＜ 出来事ログ埋め込み（events） ＞＞"
+    STATE_EMBEDDING = "＜＜ 状態埋め込み（state） ＞＞"
+    EVENT_AFFECT_EMBEDDING = "＜＜ 感情埋め込み（event_affect） ＞＞"
     IMAGE_SUMMARY_CHAT = "＜＜ 画像要約（会話） ＞＞"
     IMAGE_SUMMARY_NOTIFICATION = "＜＜ 画像要約（通知） ＞＞"
     IMAGE_SUMMARY_META_REQUEST = "＜＜ 画像要約（メタ要求対応） ＞＞"
     IMAGE_SUMMARY_DESKTOP_WATCH = "＜＜ 画像要約（デスクトップウォッチ） ＞＞"
+    IMAGE_DETAIL = "＜＜ 画像説明生成（詳細） ＞＞"
     DESKTOP_WATCH = "＜＜ デスクトップウォッチ ＞＞"
     REMINDER = "＜＜ リマインダー ＞＞"
+    SEARCH_PLAN = "＜＜ 検索計画作成（SearchPlan） ＞＞"
+    SEARCH_SELECT = "＜＜ 検索候補の選別（SearchResultPack） ＞＞"
+    WRITE_PLAN = "＜＜ 記憶更新計画作成（WritePlan） ＞＞"
 
 
 def _normalize_purpose(purpose: str) -> str:
     """空文字などを吸収し、ログに最低限の目的ラベルを残す。"""
     label = str(purpose or "").strip()
-    return label or "不明"
+    if not label:
+        return "＜＜ 不明 ＞＞"
+
+    # --- 既に＜＜＞＞形式ならそのまま ---
+    if label.startswith("＜＜") and label.endswith("＞＞"):
+        return label
+
+    # --- 呼び出し側が書式を揃えるのを正としつつ、崩れた場合だけ最低限包む ---
+    return f"＜＜ {label} ＞＞"
 
 
 class LlmClient:
