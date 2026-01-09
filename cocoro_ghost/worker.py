@@ -472,7 +472,7 @@ def _handle_upsert_event_embedding(
         return
 
     # --- embedding を作る ---
-    emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.EVENT_EMBEDDING)[0]
+    emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.ASYNC_EVENT_EMBEDDING)[0]
 
     # --- vec_items へ書く（kind+entity_idの衝突を避ける） ---
     item_id = _vec_item_id(int(_VEC_KIND_EVENT), int(event_id))
@@ -561,7 +561,7 @@ def _handle_generate_write_plan(
     resp = llm_client.generate_json_response(
         system_prompt=_write_plan_system_prompt(),
         input_text=_json_dumps(input_obj),
-        purpose=LlmRequestPurpose.WRITE_PLAN,
+        purpose=LlmRequestPurpose.ASYNC_WRITE_PLAN,
         max_tokens=2400,
     )
     content = ""
@@ -1025,7 +1025,7 @@ def _handle_upsert_state_embedding(
     if not text_in:
         return
 
-    emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.STATE_EMBEDDING)[0]
+    emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.ASYNC_STATE_EMBEDDING)[0]
     item_id = _vec_item_id(int(_VEC_KIND_STATE), int(state_id))
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         upsert_vec_item(
@@ -1061,7 +1061,7 @@ def _handle_upsert_event_affect_embedding(
     if not text_in:
         return
 
-    emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.EVENT_AFFECT_EMBEDDING)[0]
+    emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.ASYNC_EVENT_AFFECT_EMBEDDING)[0]
     item_id = _vec_item_id(int(_VEC_KIND_EVENT_AFFECT), int(affect_id))
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         upsert_vec_item(

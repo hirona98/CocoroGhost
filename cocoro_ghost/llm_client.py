@@ -350,32 +350,23 @@ class StreamDelta:
 class LlmRequestPurpose:
     """LLM呼び出しの処理目的（ログ用途のラベル）。"""
 
-    # docs/prompt_usage_map.md のフローに対応した日本語ラベル
-    CONVERSATION = "＜＜ 会話応答作成 ＞＞"
-    NOTIFICATION = "＜＜ 通知返答 ＞＞"
-    META_REQUEST = "＜＜ メタ要求対応 ＞＞"
-    INTERNAL_THOUGHT = "＜＜ 内的思考（反射） ＞＞"
-    ENTITY_EXTRACT = "＜＜ エンティティ（実体）抽出 ＞＞"
-    FACT_EXTRACT = "＜＜ 事実抽出 ＞＞"
-    LOOP_EXTRACT = "＜＜ 未完了事項抽出 ＞＞"
-    ENTITY_NAME_EXTRACT = "＜＜ エンティティ（実体）名抽出 ＞＞"
-    SHARED_NARRATIVE_SUMMARY = "＜＜ 背景共有サマリ生成 ＞＞"
-    PERSON_SUMMARY = "＜＜ 人物サマリ生成 ＞＞"
-    TOPIC_SUMMARY = "＜＜ トピックサマリ生成 ＞＞"
-    RETRIEVAL_QUERY_EMBEDDING = "＜＜ 記憶検索用クエリの埋め込み取得 ＞＞"
-    EVENT_EMBEDDING = "＜＜ 出来事ログ埋め込み（events） ＞＞"
-    STATE_EMBEDDING = "＜＜ 状態埋め込み（state） ＞＞"
-    EVENT_AFFECT_EMBEDDING = "＜＜ 感情埋め込み（event_affect） ＞＞"
-    IMAGE_SUMMARY_CHAT = "＜＜ 画像要約（会話） ＞＞"
-    IMAGE_SUMMARY_NOTIFICATION = "＜＜ 画像要約（通知） ＞＞"
-    IMAGE_SUMMARY_META_REQUEST = "＜＜ 画像要約（メタ要求対応） ＞＞"
-    IMAGE_SUMMARY_DESKTOP_WATCH = "＜＜ 画像要約（デスクトップウォッチ） ＞＞"
-    IMAGE_DETAIL = "＜＜ 画像説明生成（詳細） ＞＞"
-    DESKTOP_WATCH = "＜＜ デスクトップウォッチ ＞＞"
-    REMINDER = "＜＜ リマインダー ＞＞"
-    SEARCH_PLAN = "＜＜ 検索計画作成（SearchPlan） ＞＞"
-    SEARCH_SELECT = "＜＜ 検索候補の選別（SearchResultPack） ＞＞"
-    WRITE_PLAN = "＜＜ 記憶更新計画作成（WritePlan） ＞＞"
+    # --- 同期（API処理中） ---
+    SYNC_CONVERSATION = "【同期】＜＜ 会話応答作成 ＞＞"
+    SYNC_SEARCH_PLAN = "【同期】＜＜ 検索計画作成（SearchPlan） ＞＞"
+    SYNC_SEARCH_SELECT = "【同期】＜＜ 検索候補の選別（SearchResultPack） ＞＞"
+    SYNC_NOTIFICATION = "【同期】＜＜ 通知返答 ＞＞"
+    SYNC_META_REQUEST = "【同期】＜＜ メタ要求対応 ＞＞"
+    SYNC_IMAGE_DETAIL = "【同期】＜＜ 画像説明生成（詳細） ＞＞"
+    SYNC_IMAGE_SUMMARY_DESKTOP_WATCH = "【同期】＜＜ 画像要約（デスクトップウォッチ） ＞＞"
+    SYNC_DESKTOP_WATCH = "【同期】＜＜ デスクトップウォッチ ＞＞"
+    SYNC_REMINDER = "【同期】＜＜ リマインダー ＞＞"
+    SYNC_RETRIEVAL_QUERY_EMBEDDING = "【同期】＜＜ 記憶検索用クエリの埋め込み取得 ＞＞"
+
+    # --- 非同期（Worker） ---
+    ASYNC_EVENT_EMBEDDING = "【WORKER】＜＜ 出来事ログ埋め込み（events） ＞＞"
+    ASYNC_STATE_EMBEDDING = "【WORKER】＜＜ 状態埋め込み（state） ＞＞"
+    ASYNC_EVENT_AFFECT_EMBEDDING = "【WORKER】＜＜ 感情埋め込み（event_affect） ＞＞"
+    ASYNC_WRITE_PLAN = "【WORKER】＜＜ 記憶更新計画作成（WritePlan） ＞＞"
 
 
 def _normalize_purpose(purpose: str) -> str:
@@ -384,9 +375,12 @@ def _normalize_purpose(purpose: str) -> str:
     if not label:
         return "＜＜ 不明 ＞＞"
 
-    # --- 既に＜＜＞＞形式ならそのまま ---
-    if label.startswith("＜＜") and label.endswith("＞＞"):
-        return label
+    # --- 既に＜＜＞＞形式（またはプレフィックス付き）ならそのまま ---
+    if label.endswith("＞＞") and "＜＜" in label:
+        left = label.find("＜＜")
+        right = label.rfind("＞＞")
+        if 0 <= left < right:
+            return label
 
     # --- 呼び出し側が書式を揃えるのを正としつつ、崩れた場合だけ最低限包む ---
     return f"＜＜ {label} ＞＞"
@@ -742,95 +736,6 @@ class LlmClient:
         )
         return resp
 
-    def generate_reflection_response(
-        self,
-        system_prompt: str,
-        context_text: str,
-        image_descriptions: Optional[List[str]] = None,
-        purpose: str = LlmRequestPurpose.INTERNAL_THOUGHT,
-    ):
-        """
-        内的思考（リフレクション）を生成する（Responseオブジェクト）。
-        コンテキストに基づいてJSON形式の思考結果を返す。
-        purpose はログに出す処理目的ラベル。
-        """
-        # コンテキストブロックを構築
-        context_block = context_text
-        if image_descriptions:
-            context_block += "\n" + "\n".join(image_descriptions)
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": context_block},
-        ]
-
-        llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
-        purpose_label = _normalize_purpose(purpose)
-        start = time.perf_counter()
-
-        kwargs = self._build_completion_kwargs(
-            model=self.model,
-            messages=messages,
-            api_key=self.api_key,
-            base_url=self.llm_base_url,
-            max_tokens=self.max_tokens,
-            response_format={"type": "json_object"},
-        )
-
-        if llm_log_level != "OFF":
-            self._log_llm_info(
-                "LLM request 送信 %s kind=reflection stream=%s messages=%s 文字数=%s",
-                purpose_label,
-                False,
-                len(messages),
-                _estimate_text_chars(messages),
-            )
-        self._log_llm_payload("LLM request (reflection)", _sanitize_for_llm_log(kwargs), llm_log_level=llm_log_level)
-
-        try:
-            resp = litellm.completion(**kwargs)
-        except Exception as exc:  # noqa: BLE001
-            if llm_log_level != "OFF":
-                elapsed_ms = int((time.perf_counter() - start) * 1000)
-                # コンテキスト長超過は原因を明確に区別する（ERROR）。
-                if self._is_context_window_exceeded(exc):
-                    self._log_context_window_exceeded_error(
-                        purpose_label=purpose_label,
-                        kind="reflection",
-                        elapsed_ms=elapsed_ms,
-                        approx_chars=_estimate_text_chars(messages),
-                        messages_count=len(messages),
-                        stream=False,
-                        exc=exc,
-                    )
-                else:
-                    self._log_llm_error(
-                        "LLM request failed %s kind=reflection ms=%s error=%s",
-                        purpose_label,
-                        elapsed_ms,
-                        str(exc),
-                        exc_info=exc,
-                    )
-            raise
-
-        elapsed_ms = int((time.perf_counter() - start) * 1000)
-        content = _first_choice_content(resp)
-        finish_reason = _finish_reason(resp)
-        if llm_log_level != "OFF":
-            self._log_llm_info(
-                "LLM response 受信 %s kind=reflection finish_reason=%s chars=%s ms=%s",
-                purpose_label,
-                finish_reason,
-                len(content or ""),
-                elapsed_ms,
-            )
-        self._log_llm_payload(
-            "LLM response (reflection)",
-            _sanitize_for_llm_log({"finish_reason": finish_reason, "content": content}),
-            llm_log_level=llm_log_level,
-        )
-        return resp
-
     def generate_json_response(
         self,
         *,
@@ -1151,35 +1056,63 @@ class LlmClient:
                 self.logger.debug("response_json repaired: %s", truncate_for_log(repaired, self._DEBUG_PREVIEW_CHARS))
                 raise
 
-    def stream_delta_chunks(self, resp_stream: Iterable[Any]) -> Generator[StreamDelta, None, None]:
+    def stream_delta_chunks(
+        self,
+        resp_stream: Iterable[Any],
+        *,
+        purpose: str,
+        log_on_finish: bool = True,
+    ) -> Generator[StreamDelta, None, None]:
         """
         LiteLLMのstreaming Responseからdelta.contentを逐次抽出する。
-        ストリーミング応答をリアルタイムで処理し、finish_reasonも返すジェネレータ。
-        """
-        # ストリームの各チャンクから差分テキストとfinish_reasonを拾う。
-        for chunk in resp_stream:
-            delta_text = _delta_content(chunk)
-            finish_reason = _finish_reason(chunk) or None
-            if not delta_text and not finish_reason:
-                continue
-            yield StreamDelta(text=delta_text, finish_reason=finish_reason)
 
-    def generate_reflection(
-        self,
-        system_prompt: str,
-        context_text: str,
-        image_descriptions: Optional[List[str]] = None,
-        purpose: str = LlmRequestPurpose.INTERNAL_THOUGHT,
-    ) -> str:
+        注意:
+            stream=True の場合、completion() 側では「受信ログ」を出さない。
+            呼び出し側も、クライアント切断などでジェネレータが途中でcloseされると
+            「受信完了ログ」を出せない可能性がある。
+
+            そのため、受信ログはこのジェネレータの finally で必ず出力する。
+
+        Args:
+            resp_stream: LiteLLMのストリーム応答イテレータ
+            purpose: ログ用途の処理目的ラベル（＜＜...＞＞ 形式を推奨）
         """
-        reflection用のJSON応答を生成し、本文文字列だけ返す（薄いラッパー）。
-        generate_reflection_responseの結果から本文のみを抽出する。
-        purpose はログに出す処理目的ラベル。
-        """
-        resp = self.generate_reflection_response(
-            system_prompt,
-            context_text,
-            image_descriptions,
-            purpose=purpose,
-        )
-        return self.response_content(resp)
+        llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
+        purpose_label = _normalize_purpose(purpose)
+        start = time.perf_counter()
+
+        # --- ログ用に合計文字数と終了理由を控える ---
+        total_chars = 0
+        last_finish_reason = ""
+
+        try:
+            # --- ストリームの各チャンクから差分テキストとfinish_reasonを拾う ---
+            for chunk in resp_stream:
+                delta_text = _delta_content(chunk)
+                finish_reason = _finish_reason(chunk)
+
+                # --- 終了理由は最後に来ることが多いので、見つけたら保持する ---
+                if finish_reason:
+                    last_finish_reason = str(finish_reason)
+
+                # --- 文字数は生のdeltaで数える（サニタイズ/整形前） ---
+                if delta_text:
+                    total_chars += len(delta_text)
+
+                # --- 中身が無いチャンクは捨てる ---
+                if not delta_text and not finish_reason:
+                    continue
+
+                yield StreamDelta(text=delta_text, finish_reason=(str(finish_reason) if finish_reason else None))
+        finally:
+            # --- stream=True の受信完了ログ（途中closeでも残す） ---
+            if log_on_finish and llm_log_level != "OFF":
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+                self._log_llm_info(
+                    "LLM response 受信 %s kind=chat stream=%s finish_reason=%s chars=%s ms=%s",
+                    purpose_label,
+                    True,
+                    str(last_finish_reason or ""),
+                    int(total_chars),
+                    int(elapsed_ms),
+                )
