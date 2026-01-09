@@ -32,6 +32,7 @@ from cocoro_ghost.db import search_similar_item_ids
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.memory_models import Event, EventAffect, EventLink, Job, RetrievalRun, State
 from cocoro_ghost import vision_bridge
+from cocoro_ghost.time_utils import format_iso8601_local
 
 
 logger = logging.getLogger(__name__)
@@ -1157,6 +1158,7 @@ class MemoryManager:
                                 "type": "event",
                                 "event_id": int(r.event_id),
                                 "created_at": int(r.created_at),
+                                "created_at_iso_local": format_iso8601_local(int(r.created_at)),
                                 "source": str(r.source),
                                 "user_text": str(r.user_text or "")[:800],
                                 "assistant_text": str(r.assistant_text or "")[:800],
@@ -1186,6 +1188,7 @@ class MemoryManager:
                                 "body_text": str(s.body_text)[:900],
                                 "payload_json": str(s.payload_json)[:1200],
                                 "last_confirmed_at": int(s.last_confirmed_at),
+                                "last_confirmed_at_iso_local": format_iso8601_local(int(s.last_confirmed_at)),
                                 "valid_from_ts": s.valid_from_ts,
                                 "valid_to_ts": s.valid_to_ts,
                             },
@@ -1197,6 +1200,7 @@ class MemoryManager:
                     if a is None:
                         continue
                     ev2 = by_affect_event_id.get(int(a.event_id))
+                    event_created_at = int(ev2.created_at) if ev2 is not None else None
                     out.append(
                         _CandidateItem(
                             type="event_affect",
@@ -1207,7 +1211,9 @@ class MemoryManager:
                                 "affect_id": int(a.id),
                                 "event_id": int(a.event_id),
                                 "created_at": int(a.created_at),
-                                "event_created_at": (int(ev2.created_at) if ev2 is not None else None),
+                                "created_at_iso_local": format_iso8601_local(int(a.created_at)),
+                                "event_created_at": event_created_at,
+                                "event_created_at_iso_local": format_iso8601_local(event_created_at),
                                 "moment_affect_text": str(a.moment_affect_text or "")[:600],
                                 "inner_thought_text": (
                                     str(a.inner_thought_text)[:600] if a.inner_thought_text is not None else None
