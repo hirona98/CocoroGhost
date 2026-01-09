@@ -24,6 +24,7 @@ from typing import Any
 from cocoro_ghost.db import memory_session_scope, upsert_vec_item
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.memory_models import Event, EventAffect, EventLink, EventThread, Job, Revision, State
+from cocoro_ghost.time_utils import format_iso8601_local
 
 
 logger = logging.getLogger(__name__)
@@ -509,6 +510,7 @@ def _handle_generate_write_plan(
         event_snapshot = {
             "event_id": int(ev.event_id),
             "created_at": int(ev.created_at),
+            "created_at_iso_local": format_iso8601_local(int(ev.created_at)),
             "source": str(ev.source),
             "client_id": (str(ev.client_id) if ev.client_id is not None else None),
             "user_text": str(ev.user_text or ""),
@@ -528,6 +530,7 @@ def _handle_generate_write_plan(
             {
                 "event_id": int(x.event_id),
                 "created_at": int(x.created_at),
+                "created_at_iso_local": format_iso8601_local(int(x.created_at)),
                 "source": str(x.source),
                 "user_text": str(x.user_text or "")[:600],
                 "assistant_text": str(x.assistant_text or "")[:600],
@@ -541,6 +544,7 @@ def _handle_generate_write_plan(
                 "body_text": str(s.body_text)[:600],
                 "payload_json": str(s.payload_json)[:800],
                 "last_confirmed_at": int(s.last_confirmed_at),
+                "last_confirmed_at_iso_local": format_iso8601_local(int(s.last_confirmed_at)),
                 "valid_from_ts": (int(s.valid_from_ts) if s.valid_from_ts is not None else None),
                 "valid_to_ts": (int(s.valid_to_ts) if s.valid_to_ts is not None else None),
             }
