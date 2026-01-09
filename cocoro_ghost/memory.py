@@ -139,6 +139,17 @@ class _UserVisibleReplySanitizer:
             kept = self._process_line(line)
             if kept:
                 out_parts.append(kept)
+
+        # --- 改行が来ないモデルでも、体感速度（ストリーミング）を維持する ---
+        # 方針:
+        # - 内部用タグ（"<" 始まり）の混入を避けるため、"<" を含む場合は保留する。
+        # - それ以外は一定文字数で分割して送る（行単位以外でも流れるようにする）。
+        if not self._skip_mode and self._pending and "<" not in self._pending:
+            # NOTE: 小さすぎると無駄なイベントが増えるため、ほどよい粒度で送る。
+            flush_threshold = 64
+            if len(self._pending) >= flush_threshold:
+                out_parts.append(self._pending)
+                self._pending = ""
         return "".join(out_parts)
 
     def flush(self) -> str:
@@ -312,6 +323,56 @@ class MemoryManager:
             max_value_chars=int(tc.llm_log_file_value_max_chars),
         )
 
+    def _log_llm_stream_receive_info(self, *, purpose: str, finish_reason: str, chars: int, elapsed_ms: int) -> None:
+        """ストリーミング応答の「受信完了」を LLM I/O ログへ出力する。"""
+
+        # --- LLMログレベル（TOML）に従う ---
+        llm_log_level = normalize_llm_log_level(self.config_store.toml_config.llm_log_level)
+        if llm_log_level == "OFF":
+            return
+
+        # --- 出力先（console/file） ---
+        console_logger = logging.getLogger("cocoro_ghost.llm_io.console")
+        file_logger = logging.getLogger("cocoro_ghost.llm_io.file")
+
+        # --- llm_client のINFOログと同じ書式へ寄せる ---
+        msg = "LLM response 受信 %s kind=chat stream=%s finish_reason=%s chars=%s ms=%s"
+        args = (str(purpose), True, str(finish_reason or ""), int(chars), int(elapsed_ms))
+        console_logger.info(msg, *args)
+        file_logger.info(msg, *args)
+
+    def _log_llm_stream_receive_payload(self, *, finish_reason: str, content: str) -> None:
+        """ストリーミング応答の本文（デバッグ用）を LLM I/O ログへ出力する。"""
+
+        # --- LLMログレベル（TOML）に従う（DEBUGのみ本文を出す） ---
+        llm_log_level = normalize_llm_log_level(self.config_store.toml_config.llm_log_level)
+        if llm_log_level != "DEBUG":
+            return
+
+        # --- 出力先（console/file） ---
+        console_logger = logging.getLogger("cocoro_ghost.llm_io.console")
+        file_logger = logging.getLogger("cocoro_ghost.llm_io.file")
+
+        # --- トリミングはTOML設定に従う ---
+        tc = self.config_store.toml_config
+        payload = {"finish_reason": str(finish_reason or ""), "content": str(content or "")}
+        log_llm_payload(
+            console_logger,
+            "LLM response (chat)",
+            payload,
+            llm_log_level=llm_log_level,
+            max_chars=int(tc.llm_log_console_max_chars),
+            max_value_chars=int(tc.llm_log_console_value_max_chars),
+        )
+        log_llm_payload(
+            file_logger,
+            "LLM response (chat)",
+            payload,
+            llm_log_level=llm_log_level,
+            max_chars=int(tc.llm_log_file_max_chars),
+            max_value_chars=int(tc.llm_log_file_value_max_chars),
+        )
+
     def stream_chat(self, request: schemas.ChatRequest, background_tasks: BackgroundTasks) -> Generator[str, None, None]:
         """チャットをSSEで返す（出来事ログ作成→検索→ストリーム→非同期更新）。"""
 
@@ -382,7 +443,7 @@ class MemoryManager:
             resp = self.llm_client.generate_json_response(
                 system_prompt=_search_plan_system_prompt(),
                 input_text=input_text,
-                purpose=LlmRequestPurpose.SEARCH_PLAN,
+                purpose=LlmRequestPurpose.SYNC_SEARCH_PLAN,
                 max_tokens=500,
             )
             obj = _parse_first_json_object(_first_choice_content(resp))
@@ -439,7 +500,7 @@ class MemoryManager:
             resp = self.llm_client.generate_json_response(
                 system_prompt=_selection_system_prompt(),
                 input_text=selection_input,
-                purpose=LlmRequestPurpose.SEARCH_SELECT,
+                purpose=LlmRequestPurpose.SYNC_SEARCH_SELECT,
                 max_tokens=1500,
             )
             obj = _parse_first_json_object(_first_choice_content(resp))
@@ -467,14 +528,20 @@ class MemoryManager:
         reply_text = ""
         finish_reason = ""
         sanitizer = _UserVisibleReplySanitizer()
+        stream_failed = False
+        stream_start = time.perf_counter()
         try:
             resp_stream = self.llm_client.generate_reply_response(
                 system_prompt=system_prompt,
                 conversation=conversation,
-                purpose=LlmRequestPurpose.CONVERSATION,
+                purpose=LlmRequestPurpose.SYNC_CONVERSATION,
                 stream=True,
             )
-            for delta in self.llm_client.stream_delta_chunks(resp_stream):
+            for delta in self.llm_client.stream_delta_chunks(
+                resp_stream,
+                purpose=LlmRequestPurpose.SYNC_CONVERSATION,
+                log_on_finish=False,
+            ):
                 if delta.finish_reason:
                     finish_reason = str(delta.finish_reason)
                 if not delta.text:
@@ -488,9 +555,24 @@ class MemoryManager:
                 reply_text += tail
                 yield _sse("token", {"text": tail})
         except Exception as exc:  # noqa: BLE001
+            stream_failed = True
             logger.error("chat stream failed", exc_info=exc)
             yield _sse("error", {"message": str(exc), "code": "llm_stream_failed"})
             return
+        finally:
+            # --- ストリーミング受信ログ（切断や例外時でも、可能な限り出す） ---
+            if not stream_failed:
+                elapsed_ms = int((time.perf_counter() - stream_start) * 1000)
+                self._log_llm_stream_receive_info(
+                    purpose=LlmRequestPurpose.SYNC_CONVERSATION,
+                    finish_reason=str(finish_reason or ""),
+                    chars=len(reply_text or ""),
+                    elapsed_ms=int(elapsed_ms),
+                )
+                self._log_llm_stream_receive_payload(
+                    finish_reason=str(finish_reason or ""),
+                    content=str(reply_text or ""),
+                )
 
         # --- 9) events を更新（assistant_text） ---
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
@@ -549,7 +631,7 @@ class MemoryManager:
         resp = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
             conversation=[{"role": "user", "content": user_prompt}],
-            purpose=LlmRequestPurpose.NOTIFICATION,
+            purpose=LlmRequestPurpose.SYNC_NOTIFICATION,
             stream=False,
         )
         message = _first_choice_content(resp).strip()
@@ -627,7 +709,7 @@ class MemoryManager:
         resp = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
             conversation=[{"role": "user", "content": user_prompt}],
-            purpose=LlmRequestPurpose.META_REQUEST,
+            purpose=LlmRequestPurpose.SYNC_META_REQUEST,
             stream=False,
         )
         message = _first_choice_content(resp).strip()
@@ -702,7 +784,10 @@ class MemoryManager:
             images_bytes.append(base64.b64decode(b64))
 
         # --- LLMで詳細説明 ---
-        descriptions = self.llm_client.generate_image_summary(images_bytes, purpose=LlmRequestPurpose.IMAGE_DETAIL)
+        descriptions = self.llm_client.generate_image_summary(
+            images_bytes,
+            purpose=LlmRequestPurpose.SYNC_IMAGE_DETAIL,
+        )
         detail_text = "\n\n".join([d.strip() for d in descriptions if str(d or "").strip()]).strip()
         if not detail_text:
             return
@@ -767,7 +852,7 @@ class MemoryManager:
         resp = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
             conversation=[{"role": "user", "content": user_prompt}],
-            purpose=LlmRequestPurpose.REMINDER,
+            purpose=LlmRequestPurpose.SYNC_REMINDER,
             stream=False,
         )
         message = _first_choice_content(resp).strip()
@@ -847,7 +932,10 @@ class MemoryManager:
         for s in list(resp.images or []):
             b64 = schemas.data_uri_image_to_base64(s)
             images_bytes.append(base64.b64decode(b64))
-        descriptions = self.llm_client.generate_image_summary(images_bytes, purpose=LlmRequestPurpose.IMAGE_SUMMARY_DESKTOP_WATCH)
+        descriptions = self.llm_client.generate_image_summary(
+            images_bytes,
+            purpose=LlmRequestPurpose.SYNC_IMAGE_SUMMARY_DESKTOP_WATCH,
+        )
         detail_text = "\n\n".join([d.strip() for d in descriptions if str(d or "").strip()]).strip()
 
         # --- LLMで人格コメントを生成 ---
@@ -862,7 +950,7 @@ class MemoryManager:
         resp2 = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
             conversation=[{"role": "assistant", "content": f"<<INTERNAL_CONTEXT>>\n{detail_text}"}, {"role": "user", "content": "コメントを一言で。"}],
-            purpose=LlmRequestPurpose.DESKTOP_WATCH,
+            purpose=LlmRequestPurpose.SYNC_DESKTOP_WATCH,
             stream=False,
         )
         message = _first_choice_content(resp2).strip()
@@ -1080,7 +1168,10 @@ class MemoryManager:
 
         def task_vector_all() -> tuple[list[tuple[str, int]], dict[str, Any]]:
             # --- embedding を作る（重い） ---
-            q_emb = self.llm_client.generate_embedding([str(input_text)], purpose=LlmRequestPurpose.RETRIEVAL_QUERY_EMBEDDING)[0]
+            q_emb = self.llm_client.generate_embedding(
+                [str(input_text)],
+                purpose=LlmRequestPurpose.SYNC_RETRIEVAL_QUERY_EMBEDDING,
+            )[0]
 
             # --- mode によって最近性フィルタを使う ---
             mode = str(plan_obj.get("mode") or "").strip()
