@@ -256,7 +256,7 @@ def _build_event_affect_embedding_text(aff: EventAffect) -> str:
     it = str(aff.inner_thought_text or "").strip()
     if it:
         parts.append("")
-        parts.append(f"(inner) {it}")
+        parts.append(f"【内心】 {it}")
 
     # --- VAD ---
     parts.append("")
