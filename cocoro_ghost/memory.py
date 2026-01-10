@@ -311,8 +311,9 @@ def _reply_system_prompt(*, persona_text: str, addon_text: str) -> str:
     )
 
     # --- ペルソナ（ユーザー編集） ---
-    pt = str(persona_text or "").strip()
-    at = str(addon_text or "").strip()
+    # NOTE: 行末（CRLF/LF）の揺れは暗黙的キャッシュの阻害になり得るため、ここで正規化する。
+    pt = str(persona_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    at = str(addon_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if pt or at:
         parts.append("\n".join([x for x in [pt, at] if x]).strip())
 
@@ -680,9 +681,21 @@ class MemoryManager:
         )
         # --- 暗黙的キャッシュ（プロンプトキャッシュ）を効かせやすくする ---
         # NOTE:
-        # - 先頭側が同じほどキャッシュが効きやすい前提で、直近会話（短期）を先に置く。
-        # - SearchResultPack はターンごとに変化しやすいので、末尾側に寄せる。
+        # - 「先頭側が同じほどキャッシュが効きやすい」前提で、system直後に固定ヘッダを置く。
+        # - SearchResultPack/TimeContext はターンごとに変化しやすいので末尾側に寄せる。
+        # - 直近会話は短期文脈として必要だが、先頭が揺れやすいので固定ヘッダの後ろへ置く。
         conversation: list[dict[str, str]] = []
+        conversation.append(
+            {
+                "role": "assistant",
+                "content": "\n".join(
+                    [
+                        "<<INTERNAL_CONTEXT>>",
+                        "このメッセージは固定ヘッダ。本文に出力しない。",
+                    ]
+                ),
+            }
+        )
         conversation.extend(recent_dialog)
         conversation.append({"role": "assistant", "content": f"<<INTERNAL_CONTEXT>>\n{internal_context}"})
         conversation.append({"role": "user", "content": input_text})
