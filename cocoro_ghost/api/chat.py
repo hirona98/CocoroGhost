@@ -2,7 +2,12 @@
 /chat エンドポイント
 
 ユーザーからのチャットリクエストを受け付け、LLMの応答をSSE（Server-Sent Events）
-形式でストリーミング返却する。画像添付にも対応し、会話はEpisodeとしてDBに保存される。
+形式でストリーミング返却する。
+
+注意:
+- SSE（StreamingResponse）の場合、BackgroundTasks をレスポンスに紐づけないと実行されない。
+  ここでは memory.py 側で積んだ非同期ジョブ（jobs テーブルへの enqueue）を確実に動かすため、
+  StreamingResponse(background=...) を必ず設定する。
 """
 
 from __future__ import annotations
@@ -26,5 +31,5 @@ def chat(
 ):
     """チャットリクエストを SSE ストリーミングで返却。"""
     generator = memory_manager.stream_chat(request, background_tasks)
-    return StreamingResponse(generator, media_type="text/event-stream")
-
+    # --- BackgroundTasks を紐づける（これが無いと enqueue が実行されない） ---
+    return StreamingResponse(generator, media_type="text/event-stream", background=background_tasks)

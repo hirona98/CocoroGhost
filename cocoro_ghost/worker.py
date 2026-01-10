@@ -337,6 +337,12 @@ def _tick_once(*, embedding_preset_id: str, embedding_dimension: int, llm_client
     max_jobs_i = max(1, int(max_jobs))
 
     # --- due jobs を取る ---
+    # NOTE:
+    # - memory_session_scope は正常終了時に commit する。
+    # - SQLAlchemy は commit で ORM オブジェクトを expire し得るため、
+    #   with を抜けた後に rows（Job ORM）へ触ると DetachedInstanceError になり得る。
+    # - そのため、外に持ち出すのは「job_id の整数」だけにする。
+    job_ids: list[int] = []
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         rows = (
             db.query(Job)
@@ -349,21 +355,30 @@ def _tick_once(*, embedding_preset_id: str, embedding_dimension: int, llm_client
         if not rows:
             return False
 
+        # --- 仕事がある時だけ出す（無限ループでのログ氾濫を避ける） ---
+        logger.info(
+            "worker tick due_jobs=%s",
+            len(rows),
+            extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
+        )
+
         # --- 実行対象を running にする（同時実行があっても二重処理を減らす） ---
         for j in rows:
             j.status = int(_JOB_RUNNING)
             j.updated_at = int(now_ts)
             db.add(j)
+            # --- with の外で使うのは id だけ ---
+            job_ids.append(int(j.id))
 
     # --- running にしたものを順番に処理する ---
     ran_any = False
-    for j in rows:
+    for job_id in job_ids:
         ran_any = True
         _run_one_job(
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             llm_client=llm_client,
-            job_id=int(j.id),
+            job_id=int(job_id),
         )
 
     return ran_any
@@ -385,6 +400,13 @@ def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_clie
 
     # --- 実行 ---
     try:
+        # --- 実行開始（観測用） ---
+        logger.info(
+            "job start kind=%s job_id=%s",
+            kind,
+            int(job_id),
+            extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
+        )
         if kind == "upsert_event_embedding":
             _handle_upsert_event_embedding(
                 embedding_preset_id=embedding_preset_id,
@@ -432,6 +454,13 @@ def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_clie
             job2.last_error = None
             db.add(job2)
 
+        # --- 実行完了（観測用） ---
+        logger.info(
+            "job done kind=%s job_id=%s",
+            kind,
+            int(job_id),
+            extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
+        )
     except Exception as exc:  # noqa: BLE001
         # --- 失敗を書き戻す ---
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:

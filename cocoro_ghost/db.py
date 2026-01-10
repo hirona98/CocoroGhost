@@ -651,7 +651,8 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     if global_settings is None:
         global_settings = models.GlobalSettings(
             token=toml_config.token,
-            memory_enabled=False,
+            # 記憶は本システムの中核なので、初期値は有効にする。
+            memory_enabled=True,
             # 視覚（Vision）: デスクトップウォッチ（初期は無効）
             desktop_watch_enabled=False,
             desktop_watch_interval_seconds=300,
