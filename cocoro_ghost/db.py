@@ -701,7 +701,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             embedding_api_key=None,
             embedding_base_url=None,
             embedding_dimension=3072,
-            similar_episodes_limit=5,
+            similar_episodes_limit=60,
             max_inject_tokens=1200,
             similar_limit_by_kind_json="{}",
         )

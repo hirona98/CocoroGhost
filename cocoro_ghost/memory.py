@@ -18,6 +18,7 @@ import base64
 import concurrent.futures
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Generator
@@ -1306,6 +1307,21 @@ class MemoryManager:
                 return [("event", int(r[0])) for r in rows if r and r[0] is not None]
 
         def task_vector_all() -> tuple[list[tuple[str, int]], dict[str, Any]]:
+            # --- 類似検索の件数（k）を設定から決める ---
+            # NOTE:
+            # - embedding_preset.similar_episodes_limit は「類似イベント（episodes）の上限」を表す。
+            # - SearchPlan の queries は複数になることがあるため、総量が暴れないように per-query に割り当てる。
+            # - state / event_affect は従来の比率（60:40:20）を踏襲し、events を基準に派生させる。
+            cfg = self.config_store.config
+            total_event_k = max(1, min(200, int(cfg.similar_episodes_limit)))
+            qn = max(1, len(query_texts))
+
+            per_query_event_k = int(math.ceil(float(total_event_k) / float(qn)))
+            total_state_k = int(math.ceil(float(total_event_k) * (2.0 / 3.0)))
+            total_affect_k = int(math.ceil(float(total_event_k) * (1.0 / 3.0)))
+            per_query_state_k = max(1, int(math.ceil(float(total_state_k) / float(qn))))
+            per_query_affect_k = max(1, int(math.ceil(float(total_affect_k) / float(qn))))
+
             # --- embedding を作る（重い） ---
             # NOTE: SearchPlan の queries を広めに使い、連想を拾いやすくする。
             embeddings = self.llm_client.generate_embedding(
@@ -1328,6 +1344,12 @@ class MemoryManager:
                     "mode": str(mode),
                     "rank_day_range": (list(rank_range) if rank_range is not None else None),
                     "query_texts": list(query_texts),
+                    "similar_episodes_limit": int(total_event_k),
+                    "k_per_query": {
+                        "event": int(per_query_event_k),
+                        "state": int(per_query_state_k),
+                        "event_affect": int(per_query_affect_k),
+                    },
                     "vec_items_counts": {},
                     "hits": {"event": [], "state": [], "event_affect": []},
                 }
@@ -1358,7 +1380,7 @@ class MemoryManager:
                     rows_e = search_similar_item_ids(
                         db,
                         query_embedding=q_emb,
-                        k=60,
+                        k=int(per_query_event_k),
                         kind=int(_VEC_KIND_EVENT),
                         rank_day_range=rank_range,
                         active_only=True,
@@ -1379,7 +1401,7 @@ class MemoryManager:
                     rows_s = search_similar_item_ids(
                         db,
                         query_embedding=q_emb,
-                        k=40,
+                        k=int(per_query_state_k),
                         kind=int(_VEC_KIND_STATE),
                         rank_day_range=None,
                         active_only=True,
@@ -1398,7 +1420,7 @@ class MemoryManager:
                     rows_a = search_similar_item_ids(
                         db,
                         query_embedding=q_emb,
-                        k=20,
+                        k=int(per_query_affect_k),
                         kind=int(_VEC_KIND_EVENT_AFFECT),
                         rank_day_range=None,
                         active_only=True,
