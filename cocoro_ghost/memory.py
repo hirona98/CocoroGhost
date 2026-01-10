@@ -20,7 +20,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Generator, Optional
+from typing import Any, Generator
 
 from fastapi import BackgroundTasks
 from sqlalchemy import text
@@ -108,6 +108,9 @@ def _sse(event: str, data: dict) -> str:
 class _UserVisibleReplySanitizer:
     """ユーザーに見せる本文から、内部コンテキストの混入を除去する。"""
 
+    # NOTE: 改行が出ないモデルでもストリーミング体感を維持するための最小送信単位。
+    _STREAM_FLUSH_THRESHOLD_CHARS = 64
+
     def __init__(self) -> None:
         # --- feed()で改行が来るまで保留する末尾（行未確定） ---
         self._pending: str = ""
@@ -146,8 +149,7 @@ class _UserVisibleReplySanitizer:
         # - それ以外は一定文字数で分割して送る（行単位以外でも流れるようにする）。
         if not self._skip_mode and self._pending and "<" not in self._pending:
             # NOTE: 小さすぎると無駄なイベントが増えるため、ほどよい粒度で送る。
-            flush_threshold = 64
-            if len(self._pending) >= flush_threshold:
+            if len(self._pending) >= int(self._STREAM_FLUSH_THRESHOLD_CHARS):
                 out_parts.append(self._pending)
                 self._pending = ""
         return "".join(out_parts)
@@ -292,85 +294,96 @@ class MemoryManager:
         self.llm_client = llm_client
         self.config_store = config_store
 
+    def _llm_io_loggers(self) -> tuple[logging.Logger, logging.Logger]:
+        """LLM I/O ログの出力先ロガー（console/file）を返す。"""
+        return (logging.getLogger("cocoro_ghost.llm_io.console"), logging.getLogger("cocoro_ghost.llm_io.file"))
+
+    def _llm_log_level(self) -> str:
+        """TOML設定に基づく LLMログレベル（DEBUG/INFO/OFF）を返す。"""
+        return normalize_llm_log_level(self.config_store.toml_config.llm_log_level)
+
+    def _llm_log_limits(self) -> tuple[int, int, int, int]:
+        """TOML設定に基づく LLMログの文字数上限を返す。"""
+        tc = self.config_store.toml_config
+        return (
+            int(tc.llm_log_console_max_chars),
+            int(tc.llm_log_file_max_chars),
+            int(tc.llm_log_console_value_max_chars),
+            int(tc.llm_log_file_value_max_chars),
+        )
+
     def _log_retrieval_debug(self, label: str, payload: Any) -> None:
         """検索（候補収集）まわりのデバッグ情報を LLM I/O ログへ出力する。"""
 
         # --- LLMログレベル（TOML）に従う ---
-        llm_log_level = normalize_llm_log_level(self.config_store.toml_config.llm_log_level)
+        llm_log_level = self._llm_log_level()
         if llm_log_level != "DEBUG":
             return
 
         # --- 出力先（console/file） ---
-        console_logger = logging.getLogger("cocoro_ghost.llm_io.console")
-        file_logger = logging.getLogger("cocoro_ghost.llm_io.file")
+        console_logger, file_logger = self._llm_io_loggers()
 
         # --- トリミングはTOML設定に従う ---
-        tc = self.config_store.toml_config
+        console_max_chars, file_max_chars, console_max_value_chars, file_max_value_chars = self._llm_log_limits()
         log_llm_payload(
             console_logger,
             label,
             payload,
             llm_log_level=llm_log_level,
-            max_chars=int(tc.llm_log_console_max_chars),
-            max_value_chars=int(tc.llm_log_console_value_max_chars),
+            max_chars=int(console_max_chars),
+            max_value_chars=int(console_max_value_chars),
         )
         log_llm_payload(
             file_logger,
             label,
             payload,
             llm_log_level=llm_log_level,
-            max_chars=int(tc.llm_log_file_max_chars),
-            max_value_chars=int(tc.llm_log_file_value_max_chars),
+            max_chars=int(file_max_chars),
+            max_value_chars=int(file_max_value_chars),
         )
 
-    def _log_llm_stream_receive_info(self, *, purpose: str, finish_reason: str, chars: int, elapsed_ms: int) -> None:
+    def _log_llm_stream_receive_complete(
+        self,
+        *,
+        purpose: str,
+        finish_reason: str,
+        content: str,
+        elapsed_ms: int,
+    ) -> None:
         """ストリーミング応答の「受信完了」を LLM I/O ログへ出力する。"""
 
         # --- LLMログレベル（TOML）に従う ---
-        llm_log_level = normalize_llm_log_level(self.config_store.toml_config.llm_log_level)
+        llm_log_level = self._llm_log_level()
         if llm_log_level == "OFF":
             return
 
         # --- 出力先（console/file） ---
-        console_logger = logging.getLogger("cocoro_ghost.llm_io.console")
-        file_logger = logging.getLogger("cocoro_ghost.llm_io.file")
+        console_logger, file_logger = self._llm_io_loggers()
 
-        # --- llm_client のINFOログと同じ書式へ寄せる ---
+        # --- 受信メタ（INFO） ---
         msg = "LLM response 受信 %s kind=chat stream=%s finish_reason=%s chars=%s ms=%s"
-        args = (str(purpose), True, str(finish_reason or ""), int(chars), int(elapsed_ms))
+        args = (str(purpose), True, str(finish_reason or ""), len(content or ""), int(elapsed_ms))
         console_logger.info(msg, *args)
         file_logger.info(msg, *args)
 
-    def _log_llm_stream_receive_payload(self, *, finish_reason: str, content: str) -> None:
-        """ストリーミング応答の本文（デバッグ用）を LLM I/O ログへ出力する。"""
-
-        # --- LLMログレベル（TOML）に従う（DEBUGのみ本文を出す） ---
-        llm_log_level = normalize_llm_log_level(self.config_store.toml_config.llm_log_level)
-        if llm_log_level != "DEBUG":
-            return
-
-        # --- 出力先（console/file） ---
-        console_logger = logging.getLogger("cocoro_ghost.llm_io.console")
-        file_logger = logging.getLogger("cocoro_ghost.llm_io.file")
-
-        # --- トリミングはTOML設定に従う ---
-        tc = self.config_store.toml_config
+        # --- 本文（DEBUGのみ） ---
+        console_max_chars, file_max_chars, console_max_value_chars, file_max_value_chars = self._llm_log_limits()
         payload = {"finish_reason": str(finish_reason or ""), "content": str(content or "")}
         log_llm_payload(
             console_logger,
             "LLM response (chat)",
             payload,
             llm_log_level=llm_log_level,
-            max_chars=int(tc.llm_log_console_max_chars),
-            max_value_chars=int(tc.llm_log_console_value_max_chars),
+            max_chars=int(console_max_chars),
+            max_value_chars=int(console_max_value_chars),
         )
         log_llm_payload(
             file_logger,
             "LLM response (chat)",
             payload,
             llm_log_level=llm_log_level,
-            max_chars=int(tc.llm_log_file_max_chars),
-            max_value_chars=int(tc.llm_log_file_value_max_chars),
+            max_chars=int(file_max_chars),
+            max_value_chars=int(file_max_value_chars),
         )
 
     def stream_chat(self, request: schemas.ChatRequest, background_tasks: BackgroundTasks) -> Generator[str, None, None]:
@@ -537,11 +550,7 @@ class MemoryManager:
                 purpose=LlmRequestPurpose.SYNC_CONVERSATION,
                 stream=True,
             )
-            for delta in self.llm_client.stream_delta_chunks(
-                resp_stream,
-                purpose=LlmRequestPurpose.SYNC_CONVERSATION,
-                log_on_finish=False,
-            ):
+            for delta in self.llm_client.stream_delta_chunks(resp_stream):
                 if delta.finish_reason:
                     finish_reason = str(delta.finish_reason)
                 if not delta.text:
@@ -563,15 +572,11 @@ class MemoryManager:
             # --- ストリーミング受信ログ（切断や例外時でも、可能な限り出す） ---
             if not stream_failed:
                 elapsed_ms = int((time.perf_counter() - stream_start) * 1000)
-                self._log_llm_stream_receive_info(
+                self._log_llm_stream_receive_complete(
                     purpose=LlmRequestPurpose.SYNC_CONVERSATION,
                     finish_reason=str(finish_reason or ""),
-                    chars=len(reply_text or ""),
-                    elapsed_ms=int(elapsed_ms),
-                )
-                self._log_llm_stream_receive_payload(
-                    finish_reason=str(finish_reason or ""),
                     content=str(reply_text or ""),
+                    elapsed_ms=int(elapsed_ms),
                 )
 
         # --- 9) events を更新（assistant_text） ---

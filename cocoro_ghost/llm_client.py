@@ -1056,63 +1056,19 @@ class LlmClient:
                 self.logger.debug("response_json repaired: %s", truncate_for_log(repaired, self._DEBUG_PREVIEW_CHARS))
                 raise
 
-    def stream_delta_chunks(
-        self,
-        resp_stream: Iterable[Any],
-        *,
-        purpose: str,
-        log_on_finish: bool = True,
-    ) -> Generator[StreamDelta, None, None]:
+    def stream_delta_chunks(self, resp_stream: Iterable[Any]) -> Generator[StreamDelta, None, None]:
         """
         LiteLLMのstreaming Responseからdelta.contentを逐次抽出する。
 
         注意:
-            stream=True の場合、completion() 側では「受信ログ」を出さない。
-            呼び出し側も、クライアント切断などでジェネレータが途中でcloseされると
-            「受信完了ログ」を出せない可能性がある。
-
-            そのため、受信ログはこのジェネレータの finally で必ず出力する。
-
-        Args:
-            resp_stream: LiteLLMのストリーム応答イテレータ
-            purpose: ログ用途の処理目的ラベル（＜＜...＞＞ 形式を推奨）
+            ここは「ストリームの解釈」だけを担い、ログ出力は行わない。
+            ログは、サニタイズ後の本文やUI送信量に合わせたい都合があるため、
+            呼び出し側（例: SSE処理）で一元管理する。
         """
-        llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
-        purpose_label = _normalize_purpose(purpose)
-        start = time.perf_counter()
-
-        # --- ログ用に合計文字数と終了理由を控える ---
-        total_chars = 0
-        last_finish_reason = ""
-
-        try:
-            # --- ストリームの各チャンクから差分テキストとfinish_reasonを拾う ---
-            for chunk in resp_stream:
-                delta_text = _delta_content(chunk)
-                finish_reason = _finish_reason(chunk)
-
-                # --- 終了理由は最後に来ることが多いので、見つけたら保持する ---
-                if finish_reason:
-                    last_finish_reason = str(finish_reason)
-
-                # --- 文字数は生のdeltaで数える（サニタイズ/整形前） ---
-                if delta_text:
-                    total_chars += len(delta_text)
-
-                # --- 中身が無いチャンクは捨てる ---
-                if not delta_text and not finish_reason:
-                    continue
-
-                yield StreamDelta(text=delta_text, finish_reason=(str(finish_reason) if finish_reason else None))
-        finally:
-            # --- stream=True の受信完了ログ（途中closeでも残す） ---
-            if log_on_finish and llm_log_level != "OFF":
-                elapsed_ms = int((time.perf_counter() - start) * 1000)
-                self._log_llm_info(
-                    "LLM response 受信 %s kind=chat stream=%s finish_reason=%s chars=%s ms=%s",
-                    purpose_label,
-                    True,
-                    str(last_finish_reason or ""),
-                    int(total_chars),
-                    int(elapsed_ms),
-                )
+        # --- ストリームの各チャンクから差分テキストとfinish_reasonを拾う ---
+        for chunk in resp_stream:
+            delta_text = _delta_content(chunk)
+            finish_reason = _finish_reason(chunk) or None
+            if not delta_text and not finish_reason:
+                continue
+            yield StreamDelta(text=delta_text, finish_reason=finish_reason)
