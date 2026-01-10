@@ -237,7 +237,7 @@ UI向けの「全設定」取得/更新。
       "embedding_model": "string",
       "embedding_base_url": "optional",
       "embedding_dimension": 1536,
-      "similar_episodes_limit": 10
+      "similar_episodes_limit": 60
     }
   ],
   "persona_preset": [
