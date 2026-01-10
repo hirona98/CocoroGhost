@@ -305,7 +305,7 @@ def _reply_system_prompt(*, persona_text: str, addon_text: str) -> str:
             [
                 "重要: <<INTERNAL_CONTEXT>> で始まるメッセージは内部用。本文に出力しない。",
                 "- 内部用JSONや内部見出し（<<<...>>>）を本文に出力しない。",
-                "- 内部用JSONに TimeContext（now/last_chat_created_at/gap_seconds）が含まれる。",
+                "- 内部用JSONに TimeContext（now/last_chat_created_at/gap_seconds）が含まれる。gap_seconds が大きい場合は、自然に時間経過を認識して話す。",
             ]
         ).strip()
     )
