@@ -21,6 +21,8 @@ import logging
 import time
 from typing import Any
 
+from sqlalchemy import func
+
 from cocoro_ghost.db import memory_session_scope, upsert_vec_item
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.memory_models import Event, EventAffect, EventLink, EventThread, Job, Revision, State
@@ -40,6 +42,12 @@ _JOB_PENDING = 0
 _JOB_RUNNING = 1
 _JOB_DONE = 2
 _JOB_FAILED = 3
+
+
+_TIDY_CHAT_TURNS_INTERVAL = 200
+_TIDY_CHAT_TURNS_INTERVAL_FIRST = 10
+_TIDY_MAX_CLOSE_PER_RUN = 200
+_TIDY_ACTIVE_STATE_FETCH_LIMIT = 5000
 
 
 def _now_utc_ts() -> int:
@@ -100,6 +108,89 @@ def _clamp_vad(x: Any) -> float:
     if v > 1.0:
         return 1.0
     return v
+
+
+def _normalize_text_for_dedupe(text_in: str) -> str:
+    """重複判定用に本文テキストを正規化する（空白の揺れを吸収）。"""
+    s = str(text_in or "").strip()
+    if not s:
+        return ""
+
+    # --- 空白の連続を1つにする（日本語でも不都合が少ない） ---
+    return " ".join(s.split())
+
+
+def _canonicalize_json_for_dedupe(text_in: str) -> str:
+    """重複判定用に payload_json を安定化する（JSONならキー順を揃える）。"""
+    s = str(text_in or "").strip()
+    if not s:
+        return ""
+
+    # --- JSONとして読めるなら、キー順を揃えてダンプする ---
+    try:
+        obj = json.loads(s)
+        return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except Exception:  # noqa: BLE001
+        return s
+
+
+def _has_pending_or_running_job(db, *, kind: str) -> bool:
+    """指定kindの pending/running ジョブが存在するかを返す。"""
+    n = (
+        db.query(func.count(Job.id))
+        .filter(Job.kind == str(kind))
+        .filter(Job.status.in_([int(_JOB_PENDING), int(_JOB_RUNNING)]))
+        .scalar()
+    )
+    return int(n or 0) > 0
+
+
+def _last_tidy_watermark_event_id(db) -> int:
+    """最後に完了した tidy_memory が対象にした event_id の上限（watermark）を返す。"""
+    last = (
+        db.query(Job)
+        .filter(Job.kind == "tidy_memory")
+        .filter(Job.status == int(_JOB_DONE))
+        .order_by(Job.id.desc())
+        .first()
+    )
+    if last is None:
+        return 0
+
+    payload = _json_loads_maybe(str(last.payload_json or ""))
+    try:
+        return int(payload.get("watermark_event_id") or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _enqueue_tidy_memory_job(
+    *,
+    db,
+    now_ts: int,
+    run_after: int,
+    reason: str,
+    watermark_event_id: int,
+) -> None:
+    """記憶整理ジョブ（tidy_memory）を投入する（重複投入は呼び出し側で防ぐ）。"""
+    db.add(
+        Job(
+            kind="tidy_memory",
+            payload_json=_json_dumps(
+                {
+                    "reason": str(reason),
+                    "max_close_per_run": int(_TIDY_MAX_CLOSE_PER_RUN),
+                    "watermark_event_id": int(watermark_event_id),
+                }
+            ),
+            status=int(_JOB_PENDING),
+            run_after=int(run_after),
+            tries=0,
+            last_error=None,
+            created_at=int(now_ts),
+            updated_at=int(now_ts),
+        )
+    )
 
 
 def _build_event_embedding_text(ev: Event) -> str:
@@ -309,7 +400,7 @@ def run_forever(
 ) -> None:
     """jobs を監視して実行し続ける（内蔵Worker用エントリポイント）。"""
 
-    _ = periodic_interval_seconds  # 現時点では未使用（将来の周期ジョブに使う）
+    _ = periodic_interval_seconds  # cron無し定期は採用しない（ターン回数ベースを正とする）
 
     # --- ループ ---
     while True:
@@ -441,6 +532,12 @@ def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_clie
                 embedding_preset_id=embedding_preset_id,
                 embedding_dimension=embedding_dimension,
                 llm_client=llm_client,
+                payload=payload,
+            )
+        elif kind == "tidy_memory":
+            _handle_tidy_memory(
+                embedding_preset_id=embedding_preset_id,
+                embedding_dimension=embedding_dimension,
                 payload=payload,
             )
         else:
@@ -1050,6 +1147,168 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                             updated_at=int(now_ts),
                         )
                     )
+
+        # --- Nターンごとの整理ジョブ（chatターン回数ベース） ---
+        # NOTE:
+        # - 併用はしない（定期/閾値は採用しない）
+        # - pending/running がある場合は二重投入しない
+        if not _has_pending_or_running_job(db, kind="tidy_memory"):
+            last_watermark_event_id = _last_tidy_watermark_event_id(db)
+            interval_turns = (
+                int(_TIDY_CHAT_TURNS_INTERVAL_FIRST)
+                if int(last_watermark_event_id) <= 0
+                else int(_TIDY_CHAT_TURNS_INTERVAL)
+            )
+            chat_turns_since = (
+                db.query(func.count(Event.event_id))
+                .filter(Event.source == "chat")
+                .filter(Event.event_id > int(last_watermark_event_id))
+                .scalar()
+            )
+            chat_turns_since_i = int(chat_turns_since or 0)
+            if chat_turns_since_i >= int(interval_turns):
+                max_chat_event_id = (
+                    db.query(func.max(Event.event_id))
+                    .filter(Event.source == "chat")
+                    .scalar()
+                )
+                watermark_event_id = int(max_chat_event_id or 0)
+                if watermark_event_id > 0:
+                    _enqueue_tidy_memory_job(
+                        db=db,
+                        now_ts=int(now_ts),
+                        run_after=int(now_ts) + 5,
+                        reason="chat_turn_interval",
+                        watermark_event_id=int(watermark_event_id),
+                    )
+
+
+def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, payload: dict[str, Any]) -> None:
+    """記憶整理（削除せず、集約/過去化でノイズを減らす）。"""
+
+    now_ts = _now_utc_ts()
+    max_close = int(payload.get("max_close_per_run") or _TIDY_MAX_CLOSE_PER_RUN)
+    max_close = max(1, min(int(max_close), 5000))
+
+    # --- 変更件数（観測用） ---
+    closed_state_ids: list[int] = []
+    kept_long_mood_state_id: int | None = None
+
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        # --- revisions を追加するヘルパ（整理でも説明責任を残す） ---
+        def add_revision(*, entity_type: str, entity_id: int, before: Any, after: Any, reason: str) -> None:
+            db.add(
+                Revision(
+                    entity_type=str(entity_type),
+                    entity_id=int(entity_id),
+                    before_json=(_json_dumps(before) if before is not None else None),
+                    after_json=(_json_dumps(after) if after is not None else None),
+                    reason=str(reason or "").strip() or "(no reason)",
+                    evidence_event_ids_json="[]",
+                    created_at=int(now_ts),
+                )
+            )
+
+        # --- 1) long_mood_state は原則1件に寄せる（背景の安定性） ---
+        # NOTE:
+        # - 重複があっても削除はしない
+        # - もっとも最近の1件だけ残し、他は過去化する
+        mood_rows = (
+            db.query(State)
+            .filter(State.kind == "long_mood_state")
+            .filter(State.valid_to_ts.is_(None))
+            .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+            .all()
+        )
+        if mood_rows:
+            kept_long_mood_state_id = int(mood_rows[0].state_id)
+            for st in mood_rows[1:]:
+                if len(closed_state_ids) >= int(max_close):
+                    break
+                before = _state_row_to_json(st)
+                # NOTE: 最近性（last_confirmed_at）は弄らない（検索順位を壊さない）
+                st.valid_to_ts = int(now_ts)
+                st.updated_at = int(now_ts)
+                db.add(st)
+                db.flush()
+                add_revision(
+                    entity_type="state",
+                    entity_id=int(st.state_id),
+                    before=before,
+                    after=_state_row_to_json(st),
+                    reason="記憶整理: long_mood_state を1件に集約するため過去化した",
+                )
+                closed_state_ids.append(int(st.state_id))
+
+        # --- 2) 完全一致の重複（kind/body/payload）を過去化する ---
+        # NOTE:
+        # - 「近い意味」の統合は品質難度が高いので、まずは安全な完全一致だけ整理する
+        # - 候補収集は広めを正とするため、ここは「ノイズの上限」を抑える役割
+        active_states = (
+            db.query(State)
+            .filter(State.valid_to_ts.is_(None))
+            .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+            .limit(int(_TIDY_ACTIVE_STATE_FETCH_LIMIT))
+            .all()
+        )
+
+        seen_keys: set[str] = set()
+        for st in active_states:
+            if len(closed_state_ids) >= int(max_close):
+                break
+
+            # --- long_mood_state の代表は閉じない ---
+            if kept_long_mood_state_id is not None and int(st.state_id) == int(kept_long_mood_state_id):
+                continue
+
+            key = "|".join(
+                [
+                    str(st.kind),
+                    _normalize_text_for_dedupe(str(st.body_text)),
+                    _canonicalize_json_for_dedupe(str(st.payload_json)),
+                ]
+            )
+            if key in seen_keys:
+                before = _state_row_to_json(st)
+                # NOTE: 最近性（last_confirmed_at）は弄らない（検索順位を壊さない）
+                st.valid_to_ts = int(now_ts)
+                st.updated_at = int(now_ts)
+                db.add(st)
+                db.flush()
+                add_revision(
+                    entity_type="state",
+                    entity_id=int(st.state_id),
+                    before=before,
+                    after=_state_row_to_json(st),
+                    reason="記憶整理: 完全一致の重複stateを過去化した",
+                )
+                closed_state_ids.append(int(st.state_id))
+                continue
+
+            seen_keys.add(key)
+
+        # --- 3) 過去化したstateの埋め込みを更新する（activeフラグを反映） ---
+        for state_id in closed_state_ids:
+            db.add(
+                Job(
+                    kind="upsert_state_embedding",
+                    payload_json=_json_dumps({"state_id": int(state_id)}),
+                    status=int(_JOB_PENDING),
+                    run_after=int(now_ts),
+                    tries=0,
+                    last_error=None,
+                    created_at=int(now_ts),
+                    updated_at=int(now_ts),
+                )
+            )
+
+    # --- 観測ログ（件数のみ） ---
+    logger.info(
+        "tidy_memory done closed_states=%s kept_long_mood_state_id=%s",
+        int(len(closed_state_ids)),
+        (int(kept_long_mood_state_id) if kept_long_mood_state_id is not None else None),
+        extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
+    )
 
 
 def _handle_upsert_state_embedding(

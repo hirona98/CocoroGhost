@@ -23,8 +23,9 @@
 4. `docs/03_時間モデル.md`
 5. `docs/04_検索（思い出す）.md`
 6. `docs/05_記憶更新（育てる）.md`
-7. `docs/06_ストレージ（SQLite）.md`
-8. `docs/07_API.md`
-9. `docs/08_観測とデバッグ.md`
-10. `docs/09_感情.md`
-11. `docs/10_実行フロー.md`
+7. `docs/11_記憶整理（整える）.md`
+8. `docs/06_ストレージ（SQLite）.md`
+9. `docs/07_API.md`
+10. `docs/08_観測とデバッグ.md`
+11. `docs/09_感情.md`
+12. `docs/10_実行フロー.md`
