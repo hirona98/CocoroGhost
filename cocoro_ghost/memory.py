@@ -306,6 +306,7 @@ def _reply_system_prompt(*, persona_text: str, addon_text: str) -> str:
                 "重要: <<INTERNAL_CONTEXT>> で始まるメッセージは内部用。本文に出力しない。",
                 "- 内部用JSONや内部見出し（<<<...>>>）を本文に出力しない。",
                 "- 内部用JSONに TimeContext（now/last_chat_created_at/gap_seconds）が含まれる。gap_seconds が大きい場合は、自然に時間経過を認識して話す。",
+                "- 内部用JSONに LongMoodState（背景の長期感情）が含まれる。本文にJSONや数値（VAD）をそのまま出力しない。雰囲気や言葉選びに反映する。",
             ]
         ).strip()
     )
@@ -398,6 +399,79 @@ class MemoryManager:
             if str(at or "").strip():
                 out.append({"role": "assistant", "content": str(at)})
         return out
+
+    def _load_long_mood_state_snapshot(
+        self, *, embedding_preset_id: str, embedding_dimension: int
+    ) -> dict[str, Any] | None:
+        """
+        長期気分（state.kind="long_mood_state"）の最新スナップショットを返す。
+
+        目的:
+            - 返答生成で「背景の気分」を安定して参照できるようにする（SearchResultPackの選別に依存しない）。
+
+        注意:
+            - 1ユーザー前提（client_id は端末識別）のため、ここでは client_id で分けない。
+            - with を抜けても安全なように、ORMを返さず dict だけ返す。
+        """
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            st = (
+                db.query(State)
+                .filter(State.kind == "long_mood_state")
+                .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+                .first()
+            )
+            if st is None:
+                return None
+
+            # --- payload_json を dict として扱えるようにする ---
+            payload_raw = str(st.payload_json or "").strip()
+            payload_obj: Any
+            if payload_raw:
+                try:
+                    payload_obj = json.loads(payload_raw)
+                except Exception:  # noqa: BLE001
+                    payload_obj = {"_raw": payload_raw}
+            else:
+                payload_obj = {}
+
+            # --- VAD を取り出せる場合は、見やすい形で別キーにする ---
+            vad: dict[str, float] | None = None
+            if isinstance(payload_obj, dict):
+                if all(k in payload_obj for k in ["v", "a", "d"]):
+                    try:
+                        vad = {
+                            "v": float(payload_obj.get("v")),  # type: ignore[arg-type]
+                            "a": float(payload_obj.get("a")),  # type: ignore[arg-type]
+                            "d": float(payload_obj.get("d")),  # type: ignore[arg-type]
+                        }
+                    except Exception:  # noqa: BLE001
+                        vad = None
+                elif isinstance(payload_obj.get("vad"), dict):
+                    vv = payload_obj.get("vad")
+                    if isinstance(vv, dict) and all(k in vv for k in ["v", "a", "d"]):
+                        try:
+                            vad = {
+                                "v": float(vv.get("v")),  # type: ignore[arg-type]
+                                "a": float(vv.get("a")),  # type: ignore[arg-type]
+                                "d": float(vv.get("d")),  # type: ignore[arg-type]
+                            }
+                        except Exception:  # noqa: BLE001
+                            vad = None
+
+            return {
+                "state_id": int(st.state_id),
+                "kind": str(st.kind),
+                "body_text": str(st.body_text),
+                "payload": payload_obj,
+                "vad": vad,
+                "confidence": float(st.confidence),
+                "salience": float(st.salience),
+                "last_confirmed_at": format_iso8601_local(int(st.last_confirmed_at)),
+                "valid_from_ts": (
+                    format_iso8601_local(int(st.valid_from_ts)) if st.valid_from_ts is not None else None
+                ),
+                "valid_to_ts": format_iso8601_local(int(st.valid_to_ts)) if st.valid_to_ts is not None else None,
+            }
 
     def _llm_io_loggers(self) -> tuple[logging.Logger, logging.Logger]:
         """LLM I/O ログの出力先ロガー（console/file）を返す。"""
@@ -686,6 +760,10 @@ class MemoryManager:
                     ),
                     "gap_seconds": (int(gap_seconds) if gap_seconds is not None else None),
                 },
+                "LongMoodState": self._load_long_mood_state_snapshot(
+                    embedding_preset_id=embedding_preset_id,
+                    embedding_dimension=embedding_dimension,
+                ),
                 "SearchResultPack": self._inflate_search_result_pack(candidates, search_result_pack),
             }
         )
@@ -1787,6 +1865,9 @@ class MemoryManager:
                 elif t == "state":
                     s = by_state_id.get(int(i))
                     if s is None:
+                        continue
+                    # --- long_mood_state は背景として別途注入するため、候補（SearchResultPack）には入れない ---
+                    if str(s.kind) == "long_mood_state":
                         continue
                     out.append(
                         _CandidateItem(
