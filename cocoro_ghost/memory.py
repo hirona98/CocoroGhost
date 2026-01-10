@@ -1510,8 +1510,7 @@ class MemoryManager:
                             meta={
                                 "type": "event",
                                 "event_id": int(r.event_id),
-                                "created_at": int(r.created_at),
-                                "created_at_iso_local": format_iso8601_local(int(r.created_at)),
+                                "created_at": format_iso8601_local(int(r.created_at)),
                                 "source": str(r.source),
                                 "user_text": str(r.user_text or "")[:800],
                                 "assistant_text": str(r.assistant_text or "")[:800],
@@ -1540,8 +1539,7 @@ class MemoryManager:
                                 "kind": str(s.kind),
                                 "body_text": str(s.body_text)[:900],
                                 "payload_json": str(s.payload_json)[:1200],
-                                "last_confirmed_at": int(s.last_confirmed_at),
-                                "last_confirmed_at_iso_local": format_iso8601_local(int(s.last_confirmed_at)),
+                                "last_confirmed_at": format_iso8601_local(int(s.last_confirmed_at)),
                                 "valid_from_ts": s.valid_from_ts,
                                 "valid_to_ts": s.valid_to_ts,
                             },
@@ -1563,10 +1561,10 @@ class MemoryManager:
                                 "type": "event_affect",
                                 "affect_id": int(a.id),
                                 "event_id": int(a.event_id),
-                                "created_at": int(a.created_at),
-                                "created_at_iso_local": format_iso8601_local(int(a.created_at)),
-                                "event_created_at": event_created_at,
-                                "event_created_at_iso_local": format_iso8601_local(event_created_at),
+                                "created_at": format_iso8601_local(int(a.created_at)),
+                                "event_created_at": (
+                                    format_iso8601_local(int(event_created_at)) if event_created_at is not None else None
+                                ),
                                 "moment_affect_text": str(a.moment_affect_text or "")[:600],
                                 "inner_thought_text": (
                                     str(a.inner_thought_text)[:600] if a.inner_thought_text is not None else None
