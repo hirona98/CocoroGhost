@@ -1018,6 +1018,23 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 if op == "upsert":
                     # --- 既存を更新するか、新規を作る ---
                     existing = db.query(State).filter(State.state_id == int(state_id_i)).one_or_none() if state_id_i else None
+
+                    # --- long_mood_state は「単一更新」で育てる ---
+                    # NOTE:
+                    # - long_mood_state は「背景」として扱い、複数を並存させない（増殖させない）
+                    # - 整理（tidy_memory）では long_mood_state を触らない前提なので、ここで増殖を防ぐ
+                    if str(kind) == "long_mood_state":
+                        if existing is not None and str(existing.kind) != "long_mood_state":
+                            existing = None
+
+                        if existing is None:
+                            existing = (
+                                db.query(State)
+                                .filter(State.kind == "long_mood_state")
+                                .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+                                .first()
+                            )
+
                     if existing is None:
                         if not body_text:
                             body_text = _json_dumps(payload_obj)[:2000]
@@ -1192,7 +1209,6 @@ def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, p
 
     # --- 変更件数（観測用） ---
     closed_state_ids: list[int] = []
-    kept_long_mood_state_id: int | None = None
 
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         # --- revisions を追加するヘルパ（整理でも説明責任を残す） ---
@@ -1209,41 +1225,11 @@ def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, p
                 )
             )
 
-        # --- 1) long_mood_state は原則1件に寄せる（背景の安定性） ---
-        # NOTE:
-        # - 重複があっても削除はしない
-        # - もっとも最近の1件だけ残し、他は過去化する
-        mood_rows = (
-            db.query(State)
-            .filter(State.kind == "long_mood_state")
-            .filter(State.valid_to_ts.is_(None))
-            .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
-            .all()
-        )
-        if mood_rows:
-            kept_long_mood_state_id = int(mood_rows[0].state_id)
-            for st in mood_rows[1:]:
-                if len(closed_state_ids) >= int(max_close):
-                    break
-                before = _state_row_to_json(st)
-                # NOTE: 最近性（last_confirmed_at）は弄らない（検索順位を壊さない）
-                st.valid_to_ts = int(now_ts)
-                st.updated_at = int(now_ts)
-                db.add(st)
-                db.flush()
-                add_revision(
-                    entity_type="state",
-                    entity_id=int(st.state_id),
-                    before=before,
-                    after=_state_row_to_json(st),
-                    reason="記憶整理: long_mood_state を1件に集約するため過去化した",
-                )
-                closed_state_ids.append(int(st.state_id))
-
-        # --- 2) 完全一致の重複（kind/body/payload）を過去化する ---
+        # --- 完全一致の重複（kind/body/payload）を過去化する ---
         # NOTE:
         # - 「近い意味」の統合は品質難度が高いので、まずは安全な完全一致だけ整理する
         # - 候補収集は広めを正とするため、ここは「ノイズの上限」を抑える役割
+        # - long_mood_state は整理対象から除外する（単一更新で育てるのを正とする）
         active_states = (
             db.query(State)
             .filter(State.valid_to_ts.is_(None))
@@ -1257,8 +1243,8 @@ def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, p
             if len(closed_state_ids) >= int(max_close):
                 break
 
-            # --- long_mood_state の代表は閉じない ---
-            if kept_long_mood_state_id is not None and int(st.state_id) == int(kept_long_mood_state_id):
+            # --- long_mood_state は整理対象外 ---
+            if str(st.kind) == "long_mood_state":
                 continue
 
             key = "|".join(
@@ -1304,9 +1290,8 @@ def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, p
 
     # --- 観測ログ（件数のみ） ---
     logger.info(
-        "tidy_memory done closed_states=%s kept_long_mood_state_id=%s",
+        "tidy_memory done closed_states=%s",
         int(len(closed_state_ids)),
-        (int(kept_long_mood_state_id) if kept_long_mood_state_id is not None else None),
         extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
     )
 
