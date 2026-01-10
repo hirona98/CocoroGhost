@@ -305,6 +305,7 @@ def _reply_system_prompt(*, persona_text: str, addon_text: str) -> str:
             [
                 "重要: <<INTERNAL_CONTEXT>> で始まるメッセージは内部用。本文に出力しない。",
                 "- 内部用JSONや内部見出し（<<<...>>>）を本文に出力しない。",
+                "- 内部用JSONに TimeContext（now/last_chat_created_at/gap_seconds）が含まれる。",
             ]
         ).strip()
     )
@@ -511,6 +512,7 @@ class MemoryManager:
             return
 
         now_ts = _now_utc_ts()
+        last_chat_created_at_ts: int | None = None
 
         # --- eventsを作成（ターン単位） ---
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
@@ -531,27 +533,30 @@ class MemoryManager:
 
             # --- 2) reply_to（同じclient_idの直前チャット）を軽量に仮置きする ---
             prev = (
-                db.query(Event)
+                db.query(Event.event_id, Event.created_at)
                 .filter(Event.client_id == client_id)
                 .filter(Event.source == "chat")
                 .filter(Event.event_id != event_id)
+                # assistant_text が無いターン（作成途中）は除外する
+                .filter(Event.assistant_text.isnot(None))
                 .order_by(Event.event_id.desc())
                 .first()
             )
-            if prev is not None:
+            if prev is not None and int(prev[0] or 0) > 0:
                 # NOTE: 文脈グラフの本更新は非同期で行う。ここでは reply_to だけを即時に張る。
                 from cocoro_ghost.memory_models import EventLink  # noqa: PLC0415
 
                 db.add(
                     EventLink(
                         from_event_id=event_id,
-                        to_event_id=int(prev.event_id),
+                        to_event_id=int(prev[0]),
                         label="reply_to",
                         confidence=1.0,
                         evidence_event_ids_json="[]",
                         created_at=now_ts,
                     )
                 )
+                last_chat_created_at_ts = int(prev[1] or 0) if int(prev[1] or 0) > 0 else None
 
         # --- 3) SearchPlan（LLM） ---
         plan_obj: dict[str, Any] = {
@@ -641,7 +646,26 @@ class MemoryManager:
 
         # --- 8) 返答をSSEで生成（SearchResultPackを内部注入） ---
         system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
-        internal_context = _json_dumps({"SearchResultPack": self._inflate_search_result_pack(candidates, search_result_pack)})
+        gap_seconds: int | None = None
+        if last_chat_created_at_ts is not None and int(last_chat_created_at_ts) > 0:
+            gap_seconds = int(now_ts) - int(last_chat_created_at_ts)
+            if gap_seconds < 0:
+                gap_seconds = 0
+
+        internal_context = _json_dumps(
+            {
+                "TimeContext": {
+                    "now": format_iso8601_local(int(now_ts)),
+                    "last_chat_created_at": (
+                        format_iso8601_local(int(last_chat_created_at_ts))
+                        if last_chat_created_at_ts is not None and int(last_chat_created_at_ts) > 0
+                        else None
+                    ),
+                    "gap_seconds": (int(gap_seconds) if gap_seconds is not None else None),
+                },
+                "SearchResultPack": self._inflate_search_result_pack(candidates, search_result_pack),
+            }
+        )
         # --- 直近会話（短期コンテキスト）を付与して会話の安定性を上げる ---
         # NOTE:
         # - 記憶（長期）は SearchResultPack で注入する。
