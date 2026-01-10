@@ -32,7 +32,7 @@ from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.db import search_similar_item_ids
 from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
-from cocoro_ghost.memory_models import Event, EventAffect, EventLink, Job, RetrievalRun, State
+from cocoro_ghost.memory_models import Event, EventAffect, EventLink, EventThread, Job, RetrievalRun, State
 from cocoro_ghost import vision_bridge
 from cocoro_ghost.time_utils import format_iso8601_local
 
@@ -1355,6 +1355,132 @@ class MemoryManager:
                     cur = prev_id
             return out
 
+        def task_context_threads_events() -> list[tuple[str, int]]:
+            # --- 文脈スレッド（event_threads）から、同一文脈のイベントを拾う ---
+            # NOTE:
+            # - 現在ターン（event_id）は同期直後で thread 付与が無いことが多い。
+            # - そのため reply_to 連鎖（直近の流れ）を「種」にして thread_key を集める。
+            out: list[tuple[str, int]] = []
+            with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                # --- 種（seed）: reply_to 連鎖の先頭側（短め） ---
+                seed_event_ids: list[int] = []
+                cur = int(event_id)
+                for _ in range(8):
+                    link = (
+                        db.query(EventLink.to_event_id)
+                        .filter(EventLink.from_event_id == int(cur))
+                        .filter(EventLink.label == "reply_to")
+                        .order_by(EventLink.id.desc())
+                        .first()
+                    )
+                    if link is None:
+                        break
+                    prev_id = int(link[0] or 0)
+                    if prev_id <= 0:
+                        break
+                    seed_event_ids.append(int(prev_id))
+                    cur = int(prev_id)
+
+                if not seed_event_ids:
+                    return []
+
+                # --- thread_key を集める（重くしない） ---
+                rows = (
+                    db.query(EventThread.thread_key)
+                    .filter(EventThread.event_id.in_([int(x) for x in seed_event_ids]))
+                    .order_by(EventThread.id.desc())
+                    .limit(16)
+                    .all()
+                )
+                thread_keys: list[str] = []
+                seen: set[str] = set()
+                for r in rows:
+                    tk = str(r[0] or "").strip()
+                    if not tk:
+                        continue
+                    if tk in seen:
+                        continue
+                    seen.add(tk)
+                    thread_keys.append(tk)
+
+                if not thread_keys:
+                    return []
+
+                # --- 同一threadのイベントを拾う（最近順） ---
+                rows2 = (
+                    db.query(EventThread.event_id)
+                    .filter(EventThread.thread_key.in_([str(x) for x in thread_keys]))
+                    .order_by(EventThread.event_id.desc())
+                    .limit(80)
+                    .all()
+                )
+                for r in rows2:
+                    if not r or r[0] is None:
+                        continue
+                    eid = int(r[0] or 0)
+                    if eid <= 0 or int(eid) == int(event_id):
+                        continue
+                    out.append(("event", int(eid)))
+            return out
+
+        def task_context_links_events() -> list[tuple[str, int]]:
+            # --- 文脈リンク（event_links）から、同一話題/因果/継続を拾う ---
+            # NOTE:
+            # - reply_to は別経路で辿るので、ここでは reply_to 以外を対象にする。
+            out: list[tuple[str, int]] = []
+            with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                # --- 種（seed）: reply_to 連鎖の先頭側（短め） ---
+                seed_event_ids: list[int] = []
+                cur = int(event_id)
+                for _ in range(8):
+                    link = (
+                        db.query(EventLink.to_event_id)
+                        .filter(EventLink.from_event_id == int(cur))
+                        .filter(EventLink.label == "reply_to")
+                        .order_by(EventLink.id.desc())
+                        .first()
+                    )
+                    if link is None:
+                        break
+                    prev_id = int(link[0] or 0)
+                    if prev_id <= 0:
+                        break
+                    seed_event_ids.append(int(prev_id))
+                    cur = int(prev_id)
+
+                if not seed_event_ids:
+                    return []
+
+                seed_set = {int(x) for x in seed_event_ids if int(x) > 0}
+                if not seed_set:
+                    return []
+
+                # --- 同一話題/因果/継続を拾う ---
+                labels = ["same_topic", "caused_by", "continuation"]
+                rows = (
+                    db.query(EventLink.from_event_id, EventLink.to_event_id)
+                    .filter(
+                        (EventLink.from_event_id.in_([int(x) for x in seed_set]))
+                        | (EventLink.to_event_id.in_([int(x) for x in seed_set]))
+                    )
+                    .filter(EventLink.label.in_([str(x) for x in labels]))
+                    .order_by(EventLink.id.desc())
+                    .limit(80)
+                    .all()
+                )
+                for r in rows:
+                    if not r:
+                        continue
+                    a = int(r[0] or 0)
+                    b = int(r[1] or 0)
+                    if a <= 0 or b <= 0:
+                        continue
+                    other = b if a in seed_set else a if b in seed_set else 0
+                    if other <= 0 or int(other) == int(event_id):
+                        continue
+                    out.append(("event", int(other)))
+            return out
+
         def task_recent_states() -> list[tuple[str, int]]:
             with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
                 rows = (
@@ -1542,11 +1668,13 @@ class MemoryManager:
                 return out, dbg
 
         # --- 並列実行（遅い経路があっても全体が破綻しない） ---
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
             futures = {
                 "recent_events": ex.submit(task_recent_events),
                 "trigram_events": ex.submit(task_trigram_events),
                 "reply_chain": ex.submit(task_reply_chain_events),
+                "context_threads": ex.submit(task_context_threads_events),
+                "context_links": ex.submit(task_context_links_events),
                 "recent_states": ex.submit(task_recent_states),
                 "about_time": ex.submit(task_about_time_events),
                 "vector_all": ex.submit(task_vector_all),
@@ -1556,6 +1684,8 @@ class MemoryManager:
                 "recent_events": 0.25,
                 "trigram_events": 0.6,
                 "reply_chain": 0.2,
+                "context_threads": 0.35,
+                "context_links": 0.35,
                 "recent_states": 0.25,
                 "about_time": 0.4,
                 "vector_all": 2.2,
@@ -1593,6 +1723,32 @@ class MemoryManager:
             by_state_id = {int(r.state_id): r for r in states}
             by_affect_id = {int(r.id): r for r in affects}
 
+            # --- event_threads（文脈スレッド）をイベントメタへ添える ---
+            # NOTE:
+            # - thread_key は「なんの流れだっけ？」のヒントとして有効。
+            # - 同期の選別入力へ含めることで、選別の安定性を上げる。
+            threads_by_event_id: dict[int, list[str]] = {}
+            if event_ids:
+                rows = (
+                    db.query(EventThread.event_id, EventThread.thread_key)
+                    .filter(EventThread.event_id.in_([int(x) for x in event_ids]))
+                    .order_by(EventThread.id.desc())
+                    .all()
+                )
+                for r in rows:
+                    if not r:
+                        continue
+                    eid = int(r[0] or 0)
+                    tk = str(r[1] or "").strip()
+                    if eid <= 0 or not tk:
+                        continue
+                    lst = threads_by_event_id.get(eid)
+                    if lst is None:
+                        lst = []
+                        threads_by_event_id[eid] = lst
+                    if tk not in lst:
+                        lst.append(tk)
+
             affect_event_ids = sorted({int(a.event_id) for a in affects if a and a.event_id is not None})
             affect_events = db.query(Event).filter(Event.event_id.in_(affect_event_ids)).all() if affect_event_ids else []
             by_affect_event_id = {int(r.event_id): r for r in affect_events}
@@ -1615,6 +1771,7 @@ class MemoryManager:
                                 "event_id": int(r.event_id),
                                 "created_at": format_iso8601_local(int(r.created_at)),
                                 "source": str(r.source),
+                                "thread_keys": threads_by_event_id.get(int(r.event_id), []),
                                 "user_text": str(r.user_text or "")[:800],
                                 "assistant_text": str(r.assistant_text or "")[:800],
                                 "about_time": {
