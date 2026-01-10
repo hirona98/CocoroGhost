@@ -559,7 +559,28 @@ class MemoryManager:
                 )
                 last_chat_created_at_ts = int(prev[1] or 0) if int(prev[1] or 0) > 0 else None
 
-        # --- 3) SearchPlan（LLM） ---
+        # --- 3) 先行: 埋め込み取得（input_text のみ。SearchPlan生成と重ねて待ちを削る） ---
+        # NOTE:
+        # - 段階化（追加クエリの追い埋め込み）はしない（シンプル優先）。
+        # - 先行埋め込みは vector_all で使い、文字n-gram側は SearchPlan.queries を使える。
+        vector_embedding_future: concurrent.futures.Future[list[Any]] | None = None
+        pre_ex: concurrent.futures.ThreadPoolExecutor | None = None
+        try:
+            pre_ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            vector_embedding_future = pre_ex.submit(
+                self.llm_client.generate_embedding,
+                [str(input_text)],
+                purpose=LlmRequestPurpose.SYNC_RETRIEVAL_QUERY_EMBEDDING,
+            )
+        finally:
+            # NOTE: 送信済みタスクは継続する。ここで待たない（体感速度優先）。
+            try:
+                if pre_ex is not None:
+                    pre_ex.shutdown(wait=False)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # --- 4) SearchPlan（LLM） ---
         plan_obj: dict[str, Any] = {
             "mode": "associative_recent",
             "queries": [input_text],
@@ -580,13 +601,14 @@ class MemoryManager:
         except Exception as exc:  # noqa: BLE001
             logger.warning("SearchPlan generation failed; fallback to default", exc_info=exc)
 
-        # --- 4) 候補収集（取りこぼし防止優先・可能なものは並列） ---
+        # --- 5) 候補収集（取りこぼし防止優先・可能なものは並列） ---
         candidates: list[_CandidateItem] = self._collect_candidates(
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),
             input_text=input_text,
             plan_obj=plan_obj,
+            vector_embedding_future=vector_embedding_future,
         )
 
         # --- 5) retrieval_runs を記録（plan + candidate統計） ---
@@ -1222,8 +1244,22 @@ class MemoryManager:
         event_id: int,
         input_text: str,
         plan_obj: dict[str, Any],
+        vector_embedding_future: concurrent.futures.Future[list[Any]] | None = None,
     ) -> list[_CandidateItem]:
-        """候補収集（取りこぼし防止優先・可能なものは並列）。"""
+        """
+        候補収集（取りこぼし防止優先・可能なものは並列）。
+
+        Args:
+            embedding_preset_id: 埋め込みプリセットID。
+            embedding_dimension: 埋め込み次元。
+            event_id: 現在ターンの event_id（除外用）。
+            input_text: ユーザー入力。
+            plan_obj: SearchPlan（文字n-gram/期間補助/上限制御などに使う）。
+            vector_embedding_future:
+                先行して開始した「input_text のみ」の埋め込み取得結果。
+                - これが渡された場合、vector_all は原則この結果を使う（SearchPlanのqueriesは使わない）。
+                - 目的: SearchPlan生成と埋め込み取得を重ねて体感を上げ、vec候補の欠落を減らす。
+        """
 
         # --- 上限 ---
         limits = plan_obj.get("limits") if isinstance(plan_obj, dict) else None
@@ -1249,6 +1285,13 @@ class MemoryManager:
                 if qq not in query_texts:
                     query_texts.append(qq)
         query_texts = [q for q in query_texts if q]
+
+        # --- ベクトル検索は「input_text のみ」で先行埋め込みを使えるようにする ---
+        # NOTE:
+        # - 段階化（追加クエリの追い埋め込み）はしない（シンプル優先）。
+        # - SearchPlan.queries は文字n-gram側の補助としては使えるが、vec側は input_text を正にする。
+        vector_query_texts: list[str] = [str(input_text or "").strip()]
+        vector_query_texts = [q for q in vector_query_texts if q]
 
         def add_sources(keys: list[tuple[str, int]], label: str) -> None:
             for t, i in keys:
@@ -1356,11 +1399,11 @@ class MemoryManager:
             # --- 類似検索の件数（k）を設定から決める ---
             # NOTE:
             # - embedding_preset.similar_episodes_limit は「類似イベント（episodes）の上限」を表す。
-            # - SearchPlan の queries は複数になることがあるため、総量が暴れないように per-query に割り当てる。
+            # - 今回は vec 側は input_text を正とし、総量が暴れないように per-query に割り当てる。
             # - state / event_affect は従来の比率（60:40:20）を踏襲し、events を基準に派生させる。
             cfg = self.config_store.config
             total_event_k = max(1, min(200, int(cfg.similar_episodes_limit)))
-            qn = max(1, len(query_texts))
+            qn = max(1, len(vector_query_texts))
 
             per_query_event_k = int(math.ceil(float(total_event_k) / float(qn)))
             total_state_k = int(math.ceil(float(total_event_k) * (2.0 / 3.0)))
@@ -1368,12 +1411,24 @@ class MemoryManager:
             per_query_state_k = max(1, int(math.ceil(float(total_state_k) / float(qn))))
             per_query_affect_k = max(1, int(math.ceil(float(total_affect_k) / float(qn))))
 
-            # --- embedding を作る（重い） ---
-            # NOTE: SearchPlan の queries を広めに使い、連想を拾いやすくする。
-            embeddings = self.llm_client.generate_embedding(
-                [str(x) for x in query_texts],
-                purpose=LlmRequestPurpose.SYNC_RETRIEVAL_QUERY_EMBEDDING,
-            )
+            # --- embedding を用意する（重いので、可能なら先行開始した結果を使う） ---
+            # NOTE:
+            # - 先行埋め込みがあれば、SearchPlan生成（同期）と埋め込み取得を重ねて待ちを削る。
+            # - 先行埋め込みが無い場合のみ、ここで取得する。
+            embeddings: list[Any]
+            embedding_source: str = "generated_in_vector_all"
+            if vector_embedding_future is not None:
+                # --- vec_all タスク内での待ち時間を抑える（SQLite検索の時間を確保） ---
+                budget_seconds = 2.0
+                started = time.perf_counter()
+                remaining = max(0.0, float(budget_seconds) - float(time.perf_counter() - started))
+                embeddings = vector_embedding_future.result(timeout=float(remaining))
+                embedding_source = "precomputed_input_only"
+            else:
+                embeddings = self.llm_client.generate_embedding(
+                    [str(x) for x in vector_query_texts],
+                    purpose=LlmRequestPurpose.SYNC_RETRIEVAL_QUERY_EMBEDDING,
+                )
 
             # --- mode によって最近性フィルタを使う ---
             mode = str(plan_obj.get("mode") or "").strip()
@@ -1389,7 +1444,9 @@ class MemoryManager:
                     "memory_enabled": bool(self.config_store.memory_enabled),
                     "mode": str(mode),
                     "rank_day_range": (list(rank_range) if rank_range is not None else None),
-                    "query_texts": list(query_texts),
+                    "vector_query_texts": list(vector_query_texts),
+                    "trigram_query_texts": list(query_texts),
+                    "embedding_source": str(embedding_source),
                     "similar_episodes_limit": int(total_event_k),
                     "k_per_query": {
                         "event": int(per_query_event_k),
@@ -1420,7 +1477,7 @@ class MemoryManager:
                     dbg["vec_items_counts"] = {"error": "count failed"}
 
                 # --- 各クエリ埋め込みで拾ったヒットを統合する ---
-                for q_text, q_emb in zip(query_texts, embeddings, strict=False):
+                for q_text, q_emb in zip(vector_query_texts, embeddings, strict=False):
                     q_label = str(q_text)[:60]
 
                     rows_e = search_similar_item_ids(
@@ -1513,9 +1570,9 @@ class MemoryManager:
                     else:
                         keys = result
                     add_sources([(str(t), int(i)) for (t, i) in keys], label=str(label))
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
                     if label == "vector_all":
-                        vector_debug = {"error": "vector_all failed or timed out"}
+                        vector_debug = {"error": f"vector_all failed or timed out: {type(exc).__name__}: {exc}"}
                     continue
 
         # --- レコードをまとめて引く（ORMのDetachedを避けるため、候補のdict化までセッション内で行う） ---
@@ -1636,7 +1693,8 @@ class MemoryManager:
                 "（（埋め込みDBから候補取得））",
                 {
                     "query_text": str(input_text),
-                    "query_texts": list(query_texts),
+                    "trigram_query_texts": list(query_texts),
+                    "vector_query_texts": list(vector_query_texts),
                     "mode": str(plan_obj.get("mode") or ""),
                     "vector_debug": vector_debug,
                     "loaded_preview": vector_loaded_preview,
