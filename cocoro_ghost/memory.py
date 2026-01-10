@@ -1533,19 +1533,23 @@ class MemoryManager:
                             type="state",
                             id=int(i),
                             rank_ts=int(s.last_confirmed_at),
-                            meta={
-                                "type": "state",
-                                "state_id": int(s.state_id),
-                                "kind": str(s.kind),
-                                "body_text": str(s.body_text)[:900],
-                                "payload_json": str(s.payload_json)[:1200],
-                                "last_confirmed_at": format_iso8601_local(int(s.last_confirmed_at)),
-                                "valid_from_ts": s.valid_from_ts,
-                                "valid_to_ts": s.valid_to_ts,
-                            },
-                            hit_sources=hit_sources,
-                        )
-                    )
+	                            meta={
+	                                "type": "state",
+	                                "state_id": int(s.state_id),
+	                                "kind": str(s.kind),
+	                                "body_text": str(s.body_text)[:900],
+	                                "payload_json": str(s.payload_json)[:1200],
+	                                "last_confirmed_at": format_iso8601_local(int(s.last_confirmed_at)),
+	                                "valid_from_ts": (
+	                                    format_iso8601_local(int(s.valid_from_ts)) if s.valid_from_ts is not None else None
+	                                ),
+	                                "valid_to_ts": (
+	                                    format_iso8601_local(int(s.valid_to_ts)) if s.valid_to_ts is not None else None
+	                                ),
+	                            },
+	                            hit_sources=hit_sources,
+	                        )
+	                    )
                 elif t == "event_affect":
                     a = by_affect_id.get(int(i))
                     if a is None:

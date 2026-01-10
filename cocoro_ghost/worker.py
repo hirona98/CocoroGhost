@@ -24,7 +24,7 @@ from typing import Any
 from cocoro_ghost.db import memory_session_scope, upsert_vec_item
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.memory_models import Event, EventAffect, EventLink, EventThread, Job, Revision, State
-from cocoro_ghost.time_utils import format_iso8601_local
+from cocoro_ghost.time_utils import format_iso8601_local, parse_iso8601_to_utc_ts
 
 
 logger = logging.getLogger(__name__)
@@ -194,6 +194,8 @@ def _write_plan_system_prompt() -> str:
             "- VAD（v/a/d）は各軸 -1.0..+1.0",
             "- どの更新も evidence_event_ids に必ず現在の event_id を含める",
             "- reason は短く具体的に（なぜそう判断したか）",
+            "- state_id はDB主キー（整数）か null（文字列IDを作らない）",
+            "- 日時は ISO 8601（タイムゾーン付き）文字列で出す（例: 2026-01-10T13:24:00+09:00）",
             "",
             "出力スキーマ（キーは識別子なので英語のまま）:",
             "{",
@@ -217,7 +219,7 @@ def _write_plan_system_prompt() -> str:
             '      "salience": 0.0,',
             '      "valid_from_ts": null,',
             '      "valid_to_ts": null,',
-            '      "last_confirmed_at": 0,',
+            '      "last_confirmed_at": null,',
             '      "evidence_event_ids": [0],',
             '      "reason": "string"',
             "    }",
@@ -552,7 +554,12 @@ def _handle_generate_write_plan(
         recent_events = recent_events_q.limit(12).all()
 
         # --- 直近の状態 ---
-        recent_states = db.query(State).order_by(State.last_confirmed_at.desc(), State.state_id.desc()).limit(24).all()
+        recent_states = (
+            db.query(State)
+            .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+            .limit(24)
+            .all()
+        )
 
         recent_event_snapshots = [
             {
@@ -571,8 +578,17 @@ def _handle_generate_write_plan(
                 "body_text": str(s.body_text)[:600],
                 "payload_json": str(s.payload_json)[:800],
                 "last_confirmed_at": format_iso8601_local(int(s.last_confirmed_at)),
-                "valid_from_ts": (int(s.valid_from_ts) if s.valid_from_ts is not None else None),
-                "valid_to_ts": (int(s.valid_to_ts) if s.valid_to_ts is not None else None),
+                # NOTE: DBはUNIX秒だが、LLMにはISOで渡す。
+                "valid_from_ts": (
+                    format_iso8601_local(int(s.valid_from_ts))
+                    if s.valid_from_ts is not None and int(s.valid_from_ts) > 0
+                    else None
+                ),
+                "valid_to_ts": (
+                    format_iso8601_local(int(s.valid_to_ts))
+                    if s.valid_to_ts is not None and int(s.valid_to_ts) > 0
+                    else None
+                ),
             }
             for s in recent_states
         ]
@@ -640,10 +656,18 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         # --- events 注釈更新（about_time/entities） ---
         ann = plan.get("event_annotations") if isinstance(plan, dict) else None
         if isinstance(ann, dict):
-            ev.about_start_ts = ann.get("about_start_ts")
-            ev.about_end_ts = ann.get("about_end_ts")
-            ev.about_year_start = ann.get("about_year_start")
-            ev.about_year_end = ann.get("about_year_end")
+            # NOTE: LLMはISO文字列を返す可能性があるため、ここでUNIX秒へ正規化する。
+            a0 = ann.get("about_start_ts")
+            a1 = ann.get("about_end_ts")
+            a0_i = int(a0) if isinstance(a0, (int, float)) and int(a0) > 0 else parse_iso8601_to_utc_ts(str(a0) if a0 is not None else None)
+            a1_i = int(a1) if isinstance(a1, (int, float)) and int(a1) > 0 else parse_iso8601_to_utc_ts(str(a1) if a1 is not None else None)
+            ev.about_start_ts = int(a0_i) if a0_i is not None and int(a0_i) > 0 else None
+            ev.about_end_ts = int(a1_i) if a1_i is not None and int(a1_i) > 0 else None
+
+            y0 = ann.get("about_year_start")
+            y1 = ann.get("about_year_end")
+            ev.about_year_start = int(y0) if isinstance(y0, (int, float)) and int(y0) > 0 else None
+            ev.about_year_end = int(y1) if isinstance(y1, (int, float)) and int(y1) > 0 else None
             life_stage = ann.get("life_stage")
             ev.life_stage = (str(life_stage) if life_stage is not None else None)
             ev.about_time_confidence = float(ann.get("about_time_confidence") or 0.0)
@@ -863,18 +887,23 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 state_id = u.get("state_id")
                 state_id_i = int(state_id) if isinstance(state_id, (int, float)) and int(state_id) > 0 else None
 
-                # --- last_confirmed_at は event 時刻を基本にする（実行遅延があっても会話時系列を保つ） ---
-                last_confirmed_at = u.get("last_confirmed_at")
-                last_confirmed_at_i = (
-                    int(last_confirmed_at)
-                    if isinstance(last_confirmed_at, (int, float)) and int(last_confirmed_at) > 0
-                    else int(base_ts)
-                )
+                # --- last_confirmed_at は event 時刻を正とする（LLMが時刻を作ると破綻しやすい） ---
+                # NOTE: 会話の時系列と最近性（検索順位）を壊さないため、常に base_ts を使う。
+                last_confirmed_at_i = int(base_ts)
 
                 valid_from_ts = u.get("valid_from_ts")
                 valid_to_ts = u.get("valid_to_ts")
-                v_from = int(valid_from_ts) if isinstance(valid_from_ts, (int, float)) and int(valid_from_ts) > 0 else None
-                v_to = int(valid_to_ts) if isinstance(valid_to_ts, (int, float)) and int(valid_to_ts) > 0 else None
+                # NOTE: LLMはISO文字列を返す可能性があるため、ここでUNIX秒へ正規化する。
+                v_from = (
+                    int(valid_from_ts)
+                    if isinstance(valid_from_ts, (int, float)) and int(valid_from_ts) > 0
+                    else parse_iso8601_to_utc_ts(str(valid_from_ts) if valid_from_ts is not None else None)
+                )
+                v_to = (
+                    int(valid_to_ts)
+                    if isinstance(valid_to_ts, (int, float)) and int(valid_to_ts) > 0
+                    else parse_iso8601_to_utc_ts(str(valid_to_ts) if valid_to_ts is not None else None)
+                )
 
                 confidence = float(u.get("confidence") or 0.0)
                 salience = float(u.get("salience") or 0.0)
