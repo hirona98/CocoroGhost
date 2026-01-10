@@ -335,6 +335,67 @@ class MemoryManager:
         self.llm_client = llm_client
         self.config_store = config_store
 
+    def _load_recent_chat_dialog_messages(
+        self,
+        *,
+        embedding_preset_id: str,
+        embedding_dimension: int,
+        client_id: str,
+        exclude_event_id: int,
+        max_turn_events: int,
+    ) -> list[dict[str, str]]:
+        """
+        直近のチャット会話（短期コンテキスト）を messages 形式で返す。
+
+        注意:
+            - クライアントは単純I/Oなので、サーバ側で直近会話を付与して会話の安定性を上げる。
+            - ここは「会話の流れ」を補助する目的。検索（記憶）は別経路（SearchResultPack）。
+            - with を抜けても安全なように、ORMを返さず dict だけ返す。
+        """
+        cid = str(client_id or "").strip()
+        if not cid:
+            return []
+
+        # --- 直近ターン数（短期コンテキスト） ---
+        # NOTE: max_turns_window は常に設定される前提（欠損フォールバックはしない）。
+        n = int(max_turn_events)
+        if n <= 0:
+            return []
+        n = max(1, n)
+
+        # --- 1イベント=1ターン（user_text + assistant_text）を想定 ---
+        rows: list[tuple[int, str, str]] = []
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            q = (
+                db.query(Event.event_id, Event.user_text, Event.assistant_text)
+                .filter(Event.source == "chat")
+                .filter(Event.client_id == cid)
+                .filter(Event.event_id != int(exclude_event_id))
+                # assistant_text が無いターン（作成途中）は除外する
+                .filter(Event.assistant_text.isnot(None))
+                .order_by(Event.event_id.desc())
+                .limit(int(n))
+            )
+            for r in q.all():
+                if not r:
+                    continue
+                eid = int(r[0] or 0)
+                ut = str(r[1] or "")
+                at = str(r[2] or "")
+                rows.append((eid, ut, at))
+
+        # --- 新しい順で取っているので、会話としては古い順に並べ直す ---
+        rows.reverse()
+
+        out: list[dict[str, str]] = []
+        # NOTE: メッセージは切り詰めず、そのまま送る。
+        for _, ut, at in rows:
+            if str(ut or "").strip():
+                out.append({"role": "user", "content": str(ut)})
+            if str(at or "").strip():
+                out.append({"role": "assistant", "content": str(at)})
+        return out
+
     def _llm_io_loggers(self) -> tuple[logging.Logger, logging.Logger]:
         """LLM I/O ログの出力先ロガー（console/file）を返す。"""
         return (logging.getLogger("cocoro_ghost.llm_io.console"), logging.getLogger("cocoro_ghost.llm_io.file"))
@@ -580,10 +641,21 @@ class MemoryManager:
         # --- 8) 返答をSSEで生成（SearchResultPackを内部注入） ---
         system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
         internal_context = _json_dumps({"SearchResultPack": self._inflate_search_result_pack(candidates, search_result_pack)})
-        conversation = [
-            {"role": "assistant", "content": f"<<INTERNAL_CONTEXT>>\n{internal_context}"},
-            {"role": "user", "content": input_text},
-        ]
+        # --- 直近会話（短期コンテキスト）を付与して会話の安定性を上げる ---
+        # NOTE:
+        # - 記憶（長期）は SearchResultPack で注入する。
+        # - 直近会話は「文脈の流れ（指示・口調・直前の合意）」のために常に少量入れる。
+        # - max_turns_window は LLM プリセット（設定UI）側の値を使う（常に存在する前提）。
+        recent_dialog = self._load_recent_chat_dialog_messages(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            client_id=client_id,
+            exclude_event_id=int(event_id),
+            max_turn_events=int(cfg.max_turns_window),
+        )
+        conversation = [{"role": "assistant", "content": f"<<INTERNAL_CONTEXT>>\n{internal_context}"}]
+        conversation.extend(recent_dialog)
+        conversation.append({"role": "user", "content": input_text})
 
         reply_text = ""
         finish_reason = ""
