@@ -30,7 +30,7 @@
 
 例（概念）:
 
-- `created_at`（記録時刻、UTC）
+- `created_at`（記録時刻。DB内部はUTCのUNIX秒、LLM入出力/ログはISO 8601のローカル時刻表現）
 
 注記:
 
