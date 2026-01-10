@@ -12,7 +12,7 @@
   - 改訂履歴（`revisions`）
   - 検索インデックス（ベクトル/文字n-gram）
   - 観測ログ（`retrieval_runs`）
-  - 感情（`long_mood_state` / `event_affect`）
+  - 感情（`long_mood_state` / `event_affects`）
 
 ## 方針
 
@@ -28,9 +28,25 @@
 - **流れ（文脈）が分かる情報**を持てるようにする
 - 画像そのものは保持しない（**画像の説明テキスト**を `events` に残す）
 
-例（概念）:
+主要カラム:
 
-- `created_at`（記録時刻。DB内部はUTCのUNIX秒、LLM入出力/ログはISO 8601のローカル時刻表現）
+| カラム | 型 | 説明 |
+|--------|------|------|
+| event_id | INTEGER | 主キー（自動採番） |
+| created_at | INTEGER | 記録時刻（UTC UNIX秒） |
+| updated_at | INTEGER | 更新時刻（UTC UNIX秒） |
+| client_id | TEXT | クライアントID（NULL可） |
+| source | TEXT | イベント種別（chat/notification/reminder/desktop_watch/meta_proactive/vision_detail） |
+| user_text | TEXT | ユーザー入力（NULL可） |
+| assistant_text | TEXT | アシスタント出力（NULL可） |
+| about_start_ts | INTEGER | 内容の開始時刻（UTC UNIX秒、NULL可） |
+| about_end_ts | INTEGER | 内容の終了時刻（UTC UNIX秒、NULL可） |
+| about_year_start | INTEGER | 内容の開始年（NULL可） |
+| about_year_end | INTEGER | 内容の終了年（NULL可） |
+| life_stage | TEXT | ライフステージ（elementary/middle/high/university/work/unknown） |
+| about_time_confidence | REAL | `about_time` 推定の確信度（0.0〜1.0） |
+| entities_json | TEXT | エンティティ抽出結果（JSON配列） |
+| client_context_json | TEXT | クライアントコンテキスト（JSON、NULL可） |
 
 注記:
 
@@ -82,6 +98,12 @@
 - `event_links`: `from_event_id` → `to_event_id` の関係（`label` と `confidence` と `created_at`）
 - `event_threads`: 「イベントがどの文脈スレッドに属するか」（`thread_key` と `confidence` と `created_at`）
 
+#### `thread_key` の採番ルール
+
+- `thread_key` は LLM が決定する文字列
+- 新規スレッドは「新しいトピックを表す識別子」として LLM が命名
+- LLM は「既存スレッドに寄せる」か「新規スレッドを切る」かを判断
+
 注記:
 
 - 文脈グラフは育つ（分割/統合される）ため、更新は改訂履歴（`revisions`）で追えるようにする
@@ -113,8 +135,26 @@
 
 ### 改訂履歴（`revisions`）
 
-- 状態の更新が発生したときだけ追記
+- 状態/派生情報（文脈グラフ/感情など）の更新が発生したときに追記
 - 変更前/変更後のスナップショット + `reason` + `evidence_event_ids`
+
+主要カラム:
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| revision_id | INTEGER | 主キー（自動採番） |
+| entity_type | TEXT | 対象種別（state/event_links/event_threads/event_affects） |
+| entity_id | INTEGER | 対象レコードのID |
+| before_json | TEXT | 変更前のスナップショット（JSON、新規時はNULL） |
+| after_json | TEXT | 変更後のスナップショット（JSON） |
+| reason | TEXT | 変更理由（短文） |
+| evidence_event_ids_json | TEXT | 根拠イベントID（JSON配列） |
+| created_at | INTEGER | 作成時刻（UTC UNIX秒） |
+
+対象範囲（正）:
+
+- **revisions対象**: `state`, `event_links`, `event_threads`, `event_affects`
+- **revisions対象外**: `events`（追記ログ）, `retrieval_runs`（観測ログ）
 
 注記:
 
@@ -138,22 +178,61 @@
 
 ### 感情
 
-- `long_mood_state`: 長期的な感情（状態。文章で保持）
-- `event_affect`: 瞬間的な感情/内心（イベントごと。文章で保持）
+- `long_mood_state`: 長期的な感情（`state` テーブルの `kind="long_mood_state"` として保存）
+- `event_affects`: 瞬間的な感情/内心（専用テーブル、イベントごと）
+
+#### `event_affects` テーブル
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| id | INTEGER | 主キー（自動採番） |
+| event_id | INTEGER | 紐づくイベントID（FK） |
+| created_at | INTEGER | 作成時刻（UTC UNIX秒） |
+| moment_affect_text | TEXT | 瞬間感情のテキスト表現 |
+| moment_affect_labels_json | TEXT | 感情ラベル（JSON配列） |
+| inner_thought_text | TEXT | 内心メモ（NULL可） |
+| vad_v | REAL | 快・不快（-1.0〜+1.0） |
+| vad_a | REAL | 覚醒（-1.0〜+1.0） |
+| vad_d | REAL | 主導（-1.0〜+1.0） |
+| confidence | REAL | 確信度（0.0〜1.0） |
 
 方針:
 
 - 「後で足す」が難しい前提なので、**文章＋数値の両方**を最初から持てる形にする
 - 数値は厳密さよりも「連続的に変化し、検索/制御に使える」ことを優先する
 - VAD（快・不快/覚醒/主導）は **-1.0..+1.0** に固定する
+- `event_affects` は **ベクトル検索の対象**（`vec_items.kind=3`）
+- 1イベントにつき1件として扱い、既存があれば更新する（重複を避ける）
 
 ## 検索のための索引方針（概念）
 
 「保存したのに検索できない」を避けるため、どの情報をどの索引で拾うかを最初に決める。
 
-- ベクトル索引: 出来事ログ本文、状態本文、要約本文、感情テキスト（`long_mood_text`/`moment_affect_text`/`inner_thought_text`）を対象にできる
-- 文字n-gram索引: 出来事ログ本文を対象にする（固有名詞/型番/表記揺れ対策）
-- 文脈グラフ: 文脈スレッド/リンクを辿って候補イベントを拾う（検索の加速器）
+### ベクトル索引（`vec_items`）
+
+| kind | 値 | 対象 | 備考 |
+|------|-----|------|------|
+| 1 | `_VEC_KIND_EVENT` | `events` | 出来事ログ本文 |
+| 2 | `_VEC_KIND_STATE` | `state` | 状態本文（fact/relation/task/summary/long_mood_state） |
+| 3 | `_VEC_KIND_EVENT_AFFECT` | `event_affects` | 瞬間感情/内心 |
+
+`item_id` の計算: `kind * 10,000,000,000 + entity_id`
+
+### 文字n-gram索引（FTS5 `trigram`）
+
+- 対象: `events`（出来事ログ本文）
+- 用途: 固有名詞/型番/表記揺れ対策
+
+### 索引対象まとめ
+
+| 対象 | ベクトル | 文字n-gram | 文脈グラフ |
+|------|---------|------------|------------|
+| events | ○ | ○ | ○ |
+| state | ○ | - | - |
+| event_affects | ○ | - | - |
+| event_threads | - | - | ○ |
+| event_links | - | - | ○ |
+| revisions | - | - | - |
 
 注記:
 
