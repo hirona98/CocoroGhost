@@ -183,7 +183,11 @@ def create_app() -> FastAPI:
             embedding_preset_id=runtime_config.embedding_preset_id,
             embedding_dimension=runtime_config.embedding_dimension,
         )
-        logger.info("internal worker started", extra={"embedding_preset_id": runtime_config.embedding_preset_id})
+        # NOTE: 内蔵Workerは memory_enabled により起動しない場合がある（internal_worker側でもログする）。
+        logger.info(
+            "internal worker start requested",
+            extra={"embedding_preset_id": runtime_config.embedding_preset_id, "memory_enabled": runtime_config.memory_enabled},
+        )
 
     @app.on_event("shutdown")
     async def stop_log_stream_dispatcher() -> None:

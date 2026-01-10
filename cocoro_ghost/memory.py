@@ -37,6 +37,7 @@ from cocoro_ghost.time_utils import format_iso8601_local
 
 
 logger = logging.getLogger(__name__)
+_warned_memory_disabled = False
 
 
 _VEC_KIND_EVENT = 1
@@ -55,6 +56,37 @@ def _now_utc_ts() -> int:
 def _json_dumps(payload: Any) -> str:
     """DB保存向けにJSONを安定した形式でダンプする（日本語保持）。"""
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _fts_or_query(terms: list[str]) -> str:
+    """
+    FTS5 MATCH 用のORクエリを作る。
+
+    目的:
+        - 入力文字列に記号や空白が混ざっても検索が破綻しにくくする。
+        - trigram FTS の「広め検索」を実現する。
+
+    方針:
+        - 各語をダブルクォートで囲む（フレーズ扱い）
+        - ダブルクォートは "" にエスケープする
+        - 空/短すぎる語は捨てる
+    """
+    cleaned: list[str] = []
+    for t in terms:
+        s = str(t or "").replace("\n", " ").replace("\r", " ").strip()
+        if not s:
+            continue
+        if len(s) < 2:
+            continue
+        s = s.replace('"', '""')
+        cleaned.append(f'"{s}"')
+    if not cleaned:
+        # NOTE: MATCH が空になるとエラーになる可能性があるため、最低限の語を返す。
+        seed = str(terms[0] if terms else "_").replace("\n", " ").replace("\r", " ").strip()
+        seed = seed.replace('"', '""')
+        return f'"{seed}"'
+    # NOTE: 長すぎるORは重くなるため、上位だけ使う。
+    return " OR ".join(cleaned[:8])
 
 
 def _vec_item_id(kind: int, entity_id: int) -> int:
@@ -231,6 +263,15 @@ def _selection_system_prompt() -> str:
             "入力には候補一覧（event/state/event_affect）とユーザー入力が与えられる。",
             "目的: 会話に必要な記憶だけを最大 max_selected 件まで選ぶ（ノイズは捨てる）。",
             "",
+            "重要（出力の厳格さ）:",
+            "- selected の各要素は、必ず次のキーを全て含める: type, event_id, state_id, affect_id, why, snippet",
+            "- type は event|state|event_affect のいずれか。",
+            "- event_id/state_id/affect_id はDBの主キー。入力の candidates に存在するIDのみを使い、絶対に作り出さない。",
+            "- type=event の場合: event_id>0, state_id=0, affect_id=0",
+            "- type=state の場合: state_id>0, event_id=0, affect_id=0",
+            "- type=event_affect の場合: affect_id>0, event_id=0, state_id=0",
+            "- 選べない場合は selected を空配列にする（形だけ埋めてはいけない）。",
+            "",
             "出力スキーマ（概略）:",
             "{",
             '  "selected": [',
@@ -393,6 +434,12 @@ class MemoryManager:
         cfg = self.config_store.config
         embedding_preset_id = str(request.embedding_preset_id or cfg.embedding_preset_id).strip()
         embedding_dimension = int(cfg.embedding_dimension)
+
+        # --- 記憶が無効なら、ベクトル索引/状態更新が育たない（初回だけ強くログする） ---
+        global _warned_memory_disabled
+        if not bool(self.config_store.memory_enabled) and not bool(_warned_memory_disabled):
+            _warned_memory_disabled = True
+            logger.warning("memory_enabled=false のため、非同期ジョブ（埋め込み/状態更新）は実行されません")
 
         # --- 入力を正規化 ---
         client_id = str(request.client_id or "").strip()
@@ -1064,13 +1111,25 @@ class MemoryManager:
         max_candidates = 200
         if isinstance(limits, dict) and isinstance(limits.get("max_candidates"), (int, float)):
             max_candidates = int(limits.get("max_candidates") or 200)
-        max_candidates = max(20, min(400, max_candidates))
+        max_candidates = max(1, min(400, max_candidates))
 
         # --- 並列候補収集（タイムアウトで全体が破綻しない） ---
         # NOTE:
         # - セッションはスレッドセーフではないため、各タスクで個別に開く。
         # - 遅い経路（特に embedding）があっても、全体を止めない。
         sources_by_key: dict[tuple[str, int], set[str]] = {}
+
+        # --- 検索語（SearchPlan）を正として、複数クエリで広めに拾う ---
+        queries_raw = plan_obj.get("queries") if isinstance(plan_obj, dict) else None
+        query_texts: list[str] = [str(input_text or "").strip()]
+        if isinstance(queries_raw, list):
+            for q in queries_raw:
+                qq = str(q or "").strip()
+                if not qq:
+                    continue
+                if qq not in query_texts:
+                    query_texts.append(qq)
+        query_texts = [q for q in query_texts if q]
 
         def add_sources(keys: list[tuple[str, int]], label: str) -> None:
             for t, i in keys:
@@ -1087,6 +1146,7 @@ class MemoryManager:
             with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
                 rows = (
                     db.query(Event.event_id)
+                    .filter(Event.event_id != int(event_id))
                     .order_by(Event.created_at.desc(), Event.event_id.desc())
                     .limit(50)
                     .all()
@@ -1095,17 +1155,19 @@ class MemoryManager:
 
         def task_trigram_events() -> list[tuple[str, int]]:
             with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                q = _fts_or_query(query_texts)
                 rows = db.execute(
                     text(
                         """
                         SELECT rowid AS event_id
                         FROM events_fts
                         WHERE events_fts MATCH :q
+                          AND rowid != :event_id
                         ORDER BY rowid DESC
                         LIMIT 80
                         """
                     ),
-                    {"q": str(input_text)},
+                    {"q": str(q), "event_id": int(event_id)},
                 ).fetchall()
                 return [("event", int(r[0])) for r in rows if r and r[0] is not None]
 
@@ -1173,10 +1235,11 @@ class MemoryManager:
 
         def task_vector_all() -> tuple[list[tuple[str, int]], dict[str, Any]]:
             # --- embedding を作る（重い） ---
-            q_emb = self.llm_client.generate_embedding(
-                [str(input_text)],
+            # NOTE: SearchPlan の queries を広めに使い、連想を拾いやすくする。
+            embeddings = self.llm_client.generate_embedding(
+                [str(x) for x in query_texts],
                 purpose=LlmRequestPurpose.SYNC_RETRIEVAL_QUERY_EMBEDDING,
-            )[0]
+            )
 
             # --- mode によって最近性フィルタを使う ---
             mode = str(plan_obj.get("mode") or "").strip()
@@ -1189,63 +1252,95 @@ class MemoryManager:
                 out: list[tuple[str, int]] = []
                 dbg: dict[str, Any] = {
                     "embedding_preset_id": str(embedding_preset_id),
+                    "memory_enabled": bool(self.config_store.memory_enabled),
                     "mode": str(mode),
                     "rank_day_range": (list(rank_range) if rank_range is not None else None),
+                    "query_texts": list(query_texts),
+                    "vec_items_counts": {},
                     "hits": {"event": [], "state": [], "event_affect": []},
                 }
 
-                rows_e = search_similar_item_ids(
-                    db,
-                    query_embedding=q_emb,
-                    k=60,
-                    kind=int(_VEC_KIND_EVENT),
-                    rank_day_range=rank_range,
-                    active_only=True,
-                )
-                for r in rows_e:
-                    if not r or r[0] is None:
-                        continue
-                    item_id = int(r[0])
-                    distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
-                    event_id2 = _vec_entity_id(item_id)
-                    out.append(("event", int(event_id2)))
-                    dbg["hits"]["event"].append({"event_id": int(event_id2), "distance": distance, "item_id": int(item_id)})
+                # --- vec_items の状況（育っていない時の診断用） ---
+                # NOTE: vec_items が空だと search_similar_item_ids の結果も空になりやすい。
+                try:
+                    total = db.execute(text("SELECT COUNT(*) FROM vec_items")).scalar()
+                    c_event = db.execute(text("SELECT COUNT(*) FROM vec_items WHERE kind=:k"), {"k": int(_VEC_KIND_EVENT)}).scalar()
+                    c_state = db.execute(text("SELECT COUNT(*) FROM vec_items WHERE kind=:k"), {"k": int(_VEC_KIND_STATE)}).scalar()
+                    c_aff = db.execute(
+                        text("SELECT COUNT(*) FROM vec_items WHERE kind=:k"),
+                        {"k": int(_VEC_KIND_EVENT_AFFECT)},
+                    ).scalar()
+                    dbg["vec_items_counts"] = {
+                        "total": int(total or 0),
+                        "event": int(c_event or 0),
+                        "state": int(c_state or 0),
+                        "event_affect": int(c_aff or 0),
+                    }
+                except Exception:  # noqa: BLE001
+                    dbg["vec_items_counts"] = {"error": "count failed"}
 
-                rows_s = search_similar_item_ids(
-                    db,
-                    query_embedding=q_emb,
-                    k=40,
-                    kind=int(_VEC_KIND_STATE),
-                    rank_day_range=None,
-                    active_only=True,
-                )
-                for r in rows_s:
-                    if not r or r[0] is None:
-                        continue
-                    item_id = int(r[0])
-                    distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
-                    state_id2 = _vec_entity_id(item_id)
-                    out.append(("state", int(state_id2)))
-                    dbg["hits"]["state"].append({"state_id": int(state_id2), "distance": distance, "item_id": int(item_id)})
+                # --- 各クエリ埋め込みで拾ったヒットを統合する ---
+                for q_text, q_emb in zip(query_texts, embeddings, strict=False):
+                    q_label = str(q_text)[:60]
 
-                rows_a = search_similar_item_ids(
-                    db,
-                    query_embedding=q_emb,
-                    k=20,
-                    kind=int(_VEC_KIND_EVENT_AFFECT),
-                    rank_day_range=None,
-                    active_only=True,
-                )
-                for r in rows_a:
-                    if not r or r[0] is None:
-                        continue
-                    item_id = int(r[0])
-                    distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
-                    affect_id2 = _vec_entity_id(item_id)
-                    out.append(("event_affect", int(affect_id2)))
-                    dbg["hits"]["event_affect"].append(
-                        {"affect_id": int(affect_id2), "distance": distance, "item_id": int(item_id)}
+                    rows_e = search_similar_item_ids(
+                        db,
+                        query_embedding=q_emb,
+                        k=60,
+                        kind=int(_VEC_KIND_EVENT),
+                        rank_day_range=rank_range,
+                        active_only=True,
                     )
+                    for r in rows_e:
+                        if not r or r[0] is None:
+                            continue
+                        item_id = int(r[0])
+                        distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
+                        event_id2 = _vec_entity_id(item_id)
+                        if int(event_id2) == int(event_id):
+                            continue
+                        out.append(("event", int(event_id2)))
+                        dbg["hits"]["event"].append(
+                            {"event_id": int(event_id2), "distance": distance, "item_id": int(item_id), "q": q_label}
+                        )
+
+                    rows_s = search_similar_item_ids(
+                        db,
+                        query_embedding=q_emb,
+                        k=40,
+                        kind=int(_VEC_KIND_STATE),
+                        rank_day_range=None,
+                        active_only=True,
+                    )
+                    for r in rows_s:
+                        if not r or r[0] is None:
+                            continue
+                        item_id = int(r[0])
+                        distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
+                        state_id2 = _vec_entity_id(item_id)
+                        out.append(("state", int(state_id2)))
+                        dbg["hits"]["state"].append(
+                            {"state_id": int(state_id2), "distance": distance, "item_id": int(item_id), "q": q_label}
+                        )
+
+                    rows_a = search_similar_item_ids(
+                        db,
+                        query_embedding=q_emb,
+                        k=20,
+                        kind=int(_VEC_KIND_EVENT_AFFECT),
+                        rank_day_range=None,
+                        active_only=True,
+                    )
+                    for r in rows_a:
+                        if not r or r[0] is None:
+                            continue
+                        item_id = int(r[0])
+                        distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
+                        affect_id2 = _vec_entity_id(item_id)
+                        out.append(("event_affect", int(affect_id2)))
+                        dbg["hits"]["event_affect"].append(
+                            {"affect_id": int(affect_id2), "distance": distance, "item_id": int(item_id), "q": q_label}
+                        )
 
                 return out, dbg
 
@@ -1284,7 +1379,7 @@ class MemoryManager:
                     continue
 
         # --- レコードをまとめて引く（ORMのDetachedを避けるため、候補のdict化までセッション内で行う） ---
-        keys_all = sorted(sources_by_key.keys())
+        keys_all = sorted([k for k in sources_by_key.keys() if not (k[0] == "event" and int(k[1]) == int(event_id))])
         if not keys_all:
             return []
 
@@ -1399,6 +1494,7 @@ class MemoryManager:
                 "（（埋め込みDBから候補取得））",
                 {
                     "query_text": str(input_text),
+                    "query_texts": list(query_texts),
                     "mode": str(plan_obj.get("mode") or ""),
                     "vector_debug": vector_debug,
                     "loaded_preview": vector_loaded_preview,
