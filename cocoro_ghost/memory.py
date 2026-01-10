@@ -654,8 +654,13 @@ class MemoryManager:
             exclude_event_id=int(event_id),
             max_turn_events=int(cfg.max_turns_window),
         )
-        conversation = [{"role": "assistant", "content": f"<<INTERNAL_CONTEXT>>\n{internal_context}"}]
+        # --- 暗黙的キャッシュ（プロンプトキャッシュ）を効かせやすくする ---
+        # NOTE:
+        # - 先頭側が同じほどキャッシュが効きやすい前提で、直近会話（短期）を先に置く。
+        # - SearchResultPack はターンごとに変化しやすいので、末尾側に寄せる。
+        conversation: list[dict[str, str]] = []
         conversation.extend(recent_dialog)
+        conversation.append({"role": "assistant", "content": f"<<INTERNAL_CONTEXT>>\n{internal_context}"})
         conversation.append({"role": "user", "content": input_text})
 
         reply_text = ""
@@ -1068,13 +1073,17 @@ class MemoryManager:
         user_prompt = "\n".join(
             [
                 "デスクトップの様子を見て、自然に短いコメントを言う。",
-                "画像の詳細説明（内部用）:",
+                "",
+                "<<INTERNAL_CONTEXT>>",
+                "画像の詳細説明（内部用。本文に出力しない）:",
                 detail_text,
+                "",
+                "コメントを一言で。",
             ]
         ).strip()
         resp2 = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
-            conversation=[{"role": "assistant", "content": f"<<INTERNAL_CONTEXT>>\n{detail_text}"}, {"role": "user", "content": "コメントを一言で。"}],
+            conversation=[{"role": "user", "content": user_prompt}],
             purpose=LlmRequestPurpose.SYNC_DESKTOP_WATCH,
             stream=False,
         )
