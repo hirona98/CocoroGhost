@@ -43,3 +43,42 @@ def format_iso8601_local(ts_utc: Optional[int]) -> Optional[str]:
     dt_local = dt_utc.astimezone()
     return dt_local.isoformat(timespec="seconds")
 
+
+def parse_iso8601_to_utc_ts(text_in: Optional[str]) -> Optional[int]:
+    """
+    ISO 8601 形式の日時文字列を UTC のUNIX秒へ変換して返す。
+
+    目的:
+        - LLMが読みやすい ISO 8601（タイムゾーン付き）を受け取りつつ、
+          DBはUNIX秒（UTC）で保持する設計を維持する。
+
+    注意:
+        - タイムゾーン情報が無い場合は「ローカル時刻」とみなし、UTCへ変換する。
+        - 不正な文字列は None を返す（DBを壊さないため）。
+    """
+    s = str(text_in or "").strip()
+    if not s:
+        return None
+
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception:  # noqa: BLE001
+        return None
+
+    # --- タイムゾーン無しはローカルとして扱う ---
+    if dt.tzinfo is None:
+        try:
+            local_tz = datetime.now().astimezone().tzinfo
+            dt = dt.replace(tzinfo=local_tz)
+        except Exception:  # noqa: BLE001
+            return None
+
+    try:
+        dt_utc = dt.astimezone(timezone.utc)
+    except Exception:  # noqa: BLE001
+        return None
+
+    try:
+        return int(dt_utc.timestamp())
+    except Exception:  # noqa: BLE001
+        return None
