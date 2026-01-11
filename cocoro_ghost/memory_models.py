@@ -201,9 +201,7 @@ class RetrievalRun(MemoryBase):
     # --- 主要データ（JSON） ---
     plan_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     candidates_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    selected_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    timings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    errors_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    selected_json: Mapped[str] = mapped_column(Text, nullable=False, default='{"selected":[]}')
 
 
 class Job(MemoryBase):

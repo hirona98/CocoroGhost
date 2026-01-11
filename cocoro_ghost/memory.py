@@ -867,32 +867,6 @@ class MemoryManager:
             vector_embedding_future=vector_embedding_future,
         )
 
-        # --- 5) retrieval_runs を記録（plan + candidate統計） ---
-        run_id: int | None = None
-        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-            rr = RetrievalRun(
-                event_id=int(event_id),
-                created_at=now_ts,
-                plan_json=_json_dumps(plan_obj),
-                candidates_json=_json_dumps(
-                    {
-                        "counts": {
-                            "total": len(candidates),
-                            "event": sum(1 for c in candidates if c.type == "event"),
-                            "state": sum(1 for c in candidates if c.type == "state"),
-                            "event_affect": sum(1 for c in candidates if c.type == "event_affect"),
-                        },
-                        "sources": {f"{c.type}:{c.id}": c.hit_sources for c in candidates},
-                    }
-                ),
-                selected_json="{}",
-                timings_json="{}",
-                errors_json="{}",
-            )
-            db.add(rr)
-            db.flush()
-            run_id = int(rr.run_id)
-
         # --- 6) 選別（LLM → SearchResultPack） ---
         search_result_pack: dict[str, Any] = {"selected": []}
         try:
@@ -916,13 +890,27 @@ class MemoryManager:
         except Exception as exc:  # noqa: BLE001
             logger.warning("SearchResultPack selection failed; fallback to empty", exc_info=exc)
 
-        # --- 7) retrieval_runs を更新（selected_json） ---
-        if run_id is not None:
-            with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-                db.execute(
-                    text("UPDATE retrieval_runs SET selected_json=:v WHERE run_id=:id"),
-                    {"v": _json_dumps(search_result_pack), "id": int(run_id)},
-                )
+        # --- 7) retrieval_runs を記録（plan + candidate統計 + selected） ---
+        candidates_log_obj = {
+            "counts": {
+                "total": len(candidates),
+                "event": sum(1 for c in candidates if c.type == "event"),
+                "state": sum(1 for c in candidates if c.type == "state"),
+                "event_affect": sum(1 for c in candidates if c.type == "event_affect"),
+            },
+            "sources": {f"{c.type}:{c.id}": c.hit_sources for c in candidates},
+        }
+        if not isinstance(search_result_pack, dict) or not isinstance(search_result_pack.get("selected"), list):
+            search_result_pack = {"selected": []}
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            rr = RetrievalRun(
+                event_id=int(event_id),
+                created_at=now_ts,
+                plan_json=_json_dumps(plan_obj),
+                candidates_json=_json_dumps(candidates_log_obj),
+                selected_json=_json_dumps(search_result_pack),
+            )
+            db.add(rr)
 
         # --- 8) 返答をSSEで生成（SearchResultPackを内部注入） ---
         system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
