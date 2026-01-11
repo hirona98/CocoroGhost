@@ -27,6 +27,7 @@
 - `created_at`（記録時刻）と `about_time`（内容の時期）を分けて持つ
 - **流れ（文脈）が分かる情報**を持てるようにする
 - 画像そのものは保持しない（**画像の説明テキスト**を `events` に残す）
+  - 画像付きチャットでは `events.image_summaries_json` に「画像ごとの詳細要約（JSON配列）」を保存する（内部用）
 
 主要カラム:
 
@@ -39,6 +40,7 @@
 | source | TEXT | イベント種別（chat/notification/reminder/desktop_watch/meta_proactive/vision_detail） |
 | user_text | TEXT | ユーザー入力（NULL可） |
 | assistant_text | TEXT | アシスタント出力（NULL可） |
+| image_summaries_json | TEXT | 画像要約（詳細）のJSON配列（内部用、NULL可、要素は最大5） |
 | about_start_ts | INTEGER | 内容の開始時刻（UTC UNIX秒、NULL可） |
 | about_end_ts | INTEGER | 内容の終了時刻（UTC UNIX秒、NULL可） |
 | about_year_start | INTEGER | 内容の開始年（NULL可） |

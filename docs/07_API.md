@@ -25,17 +25,31 @@
 
 ## `/api/chat`（SSE）
 
-### リクエスト（例）
+### リクエスト（JSON）
 
 ```json
 {
   "embedding_preset_id": "uuid",
   "client_id": "stable-client-id",
-  "input_text": "string",
-  "images": [{"type":"image","base64":"..."}],
+  "input_text": "string (optional)",
+  "images": [
+    "data:image/png;base64,iVBORw0KGgo...",
+    "data:image/jpeg;base64,/9j/4AAQ..."
+  ],
   "client_context": {"active_app":"...", "window_title":"...", "locale":"ja-JP"}
 }
 ```
+
+- `images` は省略可能（最大5枚）
+- `images` の要素は `data:image/*;base64,...` 形式の Data URI
+  - 許可MIME: `image/png` / `image/jpeg` / `image/webp`
+  - base64部は改行等の空白を含んでもよい（サーバ側で空白除去して検証する）
+- サイズ上限（デコード後）
+  - 1枚あたり: 5MB 以下
+  - 合計: 20MB 以下
+- `input_text` は省略/空文字列を許可する
+  - `input_text` が空で、かつ有効な画像が1枚以上ある場合は、内部的に `input_text="これをみて"` として扱う
+  - `input_text` が空で、かつ有効な画像が0枚の場合は `event:error` を返す
 
 ### SSEイベント（例）
 
@@ -53,6 +67,7 @@ data: {"message":"...","code":"..."}
 補足:
 
 - `event_id` は「このターンの出来事ログ（`events`）」を指すID（整数、`INTEGER`）とする
+- 画像付きチャットの詳細は `docs/12_画像付きチャット.md` を参照
 
 ## `/api/v2/notification`
 
