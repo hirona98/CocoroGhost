@@ -88,6 +88,7 @@ data: {"message":"...","code":"..."}
 
 - `images` は省略可能（最大5枚）
 - `images` の要素は `data:image/*;base64,...` 形式の Data URI
+  - （未実装）`images` は現状「受け取るだけ」で、通知本文の生成/保存には使っていない（画像の詳細説明テキスト化も行わない）。
 
 ### レスポンス
 
@@ -135,6 +136,7 @@ Invoke-RestMethod -Method Post `
 
 - `images` は省略可能（最大5枚）
 - `images` の要素は `data:image/*;base64,...` 形式の Data URI
+  - （未実装）`images` は現状「受け取るだけ」で、能動メッセージ生成の材料として参照していない。
 
 ### レスポンス
 
