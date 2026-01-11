@@ -88,7 +88,15 @@ data: {"message":"...","code":"..."}
 
 - `images` は省略可能（最大5枚）
 - `images` の要素は `data:image/*;base64,...` 形式の Data URI
-  - （未実装）`images` は現状「受け取るだけ」で、通知本文の生成/保存には使っていない（画像の詳細説明テキスト化も行わない）。
+  - 許可MIME: `image/png` / `image/jpeg` / `image/webp`
+  - base64部は改行等の空白を含んでもよい（サーバ側で空白除去して検証する）
+  - 不正画像は「その画像だけ無視」して継続する（入力順の対応は維持）
+  - サイズ上限（デコード後）
+    - 1枚あたり: 5MB 以下
+    - 合計: 20MB 以下
+- `text` が空で、かつ有効な画像が1枚以上ある場合は、内部的に `text="これをみて"` として扱う
+- `text` が空で、かつ有効な画像が0枚の場合は `400 Bad Request` を返す（`detail.code="invalid_request"`）
+- サイズ上限超過（1枚 or 合計）の場合は `400 Bad Request` を返す（`detail.code="image_too_large"`）
 
 ### レスポンス
 
@@ -136,7 +144,15 @@ Invoke-RestMethod -Method Post `
 
 - `images` は省略可能（最大5枚）
 - `images` の要素は `data:image/*;base64,...` 形式の Data URI
-  - （未実装）`images` は現状「受け取るだけ」で、能動メッセージ生成の材料として参照していない。
+  - 許可MIME: `image/png` / `image/jpeg` / `image/webp`
+  - base64部は改行等の空白を含んでもよい（サーバ側で空白除去して検証する）
+  - 不正画像は「その画像だけ無視」して継続する（入力順の対応は維持）
+  - サイズ上限（デコード後）
+    - 1枚あたり: 5MB 以下
+    - 合計: 20MB 以下
+- `instruction` と `payload_text` が両方空で、かつ有効な画像が1枚以上ある場合は、内部的に `instruction="これをみて"` として扱う
+- `instruction` と `payload_text` が両方空で、かつ有効な画像が0枚の場合は `400 Bad Request` を返す（`detail.code="invalid_request"`）
+- サイズ上限超過（1枚 or 合計）の場合は `400 Bad Request` を返す（`detail.code="image_too_large"`）
 
 ### レスポンス
 

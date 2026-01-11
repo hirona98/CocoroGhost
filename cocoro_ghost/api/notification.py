@@ -27,8 +27,11 @@ def notification_v2(
     memory_manager: MemoryManager = Depends(get_memory_manager),
 ) -> Response:
     """通知をUnit(Episode)として保存し、派生ジョブを積む。"""
-    images = [{"type": "data_uri", "base64": schemas.data_uri_image_to_base64(s)} for s in request.images]
-    internal = schemas.NotificationRequest(source_system=request.source_system, text=request.text, images=images)
+    internal = schemas.NotificationRequest(
+        source_system=request.source_system,
+        text=request.text,
+        images=list(request.images or []),
+    )
     memory_manager.handle_notification(internal, background_tasks=background_tasks)
     # --- BackgroundTasks を紐づける（これが無いと enqueue が実行されない） ---
     return Response(status_code=status.HTTP_204_NO_CONTENT, background=background_tasks)

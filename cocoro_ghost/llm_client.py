@@ -358,6 +358,8 @@ class LlmRequestPurpose:
     SYNC_META_REQUEST = "【同期】＜＜ メタ要求対応 ＞＞"
     SYNC_IMAGE_DETAIL = "【同期】＜＜ 画像説明生成（詳細） ＞＞"
     SYNC_IMAGE_SUMMARY_CHAT = "【同期】＜＜ 画像要約（チャット） ＞＞"
+    SYNC_IMAGE_SUMMARY_NOTIFICATION = "【同期】＜＜ 画像要約（通知） ＞＞"
+    SYNC_IMAGE_SUMMARY_META_REQUEST = "【同期】＜＜ 画像要約（メタ要求） ＞＞"
     SYNC_IMAGE_SUMMARY_DESKTOP_WATCH = "【同期】＜＜ 画像要約（デスクトップウォッチ） ＞＞"
     SYNC_DESKTOP_WATCH = "【同期】＜＜ デスクトップウォッチ ＞＞"
     SYNC_REMINDER = "【同期】＜＜ リマインダー ＞＞"
