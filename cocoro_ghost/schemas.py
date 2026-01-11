@@ -18,14 +18,19 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 _DATA_URI_IMAGE_RE = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.*)$", re.DOTALL)
 
 
-def data_uri_image_to_base64(data_uri: str) -> str:
+def parse_data_uri_image(data_uri: str) -> tuple[str, str]:
     """
-    data URI（data:image/*;base64,...）からbase64部分だけを取り出して検証する。
+    data URI（data:image/*;base64,...）を解析して検証する。
+
+    Returns:
+        (mime, base64_payload)
+
     無効な形式の場合はValueErrorを発生させる。
     """
     m = _DATA_URI_IMAGE_RE.match((data_uri or "").strip())
     if not m:
         raise ValueError("invalid data URI (expected data:image/*;base64,...)")
+    mime = str(m.group(1) or "").strip().lower()
     # 空白を除去してbase64部分を取得
     b64 = re.sub(r"\s+", "", (m.group(2) or "").strip())
     if not b64:
@@ -35,6 +40,15 @@ def data_uri_image_to_base64(data_uri: str) -> str:
         base64.b64decode(b64, validate=True)
     except Exception as exc:  # noqa: BLE001
         raise ValueError("invalid base64 payload in data URI") from exc
+    return (mime, b64)
+
+
+def data_uri_image_to_base64(data_uri: str) -> str:
+    """
+    data URI（data:image/*;base64,...）からbase64部分だけを取り出して検証する。
+    無効な形式の場合はValueErrorを発生させる。
+    """
+    _mime, b64 = parse_data_uri_image(data_uri)
     return b64
 
 
@@ -48,8 +62,8 @@ class ChatRequest(BaseModel):
     """
     embedding_preset_id: Optional[str] = None
     client_id: str                      # 発話者（クライアント）ID（必須）
-    input_text: str                      # 入力テキスト
-    images: List[Dict[str, str]] = Field(default_factory=list)  # 添付画像リスト
+    input_text: str = ""                 # 入力テキスト（省略可。空の場合は画像が必要）
+    images: List[str] = Field(default_factory=list, max_length=5)  # data URI形式の画像（最大5枚）
     client_context: Optional[Dict[str, Any]] = None  # クライアント側コンテキスト
 
     @field_validator("client_id")
@@ -65,6 +79,20 @@ class ChatRequest(BaseModel):
         if not s:
             raise ValueError("client_id must not be empty")
         return s
+
+    @field_validator("images")
+    @classmethod
+    def _validate_images_max_items(cls, v: List[str]) -> List[str]:
+        """
+        画像リストのバリデーション（件数のみ）。
+
+        NOTE:
+        - 画像の形式（Data URI）やMIMEの許可判定は、/api/chat の仕様上
+          「1枚だけ無視して継続」があるため、ここでは厳密に弾かない。
+        """
+        if len(v) > 5:
+            raise ValueError("images must contain at most 5 items")
+        return v
 
 
 class VisionCaptureResponseV2Request(BaseModel):

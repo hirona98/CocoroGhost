@@ -46,6 +46,17 @@ _VEC_ID_STRIDE = 10_000_000_000
 _JOB_PENDING = 0
 
 
+_CHAT_ALLOWED_IMAGE_MIME_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+}
+_CHAT_IMAGE_MAX_BYTES_PER_IMAGE = 5 * 1024 * 1024
+_CHAT_IMAGE_MAX_BYTES_TOTAL = 20 * 1024 * 1024
+_CHAT_IMAGE_SUMMARY_MAX_CHARS = 400
+_CHAT_DEFAULT_INPUT_TEXT_WHEN_IMAGES_ONLY = "これをみて"
+
+
 def _now_utc_ts() -> int:
     """現在時刻（UTC）をUNIX秒で返す。"""
     return int(time.time())
@@ -54,6 +65,30 @@ def _now_utc_ts() -> int:
 def _json_dumps(payload: Any) -> str:
     """DB保存向けにJSONを安定した形式でダンプする（日本語保持）。"""
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _parse_image_summaries_json(image_summaries_json: str | None) -> list[str]:
+    """
+    events.image_summaries_json を list[str] に正規化する。
+
+    NOTE:
+    - 画像付きチャットの要約は「内部用」だが、検索と返答生成に効かせるため、
+      ここで安全にパースして扱えるようにする。
+    - JSONが壊れている場合は空として扱う（例外は投げない）。
+    """
+    s = str(image_summaries_json or "").strip()
+    if not s:
+        return []
+    try:
+        obj = json.loads(s)
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(obj, list):
+        return []
+    out: list[str] = []
+    for item in obj:
+        out.append(str(item or "").strip())
+    return out
 
 
 def _fts_or_query(terms: list[str]) -> str:
@@ -333,10 +368,12 @@ def _reply_system_prompt(*, persona_text: str, addon_text: str) -> str:
                 "- TimeContext（now/last_chat_created_at/gap_seconds）: 実際の経過時間（gap_seconds）との整合性を保つ。",
                 "- LongMoodState（背景の長期感情）: JSONやVAD数値は出さず、雰囲気や言葉選びに反映する。",
                 "- SearchResultPack（思い出した候補記憶）: 必要な範囲だけを会話に自然に織り込む（IDやキー名は出さない）。",
+                "- ImageSummaries（現在ターンの画像要約）: 内部用。本文に出力しない。内容の把握と会話の整合性のために使う。",
                 "- event_affect（瞬間感情/内心）: 内部用。本文に一切出さない。「（内心：...）」のような括弧書きの心情描写も禁止。雰囲気や言葉選びにだけ反映する。",
                 "",
                 "記憶を以下のように使うこと:",
                 "- SearchResultPack/直近会話に無い事実は断定しない。推測するなら「たぶん/覚えてる限り」などで不確実さを明示する。",
+                "- ImageSummaries に無い細部は断定しない（必要なら質問で確認する）。",
                 "- 重要情報が欠ける場合は、自然に質問して埋める。",
                 "- 矛盾が見える場合は断定せず、どちらが正しいかユーザーに確認する。",
                 "",
@@ -625,9 +662,110 @@ class MemoryManager:
         # --- 入力を正規化 ---
         client_id = str(request.client_id or "").strip()
         input_text = str(request.input_text or "").strip()
+
+        # --- 画像（data URI）を検証・デコードする ---
+        # 仕様:
+        # - 不正画像は「その画像だけ無視」して継続する
+        # - ただしサイズ上限（1枚/合計）を超える場合は event:error で終了する
+        raw_images = list(request.images or [])
+        images_bytes_by_index: list[bytes | None] = [None for _ in raw_images]
+        valid_images_bytes: list[bytes] = []
+        valid_images_mimes: list[str] = []
+        valid_images_index: list[int] = []
+
+        total_image_bytes = 0
+        for idx, s in enumerate(raw_images):
+            # --- 形式検証（失敗したら無視して継続） ---
+            try:
+                mime, b64 = schemas.parse_data_uri_image(str(s or ""))
+            except Exception:  # noqa: BLE001
+                continue
+
+            # --- MIMEの許可（失敗したら無視して継続） ---
+            if str(mime) not in _CHAT_ALLOWED_IMAGE_MIME_TYPES:
+                continue
+
+            # --- base64 -> bytes（念のため例外は握って無視） ---
+            try:
+                image_bytes = base64.b64decode(str(b64))
+            except Exception:  # noqa: BLE001
+                continue
+
+            # --- サイズ上限（1枚） ---
+            if len(image_bytes) > int(_CHAT_IMAGE_MAX_BYTES_PER_IMAGE):
+                yield _sse(
+                    "error",
+                    {
+                        "message": "画像サイズが大きすぎます（1枚あたり5MBまで）",
+                        "code": "image_too_large",
+                    },
+                )
+                return
+
+            # --- サイズ上限（合計） ---
+            total_image_bytes += int(len(image_bytes))
+            if int(total_image_bytes) > int(_CHAT_IMAGE_MAX_BYTES_TOTAL):
+                yield _sse(
+                    "error",
+                    {
+                        "message": "画像サイズの合計が大きすぎます（合計20MBまで）",
+                        "code": "image_too_large",
+                    },
+                )
+                return
+
+            # --- 有効画像として採用 ---
+            images_bytes_by_index[int(idx)] = image_bytes
+            valid_images_bytes.append(image_bytes)
+            valid_images_mimes.append(str(mime))
+            valid_images_index.append(int(idx))
+
+        # --- input_text が空の場合は、画像の有無で扱いを分ける ---
         if not input_text:
-            yield _sse("error", {"message": "input_text must not be empty", "code": "invalid_request"})
-            return
+            if any(b is not None for b in images_bytes_by_index):
+                input_text = str(_CHAT_DEFAULT_INPUT_TEXT_WHEN_IMAGES_ONLY)
+            else:
+                yield _sse(
+                    "error",
+                    {
+                        "message": "input_text が空で、かつ有効な画像がありません",
+                        "code": "invalid_request",
+                    },
+                )
+                return
+
+        # --- 画像要約（詳細）を作る（画像ごと、最大400文字） ---
+        # NOTE:
+        # - 画像そのものは保存しない（永続化しない）
+        # - 要約生成に失敗した画像は "" として継続する
+        image_summaries: list[str] = []
+        if raw_images:
+            image_summaries = ["" for _ in raw_images]
+            if valid_images_bytes:
+                summaries_valid = self.llm_client.generate_image_summary(
+                    valid_images_bytes,
+                    purpose=LlmRequestPurpose.SYNC_IMAGE_SUMMARY_CHAT,
+                    mime_types=list(valid_images_mimes),
+                    max_chars=int(_CHAT_IMAGE_SUMMARY_MAX_CHARS),
+                    best_effort=True,
+                )
+                for idx2, summary in zip(valid_images_index, summaries_valid, strict=False):
+                    image_summaries[int(idx2)] = str(summary or "").strip()
+
+        # --- 検索/埋め込み向けに、画像要約（空でないもの）をクエリへ混ぜる ---
+        non_empty_summaries = [s for s in image_summaries if str(s or "").strip()]
+        augmented_query_text = str(input_text)
+        if non_empty_summaries:
+            augmented_query_text = (
+                "\n\n".join(
+                    [
+                        str(input_text),
+                        "[画像要約]",
+                        "\n".join([str(s) for s in non_empty_summaries]),
+                    ]
+                )
+                .strip()
+            )
 
         now_ts = _now_utc_ts()
         last_chat_created_at_ts: int | None = None
@@ -642,6 +780,7 @@ class MemoryManager:
                 source="chat",
                 user_text=input_text,
                 assistant_text=None,
+                image_summaries_json=(_json_dumps(image_summaries) if raw_images else None),
                 entities_json="[]",
                 client_context_json=_json_dumps(request.client_context) if request.client_context is not None else None,
             )
@@ -686,7 +825,7 @@ class MemoryManager:
             pre_ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             vector_embedding_future = pre_ex.submit(
                 self.llm_client.generate_embedding,
-                [str(input_text)],
+                [str(augmented_query_text)],
                 purpose=LlmRequestPurpose.SYNC_RETRIEVAL_QUERY_EMBEDDING,
             )
         finally:
@@ -700,7 +839,7 @@ class MemoryManager:
         # --- 4) SearchPlan（LLM） ---
         plan_obj: dict[str, Any] = {
             "mode": "associative_recent",
-            "queries": [input_text],
+            "queries": [augmented_query_text],
             "time_hint": {"about_year_start": None, "about_year_end": None, "life_stage_hint": ""},
             "diversify": {"by": ["life_stage", "about_year_bucket"], "per_bucket": 5},
             "limits": {"max_candidates": 200, "max_selected": 12},
@@ -708,7 +847,7 @@ class MemoryManager:
         try:
             resp = self.llm_client.generate_json_response(
                 system_prompt=_search_plan_system_prompt(),
-                input_text=input_text,
+                input_text=augmented_query_text,
                 purpose=LlmRequestPurpose.SYNC_SEARCH_PLAN,
                 max_tokens=500,
             )
@@ -723,7 +862,7 @@ class MemoryManager:
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),
-            input_text=input_text,
+            input_text=augmented_query_text,
             plan_obj=plan_obj,
             vector_embedding_future=vector_embedding_future,
         )
@@ -760,6 +899,7 @@ class MemoryManager:
             selection_input = _json_dumps(
                 {
                     "user_input": input_text,
+                    "image_summaries": list(non_empty_summaries),
                     "plan": plan_obj,
                     "candidates": [dict(c.meta) | {"hit_sources": c.hit_sources} for c in candidates],
                 }
@@ -807,7 +947,13 @@ class MemoryManager:
                     embedding_preset_id=embedding_preset_id,
                     embedding_dimension=embedding_dimension,
                 ),
-                "SearchResultPack": self._inflate_search_result_pack(candidates, search_result_pack),
+                "SearchResultPack": self._inflate_search_result_pack(
+                    embedding_preset_id=embedding_preset_id,
+                    embedding_dimension=embedding_dimension,
+                    candidates=candidates,
+                    pack=search_result_pack,
+                ),
+                "ImageSummaries": list(image_summaries),
             }
         )
         # --- 直近会話（短期コンテキスト）を付与して会話の安定性を上げる ---
@@ -1882,6 +2028,11 @@ class MemoryManager:
                     r = by_event_id.get(int(i))
                     if r is None:
                         continue
+                    # --- 画像要約（内部用）を候補メタへ添える（サイズを抑えたプレビュー） ---
+                    img_summaries = _parse_image_summaries_json(getattr(r, "image_summaries_json", None))
+                    img_preview = "\n".join([x for x in img_summaries if str(x or "").strip()]).strip()
+                    if img_preview and len(img_preview) > 800:
+                        img_preview = img_preview[:800]
                     out.append(
                         _CandidateItem(
                             type="event",
@@ -1895,6 +2046,7 @@ class MemoryManager:
                                 "thread_keys": threads_by_event_id.get(int(r.event_id), []),
                                 "user_text": str(r.user_text or "")[:800],
                                 "assistant_text": str(r.assistant_text or "")[:800],
+                                "image_summaries_preview": (str(img_preview) if img_preview else None),
                                 "about_time": {
                                     "about_year_start": r.about_year_start,
                                     "about_year_end": r.about_year_end,
@@ -1985,8 +2137,21 @@ class MemoryManager:
         out = sorted(out, key=lambda x: (len(x.hit_sources), int(x.rank_ts), int(x.id)), reverse=True)
         return out[:max_candidates]
 
-    def _inflate_search_result_pack(self, candidates: list[_CandidateItem], pack: dict[str, Any]) -> dict[str, Any]:
-        """選別結果に候補詳細を埋め、返答生成へ渡しやすい形へ整形する。"""
+    def _inflate_search_result_pack(
+        self,
+        *,
+        embedding_preset_id: str,
+        embedding_dimension: int,
+        candidates: list[_CandidateItem],
+        pack: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        選別結果に候補詳細を埋め、返答生成へ渡しやすい形へ整形する。
+
+        画像付きチャット対応:
+        - events.image_summaries_json（画像要約）を「選別済みのイベント」にだけ付与する。
+          （候補全体へ付けると入力が肥大化しやすいため）
+        """
 
         # --- 入力を正規化 ---
         if not isinstance(pack, dict):
@@ -2046,5 +2211,36 @@ class MemoryManager:
                     "item": item,
                 }
             )
+
+        # --- 選別済みイベントへ、画像要約（詳細）を追記する（内部用） ---
+        # NOTE:
+        # - SearchResultPack で「過去の画像要約」を参照できるようにする。
+        # - 候補全体に付けるとトークンが膨らみやすいので、選別済みだけに限定する。
+        event_ids = sorted({int(x.get("item", {}).get("event_id") or 0) for x in out_selected if x.get("type") == "event"})
+        event_ids = [int(x) for x in event_ids if int(x) > 0]
+        if event_ids:
+            with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                rows = db.query(Event.event_id, Event.image_summaries_json).filter(
+                    Event.event_id.in_([int(x) for x in event_ids])
+                ).all()
+            summaries_by_event_id: dict[int, list[str]] = {}
+            for r in rows:
+                if not r:
+                    continue
+                eid = int(r[0] or 0)
+                if eid <= 0:
+                    continue
+                img_json = r[1] if len(r) > 1 else None
+                summaries_by_event_id[eid] = _parse_image_summaries_json(img_json)
+            for x in out_selected:
+                if x.get("type") != "event":
+                    continue
+                item2 = x.get("item") if isinstance(x.get("item"), dict) else None
+                if item2 is None:
+                    continue
+                eid = int(item2.get("event_id") or 0)
+                if eid <= 0:
+                    continue
+                item2["image_summaries"] = summaries_by_event_id.get(int(eid), [])
 
         return {"selected": out_selected}

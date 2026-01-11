@@ -357,6 +357,7 @@ class LlmRequestPurpose:
     SYNC_NOTIFICATION = "【同期】＜＜ 通知返答 ＞＞"
     SYNC_META_REQUEST = "【同期】＜＜ メタ要求対応 ＞＞"
     SYNC_IMAGE_DETAIL = "【同期】＜＜ 画像説明生成（詳細） ＞＞"
+    SYNC_IMAGE_SUMMARY_CHAT = "【同期】＜＜ 画像要約（チャット） ＞＞"
     SYNC_IMAGE_SUMMARY_DESKTOP_WATCH = "【同期】＜＜ 画像要約（デスクトップウォッチ） ＞＞"
     SYNC_DESKTOP_WATCH = "【同期】＜＜ デスクトップウォッチ ＞＞"
     SYNC_REMINDER = "【同期】＜＜ リマインダー ＞＞"
@@ -925,17 +926,43 @@ class LlmClient:
                     )
         return out
 
-    def generate_image_summary(self, images: List[bytes], purpose: str) -> List[str]:
+    def generate_image_summary(
+        self,
+        images: List[bytes],
+        purpose: str,
+        *,
+        mime_types: Optional[List[str]] = None,
+        max_chars: Optional[int] = None,
+        best_effort: bool = False,
+    ) -> List[str]:
         """
         画像の要約を生成する。
         各画像をVision LLMで解析し、日本語で説明テキストを返す。
         purpose はログに出す処理目的ラベル。
+
+        Args:
+            images: 画像バイナリ（bytes）の配列。
+            purpose: ログ用途の処理目的ラベル。
+            mime_types: data URI に埋め込む MIME タイプ（images と同じ長さ）。省略時は image/png とする。
+            max_chars: 1画像あたりの最大文字数（必要なら指定）。指定された場合は指示＋切り詰めを行う。
+            best_effort: True の場合、1枚の失敗で全体を失敗扱いにせず、失敗した画像は "" を返して続行する。
         """
         llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
         purpose_label = _normalize_purpose(purpose)
         max_workers = 4
 
-        def _process_one(image_bytes: bytes) -> str:
+        # --- MIMEリストを正規化する ---
+        # NOTE:
+        # - image_url の data URI では MIME が重要になり得るため、入力に合わせる。
+        # - 呼び出し側で不明なら image/png とする（従来互換）。
+        if mime_types is None:
+            mime_list = ["image/png" for _ in images]
+        else:
+            if len(mime_types) != len(images):
+                raise ValueError("mime_types length must match images length")
+            mime_list = [str(x or "").strip().lower() or "image/png" for x in mime_types]
+
+        def _process_one(image_bytes: bytes, mime: str) -> str:
             start = time.perf_counter()
             if llm_log_level != "OFF":
                 self._log_llm_info(
@@ -945,13 +972,21 @@ class LlmClient:
                 )
             # 画像をbase64エンコード
             b64 = base64.b64encode(image_bytes).decode("ascii")
+            # --- 指示文（必要なら最大文字数を明示） ---
+            # NOTE: 受信側の暴走対策として、後段でも念のため切り詰める。
+            instructions: list[str] = [
+                "この画像を日本語で詳細に説明してください。",
+            ]
+            if max_chars is not None and int(max_chars) > 0:
+                instructions.append(f"必須: {int(max_chars)}文字以内。")
+            instruction_text = " ".join(instructions).strip()
             messages = [
                 {"role": "system", "content": "あなたは日本語で画像を説明します。"},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "この画像を日本語で詳細に説明してください。"},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                        {"type": "text", "text": instruction_text},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
                     ],
                 },
             ]
@@ -1007,14 +1042,45 @@ class LlmClient:
                 _sanitize_for_llm_log({"content": content, "finish_reason": _finish_reason(resp)}),
                 llm_log_level=llm_log_level,
             )
-            return content
+            out = str(content or "").strip()
+            # LLMが文字数制限を守らない場合の防御として切り詰める
+            if max_chars is not None and int(max_chars) > 0 and len(out) > int(max_chars):
+                out = out[: int(max_chars)]
+            return out
 
+        # --- 画像が1枚以下ならシンプルに処理する ---
         if len(images) <= 1:
-            return [_process_one(image_bytes) for image_bytes in images]
+            if not images:
+                return []
+            try:
+                return [_process_one(images[0], mime_list[0])]
+            except Exception:  # noqa: BLE001
+                if best_effort:
+                    return [""]
+                raise
 
+        # --- 2枚以上は並列に処理する ---
         worker_count = min(max_workers, len(images))
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            return list(executor.map(_process_one, images))
+            if not best_effort:
+                return list(executor.map(_process_one, images, mime_list))
+
+            # --- best_effort: 失敗した画像だけ "" にして続行する ---
+            futures = [executor.submit(_process_one, b, m) for b, m in zip(images, mime_list)]
+            out: list[str] = []
+            for idx, fut in enumerate(futures):
+                try:
+                    out.append(str(fut.result() or "").strip())
+                except Exception as exc:  # noqa: BLE001
+                    if llm_log_level != "OFF":
+                        self._log_llm_error(
+                            "LLM request failed (best_effort) %s kind=vision index=%s error=%s",
+                            purpose_label,
+                            idx,
+                            str(exc),
+                        )
+                    out.append("")
+            return out
 
     def response_to_dict(self, resp: Any) -> Dict[str, Any]:
         """Responseオブジェクトをログ/デバッグ用のdictに変換する。"""

@@ -73,6 +73,7 @@ def list_events(
                     "source": str(r.source),
                     "user_text": r.user_text,
                     "assistant_text": r.assistant_text,
+                    "image_summaries_json": getattr(r, "image_summaries_json", None),
                     "about_time": {
                         "about_start_ts": r.about_start_ts,
                         "about_end_ts": r.about_end_ts,
@@ -112,6 +113,7 @@ def get_event(
             "source": str(r.source),
             "user_text": r.user_text,
             "assistant_text": r.assistant_text,
+            "image_summaries_json": getattr(r, "image_summaries_json", None),
             "about_time": {
                 "about_start_ts": r.about_start_ts,
                 "about_end_ts": r.about_end_ts,

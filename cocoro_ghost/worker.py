@@ -208,6 +208,23 @@ def _build_event_embedding_text(ev: Event) -> str:
             parts.append("")
         parts.append(at)
 
+    # --- 画像要約（内部用） ---
+    # NOTE:
+    # - 画像そのものは保存しないが、要約は検索に効かせるため埋め込みへ含める。
+    img_json = str(getattr(ev, "image_summaries_json", None) or "").strip()
+    if img_json:
+        try:
+            obj = json.loads(img_json)
+        except Exception:  # noqa: BLE001
+            obj = None
+        if isinstance(obj, list):
+            summaries = [str(x or "").strip() for x in obj if str(x or "").strip()]
+            if summaries:
+                if parts:
+                    parts.append("")
+                parts.append("[画像要約]")
+                parts.extend(summaries)
+
     # --- source は短く補助情報として付ける ---
     parts.append("")
     parts.append(f"(source={str(ev.source)})")
@@ -282,6 +299,7 @@ def _write_plan_system_prompt() -> str:
             "",
             "品質（重要）:",
             "- 入力（event/recent_events/recent_states）に無い事実は作らない。推測する場合は confidence を下げるか、更新しない。",
+            "- event.image_summaries / recent_events[*].image_summaries_preview は画像要約（内部用）。画像そのものは無いので、要約に無い細部は断定しない。",
             "- state_updates は必要なものだけ。雑談だけなら空でもよい（ノイズを増やさない）。",
             "- body_text は検索に使う短い本文（会話文の長文や箇条書きは避ける）。",
             "- 矛盾がある場合は上書きせず、並存/期間分割（valid_from_ts/valid_to_ts）や close を使う。",
@@ -648,6 +666,21 @@ def _handle_generate_write_plan(
         if ev is None:
             return
 
+        # --- 画像要約（events.image_summaries_json）をlist[str]へ正規化する ---
+        # NOTE:
+        # - 画像そのものは保存しないが、要約は状態更新/文脈/要約に効かせるため、WritePlan入力へ含める。
+        def _image_summaries_list(image_summaries_json: Any) -> list[str]:
+            s = str(image_summaries_json or "").strip()
+            if not s:
+                return []
+            try:
+                obj = json.loads(s)
+            except Exception:  # noqa: BLE001
+                return []
+            if not isinstance(obj, list):
+                return []
+            return [str(x or "").strip()[:400] for x in obj if str(x or "").strip()]
+
         event_snapshot = {
             "event_id": int(ev.event_id),
             "created_at": format_iso8601_local(int(ev.created_at)),
@@ -655,6 +688,7 @@ def _handle_generate_write_plan(
             "client_id": (str(ev.client_id) if ev.client_id is not None else None),
             "user_text": str(ev.user_text or ""),
             "assistant_text": str(ev.assistant_text or ""),
+            "image_summaries": _image_summaries_list(getattr(ev, "image_summaries_json", None)),
         }
 
         # --- 直近の出来事（同一client優先） ---
@@ -678,6 +712,9 @@ def _handle_generate_write_plan(
                 "source": str(x.source),
                 "user_text": str(x.user_text or "")[:600],
                 "assistant_text": str(x.assistant_text or "")[:600],
+                "image_summaries_preview": (
+                    "\n".join(_image_summaries_list(getattr(x, "image_summaries_json", None)))[:600] or None
+                ),
             }
             for x in recent_events
         ]
