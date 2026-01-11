@@ -2,7 +2,7 @@
 FastAPIプロセス内で動く内蔵Workerの管理
 
 アプリケーション起動時にバックグラウンドスレッドでWorkerを起動し、
-非同期ジョブ（埋め込み生成、反射、要約等）を処理する。
+非同期ジョブ（WritePlan、状態/感情/文脈更新、埋め込み生成等）を処理する。
 設定変更時には自動で再起動される。
 """
 
@@ -16,6 +16,7 @@ from cocoro_ghost.worker import run_forever
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
 _stop_event: threading.Event | None = None
+logger = __import__("logging").getLogger(__name__)
 
 
 def is_alive() -> bool:
@@ -38,12 +39,15 @@ def start(*, embedding_preset_id: str, embedding_dimension: int) -> None:
     from cocoro_ghost.config import get_config_store
     from cocoro_ghost.deps import get_llm_client
 
+    # --- 記憶が無効なら、Workerも動かない（誤解を避けるためログする） ---
     if not get_config_store().memory_enabled:
+        logger.info("internal worker skipped (memory_enabled=false)")
         return
 
     with _lock:
         global _thread, _stop_event
         if _thread is not None and _thread.is_alive():
+            logger.info("internal worker already running")
             return
 
         stop_event = threading.Event()
@@ -67,6 +71,7 @@ def start(*, embedding_preset_id: str, embedding_dimension: int) -> None:
         _stop_event = stop_event
         _thread = t
         t.start()
+        logger.info("internal worker thread started")
 
 
 def stop(*, timeout_seconds: float = 5.0) -> None:

@@ -2,8 +2,10 @@
 /v2/notification エンドポイント
 
 外部システム（ファイル監視、カレンダー、RSSリーダー等）からの通知を受け付ける。
-通知はEpisode Unitとして保存され、PERSONA_ANCHORの人物として応答を生成する。
-処理は非同期で行われ、結果はevent_streamで配信される。
+
+注意:
+- BackgroundTasks は Response に紐づけないと実行されない。
+  本エンドポイントは 204 を返すため、Response(background=...) を明示する。
 """
 
 from __future__ import annotations
@@ -28,4 +30,5 @@ def notification_v2(
     images = [{"type": "data_uri", "base64": schemas.data_uri_image_to_base64(s)} for s in request.images]
     internal = schemas.NotificationRequest(source_system=request.source_system, text=request.text, images=images)
     memory_manager.handle_notification(internal, background_tasks=background_tasks)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    # --- BackgroundTasks を紐づける（これが無いと enqueue が実行されない） ---
+    return Response(status_code=status.HTTP_204_NO_CONTENT, background=background_tasks)

@@ -59,7 +59,6 @@ class ChatRequest(BaseModel):
         client_id を必須・非空として扱う。
 
         NOTE:
-        - 運用前のため後方互換は付けない（未指定は 422）。
         - 空白だけの値も不正として弾く。
         """
         s = str(v or "").strip()
@@ -89,9 +88,6 @@ class VisionCaptureResponseV2Request(BaseModel):
         仕様:
         - 成功: error が null かつ images が1枚以上
         - スキップ/失敗: images が空 かつ error が非空文字列
-
-        NOTE:
-        - 運用前のため後方互換は付けない（曖昧な組み合わせは 422）。
         """
 
         # --- 値を正規化（空白だけの error は無効） ---
@@ -162,11 +158,6 @@ class NotificationV2Request(BaseModel):
         return v
 
 
-class NotificationResponse(BaseModel):
-    """通知の保存結果（作成したepisode unit_id）。"""
-    unit_id: int
-
-
 # --- メタリクエスト関連 ---
 
 
@@ -201,56 +192,6 @@ class MetaRequestV2Request(BaseModel):
         return v
 
 
-class MetaRequestResponse(BaseModel):
-    """メタリクエストの保存結果（作成したepisode unit_id）。"""
-    unit_id: int
-
-
-# --- Unit関連（記憶ユニット） ---
-
-
-class UnitMeta(BaseModel):
-    """
-    Unitのメタ情報（一覧/詳細共通）。
-    記憶ユニットの基本属性を表現する。
-    """
-    id: int                              # ユニットID
-    kind: int                            # 種別（エピソード、ファクト等）
-    occurred_at: Optional[int] = None    # 発生日時（UNIXタイムスタンプ）
-    created_at: int                      # 作成日時
-    updated_at: int                      # 更新日時
-    source: Optional[str] = None         # ソース識別子
-    state: int                           # 状態（有効/無効等）
-    confidence: float                    # 確信度（0.0-1.0）
-    salience: float                      # 顕著性（0.0-1.0）
-    sensitivity: int                     # 機密レベル
-    pin: int                             # ピン留めフラグ
-    topic_tags: Optional[str] = None     # トピックタグ（カンマ区切り）
-    persona_affect_label: Optional[str] = None      # AI人格の感情ラベル
-    persona_affect_intensity: Optional[float] = None  # 感情の強度
-
-
-class UnitListResponse(BaseModel):
-    """Unit一覧レスポンス。"""
-    items: List[UnitMeta]                # ユニットのリスト
-
-
-class UnitDetailResponse(BaseModel):
-    """Unit詳細レスポンス（payloadはkindに応じて可変）。"""
-    unit: UnitMeta                       # ユニットのメタ情報
-    payload: Dict[str, Any] = Field(default_factory=dict)  # 種別固有のペイロード
-
-
-class UnitUpdateRequest(BaseModel):
-    """管理APIでのUnitメタ更新リクエスト。"""
-    pin: Optional[int] = None            # ピン留めフラグ
-    sensitivity: Optional[int] = None    # 機密レベル
-    state: Optional[int] = None          # 状態
-    topic_tags: Optional[str] = None     # トピックタグ
-    confidence: Optional[float] = None   # 確信度
-    salience: Optional[float] = None     # 顕著性
-
-
 # --- 制御関連 ---
 
 
@@ -259,7 +200,7 @@ class ControlRequest(BaseModel):
     /control 用リクエスト。
 
     CocoroGhost プロセス自体の制御コマンドを受け付ける。
-    現状は shutdown のみ対応する（運用前のため後方互換は付けない）。
+    現状は shutdown のみ対応する
     """
 
     action: str

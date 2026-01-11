@@ -15,10 +15,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import uuid
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Deque, Dict, List, Optional, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -33,14 +31,12 @@ class AppEvent:
     """
     WebSocket配信用のイベント。
 
-    メモリID・UnitIDに紐づく通知データを保持する。
+    - `event_id` は出来事ログ（events）のIDと一致させる
+    - 保存しない命令（例: vision.capture_request）は event_id=0 とする
     """
 
-    event_id: str  # イベント固有ID（UUID）
-    ts: str  # ISO形式タイムスタンプ
     type: str  # イベント種別（notification_done, meta_done等）
-    embedding_preset_id: str  # 対象EmbeddingPreset ID（= 記憶DB識別子）
-    unit_id: int  # 関連UnitID
+    event_id: int  # 関連Event ID（events.event_id）
     data: Dict[str, Any]  # 追加データ
     target_client_id: Optional[str] = None  # 宛先client_id（指定時はそのクライアントにのみ送る）
     bufferable: bool = True  # リングバッファに保持するか（命令はFalse）
@@ -66,7 +62,7 @@ def _serialize_event(event: AppEvent) -> str:
     """
     return json.dumps(
         {
-            "unit_id": event.unit_id,
+            "event_id": int(event.event_id),
             "type": event.type,
             "data": event.data,
         },
@@ -127,8 +123,7 @@ async def stop_dispatcher() -> None:
 def publish(
     *,
     type: str,
-    embedding_preset_id: str,
-    unit_id: int,
+    event_id: int,
     data: Optional[Dict[str, Any]] = None,
     target_client_id: Optional[str] = None,
     bufferable: bool = True,
@@ -142,11 +137,8 @@ def publish(
     if _event_queue is None or _loop is None:
         return
     event = AppEvent(
-        event_id=str(uuid.uuid4()),
-        ts=datetime.now(timezone.utc).isoformat(),
         type=type,
-        embedding_preset_id=embedding_preset_id,
-        unit_id=int(unit_id),
+        event_id=int(event_id),
         data=data or {},
         target_client_id=(str(target_client_id).strip() if target_client_id else None),
         bufferable=bool(bufferable),
@@ -194,9 +186,9 @@ async def send_buffer(ws: "WebSocket") -> None:
     新規接続時にキャッチアップとして直近イベントを順に送信する。
     """
     for event in get_buffer_snapshot():
-        # デスクトップウォッチはリアルタイム性が本質で、再接続時に過去分を再送すると
-        # 「今見ている」誤解を招くため、キャッチアップ対象から除外する。
-        if str(event.type) == "desktop_watch":
+        # --- バッファ済みイベントのみ送る（命令はバッファしない） ---
+        # NOTE: bufferable=False のイベントはそもそも _buffer に入らない想定だが、二重安全にする。
+        if not bool(event.bufferable):
             continue
         await ws.send_text(_serialize_event(event))
 
@@ -257,20 +249,20 @@ async def _dispatch_loop() -> None:
         if target_id:
             ws = _client_id_to_ws.get(target_id)
             # --- 送信ログ（通常イベント/命令 共通） ---
-            # NOTE: 送信ペイロード（dataの中身）はログに出さず、type/unit_id/宛先だけを記録する。
+            # NOTE: 送信ペイロード（dataの中身）はログに出さず、type/event_id/宛先だけを記録する。
             if ws is not None and ws in _clients:
                 logger.info(
-                    "event stream send type=%s unit_id=%s target_client_id=%s bufferable=%s",
+                    "event stream send type=%s event_id=%s target_client_id=%s bufferable=%s",
                     event.type,
-                    int(event.unit_id),
+                    int(event.event_id),
                     target_id,
                     bool(event.bufferable),
                 )
             else:
                 logger.info(
-                    "event stream send skipped (target not connected) type=%s unit_id=%s target_client_id=%s bufferable=%s",
+                    "event stream send skipped (target not connected) type=%s event_id=%s target_client_id=%s bufferable=%s",
                     event.type,
-                    int(event.unit_id),
+                    int(event.event_id),
                     target_id,
                     bool(event.bufferable),
                 )
@@ -283,9 +275,9 @@ async def _dispatch_loop() -> None:
             # --- 送信ログ（ブロードキャスト） ---
             # NOTE: ブロードキャストの場合は宛先が複数になり得るため、接続数のみ記録する。
             logger.info(
-                "event stream broadcast type=%s unit_id=%s clients=%s bufferable=%s",
+                "event stream broadcast type=%s event_id=%s clients=%s bufferable=%s",
                 event.type,
-                int(event.unit_id),
+                int(event.event_id),
                 len(_clients),
                 bool(event.bufferable),
             )
