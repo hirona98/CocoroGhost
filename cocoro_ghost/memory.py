@@ -307,6 +307,9 @@ def _reply_system_prompt(*, persona_text: str, addon_text: str) -> str:
                 "- 内部用JSONや内部見出し（<<<...>>>）を本文に出力しない。",
                 "- 内部用JSONに TimeContext（now/last_chat_created_at/gap_seconds）が含まれる。gap_seconds が大きい場合は、自然に時間経過を認識して話す。",
                 "- 内部用JSONに LongMoodState（背景の長期感情）が含まれる。本文にJSONや数値（VAD）をそのまま出力しない。雰囲気や言葉選びに反映する。",
+                "- 視点: 一人称（「私は〜」など）。ユーザーは「あなた」や名前など。",
+                "- 本文: ユーザーに向けた会話の発話（セリフ）として自然に成立する文章を書く。",
+                "- 内心: 直接は語らず、雰囲気や言葉選びに反映する。内心メモは event_affect.inner_thought_text に置く。",
             ]
         ).strip()
     )
