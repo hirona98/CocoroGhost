@@ -2280,7 +2280,136 @@ class MemoryManager:
             )
 
         out = sorted(out, key=lambda x: (len(x.hit_sources), int(x.rank_ts), int(x.id)), reverse=True)
+
+        # --- diversify（候補分散）: event候補の偏りを抑える ---
+        # NOTE:
+        # - mode=targeted_broad/explicit_about_time のときだけ適用する（associative_recentは最近性優先）。
+        # - 現状は event にしか about_time（life_stage/about_year）が無いため、eventのみ対象にする。
+        out = self._apply_diversify_inplace(candidates=out, plan_obj=plan_obj)
+
         return out[:max_candidates]
+
+    def _apply_diversify_inplace(self, *, candidates: list[_CandidateItem], plan_obj: dict[str, Any]) -> list[_CandidateItem]:
+        """
+        SearchPlan.diversify に基づき、event候補の並び順だけを調整する。
+
+        目的:
+            - max_candidates で切り詰める前に「偏り」を抑え、LLM選別の入力を安定させる。
+
+        方針:
+            - mode=targeted_broad/explicit_about_time の場合のみ適用する。
+            - event 候補のみを対象にし、state/event_affect の順序と件数は変えない。
+            - まずは per_bucket の上限内で広く拾い、残りは元の順位順で詰める（取りこぼし優先）。
+        """
+
+        # --- plan/diversify を読む ---
+        if not isinstance(plan_obj, dict):
+            return candidates
+
+        mode = str(plan_obj.get("mode") or "").strip()
+        if mode not in ("targeted_broad", "explicit_about_time"):
+            return candidates
+
+        diversify = plan_obj.get("diversify")
+        if not isinstance(diversify, dict):
+            return candidates
+
+        by_raw = diversify.get("by")
+        by_list = [str(x or "").strip() for x in (by_raw if isinstance(by_raw, list) else [])]
+        by_list = [x for x in by_list if x]
+        if not by_list:
+            return candidates
+
+        # --- サポートする軸だけに絞る ---
+        supported = {"life_stage", "about_year_bucket"}
+        by_keys = [k for k in by_list if k in supported]
+        if not by_keys:
+            return candidates
+
+        per_bucket_raw = diversify.get("per_bucket")
+        per_bucket = int(per_bucket_raw) if isinstance(per_bucket_raw, (int, float)) else 5
+        per_bucket = max(1, min(20, int(per_bucket)))
+
+        # --- event候補を抽出（元の順序） ---
+        events_only: list[_CandidateItem] = [c for c in candidates if str(c.type) == "event"]
+        if len(events_only) <= 1:
+            return candidates
+
+        # --- バケット値を計算する（event.meta から） ---
+        def bucket_life_stage(ev: _CandidateItem) -> str:
+            # --- about_time から取得 ---
+            about = ev.meta.get("about_time") if isinstance(ev.meta, dict) else None
+            if not isinstance(about, dict):
+                return "unknown"
+            v = str(about.get("life_stage") or "").strip()
+            allowed = {"elementary", "middle", "high", "university", "work", "unknown"}
+            return v if v in allowed else "unknown"
+
+        def bucket_about_year_bucket(ev: _CandidateItem) -> str:
+            # --- about_time から取得 ---
+            about = ev.meta.get("about_time") if isinstance(ev.meta, dict) else None
+            if not isinstance(about, dict):
+                return "unknown"
+            y0 = about.get("about_year_start")
+            y1 = about.get("about_year_end")
+
+            # --- 年を正規化 ---
+            ys = int(y0) if isinstance(y0, (int, float)) and int(y0) > 0 else None
+            ye = int(y1) if isinstance(y1, (int, float)) and int(y1) > 0 else None
+            if ys is None and ye is None:
+                return "unknown"
+            year = ys if ye is None else ye if ys is None else int((int(ys) + int(ye)) // 2)
+            if year <= 0 or year > 9999:
+                return "unknown"
+
+            # --- 5年刻みバケット（例: 2018 -> 2015-2019） ---
+            start = int(year) - (int(year) % 5)
+            end = int(start) + 4
+            return f"{start}-{end}"
+
+        def buckets(ev: _CandidateItem) -> dict[str, str]:
+            out_b: dict[str, str] = {}
+            for k in by_keys:
+                if k == "life_stage":
+                    out_b[k] = bucket_life_stage(ev)
+                elif k == "about_year_bucket":
+                    out_b[k] = bucket_about_year_bucket(ev)
+            return out_b
+
+        # --- 第一パス: 上限内で広く拾う ---
+        counts_by_key: dict[str, dict[str, int]] = {k: {} for k in by_keys}
+        selected: list[_CandidateItem] = []
+        deferred: list[_CandidateItem] = []
+
+        for ev in events_only:
+            b = buckets(ev)
+            ok = True
+            for k, bv in b.items():
+                cur = counts_by_key[k].get(bv, 0)
+                if int(cur) >= int(per_bucket):
+                    ok = False
+                    break
+            if ok:
+                # --- 採用 ---
+                selected.append(ev)
+                for k, bv in b.items():
+                    counts_by_key[k][bv] = int(counts_by_key[k].get(bv, 0)) + 1
+            else:
+                # --- いったん保留 ---
+                deferred.append(ev)
+
+        # --- 第二パス: 残りを順位順で詰める ---
+        selected.extend(deferred)
+
+        # --- eventの位置だけ差し替えて返す（state/event_affectはそのまま） ---
+        it = iter(selected)
+        rebuilt: list[_CandidateItem] = []
+        for c in candidates:
+            if str(c.type) == "event":
+                rebuilt.append(next(it))
+            else:
+                rebuilt.append(c)
+        return rebuilt
 
     def _inflate_search_result_pack(
         self,
