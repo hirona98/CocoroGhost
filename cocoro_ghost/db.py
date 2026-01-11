@@ -32,7 +32,7 @@ EVENTS_FTS_TABLE_NAME = "events_fts"
 # 設定DB用 Base（GlobalSettings, LlmPreset, EmbeddingPreset）
 Base = declarative_base()
 
-# 記憶DB用 Base（events/state/revisions 等：新仕様）
+# 記憶DB用 Base（events/state/revisions 等）
 MemoryBase = declarative_base()
 
 # グローバルセッション（設定DB用）
@@ -309,7 +309,6 @@ def _create_memory_indexes(engine) -> None:
 def _assert_memory_db_is_new_schema(engine) -> None:
     """記憶DBが新スキーマであることを確認する。
 
-    運用前のため、旧スキーマ（Unit/payload）はサポートしない。
     旧スキーマが見つかった場合は例外にして、DBファイルの削除/再作成を要求する。
     """
     with engine.connect() as conn:
@@ -347,7 +346,7 @@ def _assert_memory_db_is_new_schema(engine) -> None:
         if current not in (0, _MEMORY_DB_USER_VERSION):
             raise RuntimeError(
                 f"memory DB user_version mismatch: db={current}, expected={_MEMORY_DB_USER_VERSION}. "
-                "運用前のためマイグレーションは行いません。DBを削除して作り直してください。"
+                "DBを削除して作り直してください。"
             )
 
 
@@ -439,7 +438,7 @@ def init_memory_db(embedding_preset_id: str, embedding_dimension: int) -> sessio
     # --- 旧スキーマを拒否する（運用前のためマイグレーションしない） ---
     _assert_memory_db_is_new_schema(engine)
 
-    # --- 記憶用テーブルを作成（events/state中心の新仕様） ---
+    # --- 記憶用テーブルを作成（events/state中心） ---
     import cocoro_ghost.memory_models  # noqa: F401
 
     MemoryBase.metadata.create_all(bind=engine)

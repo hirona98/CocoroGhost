@@ -1,11 +1,8 @@
 """
-記憶DB（memory_*.db）のORMモデル定義（新仕様）
+記憶DB（memory_*.db）のORMモデル定義
 
 このモジュールは「出来事ログ（events）」と「更新で育つ状態（state）」を中心に、
 改訂履歴（revisions）や文脈グラフ（event_threads/event_links）などを定義する。
-
-注意:
-- 運用前のため、マイグレーションや後方互換は前提にしない。
 """
 
 from __future__ import annotations
