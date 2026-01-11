@@ -50,7 +50,7 @@ class _MemorySessionEntry:
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
-_MEMORY_DB_USER_VERSION = 2
+_MEMORY_DB_USER_VERSION = 3
 
 
 def get_db_dir() -> Path:
