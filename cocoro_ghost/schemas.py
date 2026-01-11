@@ -59,7 +59,6 @@ class ChatRequest(BaseModel):
         client_id を必須・非空として扱う。
 
         NOTE:
-        - 運用前のため後方互換は付けない（未指定は 422）。
         - 空白だけの値も不正として弾く。
         """
         s = str(v or "").strip()
@@ -89,9 +88,6 @@ class VisionCaptureResponseV2Request(BaseModel):
         仕様:
         - 成功: error が null かつ images が1枚以上
         - スキップ/失敗: images が空 かつ error が非空文字列
-
-        NOTE:
-        - 運用前のため後方互換は付けない（曖昧な組み合わせは 422）。
         """
 
         # --- 値を正規化（空白だけの error は無効） ---
@@ -204,7 +200,7 @@ class ControlRequest(BaseModel):
     /control 用リクエスト。
 
     CocoroGhost プロセス自体の制御コマンドを受け付ける。
-    現状は shutdown のみ対応する（運用前のため後方互換は付けない）。
+    現状は shutdown のみ対応する
     """
 
     action: str

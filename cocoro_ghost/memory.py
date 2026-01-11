@@ -1,5 +1,5 @@
 """
-記憶・チャット処理（新仕様）
+記憶・チャット処理
 
 このモジュールは CocoroGhost の中心として、以下を担う。
 
@@ -7,9 +7,6 @@
 - `/api/v2/notification`: 通知を出来事ログとして保存し、イベントストリームへ配信
 - `/api/v2/meta-request`: 外部要求は保存せず、能動メッセージの「結果」だけを保存（events.source="meta_proactive"）
 - `/api/v2/vision/capture-response`: 画像を保存せず、詳細な画像説明テキストを出来事ログとして保存
-
-注意:
-- 運用前のため、マイグレーションや旧スキーマ互換は前提にしない。
 """
 
 from __future__ import annotations

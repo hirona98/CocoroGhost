@@ -18,7 +18,6 @@ def ensure_initial_reminder_global_settings(db: Session) -> ReminderGlobalSettin
     リマインダーのグローバル設定（単一行）を必ず存在させて返す。
 
     方針:
-    - 運用前のため、マイグレーションは行わない。
     - 未作成ならデフォルト値で作成する（reminders_enabled=False）。
     """
 
