@@ -90,10 +90,6 @@ def init_reminders_db() -> None:
 def _assert_expected_schema(engine) -> None:
     """
     reminders.db のスキーマが期待どおりかを検証する（マイグレーションはしない）。
-
-    方針:
-    - 運用前のため、古いスキーマを自動で直さない（後方互換なし）。
-    - 古いDBを掴んだ場合は、明示的に削除して再生成してもらう。
     """
 
     # --- PRAGMA table_info で列名だけを見る（追加/削除のマイグレーションは行わない） ---

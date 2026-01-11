@@ -52,5 +52,5 @@ def control(
 
     # --- action バリデーションは schemas 側で実施済み ---
     background_tasks.add_task(_request_process_shutdown, reason=request.reason)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
+    # --- BackgroundTasks を紐づける（これが無いと shutdown が実行されない） ---
+    return Response(status_code=status.HTTP_204_NO_CONTENT, background=background_tasks)

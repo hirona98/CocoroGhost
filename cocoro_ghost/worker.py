@@ -1,75 +1,52 @@
 """
-非同期ジョブWorker（jobsテーブル実行）
+バックグラウンドWorker
 
-バックグラウンドでjobsテーブルのタスクを処理するWorkerモジュール。
-Episode作成後の反射（reflection）、エンティティ抽出、ファクト抽出、
-埋め込みベクトル生成、サマリ更新などを非同期で実行する。
+役割:
+- memory_*.db の jobs をポーリングし、非同期処理を実行する
 
-主要関数:
-- run_forever: Workerのメインループ
-- process_due_jobs: 期限到達ジョブの一括処理
-- claim_next_job: 次のジョブを取得してRUNNINGにする
-- process_job: 単一ジョブの処理実行
+現時点の最小実装:
+- 出来事ログ（events）の埋め込みを生成し、sqlite-vec（vec_items）へ書き込む
+  - これにより「非同期更新→次ターンで効く」を最短で満たす
 
-ジョブ種別:
-- reflect_episode: エピソードの内的思考を生成
-- extract_entities: エンティティ（固有名）抽出
-- extract_facts: ファクト（安定知識）抽出
-- extract_loops: オープンループ（未完了事項）抽出
-- upsert_embeddings: 埋め込みベクトル生成/更新
-- shared_narrative_summary: 背景共有サマリ生成
-- person_summary_refresh: 人物サマリ更新
-- topic_summary_refresh: トピックサマリ更新
+拡張:
+- WritePlan を生成し、状態/感情/文脈グラフを更新する
+- 状態/感情もベクトル索引へ反映する（次ターンで効く）
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any
 
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy import func
 
-from cocoro_ghost import prompts
-from cocoro_ghost.config import get_config_store
-from cocoro_ghost.db import delete_unit_vector, get_memory_session, sync_unit_vector_metadata, upsert_edges, upsert_unit_vector
-from cocoro_ghost.fact_policy import (
-    canonicalize_fact_predicate,
-    effective_fact_ts,
-    is_event_predicate,
-    is_exclusive_predicate,
-    normalize_object_text_for_key,
-)
+from cocoro_ghost.db import memory_session_scope, upsert_vec_item
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
-from cocoro_ghost.unit_enums import (
-    EntityRole,
-    JobStatus,
-    Sensitivity,
-    UnitKind,
-    UnitState,
-)
-from cocoro_ghost.unit_models import (
-    Edge,
-    Entity,
-    EntityAlias,
-    Job,
-    PayloadEpisode,
-    PayloadFact,
-    PayloadLoop,
-    PayloadSummary,
-    Unit,
-    UnitEntity,
-)
-from cocoro_ghost.versioning import canonical_json_dumps, record_unit_version
-from cocoro_ghost.topic_tags import canonicalize_topic_tags, dumps_topic_tags_json
-from cocoro_ghost.persona_mood import clamp01
+from cocoro_ghost.memory_models import Event, EventAffect, EventLink, EventThread, Job, Revision, State
+from cocoro_ghost.time_utils import format_iso8601_local, parse_iso8601_to_utc_ts
+
 
 logger = logging.getLogger(__name__)
+
+
+_VEC_KIND_EVENT = 1
+_VEC_KIND_STATE = 2
+_VEC_KIND_EVENT_AFFECT = 3
+_VEC_ID_STRIDE = 10_000_000_000
+
+
+_JOB_PENDING = 0
+_JOB_RUNNING = 1
+_JOB_DONE = 2
+_JOB_FAILED = 3
+
+
+_TIDY_CHAT_TURNS_INTERVAL = 200
+_TIDY_CHAT_TURNS_INTERVAL_FIRST = 10
+_TIDY_MAX_CLOSE_PER_RUN = 200
+_TIDY_ACTIVE_STATE_FETCH_LIMIT = 5000
 
 
 def _now_utc_ts() -> int:
@@ -77,395 +54,351 @@ def _now_utc_ts() -> int:
     return int(time.time())
 
 
-def _json_dumps(payload: Any) -> str:
-    """DB保存用にJSONへダンプする（日本語保持）。"""
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+def _vec_item_id(kind: int, entity_id: int) -> int:
+    """vec_items の item_id を決定する（kind + entity_id の衝突を避ける）。"""
+    return int(kind) * int(_VEC_ID_STRIDE) + int(entity_id)
 
 
-def _json_loads(payload_json: str) -> Dict[str, Any]:
-    """jobs.payload_json を dict として安全に読み込む（壊れていたら空dict）。"""
+def _json_loads_maybe(text_in: str) -> dict[str, Any]:
+    """JSON文字列をdictとして読む（失敗時は空dict）。"""
     try:
-        obj = json.loads(payload_json)
+        obj = json.loads(str(text_in or ""))
         return obj if isinstance(obj, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
 
 
-def _get_persona_context() -> tuple[str | None, str | None]:
-    """現在のPERSONA_ANCHOR設定（persona_text + addon_text）を取得する（未初期化ならNone）。"""
+def _json_dumps(payload: Any) -> str:
+    """DB保存向けにJSONを安定した形式でダンプする（日本語保持）。"""
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _parse_first_json_object(text_in: str) -> dict[str, Any]:
+    """LLM出力から最初のJSONオブジェクトを抽出してdictとして返す。"""
+    s = str(text_in or "").strip()
+    if not s:
+        raise RuntimeError("LLM output is empty")
+
+    # --- llm_client の内部ユーティリティで抽出/修復する ---
+    from cocoro_ghost.llm_client import _extract_first_json_value, _repair_json_like_text  # noqa: PLC0415
+
+    candidate = _extract_first_json_value(s)
+    if not candidate:
+        raise RuntimeError("JSON extract failed")
+
     try:
-        cfg = get_config_store().config
+        obj = json.loads(candidate)
+    except json.JSONDecodeError:
+        obj = json.loads(_repair_json_like_text(candidate))
+
+    if not isinstance(obj, dict):
+        raise RuntimeError("JSON is not an object")
+    return obj
+
+
+def _clamp_vad(x: Any) -> float:
+    """VAD値を -1.0..+1.0 に丸める（壊れた出力でもDBを壊さないため）。"""
+    try:
+        v = float(x)
     except Exception:  # noqa: BLE001
-        return None, None
-    persona_text = (getattr(cfg, "persona_text", "") or "").strip() or None
-    addon_text = (getattr(cfg, "addon_text", "") or "").strip() or None
-    return persona_text, addon_text
+        return 0.0
+    if v < -1.0:
+        return -1.0
+    if v > 1.0:
+        return 1.0
+    return v
 
 
-def _wrap_prompt_with_persona(base_prompt: str) -> str:
-    """PERSONA_ANCHOR（persona_text + addon_text）があればsystem promptへ挿入する。"""
-    persona_text, addon_text = _get_persona_context()
-    return prompts.wrap_prompt_with_persona(
-        base_prompt,
-        persona_text=persona_text,
-        addon_text=addon_text,
-    )
-
-
-def _parse_optional_epoch_seconds(value: Any) -> Optional[int]:
-    """任意の値を「UNIX秒（int）」として解釈できるなら変換する。"""
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return int(value)
-    if isinstance(value, str):
-        s = value.strip()
-        if not s:
-            return None
-        try:
-            return int(float(s))
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            # ISO 8601 (e.g. "2025-12-13T00:00:00Z")
-            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return int(dt.timestamp())
-        except Exception:  # noqa: BLE001
-            return None
-    return None
-
-
-def _parse_clamped01(value: Any, default: float) -> float:
-    """
-    任意の値を 0..1 の float として保守的に解釈し、範囲外は丸める。
-
-    LLM出力の確信度/強度/重要度などは「確率スケール（0..1）」として扱う設計のため、
-    ここで型崩れや範囲逸脱を吸収する。
-    """
-    # None/Boolはスコアとして扱わない（defaultへフォールバック）
-    if value is None:
-        return float(default)
-    if isinstance(value, bool):
-        return float(default)
-    # 数値変換できるなら clamp01
-    try:
-        return clamp01(float(value))
-    except Exception:  # noqa: BLE001
-        return float(default)
-
-
-def _compute_loop_times(*, due_at: int | None, now_ts: int) -> tuple[int, int | None]:
-    """
-    Loopの期限情報（expires_at と due_at）を決定する。
-
-    方針:
-    - Loopは「次に話す理由」を作る短期メモで、LLMのclose判断に依存しない。
-    - サーバ側で TTL（expires_at）を付与し、期限超過で自動削除する。
-    - due_at は「再提起の優先順位」用途で、無ければ null でよい。
-
-    仕様（シンプルさ優先）:
-    - due_at が未来なら採用するが、最長30日までに丸める
-    - expires_at は due_at（採用できる場合）または「今から7日後」
-    """
-    # 定数は運用前のため固定（後方互換/マイグレーション無しで変更可能）。
-    default_ttl_seconds = 7 * 86400
-    max_ttl_seconds = 30 * 86400
-    now_ts_i = int(now_ts)
-    max_deadline = now_ts_i + max_ttl_seconds
-
-    due_at_i: int | None = None
-    if due_at is not None:
-        try:
-            cand = int(due_at)
-        except Exception:  # noqa: BLE001
-            cand = 0
-        if cand > now_ts_i:
-            due_at_i = min(cand, max_deadline)
-
-    if due_at_i is not None:
-        expires_at = int(due_at_i)
-    else:
-        expires_at = min(now_ts_i + default_ttl_seconds, max_deadline)
-    return int(expires_at), due_at_i
-
-
-def _delete_loop_unit(*, session: Session, unit_id: int) -> None:
-    """
-    Loop Unitを削除する（vec_units も明示削除）。
-
-    vec_units（sqlite-vec）はFKカスケードできないため、先に削除する。
-    """
-    row = session.query(Unit).filter(Unit.id == int(unit_id), Unit.kind == int(UnitKind.LOOP)).one_or_none()
-    if row is None:
-        return
-    try:
-        delete_unit_vector(session, unit_id=int(unit_id))
-    except Exception:  # noqa: BLE001
-        pass
-    session.delete(row)
-
-
-def _cleanup_expired_loops(*, session: Session, now_ts: int) -> int:
-    """
-    期限切れのLoopを削除する。
-
-    Loopは短期メモとして扱うため、expires_at <= now のものは自動的に削除する。
-    """
-    now_ts_i = int(now_ts)
-    rows = (
-        session.query(Unit.id)
-        .join(PayloadLoop, PayloadLoop.unit_id == Unit.id)
-        .filter(Unit.kind == int(UnitKind.LOOP), PayloadLoop.expires_at <= now_ts_i)
-        .order_by(PayloadLoop.expires_at.asc(), Unit.id.asc())
-        .limit(200)
-        .all()
-    )
-    deleted = 0
-    for (uid,) in rows:
-        _delete_loop_unit(session=session, unit_id=int(uid))
-        deleted += 1
-    return deleted
-
-
-def _parse_llm_json_dict(*, llm_client: LlmClient, resp: Any) -> Optional[Dict[str, Any]]:
-    """LLMのJSON応答をdictへ正規化して返す。"""
-    # JSON本文を抽出してパースする。
-    try:
-        parsed = llm_client.response_json(resp)
-    except Exception as exc:  # noqa: BLE001
-        # パース失敗時は警告して打ち切る。
-        logger.warning("LLM JSON parse failed: %s", exc)
-        return None
-
-    # dictならそのまま返す。
-    if isinstance(parsed, dict):
-        return parsed
-
-    # 1要素のlistにdictが入っているならunwrapする。
-    if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
-        return parsed[0]
-
-    # 想定外の型は警告してNone。
-    logger.warning("LLM JSON root is not object: type=%s", type(parsed).__name__)
-    return None
-
-
-def _backoff_seconds(tries: int) -> int:
-    """失敗回数に応じた簡易バックオフ秒を返す（最大1時間）。"""
-    return min(3600, max(5, 2 ** max(0, tries)))
-
-
-def _format_local_datetime(ts: int | float | None) -> str:
-    """
-    UNIX秒をローカル時刻の文字列へ変換する。
-    """
-    if ts is None:
-        return ""
-    try:
-        return datetime.fromtimestamp(float(ts)).astimezone().isoformat()
-    except Exception:  # noqa: BLE001
+def _normalize_text_for_dedupe(text_in: str) -> str:
+    """重複判定用に本文テキストを正規化する（空白の揺れを吸収）。"""
+    s = str(text_in or "").strip()
+    if not s:
         return ""
 
+    # --- 空白の連続を1つにする（日本語でも不都合が少ない） ---
+    return " ".join(s.split())
 
-def _has_pending_job_with_payload(session: Session, *, kind: str, payload_key: str, payload_value: Any) -> bool:
-    """同種ジョブの重複enqueueを避けるための簡易判定（queued/runningのみ）。"""
-    rows = (
-        session.query(Job)
-        .filter(Job.kind == kind, Job.status.in_([int(JobStatus.QUEUED), int(JobStatus.RUNNING)]))
+
+def _canonicalize_json_for_dedupe(text_in: str) -> str:
+    """重複判定用に payload_json を安定化する（JSONならキー順を揃える）。"""
+    s = str(text_in or "").strip()
+    if not s:
+        return ""
+
+    # --- JSONとして読めるなら、キー順を揃えてダンプする ---
+    try:
+        obj = json.loads(s)
+        return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except Exception:  # noqa: BLE001
+        return s
+
+
+def _has_pending_or_running_job(db, *, kind: str) -> bool:
+    """指定kindの pending/running ジョブが存在するかを返す。"""
+    n = (
+        db.query(func.count(Job.id))
+        .filter(Job.kind == str(kind))
+        .filter(Job.status.in_([int(_JOB_PENDING), int(_JOB_RUNNING)]))
+        .scalar()
+    )
+    return int(n or 0) > 0
+
+
+def _last_tidy_watermark_event_id(db) -> int:
+    """最後に完了した tidy_memory が対象にした event_id の上限（watermark）を返す。"""
+    last = (
+        db.query(Job)
+        .filter(Job.kind == "tidy_memory")
+        .filter(Job.status == int(_JOB_DONE))
         .order_by(Job.id.desc())
-        .limit(200)
-        .all()
+        .first()
     )
-    for job in rows:
-        payload = _json_loads(job.payload_json)
-        if payload.get(payload_key) == payload_value:
-            return True
-    return False
+    if last is None:
+        return 0
+
+    payload = _json_loads_maybe(str(last.payload_json or ""))
+    try:
+        return int(payload.get("watermark_event_id") or 0)
+    except Exception:  # noqa: BLE001
+        return 0
 
 
-def _enqueue_job(session: Session, *, kind: str, payload: Dict[str, Any], now_ts: int) -> None:
-    """jobsテーブルへ1件追加する（commitは呼び出し側）。"""
-    session.add(
+def _enqueue_tidy_memory_job(
+    *,
+    db,
+    now_ts: int,
+    run_after: int,
+    reason: str,
+    watermark_event_id: int,
+) -> None:
+    """記憶整理ジョブ（tidy_memory）を投入する（重複投入は呼び出し側で防ぐ）。"""
+    db.add(
         Job(
-            kind=kind,
-            payload_json=_json_dumps(payload),
-            status=int(JobStatus.QUEUED),
-            run_after=now_ts,
+            kind="tidy_memory",
+            payload_json=_json_dumps(
+                {
+                    "reason": str(reason),
+                    "max_close_per_run": int(_TIDY_MAX_CLOSE_PER_RUN),
+                    "watermark_event_id": int(watermark_event_id),
+                }
+            ),
+            status=int(_JOB_PENDING),
+            run_after=int(run_after),
             tries=0,
             last_error=None,
-            created_at=now_ts,
-            updated_at=now_ts,
+            created_at=int(now_ts),
+            updated_at=int(now_ts),
         )
     )
 
 
-def claim_next_job(session: Session, *, now_ts: int) -> Optional[int]:
-    """実行可能な次ジョブを1件RUNNINGにしてclaimし、そのjob_idを返す。"""
-    job = (
-        session.query(Job)
-        .filter(Job.status == int(JobStatus.QUEUED), Job.run_after <= now_ts)
-        .order_by(Job.run_after.asc(), Job.id.asc())
-        .first()
-    )
-    if job is None:
-        return None
-    job.status = int(JobStatus.RUNNING)
-    job.updated_at = now_ts
-    session.add(job)
-    session.commit()
-    return int(job.id)
+def _build_event_embedding_text(ev: Event) -> str:
+    """埋め込み対象テキストを組み立てる。"""
+    parts: list[str] = []
+
+    # --- user_text ---
+    ut = str(ev.user_text or "").strip()
+    if ut:
+        parts.append(ut)
+
+    # --- assistant_text ---
+    at = str(ev.assistant_text or "").strip()
+    if at:
+        if parts:
+            parts.append("")
+        parts.append(at)
+
+    # --- source は短く補助情報として付ける ---
+    parts.append("")
+    parts.append(f"(source={str(ev.source)})")
+
+    # --- 長すぎる場合は頭側を優先して切る ---
+    text_out = "\n".join([p for p in parts if p is not None]).strip()
+    if len(text_out) > 8000:
+        text_out = text_out[:8000]
+    return text_out
 
 
-def claim_next_job_with_kind(session: Session, *, now_ts: int) -> Optional[tuple[int, str]]:
-    """実行可能な次ジョブを1件RUNNINGにしてclaimし、そのjob_idとkindを返す。"""
-    job = (
-        session.query(Job)
-        .filter(Job.status == int(JobStatus.QUEUED), Job.run_after <= now_ts)
-        .order_by(Job.run_after.asc(), Job.id.asc())
-        .first()
-    )
-    if job is None:
-        return None
-    job.status = int(JobStatus.RUNNING)
-    job.updated_at = now_ts
-    session.add(job)
-    session.commit()
-    return int(job.id), str(job.kind or "")
+def _build_state_embedding_text(st: State) -> str:
+    """状態の埋め込み対象テキストを組み立てる。"""
+    parts: list[str] = []
+
+    # --- kind ---
+    parts.append(f"(kind={str(st.kind)})")
+
+    # --- body_text ---
+    bt = str(st.body_text or "").strip()
+    if bt:
+        parts.append(bt)
+
+    # --- payload は補助情報として短く添える ---
+    pj = str(st.payload_json or "").strip()
+    if pj:
+        parts.append(f"(payload={pj[:1200]})")
+
+    text_out = "\n".join([p for p in parts if p is not None]).strip()
+    if len(text_out) > 8000:
+        text_out = text_out[:8000]
+    return text_out
 
 
-def process_job(
-    *,
-    session: Session,
-    llm_client: LlmClient,
-    job_id: int,
-    now_ts: int,
-    max_tries: int,
-) -> bool:
-    """job_idの処理を実行し、成功/失敗を返す（失敗時はtries/run_after/statusを更新）。"""
-    job = session.query(Job).filter(Job.id == job_id).one_or_none()
-    if job is None:
-        return False
-    payload = _json_loads(job.payload_json)
-    try:
-        if job.kind == "reflect_episode":
-            _handle_reflect_episode(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "upsert_embeddings":
-            _handle_upsert_embeddings(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "extract_facts":
-            _handle_extract_facts(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "extract_loops":
-            _handle_extract_loops(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "extract_entities":
-            _handle_extract_entities(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "shared_narrative_summary":
-            _handle_shared_narrative_summary(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "person_summary_refresh":
-            _handle_person_summary_refresh(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        elif job.kind == "topic_summary_refresh":
-            _handle_topic_summary_refresh(session=session, llm_client=llm_client, payload=payload, now_ts=now_ts)
-        else:
-            logger.warning("unknown job kind", extra={"job_id": job_id, "kind": job.kind})
+def _build_event_affect_embedding_text(aff: EventAffect) -> str:
+    """イベント感情の埋め込み対象テキストを組み立てる。"""
+    parts: list[str] = []
 
-        job.status = int(JobStatus.DONE)
-        job.updated_at = now_ts
-        session.add(job)
-        session.commit()
-        return True
-    except Exception as exc:  # noqa: BLE001
-        # flush/commit で失敗した場合、Session は「ロールバック待ち」状態になる。
-        # この状態でDB操作すると PendingRollbackError になるので、まず rollback() する。
-        session.rollback()
-        logger.error("job failed", exc_info=exc, extra={"job_id": job_id, "kind": job.kind})
+    # --- moment_affect_text ---
+    t = str(aff.moment_affect_text or "").strip()
+    if t:
+        parts.append(t)
 
-        # rollback 後はオブジェクト状態が不安定になりうるため、job を取り直してから更新する。
-        job2 = session.query(Job).filter(Job.id == job_id).one_or_none()
-        if job2 is None:
-            return False
+    # --- inner_thought_text ---
+    it = str(aff.inner_thought_text or "").strip()
+    if it:
+        parts.append("")
+        parts.append(f"【内心】 {it}")
 
-        job2.tries = int(job2.tries or 0) + 1
-        job2.last_error = str(exc)
-        job2.updated_at = now_ts
-        if job2.tries >= max_tries:
-            job2.status = int(JobStatus.FAILED)
-        else:
-            job2.status = int(JobStatus.QUEUED)
-            job2.run_after = now_ts + _backoff_seconds(job2.tries)
-        session.add(job2)
-        session.commit()
-        return False
+    # --- VAD ---
+    parts.append("")
+    parts.append(f"(vad v={float(aff.vad_v):.3f} a={float(aff.vad_a):.3f} d={float(aff.vad_d):.3f})")
+
+    text_out = "\n".join([p for p in parts if p is not None]).strip()
+    if len(text_out) > 8000:
+        text_out = text_out[:8000]
+    return text_out
 
 
-def process_due_jobs(
-    *,
-    embedding_preset_id: str,
-    embedding_dimension: int,
-    llm_client: LlmClient,
-    max_jobs: int = 10,
-    max_tries: int = 5,
-    sleep_when_empty: float = 0.0,
-) -> int:
-    """claim→processを繰り返して、最大max_jobs件まで処理する。"""
-    processed = 0
-    claimed: list[tuple[int, str]] = []
-    for _ in range(max_jobs):
-        now_ts = _now_utc_ts()
-        session = get_memory_session(embedding_preset_id, embedding_dimension)
-        try:
-            # Loopは短期メモとして扱うため、期限切れ（expires_at <= now）は定期的に削除する。
-            # capsule（短期状態）機能を廃止したため、ジョブ処理ループ内で確実に掃除する。
-            try:
-                _cleanup_expired_loops(session=session, now_ts=now_ts)
-            except Exception:  # noqa: BLE001
-                pass
-            job_info = claim_next_job_with_kind(session, now_ts=now_ts)
-        finally:
-            session.close()
-        if job_info is None:
-            if not claimed and sleep_when_empty > 0:
-                time.sleep(sleep_when_empty)
-            break
-        claimed.append(job_info)
+def _write_plan_system_prompt() -> str:
+    """WritePlan生成用のsystem promptを返す。"""
+    return "\n".join(
+        [
+            "あなたは出来事ログ（event）から、記憶更新のための計画（WritePlan）を作る。",
+            "出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
+            "",
+            "目的:",
+            "- about_time（内容がいつの話か）と entities を推定する",
+            "- 状態（state）を更新して「次ターン以降に効く」形へ育てる",
+            "- 瞬間的な感情（event_affect）と長期的な気分（long_mood_state）を扱う",
+            "- 文脈グラフ（event_threads/event_links）の本更新案を作る",
+            "",
+            "品質（重要）:",
+            "- 入力（event/recent_events/recent_states）に無い事実は作らない。推測する場合は confidence を下げるか、更新しない。",
+            "- state_updates は必要なものだけ。雑談だけなら空でもよい（ノイズを増やさない）。",
+            "- body_text は検索に使う短い本文（会話文の長文や箇条書きは避ける）。",
+            "- 矛盾がある場合は上書きせず、並存/期間分割（valid_from_ts/valid_to_ts）や close を使う。",
+            "",
+            "視点（重要）:",
+            "- あなたは人格本人。本文は主観（一人称）で書く",
+            "- 自分を三人称で呼ばない",
+            "- 例: 「アシスタントはメイド」→「私はメイドとして仕えている」",
+            "- 対象: state_updates.body_text / state_updates.reason / event_affect.* / long_mood_state（stateのbody_text）",
+            "",
+            "制約:",
+            "- VAD（v/a/d）は各軸 -1.0..+1.0",
+            "- confidence/salience/about_time_confidence は 0.0..1.0",
+            "- どの更新も evidence_event_ids に必ず現在の event_id を含める",
+            "- reason は短く具体的に（なぜそう判断したか）",
+            "- state_id はDB主キー（整数）か null（文字列IDを作らない）",
+            "- op=close/mark_done は state_id 必須（recent_states にあるIDのみ）。op=upsert は state_id=null で新規、state_id>0 で既存更新。",
+            "- 日時は ISO 8601（タイムゾーン付き）文字列で出す（例: 2026-01-10T13:24:00+09:00）",
+            "",
+            "出力スキーマ（キーは識別子なので英語のまま）:",
+            "{",
+            '  "event_annotations": {',
+            '    "about_start_ts": null,',
+            '    "about_end_ts": null,',
+            '    "about_year_start": null,',
+            '    "about_year_end": null,',
+            '    "life_stage": "elementary|middle|high|university|work|unknown",',
+            '    "about_time_confidence": 0.0,',
+            '    "entities": [{"type":"PERSON|ORG|PLACE|THING|TOPIC","name":"string","confidence":0.0}]',
+            "  },",
+            '  "state_updates": [',
+            "    {",
+            '      "op": "upsert|close|mark_done",',
+            '      "state_id": null,',
+            '      "kind": "fact|relation|task|summary|long_mood_state",',
+            '      "body_text": "検索に使う短い本文",',
+            '      "payload": {},',
+            '      "confidence": 0.0,',
+            '      "salience": 0.0,',
+            '      "valid_from_ts": null,',
+            '      "valid_to_ts": null,',
+            '      "last_confirmed_at": null,',
+            '      "evidence_event_ids": [0],',
+            '      "reason": "string"',
+            "    }",
+            "  ],",
+            '  "event_affect": {',
+            '    "moment_affect_text": "string",',
+            '    "moment_affect_score_vad": {"v": 0.0, "a": 0.0, "d": 0.0},',
+            '    "moment_affect_confidence": 0.0,',
+            '    "inner_thought_text": null',
+            "  },",
+            '  "context_updates": {',
+            '    "threads": [{"thread_key":"string","confidence":0.0}],',
+            '    "links": [{"to_event_id":0,"label":"reply_to|same_topic|caused_by|continuation","confidence":0.0}]',
+            "  }",
+            "}",
+        ]
+    ).strip()
 
-    if not claimed:
-        return processed
 
-    embed_job_ids = [job_id for job_id, kind in claimed if kind == "upsert_embeddings"]
-    other_job_ids = [job_id for job_id, kind in claimed if kind != "upsert_embeddings"]
+def _state_row_to_json(st: State) -> dict[str, Any]:
+    """State行をJSON化する（LLM入力/Revision保存の両方で使う）。"""
+    return {
+        "state_id": int(st.state_id),
+        "kind": str(st.kind),
+        "body_text": str(st.body_text),
+        "payload_json": str(st.payload_json),
+        "last_confirmed_at": int(st.last_confirmed_at),
+        "confidence": float(st.confidence),
+        "salience": float(st.salience),
+        "valid_from_ts": (int(st.valid_from_ts) if st.valid_from_ts is not None else None),
+        "valid_to_ts": (int(st.valid_to_ts) if st.valid_to_ts is not None else None),
+        "created_at": int(st.created_at),
+        "updated_at": int(st.updated_at),
+    }
 
-    def _process_job_with_new_session(job_id: int) -> bool:
-        session = get_memory_session(embedding_preset_id, embedding_dimension)
-        try:
-            return process_job(
-                session=session,
-                llm_client=llm_client,
-                job_id=job_id,
-                now_ts=_now_utc_ts(),
-                max_tries=max_tries,
-            )
-        finally:
-            session.close()
 
-    for job_id in other_job_ids:
-        if _process_job_with_new_session(job_id):
-            processed += 1
+def _link_row_to_json(link: EventLink) -> dict[str, Any]:
+    """EventLink行をJSON化する（Revision保存用）。"""
+    return {
+        "id": int(link.id),
+        "from_event_id": int(link.from_event_id),
+        "to_event_id": int(link.to_event_id),
+        "label": str(link.label),
+        "confidence": float(link.confidence),
+        "evidence_event_ids_json": str(link.evidence_event_ids_json),
+        "created_at": int(link.created_at),
+    }
 
-    if embed_job_ids:
-        worker_count = min(4, len(embed_job_ids))
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = [executor.submit(_process_job_with_new_session, job_id) for job_id in embed_job_ids]
-            for fut in futures:
-                try:
-                    ok = fut.result()
-                except Exception:  # noqa: BLE001
-                    ok = False
-                if ok:
-                    processed += 1
 
-    return processed
+def _thread_row_to_json(th: EventThread) -> dict[str, Any]:
+    """EventThread行をJSON化する（Revision保存用）。"""
+    return {
+        "id": int(th.id),
+        "event_id": int(th.event_id),
+        "thread_key": str(th.thread_key),
+        "confidence": float(th.confidence),
+        "evidence_event_ids_json": str(th.evidence_event_ids_json),
+        "created_at": int(th.created_at),
+    }
+
+
+def _affect_row_to_json(aff: EventAffect) -> dict[str, Any]:
+    """EventAffect行をJSON化する（Revision保存用）。"""
+    return {
+        "id": int(aff.id),
+        "event_id": int(aff.event_id),
+        "created_at": int(aff.created_at),
+        "moment_affect_text": str(aff.moment_affect_text),
+        "moment_affect_labels_json": str(aff.moment_affect_labels_json),
+        "inner_thought_text": (str(aff.inner_thought_text) if aff.inner_thought_text is not None else None),
+        "vad_v": float(aff.vad_v),
+        "vad_a": float(aff.vad_a),
+        "vad_d": float(aff.vad_d),
+        "confidence": float(aff.confidence),
+    }
 
 
 def run_forever(
@@ -473,1627 +406,981 @@ def run_forever(
     embedding_preset_id: str,
     embedding_dimension: int,
     llm_client: LlmClient,
-    poll_interval_seconds: float = 1.0,
-    max_jobs_per_tick: int = 10,
-    periodic_interval_seconds: float = 30.0,
-    stop_event: threading.Event | None = None,
+    poll_interval_seconds: float,
+    max_jobs_per_tick: int,
+    periodic_interval_seconds: float,
+    stop_event,
 ) -> None:
-    """Workerのメインループ。ジョブ処理と定期enqueueを同一プロセス内で回す。"""
-    logger.info("worker start", extra={"embedding_preset_id": embedding_preset_id})
-    last_periodic_at: float = 0.0
+    """jobs を監視して実行し続ける（内蔵Worker用エントリポイント）。"""
+
+    _ = periodic_interval_seconds  # cron無し定期は採用しない（ターン回数ベースを正とする）
+
+    # --- ループ ---
     while True:
-        if stop_event is not None and stop_event.is_set():
-            break
-        # cron無し運用: Workerプロセス内で定期enqueueを行う（軽量）。
-        if periodic_interval_seconds > 0:
-            now_s = time.time()
-            if (now_s - last_periodic_at) >= float(periodic_interval_seconds):
-                last_periodic_at = now_s
-                session = get_memory_session(embedding_preset_id, embedding_dimension)
-                try:
-                    from cocoro_ghost.periodic import enqueue_periodic_jobs
+        if stop_event is not None and getattr(stop_event, "is_set", lambda: False)():
+            return
 
-                    stats = enqueue_periodic_jobs(session, now_ts=int(now_s))
-                    session.commit()
-                    if any(int(v) > 0 for v in stats.values()):
-                        logger.info("periodic enqueued", extra={"embedding_preset_id": embedding_preset_id, **stats})
-                except Exception:  # noqa: BLE001
-                    session.rollback()
-                    logger.exception("periodic enqueue failed", extra={"embedding_preset_id": embedding_preset_id})
-                finally:
-                    session.close()
+        ran_any = False
+        try:
+            ran_any = _tick_once(
+                embedding_preset_id=str(embedding_preset_id),
+                embedding_dimension=int(embedding_dimension),
+                llm_client=llm_client,
+                max_jobs=int(max_jobs_per_tick),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("worker tick failed", exc_info=exc)
 
-        processed = process_due_jobs(
+        # --- ポーリング間隔（仕事があれば詰めて回す） ---
+        if not ran_any:
+            time.sleep(max(0.05, float(poll_interval_seconds)))
+
+
+def _tick_once(*, embedding_preset_id: str, embedding_dimension: int, llm_client: LlmClient, max_jobs: int) -> bool:
+    """due な jobs を最大 max_jobs 件だけ実行する。"""
+
+    now_ts = _now_utc_ts()
+    max_jobs_i = max(1, int(max_jobs))
+
+    # --- due jobs を取る ---
+    # NOTE:
+    # - memory_session_scope は正常終了時に commit する。
+    # - SQLAlchemy は commit で ORM オブジェクトを expire し得るため、
+    #   with を抜けた後に rows（Job ORM）へ触ると DetachedInstanceError になり得る。
+    # - そのため、外に持ち出すのは「job_id の整数」だけにする。
+    job_ids: list[int] = []
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        rows = (
+            db.query(Job)
+            .filter(Job.status == int(_JOB_PENDING))
+            .filter(Job.run_after <= int(now_ts))
+            .order_by(Job.run_after.asc(), Job.id.asc())
+            .limit(max_jobs_i)
+            .all()
+        )
+        if not rows:
+            return False
+
+        # --- 仕事がある時だけ出す（無限ループでのログ氾濫を避ける） ---
+        logger.info(
+            "worker tick due_jobs=%s",
+            len(rows),
+            extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
+        )
+
+        # --- 実行対象を running にする（同時実行があっても二重処理を減らす） ---
+        for j in rows:
+            j.status = int(_JOB_RUNNING)
+            j.updated_at = int(now_ts)
+            db.add(j)
+            # --- with の外で使うのは id だけ ---
+            job_ids.append(int(j.id))
+
+    # --- running にしたものを順番に処理する ---
+    ran_any = False
+    for job_id in job_ids:
+        ran_any = True
+        _run_one_job(
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             llm_client=llm_client,
-            max_jobs=max_jobs_per_tick,
-            sleep_when_empty=0.0,
+            job_id=int(job_id),
         )
-        if processed <= 0:
-            if stop_event is not None:
-                stop_event.wait(poll_interval_seconds)
-            else:
-                time.sleep(poll_interval_seconds)
+
+    return ran_any
 
 
-def _handle_reflect_episode(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    unit_id = int(payload["unit_id"])
-    row = (
-        session.query(Unit, PayloadEpisode)
-        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(Unit.id == unit_id, Unit.kind == int(UnitKind.EPISODE))
-        .one_or_none()
-    )
-    if row is None:
-        return
-    unit, pe = row
-    # /api/chat では「本文 + 内部JSON（反射）」を同一LLM呼び出しで得られるため、
-    # すでに反射が保存されている場合は冪等にスキップする。
-    if (pe.reflection_json or "").strip() and (unit.persona_affect_label or "").strip():
-        return
-    ctx_parts = []
-    if pe.input_text:
-        ctx_parts.append(f"user: {pe.input_text}")
-    if pe.reply_text:
-        ctx_parts.append(f"reply: {pe.reply_text}")
-    if pe.image_summary:
-        ctx_parts.append(f"image_summary: {pe.image_summary}")
-    if pe.context_note:
-        ctx_parts.append(f"context_note: {pe.context_note}")
-    context_text = "\n".join(ctx_parts)
+def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_client: LlmClient, job_id: int) -> None:
+    """jobs.id を指定して1件実行する（成功/失敗をDBへ反映）。"""
 
-    system_prompt = _wrap_prompt_with_persona(prompts.get_reflection_prompt())
-    resp = llm_client.generate_json_response(
-        system_prompt=system_prompt,
-        input_text=context_text,
-        purpose=LlmRequestPurpose.INTERNAL_THOUGHT,
-    )
-    raw_text = llm_client.response_content(resp)
-    raw_json = raw_text
-    data = json.loads(raw_text)
+    now_ts = _now_utc_ts()
 
-    unit.persona_affect_label = str(data.get("persona_affect_label") or "")
-    unit.persona_affect_intensity = _parse_clamped01(data.get("persona_affect_intensity"), 0.0)
-    unit.salience = _parse_clamped01(data.get("salience"), 0.0)
-    unit.confidence = _parse_clamped01(data.get("confidence"), 0.5)
-    topic_tags_raw = data.get("topic_tags")
-    topic_tags = topic_tags_raw if isinstance(topic_tags_raw, list) else []
-    canonical_tags = canonicalize_topic_tags(topic_tags)
-    data["topic_tags"] = canonical_tags
-    unit.topic_tags = dumps_topic_tags_json(canonical_tags)
-    unit.state = int(UnitState.VALIDATED)
-    unit.updated_at = now_ts
-    pe.reflection_json = raw_json
-    session.add(unit)
-    session.add(pe)
-    sync_unit_vector_metadata(
-        session,
-        unit_id=unit_id,
-        occurred_at=unit.occurred_at,
-        state=int(unit.state),
-        sensitivity=int(unit.sensitivity),
-    )
-    record_unit_version(
-        session,
-        unit_id=unit_id,
-        payload_obj=data,
-        patch_reason="reflect_episode",
-        now_ts=now_ts,
-    )
+    # --- job を読む ---
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        job = db.query(Job).filter(Job.id == int(job_id)).one_or_none()
+        if job is None:
+            return
 
+        kind = str(job.kind or "").strip()
+        payload = _json_loads_maybe(job.payload_json)
 
-def _normalize_type_label(type_label: str | None) -> str | None:
-    tl = (type_label or "").strip().upper()
-    return tl or None
-
-
-def _normalize_roles(raw: Any, *, type_label: str | None = None) -> list[str]:
-    roles: list[str] = []
-    if isinstance(raw, list):
-        for r in raw:
-            s = str(r).strip().lower()
-            if s:
-                roles.append(s)
-
-    # rolesが無い/空のときは type_label から最低限推定する
-    tl = _normalize_type_label(type_label)
-    if not roles:
-        if tl == "PERSON":
-            roles = ["person"]
-        elif tl == "TOPIC":
-            roles = ["topic"]
-
-    # 正規化（重複除去）
-    out: list[str] = []
-    seen: set[str] = set()
-    for r in roles:
-        if r in seen:
-            continue
-        seen.add(r)
-        out.append(r)
-    return out
-
-
-def _entity_has_role(ent: Entity, role: str) -> bool:
+    # --- 実行 ---
     try:
-        data = json.loads(ent.roles_json or "[]")
-    except Exception:  # noqa: BLE001
-        return False
-    if not isinstance(data, list):
-        return False
-    want = str(role).strip().lower()
-    return any(str(x).strip().lower() == want for x in data)
-
-
-def _parse_entity_ref(ref: str) -> Optional[tuple[str, str]]:
-    s = (ref or "").strip()
-    if ":" not in s:
-        return None
-    type_label, name = s.split(":", 1)
-    name = name.strip()
-    if not name:
-        return None
-    tl = _normalize_type_label(str(type_label).strip() or None)
-    if tl is None:
-        return None
-    return tl, name
-
-
-def _normalize_relation_label(rel_raw: str) -> str:
-    """
-    LLM出力の relation をDB用に正規化する。
-
-    固定Enumにせず、将来のラベル増加（mentor, manager, rival...）に耐える。
-    """
-    key = (rel_raw or "").strip().lower()
-    if not key:
-        return "other"
-    canonical = {
-        "like": "likes",
-        "likes": "likes",
-        "dislike": "dislikes",
-        "dislikes": "dislikes",
-    }.get(key, key)
-    return canonical
-
-
-def _get_or_create_entity(
-    session: Session,
-    *,
-    name: str,
-    type_label: str | None,
-    roles: list[str],
-    aliases: list[str],
-    now_ts: int,
-) -> Entity:
-    type_label_norm = _normalize_type_label(type_label)
-    roles_norm = _normalize_roles(roles, type_label=type_label_norm)
-
-    normalized = (name or "").strip().lower()
-    ent = (
-        session.query(Entity)
-        .filter(Entity.normalized == normalized)
-        .order_by(Entity.id.asc())
-        .first()
-    )
-    if ent is None:
-        ent = Entity(
-            type_label=type_label_norm,
-            name=name,
-            normalized=normalized,
-            roles_json=_json_dumps(roles_norm),
-            created_at=now_ts,
-            updated_at=now_ts,
+        # --- 実行開始（観測用） ---
+        logger.info(
+            "job start kind=%s job_id=%s",
+            kind,
+            int(job_id),
+            extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
         )
-        session.add(ent)
-        session.flush()
-    else:
-        # 同一DB内の既存レコードに対して、表記揺れを吸収して正規化する（type_label/roles_jsonの大小文字・空値・重複など）。
-        current_tl = _normalize_type_label(ent.type_label)
-        if current_tl is not None and ent.type_label != current_tl:
-            ent.type_label = current_tl
-
-        if ent.name != name:
-            ent.name = name
-        if (ent.type_label is None or not str(ent.type_label).strip()) and type_label_norm:
-            ent.type_label = type_label_norm
-        # roles は加算（縮めない）
-        try:
-            existing = json.loads(ent.roles_json or "[]")
-        except Exception:  # noqa: BLE001
-            existing = []
-        merged: list[str] = []
-        seen: set[str] = set()
-        for r in (existing if isinstance(existing, list) else []):
-            s = str(r).strip().lower()
-            if not s or s in seen:
-                continue
-            seen.add(s)
-            merged.append(s)
-        for r in roles_norm:
-            s = str(r).strip().lower()
-            if not s or s in seen:
-                continue
-            seen.add(s)
-            merged.append(s)
-        ent.roles_json = _json_dumps(merged)
-        ent.updated_at = now_ts
-        session.add(ent)
-
-    for a in aliases:
-        a = (a or "").strip()
-        if not a:
-            continue
-        session.merge(EntityAlias(entity_id=int(ent.id), alias=a))
-
-    return ent
-
-
-def _handle_extract_entities(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    unit_id = int(payload["unit_id"])
-    row = (
-        session.query(Unit, PayloadEpisode)
-        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(Unit.id == unit_id, Unit.kind == int(UnitKind.EPISODE))
-        .one_or_none()
-    )
-    if row is None:
-        return
-    _u, pe = row
-    text_in = _build_recent_context_input(session=session, unit_id=unit_id, payload=pe, now_ts=now_ts)
-    if not text_in.strip():
-        return
-
-    resp = llm_client.generate_json_response(
-        system_prompt=prompts.get_entity_extract_prompt(),
-        input_text=text_in,
-        purpose=LlmRequestPurpose.ENTITY_EXTRACT,
-    )
-    # LLMのJSON応答をdictに正規化する。
-    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
-    if data is None:
-        return
-    entities = data.get("entities") or []
-    if not isinstance(entities, list):
-        return
-
-    for e in entities:
-        if not isinstance(e, dict):
-            continue
-        type_label = _normalize_type_label(str(e.get("type_label") or "").strip() or None)
-        name = str(e.get("name") or "").strip()
-        if not name:
-            continue
-        aliases_raw = e.get("aliases") or []
-        if not isinstance(aliases_raw, list):
-            aliases_raw = []
-        aliases = [str(a) for a in aliases_raw if str(a).strip()]
-        roles = _normalize_roles(e.get("roles"), type_label=type_label)
-        confidence = _parse_clamped01(e.get("confidence"), 0.0)
-        ent = _get_or_create_entity(
-            session,
-            name=name,
-            type_label=type_label,
-            roles=roles,
-            aliases=aliases,
-            now_ts=now_ts,
-        )
-        session.merge(
-            UnitEntity(
-                unit_id=unit_id,
-                entity_id=int(ent.id),
-                role=int(EntityRole.MENTIONED),
-                weight=max(0.1, confidence) if confidence > 0 else 1.0,
+        if kind == "upsert_event_embedding":
+            _handle_upsert_event_embedding(
+                embedding_preset_id=embedding_preset_id,
+                embedding_dimension=embedding_dimension,
+                llm_client=llm_client,
+                payload=payload,
             )
-        )
-
-    # Entity抽出の結果をもとに、人物/トピックのサマリ更新をenqueueする（ベストエフォート）。
-    # - 会話の一貫性（継続性）に効くが、毎回大量に更新するとコストが高いので上限を設ける。
-    try:
-        ue_rows = (
-            session.query(UnitEntity.entity_id, UnitEntity.weight)
-            .filter(UnitEntity.unit_id == unit_id)
-            .order_by(UnitEntity.weight.desc())
-            .limit(12)
-            .all()
-        )
-        entity_ids = [int(eid) for eid, _w in ue_rows]
-        if entity_ids:
-            # 直近の会話に重要そうな上位エンティティのみ更新対象にする。
-            person_ids: list[int] = []
-            topic_ids: list[int] = []
-            for eid, _w in ue_rows:
-                eid_i = int(eid)
-                ent = session.query(Entity).filter(Entity.id == eid_i).one_or_none()
-                if ent is None:
-                    continue
-                if _entity_has_role(ent, "person"):
-                    person_ids.append(eid_i)
-                elif _entity_has_role(ent, "topic"):
-                    topic_ids.append(eid_i)
-
-            # 上限（過剰enqueue防止）
-            person_ids = person_ids[:3]
-            topic_ids = topic_ids[:3]
-
-            for person_id in person_ids:
-                if _has_pending_job_with_payload(
-                    session,
-                    kind="person_summary_refresh",
-                    payload_key="entity_id",
-                    payload_value=int(person_id),
-                ):
-                    continue
-                _enqueue_job(session, kind="person_summary_refresh", payload={"entity_id": int(person_id)}, now_ts=now_ts)
-
-            for topic_id in topic_ids:
-                if _has_pending_job_with_payload(
-                    session,
-                    kind="topic_summary_refresh",
-                    payload_key="entity_id",
-                    payload_value=int(topic_id),
-                ):
-                    continue
-                _enqueue_job(session, kind="topic_summary_refresh", payload={"entity_id": int(topic_id)}, now_ts=now_ts)
-    except Exception:  # noqa: BLE001
-        logger.debug("failed to enqueue person/topic summary refresh", exc_info=True)
-
-    relations = data.get("relations") or []
-    if not isinstance(relations, list):
-        return
-
-    # memory Session は autoflush=False のため、同一PKの Edge を複数 add() すると
-    # commit時にまとめてINSERTされて UNIQUE 制約違反になりうる。
-    # ここで重複を畳み込み、DB側も UPSERT で冪等にする。
-    edge_rows_by_key: dict[tuple[int, str, int], dict] = {}
-    for r in relations:
-        if not isinstance(r, dict):
-            continue
-        src_raw = str(r.get("src") or "")
-        dst_raw = str(r.get("dst") or "")
-        relation_raw = str(r.get("relation") or "")
-        if not src_raw.strip() or not dst_raw.strip() or not relation_raw.strip():
-            continue
-
-        src_parsed = _parse_entity_ref(src_raw)
-        dst_parsed = _parse_entity_ref(dst_raw)
-        if src_parsed is None or dst_parsed is None:
-            continue
-        src_type_label, src_name = src_parsed
-        dst_type_label, dst_name = dst_parsed
-        relation_label = _normalize_relation_label(relation_raw)
-
-        confidence = float(r.get("confidence") or 0.0)
-        weight = max(0.1, confidence) if confidence > 0 else 1.0
-
-        src_ent = _get_or_create_entity(
-            session,
-            name=src_name,
-            type_label=src_type_label or None,
-            roles=_normalize_roles([], type_label=src_type_label),
-            aliases=[],
-            now_ts=now_ts,
-        )
-        dst_ent = _get_or_create_entity(
-            session,
-            name=dst_name,
-            type_label=dst_type_label or None,
-            roles=_normalize_roles([], type_label=dst_type_label),
-            aliases=[],
-            now_ts=now_ts,
-        )
-
-        key = (int(src_ent.id), str(relation_label), int(dst_ent.id))
-        existing = edge_rows_by_key.get(key)
-        if existing is None:
-            edge_rows_by_key[key] = {
-                "src_entity_id": int(src_ent.id),
-                "relation_label": str(relation_label),
-                "dst_entity_id": int(dst_ent.id),
-                "weight": float(weight),
-                "first_seen_at": int(now_ts),
-                "last_seen_at": int(now_ts),
-                "evidence_unit_id": int(unit_id),
-            }
+        elif kind == "generate_write_plan":
+            _handle_generate_write_plan(
+                embedding_preset_id=embedding_preset_id,
+                embedding_dimension=embedding_dimension,
+                llm_client=llm_client,
+                payload=payload,
+            )
+        elif kind == "apply_write_plan":
+            _handle_apply_write_plan(
+                embedding_preset_id=embedding_preset_id,
+                embedding_dimension=embedding_dimension,
+                payload=payload,
+            )
+        elif kind == "upsert_state_embedding":
+            _handle_upsert_state_embedding(
+                embedding_preset_id=embedding_preset_id,
+                embedding_dimension=embedding_dimension,
+                llm_client=llm_client,
+                payload=payload,
+            )
+        elif kind == "upsert_event_affect_embedding":
+            _handle_upsert_event_affect_embedding(
+                embedding_preset_id=embedding_preset_id,
+                embedding_dimension=embedding_dimension,
+                llm_client=llm_client,
+                payload=payload,
+            )
+        elif kind == "tidy_memory":
+            _handle_tidy_memory(
+                embedding_preset_id=embedding_preset_id,
+                embedding_dimension=embedding_dimension,
+                payload=payload,
+            )
         else:
-            existing["weight"] = max(float(existing.get("weight") or 0.0), float(weight))
-            existing["last_seen_at"] = int(now_ts)
-            existing["evidence_unit_id"] = int(unit_id)
+            raise RuntimeError(f"unknown job kind: {kind}")
 
-    upsert_edges(session, rows=list(edge_rows_by_key.values()))
+        # --- 成功を書き戻す ---
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            job2 = db.query(Job).filter(Job.id == int(job_id)).one_or_none()
+            if job2 is None:
+                return
+            job2.status = int(_JOB_DONE)
+            job2.updated_at = int(now_ts)
+            job2.last_error = None
+            db.add(job2)
 
-
-def _build_recent_context_input(*, session: Session, unit_id: int, payload: PayloadEpisode, now_ts: int) -> str:
-    """
-    抽出処理向けに、直近2ターン（User/Persona）を補助文脈として付与した入力を作る。
-
-    目的は指示語/省略の解決であり、会話全体は送らない。
-    """
-    parts: list[str] = []
-    # まず対象エピソードの本文を先頭に置く。
-    main_text = "\n".join(filter(None, [payload.input_text, payload.reply_text, payload.image_summary]))
-    if main_text.strip():
-        parts.append(main_text.strip())
-
-    # 直近2ターン分の補助文脈を集める（対象unitは除外）。
-    rows = (
-        session.query(Unit, PayloadEpisode)
-        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.EPISODE),
-            Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= int(Sensitivity.SECRET),
-            Unit.id != unit_id,
+        # --- 実行完了（観測用） ---
+        logger.info(
+            "job done kind=%s job_id=%s",
+            kind,
+            int(job_id),
+            extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
         )
-        .order_by(Unit.occurred_at.desc().nulls_last(), Unit.id.desc())
-        .limit(2)
-        .all()
-    )
-    if rows:
-        lines: list[str] = []
-        for _u, pe in rows:
-            ut = (pe.input_text or "").strip().replace("\n", " ")
-            rt = (pe.reply_text or "").strip().replace("\n", " ")
-            if ut:
-                lines.append(f"User: {ut}")
-            if rt:
-                lines.append(f"Persona: {rt}")
-        if lines:
-            parts.append("（参考: 直近の会話）")
-            parts.extend(lines)
-
-    return "\n".join([p for p in parts if p]).strip()
+    except Exception as exc:  # noqa: BLE001
+        # --- 失敗を書き戻す ---
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            job2 = db.query(Job).filter(Job.id == int(job_id)).one_or_none()
+            if job2 is None:
+                return
+            job2.status = int(_JOB_FAILED)
+            job2.updated_at = int(now_ts)
+            job2.tries = int(job2.tries or 0) + 1
+            job2.last_error = str(exc)
+            db.add(job2)
+        logger.warning("job failed kind=%s job_id=%s error=%s", kind, int(job_id), str(exc))
 
 
-def _handle_upsert_embeddings(
-    *, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int
+def _handle_upsert_event_embedding(
+    *,
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    llm_client: LlmClient,
+    payload: dict[str, Any],
 ) -> None:
-    unit_id = int(payload["unit_id"])
-    unit = session.query(Unit).filter(Unit.id == unit_id).one_or_none()
-    if unit is None:
+    """events の埋め込みを生成し vec_items へ upsert する。"""
+
+    # --- payload を読む ---
+    event_id = int(payload.get("event_id") or 0)
+    if event_id <= 0:
+        raise RuntimeError("payload.event_id is required")
+
+    # --- event を読む ---
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        ev = db.query(Event).filter(Event.event_id == int(event_id)).one_or_none()
+        if ev is None:
+            return
+        text_in = _build_event_embedding_text(ev)
+        rank_at = int(ev.created_at)
+
+    if not text_in:
         return
 
-    text_to_embed = ""
-    if unit.kind == int(UnitKind.EPISODE):
-        pe = session.query(PayloadEpisode).filter(PayloadEpisode.unit_id == unit_id).one_or_none()
-        if pe is None:
-            return
-        text_to_embed = "\n".join(filter(None, [pe.input_text, pe.reply_text, pe.image_summary]))
-    elif unit.kind == int(UnitKind.FACT):
-        pf = session.query(PayloadFact).filter(PayloadFact.unit_id == unit_id).one_or_none()
-        if pf is None:
-            return
-        subject_name = None
-        object_name = None
-        if pf.subject_entity_id is not None:
-            ent = session.query(Entity).filter(Entity.id == int(pf.subject_entity_id)).one_or_none()
-            if ent is not None:
-                subject_name = (ent.name or "").strip() or None
-        if pf.object_entity_id is not None:
-            ent = session.query(Entity).filter(Entity.id == int(pf.object_entity_id)).one_or_none()
-            if ent is not None:
-                object_name = (ent.name or "").strip() or None
-        subject = subject_name or (str(pf.subject_entity_id) if pf.subject_entity_id is not None else None)
-        obj = object_name or (pf.object_text or "").strip() or None
-        predicate = (pf.predicate or "").strip()
-        # FACTは構造化のまま埋め込み、述語の意味を変形しない。
-        parts: list[str] = []
-        if subject:
-            parts.append(f"subject={subject}")
-        if predicate:
-            parts.append(f"predicate={predicate}")
-        if obj:
-            parts.append(f"object={obj}")
-        text_to_embed = " ".join(parts) if parts else ""
-    elif unit.kind == int(UnitKind.LOOP):
-        pl = session.query(PayloadLoop).filter(PayloadLoop.unit_id == unit_id).one_or_none()
-        if pl is None:
-            return
-        text_to_embed = pl.loop_text
-    elif unit.kind == int(UnitKind.SUMMARY):
-        ps = session.query(PayloadSummary).filter(PayloadSummary.unit_id == unit_id).one_or_none()
-        if ps is None:
-            return
-        text_to_embed = ps.summary_text
-    else:
-        return
+    # --- embedding を作る ---
+    emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.ASYNC_EVENT_EMBEDDING)[0]
 
-    embedding = llm_client.generate_embedding([text_to_embed], purpose=LlmRequestPurpose.UNIT_EMBEDDING)[0]
-    upsert_unit_vector(
-        session,
-        unit_id=unit_id,
-        embedding=embedding,
-        kind=int(unit.kind),
-        occurred_at=unit.occurred_at,
-        state=int(unit.state),
-        sensitivity=int(unit.sensitivity),
-    )
+    # --- vec_items へ書く（kind+entity_idの衝突を避ける） ---
+    item_id = _vec_item_id(int(_VEC_KIND_EVENT), int(event_id))
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        upsert_vec_item(
+            db,
+            item_id=int(item_id),
+            embedding=emb,
+            kind=int(_VEC_KIND_EVENT),
+            rank_at=int(rank_at),
+            active=1,
+        )
 
 
-def _find_existing_fact_unit_id(
-    session: Session,
+def _handle_generate_write_plan(
     *,
-    subject_entity_id: Optional[int],
-    predicate: str,
-    object_text: Optional[str],
-    object_entity_id: Optional[int],
-) -> Optional[int]:
-    """
-    既存Factの unit_id を探す（同一三つ組のupsert用）。
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    llm_client: LlmClient,
+    payload: dict[str, Any],
+) -> None:
+    """WritePlan を生成し、apply_write_plan ジョブを投入する。"""
 
-    NOTE:
-    - ここでは evidence_unit_id はキーに含めない（別エピソード由来の同一Factは統合する）
-    - predicate は canonical（制御語彙）を想定する
-    """
-    # --- まず object_entity_id で一致するものを探す（Entity化できたFactを優先） ---
-    if object_entity_id is not None:
-        row = session.execute(
-            text(
-                """
-                SELECT pf.unit_id
-                FROM payload_fact pf
-                JOIN units u ON u.id = pf.unit_id
-                WHERE u.kind = :kind
-                  AND pf.subject_entity_id IS :subject_entity_id
-                  AND pf.predicate = :predicate
-                  AND pf.object_entity_id = :object_entity_id
-                LIMIT 1
-                """
-            ),
-            {
-                "kind": int(UnitKind.FACT),
-                "subject_entity_id": subject_entity_id,
-                "predicate": predicate,
-                "object_entity_id": int(object_entity_id),
-            },
-        ).fetchone()
-        if row is not None:
-            return int(row[0])
+    # --- payload を読む ---
+    event_id = int(payload.get("event_id") or 0)
+    if event_id <= 0:
+        raise RuntimeError("payload.event_id is required")
 
-    # --- フォールバック: object_entity_id が未設定のFactは object_text で一致 ---
-    row = session.execute(
-        text(
-            """
-            SELECT pf.unit_id
-            FROM payload_fact pf
-            JOIN units u ON u.id = pf.unit_id
-            WHERE u.kind = :kind
-              AND pf.subject_entity_id IS :subject_entity_id
-              AND pf.predicate = :predicate
-              AND pf.object_entity_id IS NULL
-              AND pf.object_text IS :object_text
-            LIMIT 1
-            """
-        ),
-        {
-            "kind": int(UnitKind.FACT),
-            "subject_entity_id": subject_entity_id,
-            "predicate": predicate,
-            "object_text": object_text,
-        },
-    ).fetchone()
-    return int(row[0]) if row is not None else None
+    # --- event + 周辺コンテキストを集める（過剰に重くしない） ---
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        ev = db.query(Event).filter(Event.event_id == int(event_id)).one_or_none()
+        if ev is None:
+            return
 
+        event_snapshot = {
+            "event_id": int(ev.event_id),
+            "created_at": format_iso8601_local(int(ev.created_at)),
+            "source": str(ev.source),
+            "client_id": (str(ev.client_id) if ev.client_id is not None else None),
+            "user_text": str(ev.user_text or ""),
+            "assistant_text": str(ev.assistant_text or ""),
+        }
 
-def _handle_extract_facts(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    unit_id = int(payload["unit_id"])
-    row = (
-        session.query(Unit, PayloadEpisode)
-        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(Unit.id == unit_id, Unit.kind == int(UnitKind.EPISODE))
-        .one_or_none()
-    )
-    if row is None:
-        return
-    src_unit, pe = row
-    text_in = _build_recent_context_input(session=session, unit_id=unit_id, payload=pe, now_ts=now_ts)
-    if not text_in.strip():
-        return
+        # --- 直近の出来事（同一client優先） ---
+        recent_events_q = db.query(Event).order_by(Event.event_id.desc())
+        if ev.client_id is not None and str(ev.client_id).strip():
+            recent_events_q = recent_events_q.filter(Event.client_id == str(ev.client_id))
+        recent_events = recent_events_q.limit(12).all()
 
-    resp = llm_client.generate_json_response(
-        system_prompt=prompts.get_fact_extract_prompt(),
-        input_text=text_in,
-        purpose=LlmRequestPurpose.FACT_EXTRACT,
-    )
-    # LLMのJSON応答をdictに正規化する。
-    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
-    if data is None:
-        return
-    facts = data.get("facts") or []
-    if not isinstance(facts, list):
-        return
-
-    def _merge_evidence_unit_id(*, pf: PayloadFact, evidence_unit_id: int) -> bool:
-        """
-        evidence_unit_ids_json に根拠episodeの unit_id を追記する（集合として扱う）。
-
-        変更があった場合は True を返す。
-        """
-        try:
-            loaded = json.loads(pf.evidence_unit_ids_json or "[]")
-        except Exception:  # noqa: BLE001
-            loaded = []
-        ids = loaded if isinstance(loaded, list) else []
-        seen: set[int] = set()
-        merged: list[int] = []
-        for x in ids:
-            try:
-                xi = int(x)
-            except Exception:  # noqa: BLE001
-                continue
-            if xi in seen:
-                continue
-            seen.add(xi)
-            merged.append(xi)
-        ev = int(evidence_unit_id)
-        if ev not in seen:
-            merged.append(ev)
-            pf.evidence_unit_ids_json = _json_dumps(merged)
-            return True
-        return False
-
-    def _close_exclusive_conflicts(
-        *,
-        subject_entity_id: Optional[int],
-        predicate: str,
-        keep_unit_id: Optional[int],
-        close_ts: int,
-    ) -> None:
-        """
-        exclusive predicate の競合Factを valid_to で閉じる。
-
-        - keep_unit_id（採用するFact）は閉じない
-        - pin はユーザー意思として優先し、閉じない
-        """
-        rows = (
-            session.query(Unit, PayloadFact)
-            .join(PayloadFact, PayloadFact.unit_id == Unit.id)
-            .filter(
-                Unit.kind == int(UnitKind.FACT),
-                PayloadFact.subject_entity_id.is_(subject_entity_id),
-                PayloadFact.predicate == str(predicate),
-                Unit.pin == 0,
-                (PayloadFact.valid_to.is_(None) | (PayloadFact.valid_to > int(close_ts))),
-            )
-            .order_by(Unit.id.desc())
+        # --- 直近の状態 ---
+        recent_states = (
+            db.query(State)
+            .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+            .limit(24)
             .all()
         )
-        for u0, pf0 in rows:
-            if keep_unit_id is not None and int(u0.id) == int(keep_unit_id):
-                continue
-            # すでに十分古く閉じられている場合は触らない。
-            if pf0.valid_to is not None and int(pf0.valid_to) <= int(close_ts):
-                continue
-            # 範囲が逆転する閉じ方はしない（データを壊さない）。
-            if pf0.valid_from is not None and int(pf0.valid_from) >= int(close_ts):
-                continue
-            pf0.valid_to = int(close_ts)
-            u0.updated_at = int(now_ts)
-            session.add(u0)
-            session.add(pf0)
-            record_unit_version(
-                session,
-                unit_id=int(u0.id),
-                payload_obj={
-                    "subject_entity_id": pf0.subject_entity_id,
-                    "predicate": pf0.predicate,
-                    "object_text": pf0.object_text,
-                    "object_entity_id": pf0.object_entity_id,
-                    "valid_from": pf0.valid_from,
-                    "valid_to": pf0.valid_to,
-                    "evidence_unit_ids": json.loads(pf0.evidence_unit_ids_json or "[]"),
-                },
-                patch_reason="extract_facts_close_exclusive",
-                now_ts=int(now_ts),
+
+        recent_event_snapshots = [
+            {
+                "event_id": int(x.event_id),
+                "created_at": format_iso8601_local(int(x.created_at)),
+                "source": str(x.source),
+                "user_text": str(x.user_text or "")[:600],
+                "assistant_text": str(x.assistant_text or "")[:600],
+            }
+            for x in recent_events
+        ]
+        recent_state_snapshots = [
+            {
+                "state_id": int(s.state_id),
+                "kind": str(s.kind),
+                "body_text": str(s.body_text)[:600],
+                "payload_json": str(s.payload_json)[:800],
+                "last_confirmed_at": format_iso8601_local(int(s.last_confirmed_at)),
+                # NOTE: DBはUNIX秒だが、LLMにはISOで渡す。
+                "valid_from_ts": (
+                    format_iso8601_local(int(s.valid_from_ts))
+                    if s.valid_from_ts is not None and int(s.valid_from_ts) > 0
+                    else None
+                ),
+                "valid_to_ts": (
+                    format_iso8601_local(int(s.valid_to_ts))
+                    if s.valid_to_ts is not None and int(s.valid_to_ts) > 0
+                    else None
+                ),
+            }
+            for s in recent_states
+        ]
+
+    input_obj: dict[str, Any] = {
+        "event": event_snapshot,
+        "recent_events": recent_event_snapshots,
+        "recent_states": recent_state_snapshots,
+    }
+
+    # --- LLMでWritePlanを作る ---
+    resp = llm_client.generate_json_response(
+        system_prompt=_write_plan_system_prompt(),
+        input_text=_json_dumps(input_obj),
+        purpose=LlmRequestPurpose.ASYNC_WRITE_PLAN,
+        max_tokens=2400,
+    )
+    content = ""
+    try:
+        content = str(resp["choices"][0]["message"]["content"] or "")
+    except Exception:  # noqa: BLE001
+        try:
+            content = str(resp.choices[0].message.content or "")
+        except Exception:  # noqa: BLE001
+            content = ""
+    plan_obj = _parse_first_json_object(content)
+
+    # --- apply_write_plan を投入する（planはpayloadに入れて監査できるようにする） ---
+    now_ts = _now_utc_ts()
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        db.add(
+            Job(
+                kind="apply_write_plan",
+                payload_json=_json_dumps({"event_id": int(event_id), "write_plan": plan_obj}),
+                status=int(_JOB_PENDING),
+                run_after=int(now_ts),
+                tries=0,
+                last_error=None,
+                created_at=int(now_ts),
+                updated_at=int(now_ts),
             )
+        )
 
-    for f in facts:
-        if not isinstance(f, dict):
-            continue
-        predicate_raw = str(f.get("predicate") or "").strip()
-        predicate = canonicalize_fact_predicate(predicate_raw)
-        # 制御語彙に無いpredicateは採用しない（プロンプト逸脱・ノイズを遮断する）。
-        if predicate is None:
-            continue
-        obj_text_raw = f.get("object_text")
-        obj_text = normalize_object_text_for_key(str(obj_text_raw) if obj_text_raw is not None else None)
-        confidence = _parse_clamped01(f.get("confidence"), 0.0)
 
-        validity = f.get("validity")
-        valid_from = None
-        valid_to = None
-        if isinstance(validity, dict):
-            valid_from = _parse_optional_epoch_seconds(validity.get("from"))
-            valid_to = _parse_optional_epoch_seconds(validity.get("to"))
+def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: int, payload: dict[str, Any]) -> None:
+    """WritePlan を適用し、状態/感情/文脈グラフを更新する。"""
 
-        subject_entity_id: Optional[int] = None
-        subj = f.get("subject")
-        subj_name = "USER"
-        subj_etype_raw = "PERSON"
-        if isinstance(subj, dict):
-            subj_name = str(subj.get("name") or "").strip() or "USER"
-            subj_etype_raw = _normalize_type_label(str(subj.get("type_label") or "").strip() or None) or "PERSON"
+    # --- payload を読む ---
+    event_id = int(payload.get("event_id") or 0)
+    plan = payload.get("write_plan")
+    if event_id <= 0:
+        raise RuntimeError("payload.event_id is required")
+    if not isinstance(plan, dict):
+        raise RuntimeError("payload.write_plan is required")
 
-        # "USER" は「この会話で直接やりとりしている相手」を表す予約語。
-        if subj_name.strip().upper() == "USER":
-            user_ent = _get_or_create_entity(
-                session,
-                name="USER",
-                type_label="PERSON",
-                roles=["person"],
-                aliases=["USER"],
-                now_ts=now_ts,
-            )
-            subject_entity_id = int(user_ent.id)
-        else:
-            ent = _get_or_create_entity(
-                session,
-                name=subj_name,
-                type_label=subj_etype_raw,
-                roles=_normalize_roles([], type_label=subj_etype_raw),
-                aliases=[],
-                now_ts=now_ts,
-            )
-            subject_entity_id = int(ent.id)
+    now_ts = _now_utc_ts()
 
-        # 目的語が固有名として扱える場合は Entity化して object_entity_id を埋める（ベストエフォート）
-        object_entity_id: Optional[int] = None
-        obj = f.get("object")
-        if isinstance(obj, dict):
-            obj_name = str(obj.get("name") or "").strip()
-            obj_type_label = _normalize_type_label(str(obj.get("type_label") or "").strip() or None) or "OTHER"
-            if obj_name:
-                obj_ent = _get_or_create_entity(
-                    session,
-                    name=obj_name,
-                    type_label=obj_type_label,
-                    roles=_normalize_roles([], type_label=obj_type_label),
-                    aliases=[],
-                    now_ts=now_ts,
+    # --- まとめて1トランザクションで適用する（途中失敗で半端に残さない） ---
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        ev = db.query(Event).filter(Event.event_id == int(event_id)).one_or_none()
+        if ev is None:
+            return
+        base_ts = int(ev.created_at)
+
+        # --- events 注釈更新（about_time/entities） ---
+        ann = plan.get("event_annotations") if isinstance(plan, dict) else None
+        if isinstance(ann, dict):
+            # NOTE: LLMはISO文字列を返す可能性があるため、ここでUNIX秒へ正規化する。
+            a0 = ann.get("about_start_ts")
+            a1 = ann.get("about_end_ts")
+            a0_i = int(a0) if isinstance(a0, (int, float)) and int(a0) > 0 else parse_iso8601_to_utc_ts(str(a0) if a0 is not None else None)
+            a1_i = int(a1) if isinstance(a1, (int, float)) and int(a1) > 0 else parse_iso8601_to_utc_ts(str(a1) if a1 is not None else None)
+            ev.about_start_ts = int(a0_i) if a0_i is not None and int(a0_i) > 0 else None
+            ev.about_end_ts = int(a1_i) if a1_i is not None and int(a1_i) > 0 else None
+
+            y0 = ann.get("about_year_start")
+            y1 = ann.get("about_year_end")
+            ev.about_year_start = int(y0) if isinstance(y0, (int, float)) and int(y0) > 0 else None
+            ev.about_year_end = int(y1) if isinstance(y1, (int, float)) and int(y1) > 0 else None
+            life_stage = ann.get("life_stage")
+            ev.life_stage = (str(life_stage) if life_stage is not None else None)
+            ev.about_time_confidence = float(ann.get("about_time_confidence") or 0.0)
+            entities = ann.get("entities") if isinstance(ann.get("entities"), list) else []
+            ev.entities_json = _json_dumps(entities)
+        ev.updated_at = int(now_ts)
+        db.add(ev)
+
+        # --- revisions を追加するヘルパ ---
+        def add_revision(*, entity_type: str, entity_id: int, before: Any, after: Any, reason: str, evidence_event_ids: list[int]) -> None:
+            db.add(
+                Revision(
+                    entity_type=str(entity_type),
+                    entity_id=int(entity_id),
+                    before_json=(_json_dumps(before) if before is not None else None),
+                    after_json=(_json_dumps(after) if after is not None else None),
+                    reason=str(reason or "").strip() or "(no reason)",
+                    evidence_event_ids_json=_json_dumps([int(x) for x in evidence_event_ids if int(x) > 0]),
+                    created_at=int(now_ts),
                 )
-                object_entity_id = int(obj_ent.id)
-                if not obj_text:
-                    obj_text = normalize_object_text_for_key(obj_name)
+            )
 
-        # event（例: first_met_at）は「最初だけ」残せばよいので、既存があるなら新規作成しない。
-        # （正確な最古判定は注入側でも行うため、ここはDB増殖抑止を優先）
-        if is_event_predicate(predicate):
-            existing_event = (
-                session.query(PayloadFact.unit_id)
-                .join(Unit, Unit.id == PayloadFact.unit_id)
-                .filter(
-                    Unit.kind == int(UnitKind.FACT),
-                    PayloadFact.subject_entity_id.is_(subject_entity_id),
-                    PayloadFact.predicate == str(predicate),
+        # --- event_affect（瞬間的な感情/内心） ---
+        ea = plan.get("event_affect") if isinstance(plan, dict) else None
+        if isinstance(ea, dict):
+            moment_text = str(ea.get("moment_affect_text") or "").strip()
+            if moment_text:
+                score = ea.get("moment_affect_score_vad") if isinstance(ea.get("moment_affect_score_vad"), dict) else {}
+                conf = float(ea.get("moment_affect_confidence") or 0.0)
+                inner = ea.get("inner_thought_text")
+                inner_text = str(inner).strip() if inner is not None and str(inner).strip() else None
+
+                # NOTE: 1 event につき1件として扱い、既存があれば更新する（重複を避ける）
+                existing = (
+                    db.query(EventAffect)
+                    .filter(EventAffect.event_id == int(event_id))
+                    .order_by(EventAffect.id.desc())
+                    .first()
                 )
-                .order_by(Unit.id.asc())
-                .limit(1)
+                if existing is None:
+                    aff = EventAffect(
+                        event_id=int(event_id),
+                        created_at=int(base_ts),
+                        moment_affect_text=str(moment_text),
+                        moment_affect_labels_json="[]",
+                        inner_thought_text=inner_text,
+                        vad_v=_clamp_vad(score.get("v")),
+                        vad_a=_clamp_vad(score.get("a")),
+                        vad_d=_clamp_vad(score.get("d")),
+                        confidence=float(conf),
+                    )
+                    db.add(aff)
+                    db.flush()
+                    add_revision(
+                        entity_type="event_affects",
+                        entity_id=int(aff.id),
+                        before=None,
+                        after=_affect_row_to_json(aff),
+                        reason="event_affect を保存した",
+                        evidence_event_ids=[int(event_id)],
+                    )
+                    affect_id = int(aff.id)
+                else:
+                    before = _affect_row_to_json(existing)
+                    existing.moment_affect_text = str(moment_text)
+                    existing.inner_thought_text = inner_text
+                    existing.vad_v = _clamp_vad(score.get("v"))
+                    existing.vad_a = _clamp_vad(score.get("a"))
+                    existing.vad_d = _clamp_vad(score.get("d"))
+                    existing.confidence = float(conf)
+                    db.add(existing)
+                    db.flush()
+                    add_revision(
+                        entity_type="event_affects",
+                        entity_id=int(existing.id),
+                        before=before,
+                        after=_affect_row_to_json(existing),
+                        reason="event_affect を更新した",
+                        evidence_event_ids=[int(event_id)],
+                    )
+                    affect_id = int(existing.id)
+
+                # --- event_affect embedding job ---
+                db.add(
+                    Job(
+                        kind="upsert_event_affect_embedding",
+                        payload_json=_json_dumps({"affect_id": int(affect_id)}),
+                        status=int(_JOB_PENDING),
+                        run_after=int(now_ts),
+                        tries=0,
+                        last_error=None,
+                        created_at=int(now_ts),
+                        updated_at=int(now_ts),
+                    )
+                )
+
+        # --- 文脈グラフ（threads/links） ---
+        cu = plan.get("context_updates") if isinstance(plan, dict) else None
+        if isinstance(cu, dict):
+            threads = cu.get("threads") if isinstance(cu.get("threads"), list) else []
+            links = cu.get("links") if isinstance(cu.get("links"), list) else []
+
+            # --- threads ---
+            for t in threads:
+                if not isinstance(t, dict):
+                    continue
+                thread_key = str(t.get("thread_key") or "").strip()
+                if not thread_key:
+                    continue
+                confidence = float(t.get("confidence") or 0.0)
+
+                existing = (
+                    db.query(EventThread)
+                    .filter(EventThread.event_id == int(event_id))
+                    .filter(EventThread.thread_key == str(thread_key))
+                    .one_or_none()
+                )
+                if existing is None:
+                    th = EventThread(
+                        event_id=int(event_id),
+                        thread_key=str(thread_key),
+                        confidence=float(confidence),
+                        evidence_event_ids_json=_json_dumps([int(event_id)]),
+                        created_at=int(now_ts),
+                    )
+                    db.add(th)
+                    db.flush()
+                    add_revision(
+                        entity_type="event_threads",
+                        entity_id=int(th.id),
+                        before=None,
+                        after=_thread_row_to_json(th),
+                        reason="文脈スレッドを付与した",
+                        evidence_event_ids=[int(event_id)],
+                    )
+                else:
+                    before = _thread_row_to_json(existing)
+                    existing.confidence = float(confidence)
+                    existing.evidence_event_ids_json = _json_dumps([int(event_id)])
+                    db.add(existing)
+                    db.flush()
+                    add_revision(
+                        entity_type="event_threads",
+                        entity_id=int(existing.id),
+                        before=before,
+                        after=_thread_row_to_json(existing),
+                        reason="文脈スレッドの信頼度を更新した",
+                        evidence_event_ids=[int(event_id)],
+                    )
+
+            # --- links ---
+            for l in links:
+                if not isinstance(l, dict):
+                    continue
+                to_event_id = int(l.get("to_event_id") or 0)
+                label = str(l.get("label") or "").strip()
+                if to_event_id <= 0 or not label:
+                    continue
+                confidence = float(l.get("confidence") or 0.0)
+
+                existing = (
+                    db.query(EventLink)
+                    .filter(EventLink.from_event_id == int(event_id))
+                    .filter(EventLink.to_event_id == int(to_event_id))
+                    .filter(EventLink.label == str(label))
+                    .one_or_none()
+                )
+                if existing is None:
+                    link = EventLink(
+                        from_event_id=int(event_id),
+                        to_event_id=int(to_event_id),
+                        label=str(label),
+                        confidence=float(confidence),
+                        evidence_event_ids_json=_json_dumps([int(event_id)]),
+                        created_at=int(now_ts),
+                    )
+                    db.add(link)
+                    db.flush()
+                    add_revision(
+                        entity_type="event_links",
+                        entity_id=int(link.id),
+                        before=None,
+                        after=_link_row_to_json(link),
+                        reason="文脈リンクを追加した",
+                        evidence_event_ids=[int(event_id)],
+                    )
+                else:
+                    before = _link_row_to_json(existing)
+                    existing.confidence = float(confidence)
+                    existing.evidence_event_ids_json = _json_dumps([int(event_id)])
+                    db.add(existing)
+                    db.flush()
+                    add_revision(
+                        entity_type="event_links",
+                        entity_id=int(existing.id),
+                        before=before,
+                        after=_link_row_to_json(existing),
+                        reason="文脈リンクの信頼度を更新した",
+                        evidence_event_ids=[int(event_id)],
+                    )
+
+        # --- state 更新 ---
+        su = plan.get("state_updates") if isinstance(plan, dict) else None
+        if isinstance(su, list):
+            for u in su:
+                if not isinstance(u, dict):
+                    continue
+
+                op = str(u.get("op") or "").strip()
+                kind = str(u.get("kind") or "").strip()
+                reason = str(u.get("reason") or "").strip() or "(no reason)"
+                evidence = u.get("evidence_event_ids") if isinstance(u.get("evidence_event_ids"), list) else [int(event_id)]
+                evidence_ids = [int(x) for x in evidence if int(x) > 0]
+                if int(event_id) not in evidence_ids:
+                    evidence_ids.append(int(event_id))
+
+                state_id = u.get("state_id")
+                state_id_i = int(state_id) if isinstance(state_id, (int, float)) and int(state_id) > 0 else None
+
+                # --- last_confirmed_at は event 時刻を正とする（LLMが時刻を作ると破綻しやすい） ---
+                # NOTE: 会話の時系列と最近性（検索順位）を壊さないため、常に base_ts を使う。
+                last_confirmed_at_i = int(base_ts)
+
+                valid_from_ts = u.get("valid_from_ts")
+                valid_to_ts = u.get("valid_to_ts")
+                # NOTE: LLMはISO文字列を返す可能性があるため、ここでUNIX秒へ正規化する。
+                v_from = (
+                    int(valid_from_ts)
+                    if isinstance(valid_from_ts, (int, float)) and int(valid_from_ts) > 0
+                    else parse_iso8601_to_utc_ts(str(valid_from_ts) if valid_from_ts is not None else None)
+                )
+                v_to = (
+                    int(valid_to_ts)
+                    if isinstance(valid_to_ts, (int, float)) and int(valid_to_ts) > 0
+                    else parse_iso8601_to_utc_ts(str(valid_to_ts) if valid_to_ts is not None else None)
+                )
+
+                confidence = float(u.get("confidence") or 0.0)
+                salience = float(u.get("salience") or 0.0)
+                body_text = str(u.get("body_text") or "").strip()
+                payload_obj = u.get("payload") if isinstance(u.get("payload"), dict) else {}
+
+                # --- kind/op の最低限チェック ---
+                if not op or not kind:
+                    continue
+
+                # --- close/mark_done は state_id 必須 ---
+                if op in ("close", "mark_done") and state_id_i is None:
+                    continue
+
+                if op == "upsert":
+                    # --- 既存を更新するか、新規を作る ---
+                    existing = db.query(State).filter(State.state_id == int(state_id_i)).one_or_none() if state_id_i else None
+
+                    # --- long_mood_state は「単一更新」で育てる ---
+                    # NOTE:
+                    # - long_mood_state は「背景」として扱い、複数を並存させない（増殖させない）
+                    # - 整理（tidy_memory）では long_mood_state を触らない前提なので、ここで増殖を防ぐ
+                    if str(kind) == "long_mood_state":
+                        if existing is not None and str(existing.kind) != "long_mood_state":
+                            existing = None
+
+                        if existing is None:
+                            existing = (
+                                db.query(State)
+                                .filter(State.kind == "long_mood_state")
+                                .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+                                .first()
+                            )
+
+                    if existing is None:
+                        if not body_text:
+                            body_text = _json_dumps(payload_obj)[:2000]
+                        st = State(
+                            kind=str(kind),
+                            body_text=str(body_text),
+                            payload_json=_json_dumps(payload_obj),
+                            last_confirmed_at=int(last_confirmed_at_i),
+                            confidence=float(confidence),
+                            salience=float(salience),
+                            valid_from_ts=v_from,
+                            valid_to_ts=v_to,
+                            created_at=int(base_ts),
+                            updated_at=int(now_ts),
+                        )
+                        db.add(st)
+                        db.flush()
+                        add_revision(
+                            entity_type="state",
+                            entity_id=int(st.state_id),
+                            before=None,
+                            after=_state_row_to_json(st),
+                            reason=str(reason),
+                            evidence_event_ids=evidence_ids,
+                        )
+                        changed_state_id = int(st.state_id)
+                    else:
+                        before = _state_row_to_json(existing)
+                        existing.kind = str(kind)
+                        if body_text:
+                            existing.body_text = str(body_text)
+                        existing.payload_json = _json_dumps(payload_obj)
+                        existing.last_confirmed_at = int(last_confirmed_at_i)
+                        existing.confidence = float(confidence)
+                        existing.salience = float(salience)
+                        existing.valid_from_ts = v_from
+                        existing.valid_to_ts = v_to
+                        existing.updated_at = int(now_ts)
+                        db.add(existing)
+                        db.flush()
+                        add_revision(
+                            entity_type="state",
+                            entity_id=int(existing.state_id),
+                            before=before,
+                            after=_state_row_to_json(existing),
+                            reason=str(reason),
+                            evidence_event_ids=evidence_ids,
+                        )
+                        changed_state_id = int(existing.state_id)
+
+                    # --- state embedding job ---
+                    db.add(
+                        Job(
+                            kind="upsert_state_embedding",
+                            payload_json=_json_dumps({"state_id": int(changed_state_id)}),
+                            status=int(_JOB_PENDING),
+                            run_after=int(now_ts),
+                            tries=0,
+                            last_error=None,
+                            created_at=int(now_ts),
+                            updated_at=int(now_ts),
+                        )
+                    )
+
+                elif op == "close":
+                    st = db.query(State).filter(State.state_id == int(state_id_i)).one_or_none()
+                    if st is None:
+                        continue
+                    before = _state_row_to_json(st)
+                    # NOTE: valid_to が無い場合は event の about_end → 無ければ event時刻
+                    st.valid_to_ts = v_to if v_to is not None else (int(ev.about_end_ts) if ev.about_end_ts is not None else int(base_ts))
+                    st.last_confirmed_at = int(last_confirmed_at_i)
+                    st.updated_at = int(now_ts)
+                    db.add(st)
+                    db.flush()
+                    add_revision(
+                        entity_type="state",
+                        entity_id=int(st.state_id),
+                        before=before,
+                        after=_state_row_to_json(st),
+                        reason=str(reason),
+                        evidence_event_ids=evidence_ids,
+                    )
+                    db.add(
+                        Job(
+                            kind="upsert_state_embedding",
+                            payload_json=_json_dumps({"state_id": int(st.state_id)}),
+                            status=int(_JOB_PENDING),
+                            run_after=int(now_ts),
+                            tries=0,
+                            last_error=None,
+                            created_at=int(now_ts),
+                            updated_at=int(now_ts),
+                        )
+                    )
+
+                elif op == "mark_done":
+                    st = db.query(State).filter(State.state_id == int(state_id_i)).one_or_none()
+                    if st is None:
+                        continue
+                    before = _state_row_to_json(st)
+                    # --- payload の status を done にする ---
+                    pj = _json_loads_maybe(st.payload_json)
+                    pj["status"] = "done"
+                    st.payload_json = _json_dumps(pj)
+                    st.last_confirmed_at = int(last_confirmed_at_i)
+                    st.updated_at = int(now_ts)
+                    db.add(st)
+                    db.flush()
+                    add_revision(
+                        entity_type="state",
+                        entity_id=int(st.state_id),
+                        before=before,
+                        after=_state_row_to_json(st),
+                        reason=str(reason),
+                        evidence_event_ids=evidence_ids,
+                    )
+                    db.add(
+                        Job(
+                            kind="upsert_state_embedding",
+                            payload_json=_json_dumps({"state_id": int(st.state_id)}),
+                            status=int(_JOB_PENDING),
+                            run_after=int(now_ts),
+                            tries=0,
+                            last_error=None,
+                            created_at=int(now_ts),
+                            updated_at=int(now_ts),
+                        )
+                    )
+
+        # --- Nターンごとの整理ジョブ（chatターン回数ベース） ---
+        # NOTE:
+        # - 併用はしない（定期/閾値は採用しない）
+        # - pending/running がある場合は二重投入しない
+        if not _has_pending_or_running_job(db, kind="tidy_memory"):
+            last_watermark_event_id = _last_tidy_watermark_event_id(db)
+            interval_turns = (
+                int(_TIDY_CHAT_TURNS_INTERVAL_FIRST)
+                if int(last_watermark_event_id) <= 0
+                else int(_TIDY_CHAT_TURNS_INTERVAL)
+            )
+            chat_turns_since = (
+                db.query(func.count(Event.event_id))
+                .filter(Event.source == "chat")
+                .filter(Event.event_id > int(last_watermark_event_id))
                 .scalar()
             )
-            if existing_event is not None:
-                pf = session.query(PayloadFact).filter(PayloadFact.unit_id == int(existing_event)).one_or_none()
-                if pf is not None and _merge_evidence_unit_id(pf=pf, evidence_unit_id=unit_id):
-                    u = session.query(Unit).filter(Unit.id == int(existing_event)).one_or_none()
-                    if u is not None:
-                        u.updated_at = int(now_ts)
-                        session.add(u)
-                        session.add(pf)
-                        record_unit_version(
-                            session,
-                            unit_id=int(existing_event),
-                            payload_obj={
-                                "subject_entity_id": pf.subject_entity_id,
-                                "predicate": pf.predicate,
-                                "object_text": pf.object_text,
-                                "object_entity_id": pf.object_entity_id,
-                                "valid_from": pf.valid_from,
-                                "valid_to": pf.valid_to,
-                                "evidence_unit_ids": json.loads(pf.evidence_unit_ids_json or "[]"),
-                            },
-                            patch_reason="extract_facts_event_merge_evidence",
-                            now_ts=int(now_ts),
-                        )
-                continue
-
-        existing_fact_unit_id = _find_existing_fact_unit_id(
-            session,
-            subject_entity_id=subject_entity_id,
-            predicate=str(predicate),
-            object_text=obj_text,
-            object_entity_id=object_entity_id,
-        )
-        if existing_fact_unit_id is not None:
-            existing = (
-                session.query(Unit, PayloadFact)
-                .join(PayloadFact, PayloadFact.unit_id == Unit.id)
-                .filter(Unit.id == int(existing_fact_unit_id), Unit.kind == int(UnitKind.FACT))
-                .one_or_none()
-            )
-            if existing is None:
-                continue
-            fact_unit, pf = existing
-            changed = False
-            # evidenceは別エピソードでも統合する（同一Factの増殖を止める）。
-            if _merge_evidence_unit_id(pf=pf, evidence_unit_id=unit_id):
-                changed = True
-            # predicateは正規形で保存する（プロンプト逸脱対策）。
-            if pf.predicate != str(predicate):
-                pf.predicate = str(predicate)
-                changed = True
-            if valid_from is not None and pf.valid_from != valid_from:
-                pf.valid_from = valid_from
-                changed = True
-            if valid_to is not None and pf.valid_to != valid_to:
-                pf.valid_to = valid_to
-                changed = True
-            if object_entity_id is not None and pf.object_entity_id != object_entity_id:
-                pf.object_entity_id = int(object_entity_id)
-                changed = True
-            if obj_text and (pf.object_text is None or not str(pf.object_text).strip()):
-                pf.object_text = obj_text
-                changed = True
-            if confidence and float(fact_unit.confidence or 0.0) != float(confidence):
-                fact_unit.confidence = float(confidence)
-                changed = True
-            if changed:
-                fact_unit.updated_at = now_ts
-                session.add(fact_unit)
-                session.add(pf)
-                record_unit_version(
-                    session,
-                    unit_id=int(fact_unit.id),
-                    payload_obj={
-                        "subject_entity_id": pf.subject_entity_id,
-                        "predicate": pf.predicate,
-                        "object_text": pf.object_text,
-                        "object_entity_id": pf.object_entity_id,
-                        "valid_from": pf.valid_from,
-                        "valid_to": pf.valid_to,
-                        "evidence_unit_ids": json.loads(pf.evidence_unit_ids_json or "[]"),
-                    },
-                    patch_reason="extract_facts_update",
-                    now_ts=now_ts,
+            chat_turns_since_i = int(chat_turns_since or 0)
+            if chat_turns_since_i >= int(interval_turns):
+                max_chat_event_id = (
+                    db.query(func.max(Event.event_id))
+                    .filter(Event.source == "chat")
+                    .scalar()
                 )
-                # exclusiveは「現在状態が1つ」であることが重要なので、競合を閉じる。
-                if is_exclusive_predicate(str(predicate)):
-                    close_ts = effective_fact_ts(
-                        occurred_at=src_unit.occurred_at,
-                        created_at=now_ts,
-                        valid_from=valid_from,
+                watermark_event_id = int(max_chat_event_id or 0)
+                if watermark_event_id > 0:
+                    _enqueue_tidy_memory_job(
+                        db=db,
+                        now_ts=int(now_ts),
+                        run_after=int(now_ts) + 5,
+                        reason="chat_turn_interval",
+                        watermark_event_id=int(watermark_event_id),
                     )
-                    _close_exclusive_conflicts(
-                        subject_entity_id=subject_entity_id,
-                        predicate=str(predicate),
-                        keep_unit_id=int(fact_unit.id),
-                        close_ts=int(close_ts),
-                    )
-            continue
-
-        # exclusiveは新規作成前に競合を閉じる（DB増殖/注入矛盾を抑える）。
-        if is_exclusive_predicate(str(predicate)):
-            close_ts = effective_fact_ts(
-                occurred_at=src_unit.occurred_at,
-                created_at=now_ts,
-                valid_from=valid_from,
-            )
-            _close_exclusive_conflicts(
-                subject_entity_id=subject_entity_id,
-                predicate=str(predicate),
-                keep_unit_id=None,
-                close_ts=int(close_ts),
-            )
-
-        fact_unit = Unit(
-            kind=int(UnitKind.FACT),
-            occurred_at=src_unit.occurred_at,
-            created_at=now_ts,
-            updated_at=now_ts,
-            source="extract_facts",
-            state=int(UnitState.RAW),
-            confidence=confidence,
-            salience=0.0,
-            sensitivity=int(src_unit.sensitivity),
-            pin=0,
-            topic_tags=None,
-            persona_affect_label=None,
-            persona_affect_intensity=None,
-        )
-        session.add(fact_unit)
-        session.flush()
-        fact_payload = {
-            "subject_entity_id": subject_entity_id,
-            "predicate": str(predicate),
-            "object_text": obj_text,
-            "object_entity_id": object_entity_id,
-            "valid_from": valid_from,
-            "valid_to": valid_to,
-            "evidence_unit_ids": [unit_id],
-        }
-        session.add(
-            PayloadFact(
-                unit_id=fact_unit.id,
-                subject_entity_id=subject_entity_id,
-                predicate=str(predicate),
-                object_text=obj_text,
-                object_entity_id=object_entity_id,
-                valid_from=valid_from,
-                valid_to=valid_to,
-                evidence_unit_ids_json=_json_dumps([unit_id]),
-            )
-        )
-        record_unit_version(
-            session,
-            unit_id=int(fact_unit.id),
-            payload_obj=fact_payload,
-            patch_reason="extract_facts",
-            now_ts=now_ts,
-        )
-        session.add(
-            Job(
-                kind="upsert_embeddings",
-                payload_json=_json_dumps({"unit_id": int(fact_unit.id)}),
-                status=int(JobStatus.QUEUED),
-                run_after=now_ts,
-                tries=0,
-                last_error=None,
-                created_at=now_ts,
-                updated_at=now_ts,
-            )
-        )
 
 
-def _loop_exists(session: Session, *, loop_text: str) -> bool:
-    row = (
-        session.query(PayloadLoop.unit_id)
-        .join(Unit, Unit.id == PayloadLoop.unit_id)
-        .filter(Unit.kind == int(UnitKind.LOOP), PayloadLoop.loop_text == loop_text)
-        .limit(1)
-        .scalar()
-    )
-    return row is not None
+def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, payload: dict[str, Any]) -> None:
+    """記憶整理（削除せず、集約/過去化でノイズを減らす）。"""
 
+    now_ts = _now_utc_ts()
+    max_close = int(payload.get("max_close_per_run") or _TIDY_MAX_CLOSE_PER_RUN)
+    max_close = max(1, min(int(max_close), 5000))
 
-def _handle_extract_loops(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    unit_id = int(payload["unit_id"])
-    row = (
-        session.query(Unit, PayloadEpisode)
-        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(Unit.id == unit_id, Unit.kind == int(UnitKind.EPISODE))
-        .one_or_none()
-    )
-    if row is None:
-        return
-    src_unit, pe = row
-    text_in = _build_recent_context_input(session=session, unit_id=unit_id, payload=pe, now_ts=now_ts)
-    if not text_in.strip():
-        return
+    # --- 変更件数（観測用） ---
+    closed_state_ids: list[int] = []
 
-    system_prompt = _wrap_prompt_with_persona(prompts.get_loop_extract_prompt())
-    resp = llm_client.generate_json_response(
-        system_prompt=system_prompt,
-        input_text=text_in,
-        purpose=LlmRequestPurpose.LOOP_EXTRACT,
-    )
-    # LLMのJSON応答をdictに正規化する。
-    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
-    if data is None:
-        return
-    # ループ抽出の出力は open loops のみ（close判断はサーバ側のTTLに寄せる）。
-    loops = data.get("loops") or []
-    if not isinstance(loops, list):
-        loops = []
-
-    for l in loops:
-        if not isinstance(l, dict):
-            continue
-        loop_text = str(l.get("loop_text") or "").strip()
-        if not loop_text:
-            continue
-        expires_at, due_at = _compute_loop_times(due_at=_parse_optional_epoch_seconds(l.get("due_at")), now_ts=now_ts)
-        confidence = _parse_clamped01(l.get("confidence"), 0.0)
-
-        if _loop_exists(session, loop_text=loop_text):
-            existing = (
-                session.query(Unit, PayloadLoop)
-                .join(PayloadLoop, PayloadLoop.unit_id == Unit.id)
-                .filter(
-                    Unit.kind == int(UnitKind.LOOP),
-                    PayloadLoop.loop_text == loop_text,
-                )
-                .order_by(Unit.created_at.desc(), Unit.id.desc())
-                .first()
-            )
-            if existing is not None:
-                unit, pl = existing
-                changed = False
-                if int(pl.expires_at or 0) != int(expires_at):
-                    pl.expires_at = int(expires_at)
-                    changed = True
-                if due_at is not None and pl.due_at != due_at:
-                    pl.due_at = due_at
-                    changed = True
-                if confidence and float(unit.confidence or 0.0) != float(confidence):
-                    unit.confidence = float(confidence)
-                    changed = True
-                if changed:
-                    unit.updated_at = now_ts
-                    session.add(unit)
-                    session.add(pl)
-                    record_unit_version(
-                        session,
-                        unit_id=int(unit.id),
-                        payload_obj={"expires_at": int(pl.expires_at), "due_at": pl.due_at, "loop_text": pl.loop_text},
-                        patch_reason="extract_loops_update",
-                        now_ts=now_ts,
-                    )
-            continue
-
-        pl_unit = Unit(
-            kind=int(UnitKind.LOOP),
-            occurred_at=src_unit.occurred_at,
-            created_at=now_ts,
-            updated_at=now_ts,
-            source="extract_loops",
-            state=int(UnitState.RAW),
-            confidence=float(confidence),
-            salience=0.0,
-            sensitivity=int(src_unit.sensitivity),
-            pin=0,
-            topic_tags=None,
-            persona_affect_label=None,
-            persona_affect_intensity=None,
-        )
-        session.add(pl_unit)
-        session.flush()
-        loop_payload = {
-            "expires_at": int(expires_at),
-            "due_at": due_at,
-            "loop_text": loop_text,
-        }
-        session.add(
-            PayloadLoop(
-                unit_id=pl_unit.id,
-                expires_at=int(expires_at),
-                due_at=due_at,
-                loop_text=loop_text,
-            )
-        )
-        for ue in session.query(UnitEntity).filter(UnitEntity.unit_id == unit_id).all():
-            session.merge(
-                UnitEntity(
-                    unit_id=int(pl_unit.id),
-                    entity_id=int(ue.entity_id),
-                    role=int(ue.role),
-                    weight=float(ue.weight),
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        # --- revisions を追加するヘルパ（整理でも説明責任を残す） ---
+        def add_revision(*, entity_type: str, entity_id: int, before: Any, after: Any, reason: str) -> None:
+            db.add(
+                Revision(
+                    entity_type=str(entity_type),
+                    entity_id=int(entity_id),
+                    before_json=(_json_dumps(before) if before is not None else None),
+                    after_json=(_json_dumps(after) if after is not None else None),
+                    reason=str(reason or "").strip() or "(no reason)",
+                    evidence_event_ids_json="[]",
+                    created_at=int(now_ts),
                 )
             )
-        record_unit_version(
-            session,
-            unit_id=int(pl_unit.id),
-            payload_obj=loop_payload,
-            patch_reason="extract_loops",
-            now_ts=now_ts,
-        )
-        session.add(
-            Job(
-                kind="upsert_embeddings",
-                payload_json=_json_dumps({"unit_id": int(pl_unit.id)}),
-                status=int(JobStatus.QUEUED),
-                run_after=now_ts,
-                tries=0,
-                last_error=None,
-                created_at=now_ts,
-                updated_at=now_ts,
-            )
+
+        # --- 完全一致の重複（kind/body/payload）を過去化する ---
+        # NOTE:
+        # - 「近い意味」の統合は品質難度が高いので、まずは安全な完全一致だけ整理する
+        # - 候補収集は広めを正とするため、ここは「ノイズの上限」を抑える役割
+        # - long_mood_state は整理対象から除外する（単一更新で育てるのを正とする）
+        active_states = (
+            db.query(State)
+            .filter(State.valid_to_ts.is_(None))
+            .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+            .limit(int(_TIDY_ACTIVE_STATE_FETCH_LIMIT))
+            .all()
         )
 
+        seen_keys: set[str] = set()
+        for st in active_states:
+            if len(closed_state_ids) >= int(max_close):
+                break
 
-def _handle_shared_narrative_summary(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    # 現行: rolling 7 days shared narrative summary（scope_key固定）
-    rolling_scope_key = "rolling:7d"
-    scope_key = str(payload.get("scope_key") or "").strip() or rolling_scope_key
-    window_days = 7
-    range_end = int(now_ts)
-    range_start = range_end - window_days * 86400
-    range_start_local = _format_local_datetime(range_start)
-    range_end_local = _format_local_datetime(range_end)
-
-    ep_rows = (
-        session.query(Unit, PayloadEpisode)
-        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.EPISODE),
-            Unit.occurred_at.isnot(None),
-            Unit.occurred_at >= range_start,
-            Unit.occurred_at < range_end,
-            Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= int(Sensitivity.SECRET),
-        )
-        .order_by(Unit.occurred_at.asc(), Unit.id.asc())
-        .limit(200)
-        .all()
-    )
-
-    lines = []
-    for u, pe in ep_rows:
-        ut = (pe.input_text or "").strip().replace("\n", " ")
-        rt = (pe.reply_text or "").strip().replace("\n", " ")
-        if not ut and not rt:
-            continue
-        ut = ut[:200]
-        rt = rt[:220]
-        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
-
-    input_text = (
-        f"scope_key: {scope_key}\nrange_start: {range_start_local}\nrange_end: {range_end_local}\n\n"
-        "<<<COCORO_GHOST_SECTION:EPISODES>>>\n"
-        + "\n".join(lines)
-    )
-
-    system_prompt = _wrap_prompt_with_persona(prompts.get_shared_narrative_summary_prompt())
-    resp = llm_client.generate_json_response(
-        system_prompt=system_prompt,
-        input_text=input_text,
-        purpose=LlmRequestPurpose.SHARED_NARRATIVE_SUMMARY,
-    )
-    # LLMのJSON応答をdictに正規化する。
-    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
-    if data is None:
-        return
-    summary_text = str(data.get("summary_text") or "").strip()
-    if not summary_text:
-        return
-    key_events_raw = data.get("key_events") or []
-    key_events: list[dict[str, Any]] = []
-    if isinstance(key_events_raw, list):
-        for item in key_events_raw:
-            if not isinstance(item, dict):
+            # --- long_mood_state は整理対象外 ---
+            if str(st.kind) == "long_mood_state":
                 continue
-            why = str(item.get("why") or "").strip()
-            try:
-                unit_id = int(item.get("unit_id"))
-            except Exception:  # noqa: BLE001
+
+            key = "|".join(
+                [
+                    str(st.kind),
+                    _normalize_text_for_dedupe(str(st.body_text)),
+                    _canonicalize_json_for_dedupe(str(st.payload_json)),
+                ]
+            )
+            if key in seen_keys:
+                before = _state_row_to_json(st)
+                # NOTE: 最近性（last_confirmed_at）は弄らない（検索順位を壊さない）
+                st.valid_to_ts = int(now_ts)
+                st.updated_at = int(now_ts)
+                db.add(st)
+                db.flush()
+                add_revision(
+                    entity_type="state",
+                    entity_id=int(st.state_id),
+                    before=before,
+                    after=_state_row_to_json(st),
+                    reason="記憶整理: 完全一致の重複stateを過去化した",
+                )
+                closed_state_ids.append(int(st.state_id))
                 continue
-            if not why:
-                continue
-            key_events.append({"unit_id": unit_id, "why": why})
-    key_events = key_events[:5]
 
-    shared_state = str(data.get("shared_state") or "").strip()
-    summary_obj = {
-        "summary_text": summary_text,
-        "key_events": key_events,
-        "shared_state": shared_state,
-    }
-    summary_json = canonical_json_dumps(summary_obj)
+            seen_keys.add(key)
 
-    existing = (
-        session.query(Unit, PayloadSummary)
-        .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.SUMMARY),
-            PayloadSummary.scope_label == "shared_narrative",
-            PayloadSummary.scope_key == scope_key,
-        )
-        .order_by(Unit.created_at.desc())
-        .first()
+        # --- 3) 過去化したstateの埋め込みを更新する（activeフラグを反映） ---
+        for state_id in closed_state_ids:
+            db.add(
+                Job(
+                    kind="upsert_state_embedding",
+                    payload_json=_json_dumps({"state_id": int(state_id)}),
+                    status=int(_JOB_PENDING),
+                    run_after=int(now_ts),
+                    tries=0,
+                    last_error=None,
+                    created_at=int(now_ts),
+                    updated_at=int(now_ts),
+                )
+            )
+
+    # --- 観測ログ（件数のみ） ---
+    logger.info(
+        "tidy_memory done closed_states=%s",
+        int(len(closed_state_ids)),
+        extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
     )
 
-    payload_obj = {
-        "scope_label": "shared_narrative",
-        "scope_key": scope_key,
-        "range_start": range_start,
-        "range_end": range_end,
-        "summary": summary_obj,
-    }
 
-    if existing is None:
-        unit = Unit(
-            kind=int(UnitKind.SUMMARY),
-            occurred_at=range_end - 1,
-            created_at=now_ts,
-            updated_at=now_ts,
-            source="shared_narrative_summary",
-            state=int(UnitState.RAW),
-            confidence=0.5,
-            salience=0.0,
-            sensitivity=0,
-            pin=0,
-        )
-        session.add(unit)
-        session.flush()
-        session.add(
-            PayloadSummary(
-                unit_id=unit.id,
-                scope_label="shared_narrative",
-                scope_key=scope_key,
-                range_start=range_start,
-                range_end=range_end,
-                summary_text=summary_text,
-                summary_json=summary_json,
-            )
-        )
-        record_unit_version(
-            session,
-            unit_id=int(unit.id),
-            payload_obj=payload_obj,
-            patch_reason="shared_narrative_summary",
-            now_ts=now_ts,
-        )
-        session.add(
-            Job(
-                kind="upsert_embeddings",
-                payload_json=_json_dumps({"unit_id": int(unit.id)}),
-                status=int(JobStatus.QUEUED),
-                run_after=now_ts,
-                tries=0,
-                last_error=None,
-                created_at=now_ts,
-                updated_at=now_ts,
-            )
-        )
-        return
-
-    unit, ps = existing
-    before_text = ps.summary_text
-    ps.summary_text = summary_text
-    ps.summary_json = summary_json
-    ps.range_start = range_start
-    ps.range_end = range_end
-    unit.updated_at = now_ts
-    unit.state = int(UnitState.VALIDATED)
-    session.add(unit)
-    session.add(ps)
-    record_unit_version(
-        session,
-        unit_id=int(unit.id),
-        payload_obj=payload_obj,
-        patch_reason="shared_narrative_summary",
-        now_ts=now_ts,
-    )
-    sync_unit_vector_metadata(
-        session,
-        unit_id=int(unit.id),
-        occurred_at=unit.occurred_at,
-        state=int(unit.state),
-        sensitivity=int(unit.sensitivity),
-    )
-    if before_text != summary_text:
-        session.add(
-            Job(
-                kind="upsert_embeddings",
-                payload_json=_json_dumps({"unit_id": int(unit.id)}),
-                status=int(JobStatus.QUEUED),
-                run_after=now_ts,
-                tries=0,
-                last_error=None,
-                created_at=now_ts,
-                updated_at=now_ts,
-            )
-        )
-
-
-def _build_summary_payload_input(*, header_lines: list[str], episode_lines: list[str]) -> str:
-    parts = [*header_lines, "", "<<<COCORO_GHOST_SECTION:EPISODES>>>", *episode_lines]
-    return "\n".join([p for p in parts if p is not None]).strip()
-
-
-def _enqueue_embeddings_if_changed(
-    session: Session,
+def _handle_upsert_state_embedding(
     *,
-    unit: Unit,
-    before_text: str | None,
-    after_text: str,
-    now_ts: int,
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    llm_client: LlmClient,
+    payload: dict[str, Any],
 ) -> None:
-    if (before_text or "") == (after_text or ""):
+    """state の埋め込みを生成し vec_items へ upsert する。"""
+
+    state_id = int(payload.get("state_id") or 0)
+    if state_id <= 0:
+        raise RuntimeError("payload.state_id is required")
+
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        st = db.query(State).filter(State.state_id == int(state_id)).one_or_none()
+        if st is None:
+            return
+        text_in = _build_state_embedding_text(st)
+        rank_at = int(st.last_confirmed_at)
+        payload_obj = _json_loads_maybe(st.payload_json)
+        status = str(payload_obj.get("status") or "").strip()
+        active = 0 if status == "done" else 1
+        if st.valid_to_ts is not None and int(st.valid_to_ts) < int(_now_utc_ts()) - 86400:
+            active = 0
+
+    if not text_in:
         return
-    _enqueue_job(session, kind="upsert_embeddings", payload={"unit_id": int(unit.id)}, now_ts=now_ts)
+
+    emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.ASYNC_STATE_EMBEDDING)[0]
+    item_id = _vec_item_id(int(_VEC_KIND_STATE), int(state_id))
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        upsert_vec_item(
+            db,
+            item_id=int(item_id),
+            embedding=emb,
+            kind=int(_VEC_KIND_STATE),
+            rank_at=int(rank_at),
+            active=int(active),
+        )
 
 
-def _upsert_summary_unit(
-    session: Session,
+def _handle_upsert_event_affect_embedding(
     *,
-    scope_label: str,
-    scope_key: str,
-    range_start: int | None,
-    range_end: int | None,
-    summary_text: str,
-    summary_json: str,
-    now_ts: int,
-    source: str,
-    patch_reason: str,
-) -> Unit | None:
-    existing = (
-        session.query(Unit, PayloadSummary)
-        .join(PayloadSummary, PayloadSummary.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.SUMMARY),
-            PayloadSummary.scope_label == str(scope_label),
-            PayloadSummary.scope_key == str(scope_key),
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    llm_client: LlmClient,
+    payload: dict[str, Any],
+) -> None:
+    """event_affects の埋め込みを生成し vec_items へ upsert する。"""
+
+    affect_id = int(payload.get("affect_id") or 0)
+    if affect_id <= 0:
+        raise RuntimeError("payload.affect_id is required")
+
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        aff = db.query(EventAffect).filter(EventAffect.id == int(affect_id)).one_or_none()
+        if aff is None:
+            return
+        text_in = _build_event_affect_embedding_text(aff)
+        rank_at = int(aff.created_at)
+
+    if not text_in:
+        return
+
+    emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.ASYNC_EVENT_AFFECT_EMBEDDING)[0]
+    item_id = _vec_item_id(int(_VEC_KIND_EVENT_AFFECT), int(affect_id))
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        upsert_vec_item(
+            db,
+            item_id=int(item_id),
+            embedding=emb,
+            kind=int(_VEC_KIND_EVENT_AFFECT),
+            rank_at=int(rank_at),
+            active=1,
         )
-        .order_by(Unit.created_at.desc())
-        .first()
-    )
-
-    if existing is None:
-        unit = Unit(
-            kind=int(UnitKind.SUMMARY),
-            occurred_at=now_ts,
-            created_at=now_ts,
-            updated_at=now_ts,
-            source=source,
-            state=int(UnitState.RAW),
-            confidence=0.5,
-            salience=0.0,
-            sensitivity=0,
-            pin=0,
-        )
-        session.add(unit)
-        session.flush()
-        session.add(
-            PayloadSummary(
-                unit_id=unit.id,
-                scope_label=str(scope_label),
-                scope_key=str(scope_key),
-                range_start=range_start,
-                range_end=range_end,
-                summary_text=summary_text,
-                summary_json=summary_json,
-            )
-        )
-        record_unit_version(
-            session,
-            unit_id=int(unit.id),
-            payload_obj={
-                "scope_label": str(scope_label),
-                "scope_key": str(scope_key),
-                "range_start": range_start,
-                "range_end": range_end,
-                "summary_json": json.loads(summary_json),
-            },
-            patch_reason=patch_reason,
-            now_ts=now_ts,
-        )
-        # 生成したサマリも検索対象にするため、埋め込みを更新する。
-        _enqueue_job(session, kind="upsert_embeddings", payload={"unit_id": int(unit.id)}, now_ts=now_ts)
-        return unit
-
-    unit, ps = existing
-    before_text = ps.summary_text
-    ps.summary_text = summary_text
-    ps.summary_json = summary_json
-    ps.range_start = range_start
-    ps.range_end = range_end
-    unit.updated_at = now_ts
-    unit.state = int(UnitState.VALIDATED)
-    session.add(unit)
-    session.add(ps)
-    record_unit_version(
-        session,
-        unit_id=int(unit.id),
-        payload_obj={
-            "scope_label": str(scope_label),
-            "scope_key": str(scope_key),
-            "range_start": range_start,
-            "range_end": range_end,
-            "summary_json": json.loads(summary_json),
-        },
-        patch_reason=patch_reason,
-        now_ts=now_ts,
-    )
-    sync_unit_vector_metadata(
-        session,
-        unit_id=int(unit.id),
-        occurred_at=unit.occurred_at,
-        state=int(unit.state),
-        sensitivity=int(unit.sensitivity),
-    )
-    _enqueue_embeddings_if_changed(session, unit=unit, before_text=before_text, after_text=summary_text, now_ts=now_ts)
-    return unit
-
-
-def _handle_person_summary_refresh(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    """人物（roles_json に 'person' を含むEntity）に紐づく直近エピソードから要約を作成/更新する。"""
-    entity_id = int(payload["entity_id"])
-    ent = session.query(Entity).filter(Entity.id == entity_id).one_or_none()
-    if ent is None or not _entity_has_role(ent, "person"):
-        return
-
-    # 入力: 対象人物に紐づく直近エピソードを列挙（上限あり）。
-    ep_rows = (
-        session.query(Unit, PayloadEpisode)
-        .join(UnitEntity, UnitEntity.unit_id == Unit.id)
-        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.EPISODE),
-            Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= int(Sensitivity.SECRET),
-            UnitEntity.entity_id == entity_id,
-        )
-        .order_by(Unit.occurred_at.desc().nulls_last(), Unit.id.desc())
-        .limit(120)
-        .all()
-    )
-    if not ep_rows:
-        return
-
-    lines: list[str] = []
-    for u, pe in ep_rows:
-        ut = (pe.input_text or "").strip().replace("\n", " ")[:220]
-        rt = (pe.reply_text or "").strip().replace("\n", " ")[:240]
-        if not ut and not rt:
-            continue
-        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
-
-    input_text = _build_summary_payload_input(
-        header_lines=[f"scope: person", f"entity_id: {entity_id}", f"entity_name: {ent.name}"],
-        episode_lines=lines,
-    )
-
-    system_prompt = _wrap_prompt_with_persona(prompts.get_person_summary_prompt())
-    resp = llm_client.generate_json_response(
-        system_prompt=system_prompt,
-        input_text=input_text,
-        purpose=LlmRequestPurpose.PERSON_SUMMARY,
-    )
-    # LLMのJSON応答をdictに正規化する。
-    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
-    if data is None:
-        return
-    summary_text = str(data.get("summary_text") or "").strip()
-    if not summary_text:
-        return
-
-    # PERSONA_ANCHORの人物→人物の好感度（0..1）
-    # - 0.5: 中立（デフォルト）
-    # - 1.0: とても好意的
-    # - 0.0: 強い嫌悪/不信
-    favorability_score_raw = data.get("favorability_score")
-    favorability_score = 0.5
-    if favorability_score_raw is not None:
-        try:
-            favorability_score = clamp01(float(favorability_score_raw))
-        except Exception:  # noqa: BLE001
-            favorability_score = 0.5
-
-    favorability_reasons_raw = data.get("favorability_reasons") or []
-    favorability_reasons: list[dict[str, Any]] = []
-    if isinstance(favorability_reasons_raw, list):
-        for item in favorability_reasons_raw[:5]:
-            if not isinstance(item, dict):
-                continue
-            why = str(item.get("why") or "").strip()
-            try:
-                unit_id = int(item.get("unit_id"))
-            except Exception:  # noqa: BLE001
-                continue
-            if why:
-                favorability_reasons.append({"unit_id": unit_id, "why": why})
-
-    key_events_raw = data.get("key_events") or []
-    key_events: list[dict[str, Any]] = []
-    if isinstance(key_events_raw, list):
-        for item in key_events_raw[:5]:
-            if not isinstance(item, dict):
-                continue
-            why = str(item.get("why") or "").strip()
-            try:
-                unit_id = int(item.get("unit_id"))
-            except Exception:  # noqa: BLE001
-                continue
-            if why:
-                key_events.append({"unit_id": unit_id, "why": why})
-
-    summary_obj = {
-        "summary_text": summary_text,
-        "favorability_score": favorability_score,
-        "favorability_reasons": favorability_reasons,
-        "key_events": key_events,
-        "notes": str(data.get("notes") or "").strip(),
-    }
-    summary_json = canonical_json_dumps(summary_obj)
-
-    _upsert_summary_unit(
-        session,
-        scope_label="person",
-        scope_key=f"person:{entity_id}",
-        range_start=None,
-        range_end=None,
-        summary_text=summary_text,
-        summary_json=summary_json,
-        now_ts=now_ts,
-        source="person_summary_refresh",
-        patch_reason="person_summary_refresh",
-    )
-
-
-def _handle_topic_summary_refresh(*, session: Session, llm_client: LlmClient, payload: Dict[str, Any], now_ts: int) -> None:
-    """トピック（roles_json に 'topic' を含むEntity）に紐づく直近エピソードから要約を作成/更新する。"""
-    entity_id = int(payload["entity_id"])
-    ent = session.query(Entity).filter(Entity.id == entity_id).one_or_none()
-    if ent is None or not _entity_has_role(ent, "topic"):
-        return
-
-    topic_key = str((ent.normalized or ent.name or "")).strip().lower()
-    if not topic_key:
-        return
-
-    ep_rows = (
-        session.query(Unit, PayloadEpisode)
-        .join(UnitEntity, UnitEntity.unit_id == Unit.id)
-        .join(PayloadEpisode, PayloadEpisode.unit_id == Unit.id)
-        .filter(
-            Unit.kind == int(UnitKind.EPISODE),
-            Unit.state.in_([0, 1, 2]),
-            Unit.sensitivity <= int(Sensitivity.SECRET),
-            UnitEntity.entity_id == entity_id,
-        )
-        .order_by(Unit.occurred_at.desc().nulls_last(), Unit.id.desc())
-        .limit(120)
-        .all()
-    )
-    if not ep_rows:
-        return
-
-    lines: list[str] = []
-    for u, pe in ep_rows:
-        ut = (pe.input_text or "").strip().replace("\n", " ")[:220]
-        rt = (pe.reply_text or "").strip().replace("\n", " ")[:240]
-        if not ut and not rt:
-            continue
-        lines.append(f"- unit_id={int(u.id)} user='{ut}' reply='{rt}'")
-
-    input_text = _build_summary_payload_input(
-        header_lines=[f"scope: topic", f"entity_id: {entity_id}", f"topic_key: {topic_key}", f"topic_name: {ent.name}"],
-        episode_lines=lines,
-    )
-
-    system_prompt = _wrap_prompt_with_persona(prompts.get_topic_summary_prompt())
-    resp = llm_client.generate_json_response(
-        system_prompt=system_prompt,
-        input_text=input_text,
-        purpose=LlmRequestPurpose.TOPIC_SUMMARY,
-    )
-    # LLMのJSON応答をdictに正規化する。
-    data = _parse_llm_json_dict(llm_client=llm_client, resp=resp)
-    if data is None:
-        return
-    summary_text = str(data.get("summary_text") or "").strip()
-    if not summary_text:
-        return
-
-    key_events_raw = data.get("key_events") or []
-    key_events: list[dict[str, Any]] = []
-    if isinstance(key_events_raw, list):
-        for item in key_events_raw[:5]:
-            if not isinstance(item, dict):
-                continue
-            why = str(item.get("why") or "").strip()
-            try:
-                unit_id = int(item.get("unit_id"))
-            except Exception:  # noqa: BLE001
-                continue
-            if why:
-                key_events.append({"unit_id": unit_id, "why": why})
-
-    summary_obj = {
-        "summary_text": summary_text,
-        "key_events": key_events,
-        "notes": str(data.get("notes") or "").strip(),
-    }
-    summary_json = canonical_json_dumps(summary_obj)
-
-    _upsert_summary_unit(
-        session,
-        scope_label="topic",
-        scope_key=f"topic:{topic_key}",
-        range_start=None,
-        range_end=None,
-        summary_text=summary_text,
-        summary_json=summary_json,
-        now_ts=now_ts,
-        source="topic_summary_refresh",
-        patch_reason="topic_summary_refresh",
-    )

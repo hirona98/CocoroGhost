@@ -1,37 +1,21 @@
 """
-管理API（Unit閲覧・編集）
+管理API
 
-記憶ユニット（Unit）の一覧取得、詳細取得、メタ情報更新を提供する。
-デバッグや運用管理で記憶内容を確認・調整するために使用される。
-Unit種別（Episode, Fact, Summary, Loop）に応じたペイロードを返す。
+提供する機能:
+- 出来事ログ（events）の閲覧
+- 状態（state）の閲覧
+- 改訂履歴（revisions）の閲覧
 """
 
 from __future__ import annotations
 
-import time
-from typing import Any, Dict, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
 from cocoro_ghost import models
-from cocoro_ghost.db import memory_session_scope, settings_session_scope, sync_unit_vector_metadata
-from cocoro_ghost.topic_tags import canonicalize_topic_tags_json
-
-from cocoro_ghost.schemas import (
-    UnitDetailResponse,
-    UnitListResponse,
-    UnitMeta,
-    UnitUpdateRequest,
-)
-from cocoro_ghost.unit_enums import UnitKind
-from cocoro_ghost.unit_models import (
-    PayloadEpisode,
-    PayloadFact,
-    PayloadLoop,
-    PayloadSummary,
-    Unit,
-)
-from cocoro_ghost.versioning import record_unit_version
+from cocoro_ghost.db import memory_session_scope, settings_session_scope
+from cocoro_ghost.memory_models import Event, Revision, State
 
 
 router = APIRouter()
@@ -39,9 +23,13 @@ router = APIRouter()
 
 def _resolve_embedding_dimension(embedding_preset_id: str) -> int:
     """embedding_preset_id に対応する埋め込み次元を settings.db から解決する。"""
+
+    # --- 入力チェック ---
     pid = (embedding_preset_id or "").strip()
     if not pid:
         raise HTTPException(status_code=400, detail="embedding_preset_id is required")
+
+    # --- settings.db を参照 ---
     with settings_session_scope() as session:
         preset = session.query(models.EmbeddingPreset).filter_by(id=pid, archived=False).first()
         if preset is None:
@@ -49,180 +37,218 @@ def _resolve_embedding_dimension(embedding_preset_id: str) -> int:
         return int(preset.embedding_dimension)
 
 
-def _to_unit_meta(u: Unit) -> UnitMeta:
-    """
-    UnitモデルをUnitMetaスキーマに変換する。
-
-    データベースのUnitレコードをAPI応答用のPydanticモデルに変換する。
-    """
-    return UnitMeta(
-        id=int(u.id),
-        kind=int(u.kind),
-        occurred_at=int(u.occurred_at) if u.occurred_at is not None else None,
-        created_at=int(u.created_at),
-        updated_at=int(u.updated_at),
-        source=u.source,
-        state=int(u.state),
-        confidence=float(u.confidence),
-        salience=float(u.salience),
-        sensitivity=int(u.sensitivity),
-        pin=int(u.pin),
-        topic_tags=u.topic_tags,
-        persona_affect_label=u.persona_affect_label,
-        persona_affect_intensity=float(u.persona_affect_intensity) if u.persona_affect_intensity is not None else None,
-    )
+# --- events ---
 
 
-@router.get("/memories/{embedding_preset_id}/units", response_model=UnitListResponse)
-def list_units(
+@router.get("/memories/{embedding_preset_id}/events")
+def list_events(
     embedding_preset_id: str,
-    kind: Optional[int] = Query(default=None),
-    state: Optional[int] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    source: Optional[str] = Query(default=None),
+):
+    """出来事ログ（events）の一覧を返す。"""
+
+    # --- DBを開く（embedding_preset_idごとに分離） ---
+    embedding_dimension = _resolve_embedding_dimension(embedding_preset_id)
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        # --- フィルタを組み立てる ---
+        q = db.query(Event)
+        if source is not None:
+            s = str(source or "").strip()
+            if s:
+                q = q.filter(Event.source == s)
+
+        # --- 取得 ---
+        rows = q.order_by(Event.created_at.desc(), Event.event_id.desc()).offset(int(offset)).limit(int(limit)).all()
+
+        # --- 応答 ---
+        return {
+            "items": [
+                {
+                    "event_id": int(r.event_id),
+                    "created_at": int(r.created_at),
+                    "updated_at": int(r.updated_at),
+                    "client_id": r.client_id,
+                    "source": str(r.source),
+                    "user_text": r.user_text,
+                    "assistant_text": r.assistant_text,
+                    "about_time": {
+                        "about_start_ts": r.about_start_ts,
+                        "about_end_ts": r.about_end_ts,
+                        "about_year_start": r.about_year_start,
+                        "about_year_end": r.about_year_end,
+                        "life_stage": r.life_stage,
+                        "about_time_confidence": float(r.about_time_confidence),
+                    },
+                    "entities_json": r.entities_json,
+                }
+                for r in rows
+            ]
+        }
+
+
+@router.get("/memories/{embedding_preset_id}/events/{event_id}")
+def get_event(
+    embedding_preset_id: str,
+    event_id: int,
+):
+    """出来事ログ（events）の詳細を返す。"""
+
+    # --- DBを開く ---
+    embedding_dimension = _resolve_embedding_dimension(embedding_preset_id)
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        # --- 取得 ---
+        r = db.query(Event).filter(Event.event_id == int(event_id)).one_or_none()
+        if r is None:
+            raise HTTPException(status_code=404, detail="event not found")
+
+        # --- 応答 ---
+        return {
+            "event_id": int(r.event_id),
+            "created_at": int(r.created_at),
+            "updated_at": int(r.updated_at),
+            "client_id": r.client_id,
+            "source": str(r.source),
+            "user_text": r.user_text,
+            "assistant_text": r.assistant_text,
+            "about_time": {
+                "about_start_ts": r.about_start_ts,
+                "about_end_ts": r.about_end_ts,
+                "about_year_start": r.about_year_start,
+                "about_year_end": r.about_year_end,
+                "life_stage": r.life_stage,
+                "about_time_confidence": float(r.about_time_confidence),
+            },
+            "entities_json": r.entities_json,
+            "client_context_json": r.client_context_json,
+        }
+
+
+# --- state ---
+
+
+@router.get("/memories/{embedding_preset_id}/state")
+def list_state(
+    embedding_preset_id: str,
+    kind: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ):
-    """
-    Unit一覧を返す。
+    """状態（state）の一覧を返す。"""
 
-    kind/stateでフィルタリング可能。作成日時の降順でソートされる。
-    """
+    # --- DBを開く ---
     embedding_dimension = _resolve_embedding_dimension(embedding_preset_id)
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-        q = db.query(Unit)
+        # --- フィルタ ---
+        q = db.query(State)
         if kind is not None:
-            q = q.filter(Unit.kind == int(kind))
-        if state is not None:
-            q = q.filter(Unit.state == int(state))
-        units = q.order_by(Unit.created_at.desc(), Unit.id.desc()).offset(offset).limit(limit).all()
-        return UnitListResponse(items=[_to_unit_meta(u) for u in units])
+            k = str(kind or "").strip()
+            if k:
+                q = q.filter(State.kind == k)
 
+        # --- 取得 ---
+        rows = q.order_by(State.last_confirmed_at.desc(), State.state_id.desc()).offset(int(offset)).limit(int(limit)).all()
 
-@router.get("/memories/{embedding_preset_id}/units/{unit_id}", response_model=UnitDetailResponse)
-def get_unit(
-    embedding_preset_id: str,
-    unit_id: int,
-):
-    """
-    Unit詳細を返す。
-
-    メタ情報とkindに応じたペイロード（Episode/Fact/Summary等）を含む。
-    """
-    embedding_dimension = _resolve_embedding_dimension(embedding_preset_id)
-    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-        unit = db.query(Unit).filter(Unit.id == unit_id).one_or_none()
-        if unit is None:
-            raise HTTPException(status_code=404, detail="unit not found")
-
-        payload: Dict[str, Any] = {}
-        if unit.kind == int(UnitKind.EPISODE):
-            pe = db.query(PayloadEpisode).filter(PayloadEpisode.unit_id == unit_id).one_or_none()
-            if pe:
-                payload = {
-                    "input_text": pe.input_text,
-                    "reply_text": pe.reply_text,
-                    "image_summary": pe.image_summary,
-                    "context_note": pe.context_note,
-                    "reflection_json": pe.reflection_json,
+        # --- 応答 ---
+        return {
+            "items": [
+                {
+                    "state_id": int(r.state_id),
+                    "kind": str(r.kind),
+                    "body_text": str(r.body_text),
+                    "payload_json": r.payload_json,
+                    "last_confirmed_at": int(r.last_confirmed_at),
+                    "confidence": float(r.confidence),
+                    "salience": float(r.salience),
+                    "valid_from_ts": r.valid_from_ts,
+                    "valid_to_ts": r.valid_to_ts,
+                    "created_at": int(r.created_at),
+                    "updated_at": int(r.updated_at),
                 }
-        elif unit.kind == int(UnitKind.FACT):
-            pf = db.query(PayloadFact).filter(PayloadFact.unit_id == unit_id).one_or_none()
-            if pf:
-                payload = {
-                    "subject_entity_id": pf.subject_entity_id,
-                    "predicate": pf.predicate,
-                    "object_text": pf.object_text,
-                    "object_entity_id": pf.object_entity_id,
-                    "valid_from": pf.valid_from,
-                    "valid_to": pf.valid_to,
-                    "evidence_unit_ids_json": pf.evidence_unit_ids_json,
-                }
-        elif unit.kind == int(UnitKind.SUMMARY):
-            ps = db.query(PayloadSummary).filter(PayloadSummary.unit_id == unit_id).one_or_none()
-            if ps:
-                payload = {
-                    "scope_label": ps.scope_label,
-                    "scope_key": ps.scope_key,
-                    "range_start": ps.range_start,
-                    "range_end": ps.range_end,
-                    "summary_text": ps.summary_text,
-                    "summary_json": ps.summary_json,
-                }
-        elif unit.kind == int(UnitKind.LOOP):
-            pl = db.query(PayloadLoop).filter(PayloadLoop.unit_id == unit_id).one_or_none()
-            if pl:
-                payload = {"expires_at": pl.expires_at, "due_at": pl.due_at, "loop_text": pl.loop_text}
-
-        return UnitDetailResponse(unit=_to_unit_meta(unit), payload=payload)
-
-
-@router.patch("/memories/{embedding_preset_id}/units/{unit_id}", response_model=UnitMeta)
-def update_unit(
-    embedding_preset_id: str,
-    unit_id: int,
-    request: UnitUpdateRequest,
-):
-    """
-    Unitのメタ情報を更新する。
-
-    pin/sensitivity/state/topic_tags/confidence/salienceを変更可能。
-    変更時はバージョン履歴を記録し、ベクトルメタデータも同期する。
-    """
-    now_ts = int(time.time())
-    embedding_dimension = _resolve_embedding_dimension(embedding_preset_id)
-    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-        unit = db.query(Unit).filter(Unit.id == unit_id).one_or_none()
-        if unit is None:
-            raise HTTPException(status_code=404, detail="unit not found")
-
-        before = {
-            "pin": int(unit.pin),
-            "sensitivity": int(unit.sensitivity),
-            "state": int(unit.state),
-            "topic_tags": unit.topic_tags,
-            "confidence": float(unit.confidence),
-            "salience": float(unit.salience),
+                for r in rows
+            ]
         }
 
-        if request.pin is not None:
-            unit.pin = int(request.pin)
-        if request.sensitivity is not None:
-            unit.sensitivity = int(request.sensitivity)
-        if request.state is not None:
-            unit.state = int(request.state)
-        if request.topic_tags is not None:
-            try:
-                unit.topic_tags = canonicalize_topic_tags_json(request.topic_tags)
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(status_code=400, detail="topic_tags must be a JSON array string") from exc
-        if request.confidence is not None:
-            unit.confidence = float(request.confidence)
-        if request.salience is not None:
-            unit.salience = float(request.salience)
 
-        unit.updated_at = now_ts
-        db.add(unit)
+@router.get("/memories/{embedding_preset_id}/state/{kind}/{state_id}")
+def get_state(
+    embedding_preset_id: str,
+    kind: str,
+    state_id: int,
+):
+    """状態（state）の詳細を返す。"""
 
-        after = {
-            "pin": int(unit.pin),
-            "sensitivity": int(unit.sensitivity),
-            "state": int(unit.state),
-            "topic_tags": unit.topic_tags,
-            "confidence": float(unit.confidence),
-            "salience": float(unit.salience),
+    # --- 入力を正規化 ---
+    k = str(kind or "").strip()
+    if not k:
+        raise HTTPException(status_code=400, detail="kind is required")
+
+    # --- DBを開く ---
+    embedding_dimension = _resolve_embedding_dimension(embedding_preset_id)
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        # --- 取得 ---
+        r = db.query(State).filter(State.state_id == int(state_id)).one_or_none()
+        if r is None:
+            raise HTTPException(status_code=404, detail="state not found")
+        if str(r.kind) != k:
+            raise HTTPException(status_code=404, detail="state not found")
+
+        # --- 応答 ---
+        return {
+            "state_id": int(r.state_id),
+            "kind": str(r.kind),
+            "body_text": str(r.body_text),
+            "payload_json": r.payload_json,
+            "last_confirmed_at": int(r.last_confirmed_at),
+            "confidence": float(r.confidence),
+            "salience": float(r.salience),
+            "valid_from_ts": r.valid_from_ts,
+            "valid_to_ts": r.valid_to_ts,
+            "created_at": int(r.created_at),
+            "updated_at": int(r.updated_at),
         }
-        if after != before:
-            record_unit_version(
-                db,
-                unit_id=int(unit.id),
-                payload_obj=after,
-                patch_reason="admin_update_unit_meta",
-                now_ts=now_ts,
-            )
-            sync_unit_vector_metadata(
-                db,
-                unit_id=int(unit.id),
-                occurred_at=unit.occurred_at,
-                state=int(unit.state),
-                sensitivity=int(unit.sensitivity),
-            )
-        return _to_unit_meta(unit)
+
+
+@router.get("/memories/{embedding_preset_id}/state/{kind}/{state_id}/revisions")
+def list_state_revisions(
+    embedding_preset_id: str,
+    kind: str,
+    state_id: int,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """状態（state）の改訂履歴（revisions）を返す。"""
+
+    # --- kindが一致するstateのみ対象にする ---
+    _ = get_state(embedding_preset_id=embedding_preset_id, kind=kind, state_id=state_id)
+
+    # --- DBを開く ---
+    embedding_dimension = _resolve_embedding_dimension(embedding_preset_id)
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        # --- 取得 ---
+        q = (
+            db.query(Revision)
+            .filter(Revision.entity_type == "state")
+            .filter(Revision.entity_id == int(state_id))
+            .order_by(Revision.created_at.desc(), Revision.revision_id.desc())
+        )
+        rows = q.offset(int(offset)).limit(int(limit)).all()
+
+        # --- 応答 ---
+        return {
+            "items": [
+                {
+                    "revision_id": int(r.revision_id),
+                    "entity_type": str(r.entity_type),
+                    "entity_id": int(r.entity_id),
+                    "before_json": r.before_json,
+                    "after_json": r.after_json,
+                    "reason": str(r.reason),
+                    "evidence_event_ids_json": r.evidence_event_ids_json,
+                    "created_at": int(r.created_at),
+                }
+                for r in rows
+            ]
+        }
+

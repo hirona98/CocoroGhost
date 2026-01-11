@@ -175,11 +175,10 @@ class EmbeddingPreset(Base):
     embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
 
     # 記憶検索パラメータ
-    similar_episodes_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    similar_episodes_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     max_inject_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=1200)
     similar_limit_by_kind_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
     # タイムスタンプ
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-
