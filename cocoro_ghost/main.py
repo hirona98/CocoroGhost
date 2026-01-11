@@ -147,20 +147,6 @@ def create_app() -> FastAPI:
         return {"message": "CocoroGhost API is running"}
 
     @app.on_event("startup")
-    @repeat_every(seconds=1, wait_first=True)
-    async def periodic_desktop_watch() -> None:
-        """デスクトップウォッチ（能動視覚）の定期実行。"""
-        service = get_desktop_watch_service()
-        await asyncio.to_thread(service.tick)
-
-    @app.on_event("startup")
-    @repeat_every(seconds=1, wait_first=True)
-    async def periodic_reminders() -> None:
-        """リマインダーの定期実行。"""
-        service = get_reminder_service()
-        await asyncio.to_thread(service.tick)
-
-    @app.on_event("startup")
     async def start_log_stream_dispatcher() -> None:
         """ログSSE配信のdispatcherを起動。クライアントへのログ配信を開始する。"""
         loop = asyncio.get_running_loop()
@@ -188,6 +174,23 @@ def create_app() -> FastAPI:
             "internal worker start requested",
             extra={"embedding_preset_id": runtime_config.embedding_preset_id, "memory_enabled": runtime_config.memory_enabled},
         )
+
+    # NOTE:
+    # - デスクトップウォッチ/リマインダーは別スレッドから event_stream.publish() を呼ぶ。
+    # - event_stream の install/start_dispatcher より先に動くと命令（vision.capture_request等）が落ち得る。
+    @app.on_event("startup")
+    @repeat_every(seconds=1, wait_first=True)
+    async def periodic_desktop_watch() -> None:
+        """デスクトップウォッチ（能動視覚）の定期実行。"""
+        service = get_desktop_watch_service()
+        await asyncio.to_thread(service.tick)
+
+    @app.on_event("startup")
+    @repeat_every(seconds=1, wait_first=True)
+    async def periodic_reminders() -> None:
+        """リマインダーの定期実行。"""
+        service = get_reminder_service()
+        await asyncio.to_thread(service.tick)
 
     @app.on_event("shutdown")
     async def stop_log_stream_dispatcher() -> None:
