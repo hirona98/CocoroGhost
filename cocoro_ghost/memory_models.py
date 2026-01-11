@@ -37,6 +37,11 @@ class Event(MemoryBase):
     # --- 本文（ターンの片側だけのイベントもあり得る） ---
     user_text: Mapped[Optional[str]] = mapped_column(Text)
     assistant_text: Mapped[Optional[str]] = mapped_column(Text)
+    # --- 画像要約（内部用。画像そのものは保存しない） ---
+    # NOTE:
+    # - 画像付きチャットでは、画像ごとの要約（最大5件）を JSON 配列で保持する。
+    # - UIへ表示しないが、検索と返答生成に効かせるため events に保持する。
+    image_summaries_json: Mapped[Optional[str]] = mapped_column(Text)
 
     # --- about_time（内容がいつの話か） ---
     about_start_ts: Mapped[Optional[int]] = mapped_column(Integer)

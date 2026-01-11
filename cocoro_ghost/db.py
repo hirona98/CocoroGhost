@@ -50,7 +50,7 @@ class _MemorySessionEntry:
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
-_MEMORY_DB_USER_VERSION = 1
+_MEMORY_DB_USER_VERSION = 2
 
 
 def get_db_dir() -> Path:
@@ -202,6 +202,7 @@ def _enable_events_fts(engine) -> None:
                 CREATE VIRTUAL TABLE IF NOT EXISTS {EVENTS_FTS_TABLE_NAME} USING fts5(
                     user_text,
                     assistant_text,
+                    image_summaries_json,
                     content='events',
                     content_rowid='event_id',
                     tokenize='trigram'
@@ -218,8 +219,8 @@ def _enable_events_fts(engine) -> None:
                 CREATE TRIGGER IF NOT EXISTS {EVENTS_FTS_TABLE_NAME}_ai
                 AFTER INSERT ON events
                 BEGIN
-                    INSERT INTO {EVENTS_FTS_TABLE_NAME}(rowid, user_text, assistant_text)
-                    VALUES (new.event_id, new.user_text, new.assistant_text);
+                    INSERT INTO {EVENTS_FTS_TABLE_NAME}(rowid, user_text, assistant_text, image_summaries_json)
+                    VALUES (new.event_id, new.user_text, new.assistant_text, new.image_summaries_json);
                 END;
                 """
             )
@@ -231,8 +232,8 @@ def _enable_events_fts(engine) -> None:
                 CREATE TRIGGER IF NOT EXISTS {EVENTS_FTS_TABLE_NAME}_ad
                 AFTER DELETE ON events
                 BEGIN
-                    INSERT INTO {EVENTS_FTS_TABLE_NAME}({EVENTS_FTS_TABLE_NAME}, rowid, user_text, assistant_text)
-                    VALUES ('delete', old.event_id, old.user_text, old.assistant_text);
+                    INSERT INTO {EVENTS_FTS_TABLE_NAME}({EVENTS_FTS_TABLE_NAME}, rowid, user_text, assistant_text, image_summaries_json)
+                    VALUES ('delete', old.event_id, old.user_text, old.assistant_text, old.image_summaries_json);
                 END;
                 """
             )
@@ -244,10 +245,10 @@ def _enable_events_fts(engine) -> None:
                 CREATE TRIGGER IF NOT EXISTS {EVENTS_FTS_TABLE_NAME}_au
                 AFTER UPDATE ON events
                 BEGIN
-                    INSERT INTO {EVENTS_FTS_TABLE_NAME}({EVENTS_FTS_TABLE_NAME}, rowid, user_text, assistant_text)
-                    VALUES ('delete', old.event_id, old.user_text, old.assistant_text);
-                    INSERT INTO {EVENTS_FTS_TABLE_NAME}(rowid, user_text, assistant_text)
-                    VALUES (new.event_id, new.user_text, new.assistant_text);
+                    INSERT INTO {EVENTS_FTS_TABLE_NAME}({EVENTS_FTS_TABLE_NAME}, rowid, user_text, assistant_text, image_summaries_json)
+                    VALUES ('delete', old.event_id, old.user_text, old.assistant_text, old.image_summaries_json);
+                    INSERT INTO {EVENTS_FTS_TABLE_NAME}(rowid, user_text, assistant_text, image_summaries_json)
+                    VALUES (new.event_id, new.user_text, new.assistant_text, new.image_summaries_json);
                 END;
                 """
             )
