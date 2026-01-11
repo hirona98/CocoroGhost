@@ -163,7 +163,7 @@ class NotificationRequest(BaseModel):
     """
     source_system: str                   # 通知元システム名
     text: str                            # 通知テキスト
-    images: List[Dict[str, str]] = Field(default_factory=list)  # 添付画像
+    images: List[str] = Field(default_factory=list)  # 添付画像（data URI形式、最大5枚）
 
 
 class NotificationV2Request(BaseModel):
@@ -178,11 +178,15 @@ class NotificationV2Request(BaseModel):
     @field_validator("images")
     @classmethod
     def _validate_images(cls, v: List[str]) -> List[str]:
-        """画像リストのバリデーション。最大5枚、各画像はdata URI形式であること。"""
+        """
+        画像リストのバリデーション（件数のみ）。
+
+        NOTE:
+        - /api/chat と同様、「不正画像はその画像だけ無視して継続」を正とするため、
+          ここでは data URI の厳密検証は行わない。
+        """
         if len(v) > 5:
             raise ValueError("images must contain at most 5 items")
-        for item in v:
-            data_uri_image_to_base64(item)
         return v
 
 
@@ -197,7 +201,7 @@ class MetaRequestRequest(BaseModel):
     embedding_preset_id: Optional[str] = None
     instruction: str                     # AI人格への指示
     payload_text: str                    # 追加情報テキスト
-    images: List[Dict[str, str]] = Field(default_factory=list)  # 添付画像
+    images: List[str] = Field(default_factory=list)  # 添付画像（data URI形式、最大5枚）
 
 
 class MetaRequestV2Request(BaseModel):
@@ -212,11 +216,15 @@ class MetaRequestV2Request(BaseModel):
     @field_validator("images")
     @classmethod
     def _validate_images(cls, v: List[str]) -> List[str]:
-        """画像リストのバリデーション。"""
+        """
+        画像リストのバリデーション（件数のみ）。
+
+        NOTE:
+        - /api/chat と同様、「不正画像はその画像だけ無視して継続」を正とするため、
+          ここでは data URI の厳密検証は行わない。
+        """
         if len(v) > 5:
             raise ValueError("images must contain at most 5 items")
-        for item in v:
-            data_uri_image_to_base64(item)
         return v
 
 

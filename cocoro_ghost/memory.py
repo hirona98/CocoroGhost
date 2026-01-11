@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Generator
 
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy import text
 
 from cocoro_ghost import event_stream, schemas
@@ -1047,6 +1047,99 @@ class MemoryManager:
         # --- 11) SSE完了 ---
         yield _sse("done", {"event_id": int(event_id), "reply_text": reply_text, "usage": {"finish_reason": finish_reason}})
 
+    def _process_data_uri_images(
+        self,
+        *,
+        raw_images: list[str],
+        purpose: str,
+    ) -> tuple[list[str], bool]:
+        """
+        data URI画像を検証・デコードし、画像要約（詳細）を生成する。
+
+        Args:
+            raw_images: data URI 形式の画像リスト（入力順）。
+            purpose: LLM呼び出し目的ラベル（ログ用途）。
+
+        Returns:
+            (image_summaries, has_any_valid_image)
+            - image_summaries: raw_images と同じ長さの要約配列（無視/失敗は ""）
+            - has_any_valid_image: 有効画像が1枚以上あったか
+
+        仕様:
+        - 不正画像は「その画像だけ無視」して継続する（入力順の対応は維持）。
+        - ただしサイズ上限（1枚/合計）を超える場合は 400 を返す（HTTP）。
+        """
+
+        # --- 入力を正規化 ---
+        images_in = [str(x or "") for x in list(raw_images or [])]
+
+        # --- デコード結果（入力順対応） ---
+        images_bytes_by_index: list[bytes | None] = [None for _ in images_in]
+        valid_images_bytes: list[bytes] = []
+        valid_images_mimes: list[str] = []
+        valid_images_index: list[int] = []
+
+        # --- サイズ上限（合計） ---
+        total_image_bytes = 0
+        for idx, s in enumerate(images_in):
+            # --- 形式検証（失敗したら無視して継続） ---
+            try:
+                mime, b64 = schemas.parse_data_uri_image(str(s or ""))
+            except Exception:  # noqa: BLE001
+                continue
+
+            # --- MIMEの許可（失敗したら無視して継続） ---
+            if str(mime) not in _CHAT_ALLOWED_IMAGE_MIME_TYPES:
+                continue
+
+            # --- base64 -> bytes（念のため例外は握って無視） ---
+            try:
+                image_bytes = base64.b64decode(str(b64))
+            except Exception:  # noqa: BLE001
+                continue
+
+            # --- サイズ上限（1枚） ---
+            if len(image_bytes) > int(_CHAT_IMAGE_MAX_BYTES_PER_IMAGE):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={"message": "画像サイズが大きすぎます（1枚あたり5MBまで）", "code": "image_too_large"},
+                )
+
+            # --- サイズ上限（合計） ---
+            total_image_bytes += int(len(image_bytes))
+            if int(total_image_bytes) > int(_CHAT_IMAGE_MAX_BYTES_TOTAL):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={"message": "画像サイズの合計が大きすぎます（合計20MBまで）", "code": "image_too_large"},
+                )
+
+            # --- 有効画像として採用 ---
+            images_bytes_by_index[int(idx)] = image_bytes
+            valid_images_bytes.append(image_bytes)
+            valid_images_mimes.append(str(mime))
+            valid_images_index.append(int(idx))
+
+        # --- 画像要約（詳細）を作る（画像ごと、最大400文字） ---
+        # NOTE:
+        # - 画像そのものは保存しない（永続化しない）
+        # - 要約生成に失敗した画像は "" として継続する
+        image_summaries: list[str] = []
+        if images_in:
+            image_summaries = ["" for _ in images_in]
+            if valid_images_bytes:
+                summaries_valid = self.llm_client.generate_image_summary(
+                    valid_images_bytes,
+                    purpose=str(purpose),
+                    mime_types=list(valid_images_mimes),
+                    max_chars=int(_CHAT_IMAGE_SUMMARY_MAX_CHARS),
+                    best_effort=True,
+                )
+                for idx2, summary in zip(valid_images_index, summaries_valid, strict=False):
+                    image_summaries[int(idx2)] = str(summary or "").strip()
+
+        has_valid = any(b is not None for b in images_bytes_by_index)
+        return (image_summaries, bool(has_valid))
+
     def handle_notification(self, request: schemas.NotificationRequest, *, background_tasks: BackgroundTasks) -> None:
         """通知を受け取り、出来事ログとして保存し、イベントとして配信する。"""
 
@@ -1059,22 +1152,49 @@ class MemoryManager:
         # --- 入力 ---
         source_system = str(request.source_system or "").strip()
         text_in = str(request.text or "").strip()
+        raw_images = list(request.images or [])
 
-        # --- 画像は保存しない（必要なら詳細説明を別イベントで残す） ---
-        # NOTE: 今回は通知自体の処理を優先し、画像説明は扱わない。
+        # --- 画像付き通知（/api/chat と同様の流れ） ---
+        image_summaries, has_valid_image = self._process_data_uri_images(
+            raw_images=[str(x or "") for x in raw_images],
+            purpose=LlmRequestPurpose.SYNC_IMAGE_SUMMARY_NOTIFICATION,
+        )
+        non_empty_summaries = [s for s in image_summaries if str(s or "").strip()]
+
+        # --- text が空の場合は、画像の有無で扱いを分ける ---
+        if not text_in:
+            if bool(has_valid_image):
+                text_in = str(_CHAT_DEFAULT_INPUT_TEXT_WHEN_IMAGES_ONLY)
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={"message": "text が空で、かつ有効な画像がありません", "code": "invalid_request"},
+                )
 
         # --- LLMで人格メッセージを生成 ---
         system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
-        user_prompt = "\n".join(
-            [
-                f"通知: {source_system}",
-                text_in,
-            ]
-        ).strip()
+        user_prompt = "\n".join([f"通知: {source_system}", text_in]).strip()
+
+        # --- 画像要約（内部用）を注入（本文に出さない） ---
+        conversation: list[dict[str, str]] = []
+        if non_empty_summaries:
+            conversation.append(
+                {
+                    "role": "assistant",
+                    "content": "\n".join(
+                        [
+                            "<<INTERNAL_CONTEXT>>",
+                            "画像要約（内部用。本文に出力しない）:",
+                            "\n".join([str(s) for s in non_empty_summaries]),
+                        ]
+                    ).strip(),
+                }
+            )
+        conversation.append({"role": "user", "content": user_prompt})
 
         resp = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
-            conversation=[{"role": "user", "content": user_prompt}],
+            conversation=conversation,
             purpose=LlmRequestPurpose.SYNC_NOTIFICATION,
             stream=False,
         )
@@ -1089,6 +1209,7 @@ class MemoryManager:
                 source="notification",
                 user_text=user_prompt,
                 assistant_text=message,
+                image_summaries_json=(_json_dumps(image_summaries) if raw_images else None),
                 entities_json="[]",
                 client_context_json=None,
             )
@@ -1136,6 +1257,24 @@ class MemoryManager:
         # --- 入力（永続化しない） ---
         instruction = str(request.instruction or "").strip()
         payload_text = str(request.payload_text or "").strip()
+        raw_images = list(request.images or [])
+
+        # --- 画像付きメタ依頼（/api/chat と同様の流れ） ---
+        image_summaries, has_valid_image = self._process_data_uri_images(
+            raw_images=[str(x or "") for x in raw_images],
+            purpose=LlmRequestPurpose.SYNC_IMAGE_SUMMARY_META_REQUEST,
+        )
+        non_empty_summaries = [s for s in image_summaries if str(s or "").strip()]
+
+        # --- instruction/payload_text が空の場合は、画像の有無で扱いを分ける ---
+        if not instruction and not payload_text:
+            if bool(has_valid_image):
+                instruction = str(_CHAT_DEFAULT_INPUT_TEXT_WHEN_IMAGES_ONLY)
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={"message": "instruction/payload_text が空で、かつ有効な画像がありません", "code": "invalid_request"},
+                )
 
         # --- LLMで能動メッセージを生成（外部要求だとは悟らせない） ---
         system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
@@ -1150,9 +1289,26 @@ class MemoryManager:
             ]
         ).strip()
 
+        # --- 画像要約（内部用）を注入（本文に出さない） ---
+        conversation: list[dict[str, str]] = []
+        if non_empty_summaries:
+            conversation.append(
+                {
+                    "role": "assistant",
+                    "content": "\n".join(
+                        [
+                            "<<INTERNAL_CONTEXT>>",
+                            "画像要約（内部用。本文に出力しない）:",
+                            "\n".join([str(s) for s in non_empty_summaries]),
+                        ]
+                    ).strip(),
+                }
+            )
+        conversation.append({"role": "user", "content": user_prompt})
+
         resp = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
-            conversation=[{"role": "user", "content": user_prompt}],
+            conversation=conversation,
             purpose=LlmRequestPurpose.SYNC_META_REQUEST,
             stream=False,
         )
@@ -1167,6 +1323,7 @@ class MemoryManager:
                 source="meta_proactive",
                 user_text=None,
                 assistant_text=message,
+                image_summaries_json=(_json_dumps(image_summaries) if raw_images else None),
                 entities_json="[]",
                 client_context_json=None,
             )
