@@ -1662,23 +1662,80 @@ class MemoryManager:
         - 宛先（target_client_id）はリマインダー機能では扱わない。
         """
 
+        def _format_hhmm_to_time_jp(hhmm: str) -> str:
+            """
+            HH:MM を「H時MM分」に変換する。
+
+            NOTE:
+            - 異常値の場合は「時刻」を返し、処理を継続する（発火を落とさない）。
+            """
+
+            s = str(hhmm or "").strip()
+            try:
+                parts = s.split(":")
+                if len(parts) != 2:
+                    return "時刻"
+                hour = int(parts[0])
+                minute = int(parts[1])
+                if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                    return "時刻"
+                return f"{hour}時{minute:02d}分"
+            except Exception:  # noqa: BLE001
+                return "時刻"
+
+        def _build_reminder_user_prompt(*, time_jp: str, content: str) -> str:
+            """
+            リマインダー発火用の user prompt を組み立てる。
+
+            重要:
+            - 「設定しました」ではなく「発火（いま鳴っている）」を伝える。
+            - 内容（content）は原文を改変せず、必ずそのまま含める（引用推奨）。
+            - 内部コンテキスト/内心/JSONなどが混入しないよう、要件を強めに固定する。
+            """
+
+            raw_content = str(content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+            raw_content_one_line = " ".join([x.strip() for x in raw_content.split("\n") if x.strip()]).strip()
+
+            return "\n".join(
+                [
+                    "あなたはいまリマインダーが発火したことをユーザーに短く伝える。",
+                    "これは『設定/予約/確認』ではない。『今、時間になった通知』である。",
+                    "",
+                    "<<<REMINDER_DATA>>>",
+                    f"time: {str(time_jp)}",
+                    f"content: {raw_content_one_line}",
+                    "<<<END>>>",
+                    "",
+                    "発話要件（厳守）:",
+                    "- 1〜2文で短く伝え、一言感想などを加える。",
+                    "- 時刻（time）を必ず含める。",
+                    "- content は必ず含める（原文を改変しない。かな変換/言い換え/要約を禁止）。",
+                    "- content を入れる場合は「」で引用してよい（引用する場合は原文を改変しない）。",
+                    "- 出力はユーザーに向けた自然なセリフのみ（見出し/箇条書き/コード/JSONは禁止）。",
+                    "- 禁止: ユーザーへの質問。",
+                    "- 禁止: 未来形（例: 『〜には…』）ではなく、現在の通知として言う（例: 『〜です』『〜になったよ』）。",
+                    "- 禁止: 内心/独白（例: 『（内心: ...）』）やメタ表現。",
+                    "- 禁止: <<INTERNAL_CONTEXT>> や <<<...>>> などの内部用タグ、内部事情の露出。",
+                    "",
+                    "例:",
+                    f"- {str(time_jp)}です。「{raw_content_one_line}」の時間ですよ。",
+                ]
+            ).strip()
+
         # --- 設定 ---
         cfg = self.config_store.config
         embedding_preset_id = str(cfg.embedding_preset_id).strip()
         embedding_dimension = int(cfg.embedding_dimension)
         now_ts = _now_utc_ts()
 
-        # --- LLMで短い文面を生成 ---
-        system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
-        user_prompt = "\n".join(
-            [
-                "リマインダーを発火する。",
-                "必須: 50文字以内で、時刻を含めて自然に言う。",
-                "",
-                f"時刻: {hhmm}",
-                f"内容: {content}",
-            ]
+        # --- LLMで文面を生成（人格を必ず反映する） ---
+        time_jp = _format_hhmm_to_time_jp(str(hhmm))
+        content_one_line = " ".join(
+            [x.strip() for x in str(content or "").replace("\r\n", "\n").replace("\r", "\n").split("\n") if x.strip()]
         ).strip()
+
+        system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
+        user_prompt = _build_reminder_user_prompt(time_jp=str(time_jp), content=str(content_one_line))
 
         resp = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
