@@ -31,12 +31,29 @@ if not exist "%DISTROOT%" (
 )
 
 REM --- PyInstaller 実行（確認プロンプト無し） ---
-if exist ".venv\Scripts\pyinstaller.exe" (
-  ".venv\Scripts\pyinstaller.exe" --noconfirm --distpath "%DISTROOT%" --workpath "%WORKROOT%" cocoro_ghost_windows.spec
-) else (
-  REM venvが無い場合はPATH上のpyinstaller.exeを使う
-  pyinstaller.exe --noconfirm --distpath "%DISTROOT%" --workpath "%WORKROOT%" cocoro_ghost_windows.spec
+REM venv を必須にする（グローバル環境を使うと依存のmetadataが足りず失敗しやすい）
+if not exist ".venv\Scripts\python.exe" (
+  echo.
+  echo [ERROR] .venv not found.
+  echo [HINT] Run: setup.bat
+  exit /b 1
 )
+
+REM PyInstaller が venv に入っていなければ導入する
+".venv\Scripts\python.exe" -m pip show pyinstaller >nul 2>&1
+if errorlevel 1 (
+  echo.
+  echo [INFO] Installing pyinstaller into venv...
+  ".venv\Scripts\python.exe" -m pip install pyinstaller
+  if errorlevel 1 (
+    echo.
+    echo [ERROR] Failed to install pyinstaller.
+    exit /b 1
+  )
+)
+
+REM venv の python.exe 経由で PyInstaller を実行する
+".venv\Scripts\python.exe" -m PyInstaller --noconfirm --distpath "%DISTROOT%" --workpath "%WORKROOT%" cocoro_ghost_windows.spec
 if errorlevel 1 (
   echo.
   echo [ERROR] PyInstaller build failed.
