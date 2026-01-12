@@ -163,7 +163,7 @@
 注記:
 
 - テーブル名は `revisions` とする
-- 通常の会話検索は「出来事ログ（`events`）/状態（`state`）/要約（`state.kind="summary"`）」を中心にし、`revisions` は「なぜ変えた？」の説明・デバッグに寄せる
+- 通常の会話検索は「出来事ログ（`events`）/状態（`state`）」を中心にし、`revisions` は「なぜ変えた？」の説明・デバッグに寄せる
 
 ### 文字検索（文字n-gram / FTS5 `trigram`）
 
