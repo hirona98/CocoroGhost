@@ -903,11 +903,15 @@ class LlmClient:
         kwargs = {
             "model": model_for_request,
             "input": texts,
-            # --- OpenAI互換(=OpenRouter含む) embeddings の仕様に合わせる ---
-            # OpenRouter側のバリデーションで `encoding_format` が enum(float|base64) になっており、
-            # LiteLLM/依存ライブラリ側の既定値が変わると 400 になり得るため明示する。
-            "encoding_format": "float",
         }
+
+        # --- OpenAI互換(=OpenRouter含む) embeddings の仕様に合わせる ---
+        # NOTE:
+        # - OpenAI互換 embeddings では `encoding_format` が enum(float|base64) でバリデーションされる。
+        # - 一方、Gemini等のプロバイダ直呼びでは `encoding_format` 自体が未対応で弾かれる。
+        # そのため model が OpenAI互換（openai/）のときだけ明示指定する。
+        if str(model_for_request or "").strip().startswith("openai/"):
+            kwargs["encoding_format"] = "float"
         if self.embedding_api_key:
             kwargs["api_key"] = self.embedding_api_key
         if api_base_for_request:
