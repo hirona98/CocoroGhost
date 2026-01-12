@@ -20,7 +20,7 @@ import logging
 import time
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from cocoro_ghost.db import memory_session_scope, upsert_vec_item
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
@@ -624,6 +624,14 @@ def _handle_upsert_event_embedding(
         ev = db.query(Event).filter(Event.event_id == int(event_id)).one_or_none()
         if ev is None:
             return
+        # --- 検索対象外（自動分離など）なら、vec_items を消して終了 ---
+        # NOTE:
+        # - vec_items が残ると、ベクトル検索で再浮上する可能性がある。
+        # - searchable=0 は「ログは残すが、想起には使わない」を表す。
+        if int(getattr(ev, "searchable", 1) or 0) != 1:
+            item_id = _vec_item_id(int(_VEC_KIND_EVENT), int(event_id))
+            db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
+            return
         text_in = _build_event_embedding_text(ev)
         rank_at = int(ev.created_at)
 
@@ -665,6 +673,9 @@ def _handle_generate_write_plan(
         ev = db.query(Event).filter(Event.event_id == int(event_id)).one_or_none()
         if ev is None:
             return
+        # --- 検索対象外（自動分離など）なら、記憶更新の材料にしない ---
+        if int(getattr(ev, "searchable", 1) or 0) != 1:
+            return
 
         # --- 画像要約（events.image_summaries_json）をlist[str]へ正規化する ---
         # NOTE:
@@ -692,7 +703,7 @@ def _handle_generate_write_plan(
         }
 
         # --- 直近の出来事（同一client優先） ---
-        recent_events_q = db.query(Event).order_by(Event.event_id.desc())
+        recent_events_q = db.query(Event).filter(Event.searchable == 1).order_by(Event.event_id.desc())
         if ev.client_id is not None and str(ev.client_id).strip():
             recent_events_q = recent_events_q.filter(Event.client_id == str(ev.client_id))
         recent_events = recent_events_q.limit(12).all()
@@ -700,6 +711,7 @@ def _handle_generate_write_plan(
         # --- 直近の状態 ---
         recent_states = (
             db.query(State)
+            .filter(State.searchable == 1)
             .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
             .limit(24)
             .all()
@@ -1363,6 +1375,11 @@ def _handle_upsert_state_embedding(
         st = db.query(State).filter(State.state_id == int(state_id)).one_or_none()
         if st is None:
             return
+        # --- 検索対象外（自動分離など）なら、vec_items を消して終了 ---
+        if int(getattr(st, "searchable", 1) or 0) != 1:
+            item_id = _vec_item_id(int(_VEC_KIND_STATE), int(state_id))
+            db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
+            return
         text_in = _build_state_embedding_text(st)
         rank_at = int(st.last_confirmed_at)
         payload_obj = _json_loads_maybe(st.payload_json)
@@ -1403,6 +1420,14 @@ def _handle_upsert_event_affect_embedding(
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         aff = db.query(EventAffect).filter(EventAffect.id == int(affect_id)).one_or_none()
         if aff is None:
+            return
+        # --- 紐づく event が検索対象外なら、vec_items を消して終了 ---
+        # NOTE:
+        # - event_affect は event の派生であり、event が想起対象外なら affect も想起対象外とする。
+        ev = db.query(Event).filter(Event.event_id == int(aff.event_id)).one_or_none()
+        if ev is None or int(getattr(ev, "searchable", 1) or 0) != 1:
+            item_id = _vec_item_id(int(_VEC_KIND_EVENT_AFFECT), int(affect_id))
+            db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
             return
         text_in = _build_event_affect_embedding_text(aff)
         rank_at = int(aff.created_at)

@@ -30,6 +30,12 @@ class Event(MemoryBase):
     created_at: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
 
+    # --- 検索対象フラグ ---
+    # NOTE:
+    # - ユーザーのフィードバックで「関係ない/違う」等が発生した場合に、想起の対象から外すために使う。
+    # - ログとしての events 自体は保持し、検索/埋め込み/候補収集から除外する。
+    searchable: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
     # --- 入力の識別（クライアントは単純I/Oなので、サーバ側で文脈を構築する） ---
     client_id: Mapped[Optional[str]] = mapped_column(Text)
     source: Mapped[str] = mapped_column(Text, nullable=False)  # chat/notification/reminder/desktop_watch/meta_proactive/vision_detail など
@@ -152,6 +158,12 @@ class State(MemoryBase):
     last_confirmed_at: Mapped[int] = mapped_column(Integer, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     salience: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    # --- 検索対象フラグ ---
+    # NOTE:
+    # - 誤想起の修正（自動分離）で検索対象から外すために使う。
+    # - state自体はDBに保持し、検索/埋め込み/候補収集から除外する。
+    searchable: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     # --- 並存のための期間 ---
     valid_from_ts: Mapped[Optional[int]] = mapped_column(Integer)
