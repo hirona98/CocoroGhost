@@ -34,13 +34,6 @@ from cocoro_ghost.reminders_repo import ensure_initial_reminder_global_settings
 router = APIRouter(prefix="/reminders", tags=["reminders"])
 
 
-def _normalize_client_id(value: str | None) -> str | None:
-    """client_id を正規化し、空文字なら None を返す。"""
-
-    s = str(value or "").strip()
-    return s or None
-
-
 def _require_non_empty(value: str | None, *, field: str) -> str:
     """必須の文字列フィールドを検証する。"""
 
@@ -234,7 +227,6 @@ def get_reminder_settings(db: Session = Depends(get_reminders_db_dep)) -> schema
     row = ensure_initial_reminder_global_settings(db)
     return schemas.RemindersGlobalSettingsResponse(
         reminders_enabled=bool(row.reminders_enabled),
-        target_client_id=_normalize_client_id(row.target_client_id),
     )
 
 
@@ -249,13 +241,11 @@ def put_reminder_settings(
 
     # --- 更新 ---
     row.reminders_enabled = bool(request.reminders_enabled)
-    row.target_client_id = _normalize_client_id(request.target_client_id)
 
     db.commit()
 
     return schemas.RemindersGlobalSettingsResponse(
         reminders_enabled=bool(row.reminders_enabled),
-        target_client_id=_normalize_client_id(row.target_client_id),
     )
 
 

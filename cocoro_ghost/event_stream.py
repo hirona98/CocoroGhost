@@ -196,6 +196,31 @@ def is_client_connected(client_id: str) -> bool:
     return bool(ws is not None and ws in _clients)
 
 
+def get_connected_client_count() -> int:
+    """
+    接続中クライアント数を返す。
+
+    リマインダー等の「ブロードキャスト前提」の機能で、
+    「接続0のときは due を保持する」判定に利用する。
+    """
+
+    # NOTE:
+    # - _clients はイベントループ側で更新されるが、他スレッドから参照される用途もある。
+    # - ここでは「概数が取れれば十分」なので、ロックは導入しない。
+    return int(len(_clients))
+
+
+def has_any_client_connected() -> bool:
+    """
+    接続中クライアントが1つ以上あるかを返す。
+
+    例:
+    - リマインダー: 接続0なら発火せず保持する
+    """
+
+    return get_connected_client_count() > 0
+
+
 async def _dispatch_loop() -> None:
     while True:
         if _event_queue is None:  # pragma: no cover

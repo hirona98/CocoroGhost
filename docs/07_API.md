@@ -332,8 +332,7 @@ UI向けの「全設定」取得/更新。
 
 ```json
 {
-  "reminders_enabled": true,
-  "target_client_id": "console-uuid-or-stable-id"
+  "reminders_enabled": true
 }
 ```
 
@@ -341,8 +340,7 @@ UI向けの「全設定」取得/更新。
 
 ```json
 {
-  "reminders_enabled": true,
-  "target_client_id": "console-uuid-or-stable-id"
+  "reminders_enabled": true
 }
 ```
 
@@ -420,7 +418,7 @@ UI向けの「全設定」取得/更新。
 - 認証: `Authorization: Bearer <TOKEN>`
 - 目的:
   - `POST /api/v2/notification` / `POST /api/v2/meta-request` を受信したとき、接続中クライアントへイベントを配信する
-  - リマインダーが発火したとき、`target_client_id` 宛てに `reminder` を配信する
+  - リマインダーが発火したとき、`reminder` をブロードキャスト配信する
   - 視覚のための `vision.capture_request` をクライアントへ送る（命令）
 
 接続中のクライアントに対して、発生したイベントをリアルタイムで送信する（キャッチアップ再送はしない）。
@@ -489,8 +487,6 @@ UI向けの「全設定」取得/更新。
   "event_id": 123,
   "type": "reminder",
   "data": {
-    "reminder_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    "hhmm": "09:30",
     "message": "AI人格のセリフ（50文字以内、時刻を含む）"
   }
 }

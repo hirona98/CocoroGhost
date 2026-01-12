@@ -2,7 +2,7 @@
 リマインダーDB（reminders.db）のORMモデル
 
 reminders.db は以下を扱う：
-- グローバル設定（reminders_enabled / target_client_id）
+- グローバル設定（reminders_enabled）
 - リマインダー定義（単発/毎日/毎週）
 - 実行状態（次回発火時刻など）
 """
@@ -21,7 +21,6 @@ from cocoro_ghost.reminders_db import RemindersBase
 
 # UUIDの文字列長（ハイフン含む36文字）
 _UUID_STR_LEN = 36
-_CLIENT_ID_MAX_LEN = 128
 _REPEAT_KIND_MAX_LEN = 16
 _TIME_OF_DAY_MAX_LEN = 5  # "HH:MM"
 
@@ -37,14 +36,12 @@ class ReminderGlobalSettings(RemindersBase):
     リマインダーのグローバル設定（単一行）。
 
     - reminders_enabled: リマインダー機能の有効/無効
-    - target_client_id: 宛先 client_id（スピーカー端末）
     """
 
     __tablename__ = "reminder_global_settings"
 
     id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), primary_key=True, default=_uuid_str)
     reminders_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    target_client_id: Mapped[Optional[str]] = mapped_column(String(_CLIENT_ID_MAX_LEN), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

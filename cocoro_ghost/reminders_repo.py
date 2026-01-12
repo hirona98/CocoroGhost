@@ -29,7 +29,6 @@ def ensure_initial_reminder_global_settings(db: Session) -> ReminderGlobalSettin
     # --- 初期行を作成 ---
     row = ReminderGlobalSettings(
         reminders_enabled=False,
-        target_client_id=None,
     )
     db.add(row)
     db.flush()
