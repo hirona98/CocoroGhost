@@ -8,7 +8,7 @@
 設計方針:
 - cron無し運用を前提に、サーバ側の定期タスクから tick() を呼び出す。
 - reminders_enabled が OFF のときは「完全に発火しない」。
-- target_client_id が未接続のときは「接続まで待って遅延発火」。
+- 接続中クライアントが0のときは「接続まで待って遅延発火」。
 """
 
 from __future__ import annotations
@@ -70,8 +70,6 @@ class ReminderService:
             with reminders_session_scope() as db:
                 settings = ensure_initial_reminder_global_settings(db)
                 enabled = bool(settings.reminders_enabled)
-                target_client_id = str(settings.target_client_id or "").strip()
-                tz_name = str(DEFAULT_REMINDER_TIME_ZONE)
 
                 # --- 初回tick（起動直後） ---
                 # NOTE:
@@ -91,13 +89,8 @@ class ReminderService:
                     self._enabled_prev = True
                     self._drop_past_due_on_enable(db, now_utc_ts=now_utc_ts)
 
-                # --- 宛先なしは発火できない（保持） ---
-                if not target_client_id:
-                    logger.info("reminders enabled but target_client_id is empty; holding due reminders")
-                    return
-
-                # --- 宛先クライアントが未接続なら待つ（保持） ---
-                if not event_stream.is_client_connected(target_client_id):
+                # --- 接続クライアントが無ければ発火できない（保持） ---
+                if not event_stream.has_any_client_connected():
                     return
 
                 # --- due を抽出（複数溜まることを許容） ---
@@ -119,7 +112,6 @@ class ReminderService:
                         db,
                         mm=mm,
                         reminder=r,
-                        target_client_id=target_client_id,
                         now_utc_ts=now_utc_ts,
                     )
         finally:
@@ -161,7 +153,7 @@ class ReminderService:
                 continue
             r.next_fire_at_utc = int(next_fire)
 
-    def _fire_one(self, db, *, mm, reminder: Reminder, target_client_id: str, now_utc_ts: int) -> None:
+    def _fire_one(self, db, *, mm, reminder: Reminder, now_utc_ts: int) -> None:
         """due なリマインダーを1件発火し、DBの次回状態へ進める。"""
 
         # --- HH:MM（読み上げ/表示用） ---
@@ -178,8 +170,6 @@ class ReminderService:
         # - クライアント側の読み上げ制約があるため、メッセージは短い想定。
         # - memory_enabled=false でも配信は行う（保存はしない）。
         mm.run_reminder_once(
-            reminder_id=str(reminder.id),
-            target_client_id=str(target_client_id),
             hhmm=str(hhmm),
             content=str(reminder.content),
         )

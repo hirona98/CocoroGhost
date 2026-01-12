@@ -1653,8 +1653,14 @@ class MemoryManager:
             event_id=int(event_id),
         )
 
-    def run_reminder_once(self, *, reminder_id: str, target_client_id: str, hhmm: str, content: str) -> None:
-        """リマインダーを1件発火し、イベントストリームへ配信する。"""
+    def run_reminder_once(self, *, hhmm: str, content: str) -> None:
+        """
+        リマインダーを1件発火し、イベントストリームへブロードキャスト配信する。
+
+        仕様:
+        - events/stream の reminder は data.message のみを送る。
+        - 宛先（target_client_id）はリマインダー機能では扱わない。
+        """
 
         # --- 設定 ---
         cfg = self.config_store.config
@@ -1703,11 +1709,9 @@ class MemoryManager:
             type="reminder",
             event_id=int(event_id),
             data={
-                "reminder_id": str(reminder_id),
-                "hhmm": str(hhmm),
                 "message": message,
             },
-            target_client_id=str(target_client_id),
+            target_client_id=None,
         )
 
         # --- 非同期: 埋め込み更新 ---

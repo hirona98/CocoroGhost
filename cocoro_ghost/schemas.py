@@ -357,14 +357,12 @@ class RemindersGlobalSettingsResponse(BaseModel):
     """リマインダーのグローバル設定レスポンス。"""
 
     reminders_enabled: bool
-    target_client_id: Optional[str] = None
 
 
 class RemindersGlobalSettingsUpdateRequest(BaseModel):
     """リマインダーのグローバル設定更新リクエスト。"""
 
     reminders_enabled: bool
-    target_client_id: Optional[str] = None
 
 
 class ReminderItem(BaseModel):
