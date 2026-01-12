@@ -1,0 +1,7 @@
+{
+  // --- Python: workspace venv を既定にする ---
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+
+  // --- Terminal でも venv を自動有効化（好みでOFF可） ---
+  "python.terminal.activateEnvironment": true
+}

@@ -5,6 +5,7 @@
             "name": "cocoro_ghost: run.py",
             "type": "debugpy",
             "request": "launch",
+            "python": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
             "program": "${workspaceFolder}/run.py",
             "env": {
                 "PYTHONUTF8": "1"
