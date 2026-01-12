@@ -144,7 +144,6 @@ def request_capture_and_wait(
             "timeout_ms": req.timeout_ms,
         },
         target_client_id=cid,
-        bufferable=False,
     )
     logger.info(
         "vision capture request sent request_id=%s client_id=%s source=%s purpose=%s timeout_ms=%s",

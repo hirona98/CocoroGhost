@@ -3,11 +3,10 @@ WebSocket向けアプリイベント配信
 
 通知完了、メタ要求完了などのアプリケーションイベントを
 WebSocketクライアントにリアルタイム配信する。
-イベントはリングバッファに保持され、新規接続時にキャッチアップ可能。
 
 Planned:
 - 視覚（Vision）のための命令（capture_request）を同じストリームで配信する。
-- 命令は特定クライアント（client_id）宛てに送る（broadcastしない/バッファしない）。
+- 命令は特定クライアント（client_id）宛てに送る（broadcastしない）。
 """
 
 from __future__ import annotations
@@ -15,15 +14,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from fastapi import WebSocket
-
-
-MAX_BUFFER = 200
 
 
 @dataclass
@@ -39,11 +34,9 @@ class AppEvent:
     event_id: int  # 関連Event ID（events.event_id）
     data: Dict[str, Any]  # 追加データ
     target_client_id: Optional[str] = None  # 宛先client_id（指定時はそのクライアントにのみ送る）
-    bufferable: bool = True  # リングバッファに保持するか（命令はFalse）
 
 
 _event_queue: Optional[asyncio.Queue[AppEvent]] = None
-_buffer: Deque[AppEvent] = deque(maxlen=MAX_BUFFER)
 _clients: Set["WebSocket"] = set()
 _ws_to_client_id: dict["WebSocket", str] = {}
 _client_id_to_ws: dict[str, "WebSocket"] = {}
@@ -126,7 +119,6 @@ def publish(
     event_id: int,
     data: Optional[Dict[str, Any]] = None,
     target_client_id: Optional[str] = None,
-    bufferable: bool = True,
 ) -> None:
     """
     イベントをキューに投入する。
@@ -141,18 +133,8 @@ def publish(
         event_id=int(event_id),
         data=data or {},
         target_client_id=(str(target_client_id).strip() if target_client_id else None),
-        bufferable=bool(bufferable),
     )
     _loop.call_soon_threadsafe(_event_queue.put_nowait, event)
-
-
-def get_buffer_snapshot() -> List[AppEvent]:
-    """
-    バッファ内の直近イベントを取得する。
-
-    新規接続時のキャッチアップ用にリングバッファの内容を返す。
-    """
-    return list(_buffer)
 
 
 async def add_client(ws: "WebSocket") -> None:
@@ -177,20 +159,6 @@ async def remove_client(ws: "WebSocket") -> None:
     _ws_to_caps.pop(ws, None)
     if client_id and _client_id_to_ws.get(client_id) is ws:
         _client_id_to_ws.pop(client_id, None)
-
-
-async def send_buffer(ws: "WebSocket") -> None:
-    """
-    バッファ内のイベントを送信する。
-
-    新規接続時にキャッチアップとして直近イベントを順に送信する。
-    """
-    for event in get_buffer_snapshot():
-        # --- バッファ済みイベントのみ送る（命令はバッファしない） ---
-        # NOTE: bufferable=False のイベントはそもそも _buffer に入らない想定だが、二重安全にする。
-        if not bool(event.bufferable):
-            continue
-        await ws.send_text(_serialize_event(event))
 
 
 def register_client_identity(ws: "WebSocket", *, client_id: str, caps: Optional[list[str]] = None) -> None:
@@ -234,11 +202,6 @@ async def _dispatch_loop() -> None:
             await asyncio.sleep(0.1)
             continue
         event = await _event_queue.get()
-
-        # --- バッファリング ---
-        # 命令（例: vision.capture_request）は後から送ると危険なため、基本はバッファしない。
-        if event.bufferable:
-            _buffer.append(event)
         payload = _serialize_event(event)
 
         dead_clients: List["WebSocket"] = []
@@ -252,19 +215,17 @@ async def _dispatch_loop() -> None:
             # NOTE: 送信ペイロード（dataの中身）はログに出さず、type/event_id/宛先だけを記録する。
             if ws is not None and ws in _clients:
                 logger.info(
-                    "event stream send type=%s event_id=%s target_client_id=%s bufferable=%s",
+                    "event stream send type=%s event_id=%s target_client_id=%s",
                     event.type,
                     int(event.event_id),
                     target_id,
-                    bool(event.bufferable),
                 )
             else:
                 logger.info(
-                    "event stream send skipped (target not connected) type=%s event_id=%s target_client_id=%s bufferable=%s",
+                    "event stream send skipped (target not connected) type=%s event_id=%s target_client_id=%s",
                     event.type,
                     int(event.event_id),
                     target_id,
-                    bool(event.bufferable),
                 )
             if ws is not None and ws in _clients:
                 try:
@@ -275,11 +236,10 @@ async def _dispatch_loop() -> None:
             # --- 送信ログ（ブロードキャスト） ---
             # NOTE: ブロードキャストの場合は宛先が複数になり得るため、接続数のみ記録する。
             logger.info(
-                "event stream broadcast type=%s event_id=%s clients=%s bufferable=%s",
+                "event stream broadcast type=%s event_id=%s clients=%s",
                 event.type,
                 int(event.event_id),
                 len(_clients),
-                bool(event.bufferable),
             )
             for ws in list(_clients):
                 try:
