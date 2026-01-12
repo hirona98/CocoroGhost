@@ -1,64 +1,105 @@
 @echo off
+setlocal
+
+REM ========================================
+REM CocoroGhost setup (Windows)
+REM - Creates venv if missing
+REM - Installs dependencies into venv
+REM - Prepares config + data directory
+REM ========================================
+
+REM --- Always run from project root (this .bat location) ---
+cd /d "%~dp0"
+
+REM --- Ensure UTF-8 behavior for Python output ---
+set PYTHONUTF8=1
+
 echo ========================================
-echo CocoroGhost セットアップスクリプト
+echo CocoroGhost setup
 echo ========================================
 echo.
 
-REM 仮想環境の確認
-if not exist .venv (
-    echo 仮想環境が存在しません。作成します...
-    python -m venv .venv
+REM --- Create venv if missing ---
+if not exist ".venv\Scripts\python.exe" (
+    echo [1/3] Creating venv .venv...
+
+    REM Prefer Python Launcher if available
+    where.exe py.exe >nul 2>&1
+    if %errorlevel%==0 (
+        py.exe -3.10 -m venv .venv
+        if errorlevel 1 (
+            py.exe -3 -m venv .venv
+        )
+    ) else (
+        REM Fallback: python.exe must be on PATH
+        where.exe python.exe >nul 2>&1
+        if not %errorlevel%==0 (
+            echo [ERROR] Python not found. Install Python 3.10+ and ensure python.exe is on PATH.
+            pause
+            exit /b 1
+        )
+        python.exe -m venv .venv
+    )
+
     if errorlevel 1 (
-        echo エラー: 仮想環境の作成に失敗しました
+        echo [ERROR] Failed to create venv.
         pause
         exit /b 1
     )
-    echo 仮想環境を作成しました
 )
 
-REM 仮想環境の活性化と依存パッケージのインストール
+REM --- Install dependencies into venv (no activate needed) ---
 echo.
-echo 依存パッケージをインストールします...
-call .venv\Scripts\activate.bat
-pip install -e .
+echo [2/3] Installing dependencies...
+".venv\Scripts\python.exe" -m pip install --upgrade pip
 if errorlevel 1 (
-    echo エラー: パッケージのインストールに失敗しました
+    echo [ERROR] Failed to upgrade pip.
     pause
     exit /b 1
 )
 
-REM 設定ファイルの確認とコピー
+".venv\Scripts\python.exe" -m pip install -e .
+if errorlevel 1 (
+    echo [ERROR] Failed to install package: pip install -e .
+    pause
+    exit /b 1
+)
+
+REM --- Prepare config ---
 echo.
-if not exist config\setting.toml (
-    echo 設定ファイルを作成します...
-    copy config\setting.toml.release config\setting.toml
-    if errorlevel 1 (
-        echo エラー: 設定ファイルのコピーに失敗しました
+echo [3/3] Preparing config/data...
+if not exist "config\setting.toml" (
+    if not exist "config\setting.toml.release" (
+        echo [ERROR] config\setting.toml.release not found.
         pause
         exit /b 1
     )
-    echo 設定ファイルを作成しました: config\setting.toml
-    echo 注意: config\setting.toml を編集してAPIキーなどを設定してください
+    copy /y "config\setting.toml.release" "config\setting.toml" >nul
+    if errorlevel 1 (
+        echo [ERROR] Failed to create config\setting.toml
+        pause
+        exit /b 1
+    )
+    echo Created: config\setting.toml
 ) else (
-    echo 設定ファイルは既に存在します
+    echo Config exists: config\setting.toml
 )
 
-REM dataディレクトリの作成
-if not exist data (
-    echo dataディレクトリを作成します...
-    mkdir data
+REM --- Ensure data directory exists ---
+if not exist "data" (
+    mkdir "data"
 )
 
 echo.
 echo ========================================
-echo セットアップが完了しました！
+echo Setup completed.
 echo ========================================
 echo.
-echo 起動方法:
-echo   .venv\Scripts\activate
-echo   python -X utf8 run.py
-echo.
-echo または:
-echo   start.bat
+echo Next:
+echo   - Edit config\setting.toml
+echo   - Run: start.bat
 echo.
 pause
+
+endlocal
+
