@@ -1259,7 +1259,7 @@ class MemoryManager:
         *,
         raw_images: list[str],
         purpose: str,
-    ) -> tuple[list[str], bool]:
+    ) -> tuple[list[str], bool, list[str]]:
         """
         data URI画像を検証・デコードし、画像要約（詳細）を生成する。
 
@@ -1268,9 +1268,10 @@ class MemoryManager:
             purpose: LLM呼び出し目的ラベル（ログ用途）。
 
         Returns:
-            (image_summaries, has_any_valid_image)
+            (image_summaries, has_any_valid_image, valid_images)
             - image_summaries: raw_images と同じ長さの要約配列（無視/失敗は ""）
             - has_any_valid_image: 有効画像が1枚以上あったか
+            - valid_images: 検証済みのdata URI（入力順、無効は除外）
 
         仕様:
         - 不正画像は「その画像だけ無視」して継続する（入力順の対応は維持）。
@@ -1285,6 +1286,7 @@ class MemoryManager:
         valid_images_bytes: list[bytes] = []
         valid_images_mimes: list[str] = []
         valid_images_index: list[int] = []
+        valid_images_data_uris: list[str] = []
 
         # --- サイズ上限（合計） ---
         total_image_bytes = 0
@@ -1325,6 +1327,8 @@ class MemoryManager:
             valid_images_bytes.append(image_bytes)
             valid_images_mimes.append(str(mime))
             valid_images_index.append(int(idx))
+            # NOTE: クライアント配信用に、空白除去済みbase64へ正規化したdata URIを採用する。
+            valid_images_data_uris.append(f"data:{mime};base64,{b64}")
 
         # --- 画像要約（詳細）を作る（画像ごと、最大400文字） ---
         # NOTE:
@@ -1345,7 +1349,7 @@ class MemoryManager:
                     image_summaries[int(idx2)] = str(summary or "").strip()
 
         has_valid = any(b is not None for b in images_bytes_by_index)
-        return (image_summaries, bool(has_valid))
+        return (image_summaries, bool(has_valid), list(valid_images_data_uris))
 
     def handle_notification(self, request: schemas.NotificationRequest, *, background_tasks: BackgroundTasks) -> None:
         """通知を受け取り、出来事ログとして保存し、イベントとして配信する。"""
@@ -1357,6 +1361,8 @@ class MemoryManager:
         now_ts = _now_utc_ts()
 
         # --- 入力 ---
+        client_id = str(request.client_id or "").strip()
+        target_client_id = client_id if client_id else None
         source_system = str(request.source_system or "").strip()
         if not source_system:
             source_system = "外部システム"
@@ -1364,7 +1370,7 @@ class MemoryManager:
         raw_images = list(request.images or [])
 
         # --- 画像付き通知（/api/chat と同様の流れ） ---
-        image_summaries, has_valid_image = self._process_data_uri_images(
+        image_summaries, has_valid_image, valid_images_data_uris = self._process_data_uri_images(
             raw_images=[str(x or "") for x in raw_images],
             purpose=LlmRequestPurpose.SYNC_IMAGE_SUMMARY_NOTIFICATION,
         )
@@ -1424,7 +1430,7 @@ class MemoryManager:
             ev = Event(
                 created_at=now_ts,
                 updated_at=now_ts,
-                client_id=None,
+                client_id=(str(target_client_id) if target_client_id else None),
                 source="notification",
                 user_text=user_text,
                 assistant_text=message,
@@ -1443,8 +1449,9 @@ class MemoryManager:
             data={
                 "system_text": f"[{source_system}] {text_in}",
                 "message": message,
+                "images": list(valid_images_data_uris),
             },
-            target_client_id=None,
+            target_client_id=(str(target_client_id) if target_client_id else None),
         )
 
         # --- 非同期: 埋め込み更新 ---
@@ -1478,7 +1485,7 @@ class MemoryManager:
         raw_images = list(request.images or [])
 
         # --- 画像付きメタ依頼（/api/chat と同様の流れ） ---
-        image_summaries, has_valid_image = self._process_data_uri_images(
+        image_summaries, has_valid_image, _valid_images_data_uris = self._process_data_uri_images(
             raw_images=[str(x or "") for x in raw_images],
             purpose=LlmRequestPurpose.SYNC_IMAGE_SUMMARY_META_REQUEST,
         )

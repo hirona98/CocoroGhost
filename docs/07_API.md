@@ -433,7 +433,8 @@ UI向けの「全設定」取得/更新。
   "type": "notification|meta-request|desktop_watch|reminder|vision.capture_request",
   "data": {
     "system_text": "string",
-    "message": "string"
+    "message": "string",
+    "images": ["data:image/png;base64,..."]
   }
 }
 ```
@@ -450,7 +451,8 @@ UI向けの「全設定」取得/更新。
   "type": "notification",
   "data": {
     "system_text": "[notificationのfrom] notificationのmessage",
-    "message": "AI人格のセリフ"
+    "message": "AI人格のセリフ",
+    "images": ["data:image/png;base64,..."]
   }
 }
 ```
@@ -513,6 +515,7 @@ UI向けの「全設定」取得/更新。
 補足:
 
 - 保存しない命令（例: `vision.capture_request`）は `event_id: 0` とする
+- `data.images` は通知に画像がある場合のみ付与される（meta-request等には通常付かない）
 
 ### クライアント→サーバ（必須: 宛先配信を受ける場合）
 

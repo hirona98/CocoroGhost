@@ -161,9 +161,10 @@ class NotificationRequest(BaseModel):
     /notification 用リクエスト（内部形式）。
     外部システムからの通知をAI人格に伝える。
     """
+    client_id: Optional[str] = None     # 宛先クライアントID（省略時はブロードキャスト）
     source_system: str                   # 通知元システム名
     text: str                            # 通知テキスト
-    images: List[str] = Field(default_factory=list)  # 添付画像（data URI形式、最大5枚）
+    images: List[str] = Field(default_factory=list, max_length=5)  # 添付画像（data URI形式、最大5枚）
 
 
 class NotificationV2Request(BaseModel):
@@ -171,6 +172,7 @@ class NotificationV2Request(BaseModel):
     /notification/v2 用リクエスト。
     data URI形式の画像を受け付けるバージョン。
     """
+    client_id: Optional[str] = None     # 宛先クライアントID（省略時はブロードキャスト）
     source_system: str                   # 通知元システム名
     text: str                            # 通知テキスト
     images: List[str] = Field(default_factory=list, max_length=5)  # data URI形式の画像（最大5枚）
