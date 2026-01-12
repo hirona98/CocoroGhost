@@ -55,6 +55,36 @@ def _openrouter_slug_from_model(model: str) -> str:
     return cleaned
 
 
+def _validate_openrouter_embedding_slug(slug: str) -> None:
+    """OpenRouterのEmbeddingモデルslugとして妥当かを軽く検査する。
+
+    OpenRouterではチャットモデルとEmbeddingモデルのslugが別で、
+    チャットモデル（例: gemini-*-flash / *-preview）を embeddings に投げると失敗する。
+
+    この関数は「誤設定でハマりやすいケース」だけを明示的に弾き、
+    それ以外はOpenRouter側のエラーに委ねる。
+
+    Args:
+        slug: OpenRouterのmodel slug（例: google/gemini-embedding-001）。
+
+    Raises:
+        ValueError: Embeddingとして不適切なslugが推測される場合。
+    """
+    # --- Geminiチャット系の誤設定を狙い撃ちで弾く ---
+    cleaned = str(slug or "").strip()
+    if not cleaned:
+        raise ValueError("embedding model slug is empty")
+
+    is_google_gemini = cleaned.startswith("google/gemini-")
+    looks_like_chat = any(key in cleaned for key in ["flash", "pro", "preview"]) and "embedding" not in cleaned
+    if is_google_gemini and looks_like_chat:
+        raise ValueError(
+            "Embedding model seems to be a chat model slug. "
+            "For OpenRouter + Gemini embeddings, set embedding_model to something like "
+            "'openrouter/google/gemini-embedding-001' (not a gemini-*-flash/pro/preview chat model)."
+        )
+
+
 def _get_embedding_api_base(*, embedding_model: str, embedding_base_url: str | None) -> str | None:
     """
     Embedding 用の api_base を決定する。
@@ -867,11 +897,16 @@ class LlmClient:
         if str(self.embedding_model or "").strip().startswith("openrouter/"):
             # --- OpenRouter の埋め込みは OpenAI互換として呼び出す（api_base を自動設定） ---
             openrouter_slug = _openrouter_slug_from_model(self.embedding_model)
+            _validate_openrouter_embedding_slug(openrouter_slug)
             model_for_request = _to_openai_compatible_model_for_slug(openrouter_slug)
 
         kwargs = {
             "model": model_for_request,
             "input": texts,
+            # --- OpenAI互換(=OpenRouter含む) embeddings の仕様に合わせる ---
+            # OpenRouter側のバリデーションで `encoding_format` が enum(float|base64) になっており、
+            # LiteLLM/依存ライブラリ側の既定値が変わると 400 になり得るため明示する。
+            "encoding_format": "float",
         }
         if self.embedding_api_key:
             kwargs["api_key"] = self.embedding_api_key
