@@ -354,7 +354,7 @@ class LlmRequestPurpose:
     SYNC_CONVERSATION = "【同期】＜＜ 会話応答作成 ＞＞"
     SYNC_SEARCH_PLAN = "【同期】＜＜ 検索計画作成（SearchPlan） ＞＞"
     SYNC_SEARCH_SELECT = "【同期】＜＜ 検索候補の選別（SearchResultPack） ＞＞"
-    SYNC_NOTIFICATION = "【同期】＜＜ 通知返答 ＞＞"
+    SYNC_NOTIFICATION = "【同期】＜＜ 通知（受信報告） ＞＞"
     SYNC_META_REQUEST = "【同期】＜＜ メタ要求対応 ＞＞"
     SYNC_IMAGE_DETAIL = "【同期】＜＜ 画像説明生成（詳細） ＞＞"
     SYNC_IMAGE_SUMMARY_CHAT = "【同期】＜＜ 画像要約（チャット） ＞＞"
