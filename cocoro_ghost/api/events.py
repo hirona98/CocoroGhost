@@ -37,7 +37,6 @@ async def stream_events(websocket: WebSocket) -> None:
 
     await websocket.accept()
     await event_stream.add_client(websocket)
-    await event_stream.send_buffer(websocket)
     logger.info("events websocket connected")
 
     try:

@@ -1388,7 +1388,6 @@ class MemoryManager:
                 "message": message,
             },
             target_client_id=None,
-            bufferable=True,
         )
 
         # --- 非同期: 埋め込み更新 ---
@@ -1499,7 +1498,6 @@ class MemoryManager:
             event_id=int(event_id),
             data={"message": message},
             target_client_id=None,
-            bufferable=True,
         )
 
         # --- 非同期: 埋め込み更新 ---
@@ -1646,7 +1644,6 @@ class MemoryManager:
                 "message": message,
             },
             target_client_id=str(target_client_id),
-            bufferable=False,
         )
 
         # --- 非同期: 埋め込み更新 ---
@@ -1748,7 +1745,6 @@ class MemoryManager:
                 "message": message,
             },
             target_client_id=str(target_client_id),
-            bufferable=False,
         )
 
         # --- 埋め込み更新 ---
