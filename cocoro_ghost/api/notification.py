@@ -28,6 +28,7 @@ def notification_v2(
 ) -> Response:
     """通知をUnit(Episode)として保存し、派生ジョブを積む。"""
     internal = schemas.NotificationRequest(
+        client_id=request.client_id,
         source_system=request.source_system,
         text=request.text,
         images=list(request.images or []),
