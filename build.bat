@@ -11,6 +11,30 @@ REM ========================================
 REM --- ÉvÉçÉWÉFÉNÉgÉãÅ[ÉgÇ÷à⁄ìÆÅiÇ±ÇÃbatÇÃèÍèääÓèÄÅj ---
 cd /d "%~dp0"
 
+REM --- à¯êîèàóù ---
+REM -c : ÉNÉäÅ[ÉìÉrÉãÉhÅidist / build ÇçÌèúÇµÇƒÇ©ÇÁÉrÉãÉhÅj
+set "CLEAN_BUILD=0"
+:parse_args
+if "%~1"=="" goto args_done
+if /i "%~1"=="-c" (
+  set "CLEAN_BUILD=1"
+  shift
+  goto parse_args
+)
+if /i "%~1"=="-h" goto show_help
+if /i "%~1"=="--help" goto show_help
+shift
+goto parse_args
+:show_help
+echo.
+echo Usage:
+echo   build.bat [-c]
+echo.
+echo Options:
+echo   -c   Clean build (delete dist and build)
+exit /b 0
+:args_done
+
 REM --- venv óLå¯âªÅiñ≥Ç¢èÍçáÇÕÇªÇÃÇ‹Ç‹êiÇﬁÅj ---
 if exist ".venv\Scripts\activate.bat" (
   call ".venv\Scripts\activate.bat"
@@ -24,7 +48,34 @@ REM Å¶ CocoroGhost.exe ÇãNìÆÇµÇΩÇ‹Ç‹ÉrÉãÉhÇ∑ÇÈÇ∆ dist\CocoroGhost Ç™ÉçÉbÉNÇ≥ÇÍÇ
 taskkill /f /im CocoroGhost.exe >nul 2>&1
 
 set "DISTROOT=dist"
-set "WORKROOT=build\cocoro_ghost_windows"
+set "BUILDROOT=build"
+
+REM --- ÉNÉäÅ[ÉìÉrÉãÉhÅiê¨â ï®ÇçÌèúÇµÇƒÇ©ÇÁÉrÉãÉhÅj ---
+if "%CLEAN_BUILD%"=="1" (
+  echo.
+  echo [INFO] Clean build: removing "%DISTROOT%" and "%BUILDROOT%" ...
+
+  REM dist ÇçÌèú
+  if exist "%DISTROOT%" (
+    rmdir /s /q "%DISTROOT%" >nul 2>&1
+    if exist "%DISTROOT%" (
+      echo.
+      echo [ERROR] Failed to remove "%DISTROOT%".
+      echo [HINT] Close running CocoroGhost / Explorer window locking dist.
+      exit /b 1
+    )
+  )
+
+  REM build ÇçÌèúÅiPyInstaller workpath Çä‹ÇﬁÅj
+  if exist "%BUILDROOT%" (
+    rmdir /s /q "%BUILDROOT%" >nul 2>&1
+    if exist "%BUILDROOT%" (
+      echo.
+      echo [ERROR] Failed to remove "%BUILDROOT%".
+      exit /b 1
+    )
+  )
+)
 
 if not exist "%DISTROOT%" (
   mkdir "%DISTROOT%" || exit /b 1
@@ -53,7 +104,7 @@ if errorlevel 1 (
 )
 
 REM venv ÇÃ python.exe åoóRÇ≈ PyInstaller Çé¿çsÇ∑ÇÈ
-".venv\Scripts\python.exe" -m PyInstaller --noconfirm --distpath "%DISTROOT%" --workpath "%WORKROOT%" cocoro_ghost_windows.spec
+".venv\Scripts\python.exe" -m PyInstaller --noconfirm --distpath "%DISTROOT%" cocoro_ghost_windows.spec
 if errorlevel 1 (
   echo.
   echo [ERROR] PyInstaller build failed.
