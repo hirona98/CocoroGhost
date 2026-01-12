@@ -419,6 +419,151 @@ class MemoryManager:
         self.llm_client = llm_client
         self.config_store = config_store
 
+    def _should_auto_forget_for_feedback_text(self, feedback_text: str) -> bool:
+        """
+        ユーザー入力が「関係ない/それじゃない」系の否定フィードバックに見えるかを判定する。
+
+        方針:
+        - 事故率（誤爆）を下げるため、強い否定の一部だけに反応する。
+        - ここは軽量であることを優先し、文字列検索だけで判定する。
+        """
+
+        # --- 入力を正規化 ---
+        t = str(feedback_text or "").strip()
+        if not t:
+            return False
+
+        # --- 強い否定（最小集合） ---
+        # NOTE:
+        # - 「違う」単体は誤爆しやすいので入れない。
+        # - 「関係ない」はユーザー要望（例: "それは関係ないよ"）に合わせてトリガに含める。
+        triggers = [
+            "関係ない",
+            "それじゃない",
+            "それは違う",
+            "その話じゃない",
+            "出さないで",
+            "忘れて",
+            "思い出さないで",
+        ]
+        return any(k in t for k in triggers)
+
+    def _auto_forget_from_negative_feedback(
+        self,
+        *,
+        embedding_preset_id: str,
+        embedding_dimension: int,
+        feedback_event_id: int,
+        reply_to_event_id: int | None,
+        feedback_text: str,
+    ) -> None:
+        """
+        否定フィードバック（例: 「それは関係ない」）を契機に、直前ターンで想起した記憶を自動で分離する。
+
+        重要:
+        - チャットの体感速度を壊さないため、この処理は BackgroundTasks で実行される想定。
+        - 安全寄り（誤爆回避）のため、対象は「直前ターンの retrieval_runs.selected が1件」の場合に限定する。
+        - UIや確認質問は行わない（会話のみ、かつ曖昧なら何もしない）。
+
+        分離の定義:
+        - event/state: 行は残しつつ `searchable=0` にして検索・候補収集・埋め込みから除外する。
+        - event_affect: 行を削除する（内部用であり、再利用価値が低い前提）。
+        """
+
+        # --- トリガ判定（軽量） ---
+        if not self._should_auto_forget_for_feedback_text(str(feedback_text or "")):
+            return
+
+        # --- reply_to が無いなら対象が無い ---
+        if reply_to_event_id is None or int(reply_to_event_id) <= 0:
+            return
+
+        now_ts = _now_utc_ts()
+
+        # --- 直前ターンの retrieval_run を読む ---
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            rr = (
+                db.query(RetrievalRun)
+                .filter(RetrievalRun.event_id == int(reply_to_event_id))
+                .order_by(RetrievalRun.run_id.desc())
+                .first()
+            )
+            if rr is None:
+                return
+
+            # --- selected_json をパース ---
+            try:
+                pack = json.loads(str(rr.selected_json or "").strip() or "{}")
+            except Exception:  # noqa: BLE001
+                return
+            if not isinstance(pack, dict):
+                return
+
+            selected = pack.get("selected")
+            if not isinstance(selected, list):
+                return
+            if len(selected) != 1:
+                return
+
+            item0 = selected[0]
+            if not isinstance(item0, dict):
+                return
+
+            # --- type が無い場合はIDの有無で推定する（LLMの揺れ吸収） ---
+            t = str(item0.get("type") or "").strip()
+            if not t:
+                if int(item0.get("event_id") or 0) > 0:
+                    t = "event"
+                elif int(item0.get("state_id") or 0) > 0:
+                    t = "state"
+                elif int(item0.get("affect_id") or 0) > 0:
+                    t = "event_affect"
+                else:
+                    return
+
+            # --- 対象IDを確定 ---
+            target_event_id = int(item0.get("event_id") or 0)
+            target_state_id = int(item0.get("state_id") or 0)
+            target_affect_id = int(item0.get("affect_id") or 0)
+
+            # --- 不整合は何もしない（安全寄り） ---
+            if t == "event" and not (target_event_id > 0 and target_state_id == 0 and target_affect_id == 0):
+                return
+            if t == "state" and not (target_state_id > 0 and target_event_id == 0 and target_affect_id == 0):
+                return
+            if t == "event_affect" and not (target_affect_id > 0 and target_event_id == 0 and target_state_id == 0):
+                return
+            if t not in ("event", "state", "event_affect"):
+                return
+
+            # --- 分離（永続・不可逆）を適用 ---
+            if t == "event":
+                db.execute(
+                    text("UPDATE events SET searchable=0, updated_at=:u WHERE event_id=:id"),
+                    {"u": int(now_ts), "id": int(target_event_id)},
+                )
+                # --- 埋め込み復活を防ぐ（vec_items を消す） ---
+                item_id = _vec_item_id(int(_VEC_KIND_EVENT), int(target_event_id))
+                db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
+                return
+
+            if t == "state":
+                db.execute(
+                    text("UPDATE state SET searchable=0, updated_at=:u WHERE state_id=:id"),
+                    {"u": int(now_ts), "id": int(target_state_id)},
+                )
+                # --- 埋め込み復活を防ぐ（vec_items を消す） ---
+                item_id = _vec_item_id(int(_VEC_KIND_STATE), int(target_state_id))
+                db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
+                return
+
+            # --- event_affect は行ごと削除する ---
+            if t == "event_affect":
+                db.execute(text("DELETE FROM event_affects WHERE id=:id"), {"id": int(target_affect_id)})
+                item_id = _vec_item_id(int(_VEC_KIND_EVENT_AFFECT), int(target_affect_id))
+                db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
+                return
+
     def _load_recent_chat_dialog_messages(
         self,
         *,
@@ -497,6 +642,7 @@ class MemoryManager:
             st = (
                 db.query(State)
                 .filter(State.kind == "long_mood_state")
+                .filter(State.searchable == 1)
                 .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
                 .first()
             )
@@ -769,6 +915,7 @@ class MemoryManager:
 
         now_ts = _now_utc_ts()
         last_chat_created_at_ts: int | None = None
+        reply_to_event_id: int | None = None
 
         # --- eventsを作成（ターン単位） ---
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
@@ -803,6 +950,7 @@ class MemoryManager:
                 # NOTE: 文脈グラフの本更新は非同期で行う。ここでは reply_to だけを即時に張る。
                 from cocoro_ghost.memory_models import EventLink  # noqa: PLC0415
 
+                reply_to_event_id = int(prev[0])
                 db.add(
                     EventLink(
                         from_event_id=event_id,
@@ -1043,6 +1191,20 @@ class MemoryManager:
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),
         )
+
+        # --- 10.6) 非同期: 否定フィードバックによる自動分離（検索対象から除外） ---
+        # NOTE:
+        # - チャットターン開始（応答開始）を遅くしないため、レスポンス完了後に実行する。
+        # - 事故率を下げるため、直前ターンの selected が1件のときだけ適用する（曖昧なら何もしない）。
+        if reply_to_event_id is not None and self._should_auto_forget_for_feedback_text(str(input_text or "")):
+            background_tasks.add_task(
+                self._auto_forget_from_negative_feedback,
+                embedding_preset_id=str(embedding_preset_id),
+                embedding_dimension=int(embedding_dimension),
+                feedback_event_id=int(event_id),
+                reply_to_event_id=int(reply_to_event_id),
+                feedback_text=str(input_text),
+            )
 
         # --- 11) SSE完了 ---
         yield _sse("done", {"event_id": int(event_id), "reply_text": reply_text, "usage": {"finish_reason": finish_reason}})
@@ -1720,6 +1882,7 @@ class MemoryManager:
             with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
                 rows = (
                     db.query(Event.event_id)
+                    .filter(Event.searchable == 1)
                     .filter(Event.event_id != int(event_id))
                     .order_by(Event.created_at.desc(), Event.event_id.desc())
                     .limit(50)
@@ -1733,11 +1896,13 @@ class MemoryManager:
                 rows = db.execute(
                     text(
                         """
-                        SELECT rowid AS event_id
-                        FROM events_fts
-                        WHERE events_fts MATCH :q
-                          AND rowid != :event_id
-                        ORDER BY rowid DESC
+                        SELECT f.rowid AS event_id
+                        FROM events_fts AS f
+                        JOIN events AS e ON e.event_id = f.rowid
+                        WHERE f MATCH :q
+                          AND f.rowid != :event_id
+                          AND e.searchable = 1
+                        ORDER BY f.rowid DESC
                         LIMIT 80
                         """
                     ),
@@ -1897,6 +2062,7 @@ class MemoryManager:
             with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
                 rows = (
                     db.query(State.state_id)
+                    .filter(State.searchable == 1)
                     .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
                     .limit(40)
                     .all()
@@ -1916,7 +2082,7 @@ class MemoryManager:
                 return []
 
             with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-                q = db.query(Event.event_id)
+                q = db.query(Event.event_id).filter(Event.searchable == 1)
                 if y0 or y1:
                     ys = int(y0) if isinstance(y0, (int, float)) and int(y0) > 0 else None
                     ye = int(y1) if isinstance(y1, (int, float)) and int(y1) > 0 else None
@@ -2127,9 +2293,25 @@ class MemoryManager:
             state_ids = [int(i) for (t, i) in keys_all if t == "state"]
             affect_ids = [int(i) for (t, i) in keys_all if t == "event_affect"]
 
-            events = db.query(Event).filter(Event.event_id.in_(event_ids)).all() if event_ids else []
-            states = db.query(State).filter(State.state_id.in_(state_ids)).all() if state_ids else []
-            affects = db.query(EventAffect).filter(EventAffect.id.in_(affect_ids)).all() if affect_ids else []
+            events = (
+                db.query(Event).filter(Event.searchable == 1).filter(Event.event_id.in_(event_ids)).all()
+                if event_ids
+                else []
+            )
+            states = (
+                db.query(State).filter(State.searchable == 1).filter(State.state_id.in_(state_ids)).all()
+                if state_ids
+                else []
+            )
+            affects = (
+                db.query(EventAffect)
+                .join(Event, Event.event_id == EventAffect.event_id)
+                .filter(Event.searchable == 1)
+                .filter(EventAffect.id.in_(affect_ids))
+                .all()
+                if affect_ids
+                else []
+            )
 
             by_event_id = {int(r.event_id): r for r in events}
             by_state_id = {int(r.state_id): r for r in states}
@@ -2162,7 +2344,11 @@ class MemoryManager:
                         lst.append(tk)
 
             affect_event_ids = sorted({int(a.event_id) for a in affects if a and a.event_id is not None})
-            affect_events = db.query(Event).filter(Event.event_id.in_(affect_event_ids)).all() if affect_event_ids else []
+            affect_events = (
+                db.query(Event).filter(Event.searchable == 1).filter(Event.event_id.in_(affect_event_ids)).all()
+                if affect_event_ids
+                else []
+            )
             by_affect_event_id = {int(r.event_id): r for r in affect_events}
 
             out: list[_CandidateItem] = []

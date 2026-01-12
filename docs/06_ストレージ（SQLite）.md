@@ -36,6 +36,7 @@
 | event_id | INTEGER | 主キー（自動採番） |
 | created_at | INTEGER | 記録時刻（UTC UNIX秒） |
 | updated_at | INTEGER | 更新時刻（UTC UNIX秒） |
+| searchable | INTEGER | 検索対象フラグ（1=想起対象、0=想起対象外） |
 | client_id | TEXT | クライアントID（NULL可） |
 | source | TEXT | イベント種別（chat/notification/reminder/desktop_watch/meta_proactive/vision_detail） |
 | user_text | TEXT | ユーザー入力（NULL可） |
@@ -134,6 +135,7 @@
 - `valid_from_ts` / `valid_to_ts`（並存のための有効期間）
 - `last_confirmed_at`（最近性）
 - `confidence` / `salience`（検索順位に使える）
+- `searchable`（検索対象フラグ、誤想起の分離で0になる）
 
 ### 改訂履歴（`revisions`）
 
