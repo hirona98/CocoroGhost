@@ -116,7 +116,8 @@ def install_log_handler(loop: asyncio.AbstractEventLoop) -> None:
     """
     ログストリーム用ハンドラを設置する。
 
-    ルートロガーとuvicorn関連ロガーにQueueHandlerを追加する。
+    ルートロガーにQueueHandlerを追加する。
+    propagate=False のロガーのみ個別に追加して二重配信を避ける。
     多重呼び出しは無視される。
     """
     global _log_queue, _handler_installed, _installed_handler
@@ -129,9 +130,15 @@ def install_log_handler(loop: asyncio.AbstractEventLoop) -> None:
     root_logger = logging.getLogger()
     root_logger.addHandler(handler)
 
-    # propagate=False のロガーは個別にハンドラを付与する
+    # propagate=True の場合は root 経由で届くため、二重配信を避けて付与しない
+    # propagate=False のロガーだけ個別にハンドラを付与する
     for name in _attached_logger_names:
-        logging.getLogger(name).addHandler(handler)
+        target_logger = logging.getLogger(name)
+        if target_logger.propagate:
+            continue
+        if handler in target_logger.handlers:
+            continue
+        target_logger.addHandler(handler)
 
     _installed_handler = handler
     _handler_installed = True
