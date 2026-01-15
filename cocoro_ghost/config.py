@@ -92,6 +92,7 @@ class RuntimeConfig:
     # PromptPresets由来（ユーザー編集対象）
     persona_preset_name: str      # ペルソナプリセット名
     persona_text: str             # ペルソナ定義テキスト
+    second_person_label: str      # 二人称の呼称（例: マスター / あなた）
     addon_preset_name: str        # アドオンプリセット名
     addon_text: str               # アドオンテキスト
 
@@ -265,6 +266,7 @@ def build_runtime_config(
         # PromptPresets由来
         persona_preset_name=persona_preset.name,
         persona_text=persona_preset.persona_text,
+        second_person_label=persona_preset.second_person_label,
         addon_preset_name=addon_preset.name,
         addon_text=addon_preset.addon_text,
     )

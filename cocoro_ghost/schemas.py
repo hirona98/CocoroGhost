@@ -311,6 +311,7 @@ class PersonaPresetSettings(BaseModel):
     persona_preset_id: str
     persona_preset_name: str
     persona_text: str
+    second_person_label: str
 
 
 class AddonPresetSettings(BaseModel):

@@ -128,6 +128,8 @@ class PersonaPreset(Base):
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # ペルソナ定義テキスト（システムプロンプトに使用）
     persona_text: Mapped[str] = mapped_column(Text, nullable=False)
+    # 二人称の呼称（例: マスター / あなた / 君 / ◯◯さん）
+    second_person_label: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # タイムスタンプ
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)

@@ -89,6 +89,7 @@ def get_settings(
                 persona_preset_id=preset.id,
                 persona_preset_name=preset.name,
                 persona_text=preset.persona_text,
+                second_person_label=preset.second_person_label,
             )
         )
 
@@ -253,6 +254,7 @@ def commit_settings(
                 name=pp.persona_preset_name,
                 archived=False,
                 persona_text=pp.persona_text,
+                second_person_label=pp.second_person_label,
             )
             db.add(preset)
             persona_presets_by_id[preset_id] = preset
@@ -260,6 +262,7 @@ def commit_settings(
             preset.archived = False
             preset.name = pp.persona_preset_name
             preset.persona_text = pp.persona_text
+            preset.second_person_label = pp.second_person_label
 
     persona_id_set = set(persona_ids)
     for preset in persona_existing:
