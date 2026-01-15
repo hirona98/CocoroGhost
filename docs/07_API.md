@@ -285,7 +285,8 @@ UI向けの「全設定」取得/更新。
     {
       "persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
       "persona_preset_name": "default",
-      "persona_text": "string"
+      "persona_text": "string",
+      "second_person_label": "マスター"
     }
   ],
   "addon_preset": [

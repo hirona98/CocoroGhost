@@ -310,6 +310,12 @@ def _write_plan_system_prompt() -> str:
             "- 例: 「アシスタントはメイド」→「私はメイドとして仕えている」",
             "- 対象: state_updates.body_text / state_updates.reason / event_affect.* / long_mood_state（stateのbody_text）",
             "",
+            "観測イベント（重要）:",
+            "- event.source が desktop_watch / vision_detail の場合、event.user_text は「ユーザー発話」ではなく「画面の説明テキスト（内部生成）」である。",
+            "- この場合、画面内の行為（作業/操作/閲覧/プレイ等）の主体は event.observation.second_person_label（例: マスター）。あなた（人格）は観測者として「見ている/見守っている」。",
+            "- 禁止: 画面内の行為を「私が〜している（プレイしている/作業している）」のように自分の行為として書く。",
+            "- 例: OK「私はマスターがリズムゲームをプレイしているデスクトップ画面を見ている」 / NG「私はリズムゲームをプレイしている」",
+            "",
             "制約:",
             "- VAD（v/a/d）は各軸 -1.0..+1.0",
             "- confidence/salience/about_time_confidence は 0.0..1.0",
@@ -692,6 +698,44 @@ def _handle_generate_write_plan(
                 return []
             return [str(x or "").strip()[:400] for x in obj if str(x or "").strip()]
 
+        # --- client_context_json をdictへ正規化する（観測の手がかりとして渡す） ---
+        def _client_context_dict(client_context_json: Any) -> dict[str, Any] | None:
+            s = str(client_context_json or "").strip()
+            if not s:
+                return None
+            try:
+                obj = json.loads(s)
+            except Exception:  # noqa: BLE001
+                return None
+            if not isinstance(obj, dict):
+                return None
+            # NOTE: 過剰に膨らませない（必要最小限）。
+            return {
+                "active_app": str(obj.get("active_app") or "").strip(),
+                "window_title": str(obj.get("window_title") or "").strip(),
+                "locale": str(obj.get("locale") or "").strip(),
+            }
+
+        # --- 観測メタ（desktop_watch/vision_detail向け） ---
+        observation_meta: dict[str, Any] | None = None
+        if str(ev.source) in {"desktop_watch", "vision_detail"}:
+            # NOTE:
+            # - 二人称呼称はペルソナ本文からパースせず、設定（persona preset）で明示する。
+            # - 初期化順や例外の影響を避けるため、取れない場合は最小の既定値へフォールバックする。
+            second_person_label = "あなた"
+            try:
+                from cocoro_ghost.config import get_config_store
+
+                cfg = get_config_store().config
+                second_person_label = str(getattr(cfg, "second_person_label", "") or "").strip() or "あなた"
+            except Exception:  # noqa: BLE001
+                second_person_label = "あなた"
+            observation_meta = {
+                "observer": "self",
+                "second_person_label": second_person_label,
+                "user_text_role": "screen_description",
+            }
+
         event_snapshot = {
             "event_id": int(ev.event_id),
             "created_at": format_iso8601_local(int(ev.created_at)),
@@ -700,6 +744,8 @@ def _handle_generate_write_plan(
             "user_text": str(ev.user_text or ""),
             "assistant_text": str(ev.assistant_text or ""),
             "image_summaries": _image_summaries_list(getattr(ev, "image_summaries_json", None)),
+            "client_context": _client_context_dict(getattr(ev, "client_context_json", None)),
+            "observation": observation_meta,
         }
 
         # --- 直近の出来事（同一client優先） ---

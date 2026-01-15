@@ -51,6 +51,7 @@ _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
 _MEMORY_DB_USER_VERSION = 4
+_SETTINGS_DB_USER_VERSION = 1
 
 
 def get_db_dir() -> Path:
@@ -360,6 +361,51 @@ def _set_memory_db_user_version(engine) -> None:
 
 # --- 設定DB ---
 
+def _verify_settings_db_user_version(engine) -> None:
+    """
+    設定DBの user_version を検証する。
+
+    方針:
+    - マイグレーションは扱わない（互換を切って作り直す）。
+    - 旧DB（user_version=0 かつテーブルが存在する等）はエラーにする。
+    """
+    with engine.connect() as conn:
+        uv = conn.execute(text("PRAGMA user_version")).fetchone()
+        current = int(uv[0]) if uv and uv[0] is not None else 0
+
+        # --- 未設定（0）の場合は「真っさら」だけ許容する ---
+        if current == 0:
+            # NOTE:
+            # - 旧実装は user_version を設定していなかったため、既存DBでも 0 の可能性がある。
+            # - その場合は後方互換を付けず、DBを削除して作り直してもらう。
+            rows = conn.execute(
+                text(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ("
+                    "'global_settings','llm_presets','embedding_presets','persona_presets','addon_presets'"
+                    ")"
+                )
+            ).fetchall()
+            if rows:
+                found = sorted({str(r[0]) for r in rows})
+                raise RuntimeError(
+                    f"settings DB user_version mismatch: db={current}, expected={_SETTINGS_DB_USER_VERSION}. "
+                    f"settings.db を削除して作り直してください。found_tables={found}"
+                )
+            return
+
+        if current != _SETTINGS_DB_USER_VERSION:
+            raise RuntimeError(
+                f"settings DB user_version mismatch: db={current}, expected={_SETTINGS_DB_USER_VERSION}. "
+                "settings.db を削除して作り直してください。"
+            )
+
+
+def _set_settings_db_user_version(engine) -> None:
+    """設定DBの user_version を新スキーマに固定する。"""
+    with engine.connect() as conn:
+        conn.execute(text(f"PRAGMA user_version={_SETTINGS_DB_USER_VERSION}"))
+        conn.commit()
+
 
 def init_settings_db() -> None:
     """
@@ -373,7 +419,12 @@ def init_settings_db() -> None:
     connect_args = {"check_same_thread": False, "timeout": 10.0}
     engine = create_engine(db_url, future=True, connect_args=connect_args)
     SettingsSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+    # --- user_version を検証（互換は切って作り直し） ---
+    _verify_settings_db_user_version(engine)
+
     Base.metadata.create_all(bind=engine)
+    _set_settings_db_user_version(engine)
     logger.info(f"設定DB初期化完了: {db_url}")
 
 
@@ -723,6 +774,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             name="miku-sample-persona_prompt",
             archived=False,
             persona_text=prompts.get_default_persona_anchor(),
+            second_person_label="マスター",
         )
         session.add(persona_preset)
         session.flush()
