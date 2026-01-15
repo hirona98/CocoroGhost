@@ -401,6 +401,75 @@ def _reply_system_prompt(*, persona_text: str, addon_text: str) -> str:
     return "\n\n".join([p for p in parts if p]).strip()
 
 
+def _desktop_watch_user_prompt() -> str:
+    """
+    デスクトップウォッチ向けの user prompt を組み立てる。
+
+    目的:
+    - 「ユーザーのデスクトップ画面を、人格（あなた）が見てコメントする」ことを明示して視点を固定する。
+    - 「覗かれている/監視されている」等の受け身の誤解（視点反転）を防ぐ。
+    - 返答を短く、コメント（セリフ）として自然に成立させる。
+    """
+
+    # NOTE:
+    # - デスクトップウォッチはユーザー発話ではないため、ユーザーが何か言った前提の返答にならないよう固定する。
+    # - 画像の詳細説明や client_context は <<INTERNAL_CONTEXT>> に注入される（本文には出さない）。
+    return "\n".join(
+        [
+            "",
+            "あなたは今「ユーザーのデスクトップ画面」を見ています。",
+            "画面の内容について、あなたらしくコメントしてください。",
+            "",
+            "内部コンテキスト（<<INTERNAL_CONTEXT>>）を材料として、次のルールでコメントを言う:",
+            "- 最大60文字程度。",
+            "- あなたは見られている側ではなく、見ている側です。",
+            "- 許可取り・報告口調（例: 見ました/確認しました/スクショ撮りました）は避ける。",
+            "",
+        ]
+    ).strip()
+
+
+def _desktop_watch_internal_context(*, detail_text: str, client_context: dict | None) -> str:
+    """
+    デスクトップウォッチ向けの内部コンテキスト文を組み立てる。
+
+    重要:
+    - <<INTERNAL_CONTEXT>> から開始し、system prompt の「内部用」ルールを確実に適用させる。
+    - ここには「材料（データ）」だけを載せ、指示文は user prompt 側に寄せる。
+    - 可能な限り JSON として表現し、観測（デバッグ）しやすくする。
+    """
+
+    # --- 入力を正規化 ---
+    detail_text_normalized = str(detail_text or "").strip()
+    client_context_raw = client_context if isinstance(client_context, dict) else {}
+    client_context_dict = dict(client_context_raw or {})
+
+    # --- データ（JSON）を組み立て ---
+    desktop_watch_obj: dict[str, Any] = {}
+
+    # --- client_context（空は入れない） ---
+    active_app = str(client_context_dict.get("active_app") or "").strip()
+    window_title = str(client_context_dict.get("window_title") or "").strip()
+    locale = str(client_context_dict.get("locale") or "").strip()
+    if active_app or window_title or locale:
+        desktop_watch_obj["ClientContext"] = {
+            "active_app": active_app,
+            "window_title": window_title,
+            "locale": locale,
+        }
+
+    # --- 画像の詳細説明（空は入れない） ---
+    if detail_text_normalized:
+        desktop_watch_obj["ImageDetail"] = detail_text_normalized
+
+    # --- ルートオブジェクト ---
+    payload: dict[str, Any] = {}
+    if desktop_watch_obj:
+        payload["DesktopWatch"] = desktop_watch_obj
+
+    return "\n".join(["<<INTERNAL_CONTEXT>>", _json_dumps(payload)])
+
+
 def _notification_user_prompt(*, source_system: str, text: str, has_any_valid_image: bool) -> str:
     """
     通知要求（外部システム通知）向けの user prompt を組み立てる。
@@ -1825,20 +1894,14 @@ class MemoryManager:
 
         # --- LLMで人格コメントを生成 ---
         system_prompt = _reply_system_prompt(persona_text=cfg.persona_text, addon_text=cfg.addon_text)
-        user_prompt = "\n".join(
-            [
-                "デスクトップの様子を見て、自然に短いコメントを言う。",
-                "",
-                "<<INTERNAL_CONTEXT>>",
-                "画像の詳細説明（内部用。本文に出力しない）:",
-                detail_text,
-                "",
-                "コメントを一言で。",
-            ]
-        ).strip()
+        internal_context = _desktop_watch_internal_context(detail_text=detail_text, client_context=resp.client_context)
+        user_prompt = _desktop_watch_user_prompt()
         resp2 = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
-            conversation=[{"role": "user", "content": user_prompt}],
+            conversation=[
+                {"role": "assistant", "content": internal_context},
+                {"role": "user", "content": user_prompt},
+            ],
             purpose=LlmRequestPurpose.SYNC_DESKTOP_WATCH,
             stream=False,
         )
@@ -1862,11 +1925,15 @@ class MemoryManager:
             event_id = int(ev.event_id)
 
         # --- events/stream へ配信（リアルタイム性を優先してバッファしない） ---
+        ctx = dict(resp.client_context or {})
+        active_app = str(ctx.get("active_app") or "").strip()
+        window_title = str(ctx.get("window_title") or "").strip()
+        system_text = " ".join([x for x in ["[desktop_watch]", active_app, window_title] if str(x).strip()]).strip()
         event_stream.publish(
             type="desktop_watch",
             event_id=int(event_id),
             data={
-                "system_text": "[desktop_watch]",
+                "system_text": system_text,
                 "message": message,
             },
             target_client_id=str(target_client_id),
