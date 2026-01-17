@@ -16,6 +16,7 @@ import concurrent.futures
 import json
 import logging
 import math
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Generator
@@ -89,6 +90,39 @@ def _parse_image_summaries_json(image_summaries_json: str | None) -> list[str]:
     for item in obj:
         out.append(str(item or "").strip())
     return out
+
+
+def _parse_json_str_list(text_in: str | None) -> list[str]:
+    """JSON文字列を list[str] として読む（失敗時は空list）。"""
+    s = str(text_in or "").strip()
+    if not s:
+        return []
+    try:
+        obj = json.loads(s)
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(obj, list):
+        return []
+    out: list[str] = []
+    for item in obj:
+        t = str(item or "").replace("\n", " ").replace("\r", " ").strip()
+        if not t:
+            continue
+        out.append(t)
+    return out
+
+
+def _strip_face_tags(text_in: str) -> str:
+    """テキストから会話装飾タグ（例: [face:Joy]）を除去する。"""
+    s = str(text_in or "")
+    if not s:
+        return ""
+
+    # --- [face:...] 形式を一律で消す（種類は固定しない） ---
+    s2 = re.sub(r"\[face:[^\]]+\]", "", s)
+
+    # --- 余計な空白を整える ---
+    return " ".join(s2.replace("\r", " ").replace("\n", " ").split()).strip()
 
 
 def _fts_or_query(terms: list[str]) -> str:
@@ -2664,21 +2698,22 @@ class MemoryManager:
                             type="event_affect",
                             id=int(i),
                             rank_ts=int(a.created_at),
-                            meta={
-                                "type": "event_affect",
-                                "affect_id": int(a.id),
-                                "event_id": int(a.event_id),
-                                "created_at": format_iso8601_local(int(a.created_at)),
-                                "event_created_at": (
-                                    format_iso8601_local(int(event_created_at)) if event_created_at is not None else None
-                                ),
-                                "moment_affect_text": str(a.moment_affect_text or "")[:600],
-                                "inner_thought_text": (
-                                    str(a.inner_thought_text)[:600] if a.inner_thought_text is not None else None
-                                ),
-                                "vad": {"v": float(a.vad_v), "a": float(a.vad_a), "d": float(a.vad_d)},
-                                "confidence": float(a.confidence),
-                            },
+	                            meta={
+	                                "type": "event_affect",
+	                                "affect_id": int(a.id),
+	                                "event_id": int(a.event_id),
+	                                "created_at": format_iso8601_local(int(a.created_at)),
+	                                "event_created_at": (
+	                                    format_iso8601_local(int(event_created_at)) if event_created_at is not None else None
+	                                ),
+	                                "moment_affect_text": _strip_face_tags(str(a.moment_affect_text or ""))[:600],
+	                                "moment_affect_labels": _parse_json_str_list(getattr(a, "moment_affect_labels_json", None))[:6],
+	                                "inner_thought_text": (
+	                                    _strip_face_tags(str(a.inner_thought_text))[:600] if a.inner_thought_text is not None else None
+	                                ),
+	                                "vad": {"v": float(a.vad_v), "a": float(a.vad_a), "d": float(a.vad_d)},
+	                                "confidence": float(a.confidence),
+	                            },
                             hit_sources=hit_sources,
                         )
                     )
