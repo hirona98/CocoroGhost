@@ -284,9 +284,28 @@ def _build_event_affect_embedding_text(aff: EventAffect) -> str:
     return text_out
 
 
-def _write_plan_system_prompt() -> str:
-    """WritePlan生成用のsystem promptを返す。"""
-    return "\n".join(
+def _write_plan_system_prompt(*, persona_text: str, addon_text: str, second_person_label: str) -> str:
+    """
+    WritePlan生成用のsystem promptを返す（ペルソナ注入あり）。
+
+    Args:
+        persona_text: ペルソナ本文（ユーザー編集対象）。
+        addon_text: 追加プロンプト（ユーザー編集対象）。
+        second_person_label: 二人称の呼称（例: マスター / あなた / 君 / ◯◯さん）。
+    """
+
+    # --- 二人称呼称を正規化 ---
+    sp = str(second_person_label or "").strip() or "あなた"
+
+    # --- ペルソナ本文を正規化 ---
+    # NOTE:
+    # - WritePlanは内部用のJSONだが、state_updates / event_affect の文章は人格の口調に揃える。
+    # - 行末（CRLF/LF）の揺れは暗黙的キャッシュの阻害になり得るため、ここで正規化する。
+    pt = str(persona_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    at = str(addon_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    # --- ベースプロンプト（スキーマ＋品質要件） ---
+    base = "\n".join(
         [
             "あなたは出来事ログ（event）から、記憶更新のための計画（WritePlan）を作る。",
             "出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
@@ -304,11 +323,13 @@ def _write_plan_system_prompt() -> str:
             "- body_text は検索に使う短い本文（会話文の長文や箇条書きは避ける）。",
             "- 矛盾がある場合は上書きせず、並存/期間分割（valid_from_ts/valid_to_ts）や close を使う。",
             "",
-            "視点（重要）:",
+            "視点・口調（重要）:",
             "- あなたは人格本人。本文は主観（一人称）で書く",
             "- 自分を三人称で呼ばない",
             "- 例: 「アシスタントはメイド」→「私はメイドとして仕えている」",
+            f'- 二人称（呼びかけ）は「{sp}」に固定する',
             "- 対象: state_updates.body_text / state_updates.reason / event_affect.* / long_mood_state（stateのbody_text）",
+            "- inner_thought_text は内部メモでも、人格の口調を崩さない（ただし短く簡潔に）。",
             "",
             "観測イベント（重要）:",
             "- event.source が desktop_watch / vision_detail の場合、event.user_text は「ユーザー発話」ではなく「画面の説明テキスト（内部生成）」である。",
@@ -365,6 +386,30 @@ def _write_plan_system_prompt() -> str:
             "}",
         ]
     ).strip()
+
+    # --- ペルソナ注入 ---
+    # NOTE:
+    # - WritePlan はユーザーに見せないが、人格の「考え方/口調」を揃えるため、ペルソナ本文を最優先で参照させる。
+    persona = "\n".join(
+        [
+            "",
+            "人格設定（最優先）:",
+            "- 以下の persona/addon を最優先で守り、文章（state_updates / event_affect）に反映する。",
+            "- persona/addon に口調指定が無い場合は、自然な日本語の一人称で書く。",
+            "",
+            "<<<PERSONA_TEXT>>>",
+            pt,
+            "<<<END>>>",
+            "",
+            "<<<ADDON_TEXT>>>",
+            at,
+            "<<<END>>>",
+            "",
+        ]
+    ).strip()
+
+    # persona/addon が空の場合も、空として明示して「未注入」と誤認しないようにする。
+    return "\n\n".join([base, persona]).strip()
 
 
 def _state_row_to_json(st: State) -> dict[str, Any]:
@@ -674,6 +719,25 @@ def _handle_generate_write_plan(
     if event_id <= 0:
         raise RuntimeError("payload.event_id is required")
 
+    # --- ランタイム設定（ペルソナ/呼称）を取得する ---
+    # NOTE:
+    # - WritePlan は内部用だが、記憶（state_updates / event_affect）に残る文章は人格の口調に揃える。
+    # - 初期化順や例外の影響を避けるため、取れない場合は最小の既定値へフォールバックする。
+    persona_text = ""
+    addon_text = ""
+    second_person_label = "あなた"
+    try:
+        from cocoro_ghost.config import get_config_store
+
+        cfg = get_config_store().config
+        persona_text = str(getattr(cfg, "persona_text", "") or "")
+        addon_text = str(getattr(cfg, "addon_text", "") or "")
+        second_person_label = str(getattr(cfg, "second_person_label", "") or "").strip() or "あなた"
+    except Exception:  # noqa: BLE001
+        persona_text = ""
+        addon_text = ""
+        second_person_label = "あなた"
+
     # --- event + 周辺コンテキストを集める（過剰に重くしない） ---
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         ev = db.query(Event).filter(Event.event_id == int(event_id)).one_or_none()
@@ -719,20 +783,10 @@ def _handle_generate_write_plan(
         # --- 観測メタ（desktop_watch/vision_detail向け） ---
         observation_meta: dict[str, Any] | None = None
         if str(ev.source) in {"desktop_watch", "vision_detail"}:
-            # NOTE:
-            # - 二人称呼称はペルソナ本文からパースせず、設定（persona preset）で明示する。
-            # - 初期化順や例外の影響を避けるため、取れない場合は最小の既定値へフォールバックする。
-            second_person_label = "あなた"
-            try:
-                from cocoro_ghost.config import get_config_store
-
-                cfg = get_config_store().config
-                second_person_label = str(getattr(cfg, "second_person_label", "") or "").strip() or "あなた"
-            except Exception:  # noqa: BLE001
-                second_person_label = "あなた"
+            # NOTE: 行為主体の誤認防止のため、二人称呼称は設定値で明示する（ペルソナ本文からはパースしない）。
             observation_meta = {
                 "observer": "self",
-                "second_person_label": second_person_label,
+                "second_person_label": str(second_person_label),
                 "user_text_role": "screen_description",
             }
 
@@ -806,7 +860,11 @@ def _handle_generate_write_plan(
 
     # --- LLMでWritePlanを作る ---
     resp = llm_client.generate_json_response(
-        system_prompt=_write_plan_system_prompt(),
+        system_prompt=_write_plan_system_prompt(
+            persona_text=persona_text,
+            addon_text=addon_text,
+            second_person_label=second_person_label,
+        ),
         input_text=_json_dumps(input_obj),
         purpose=LlmRequestPurpose.ASYNC_WRITE_PLAN,
         max_tokens=2400,
