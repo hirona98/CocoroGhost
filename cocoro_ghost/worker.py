@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -66,6 +67,45 @@ def _json_loads_maybe(text_in: str) -> dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _parse_json_str_list(text_in: str) -> list[str]:
+    """JSON文字列を list[str] として読む（失敗時は空list）。"""
+    s = str(text_in or "").strip()
+    if not s:
+        return []
+    try:
+        obj = json.loads(s)
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(obj, list):
+        return []
+    out: list[str] = []
+    for item in obj:
+        t = str(item or "").replace("\n", " ").replace("\r", " ").strip()
+        if not t:
+            continue
+        out.append(t)
+    return out
+
+
+def _strip_face_tags(text_in: str) -> str:
+    """
+    テキストから会話装飾タグ（例: [face:Joy]）を除去する。
+
+    NOTE:
+    - [face:*] はユーザーに見せる返答用の表記であり、内部の記憶（WritePlan/state/event_affect）には不要。
+    - LLMが混入させてもDBへ保存しないように、保存前に必ず除去する。
+    """
+    s = str(text_in or "")
+    if not s:
+        return ""
+
+    # --- [face:...] 形式を一律で消す（種類は固定しない） ---
+    s2 = re.sub(r"\[face:[^\]]+\]", "", s)
+
+    # --- 余計な空白を整える ---
+    return " ".join(s2.replace("\r", " ").replace("\n", " ").split()).strip()
 
 
 def _json_dumps(payload: Any) -> str:
@@ -131,6 +171,35 @@ def _canonicalize_json_for_dedupe(text_in: str) -> str:
         return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     except Exception:  # noqa: BLE001
         return s
+
+
+def _sanitize_moment_affect_labels(labels_in: Any) -> list[str]:
+    """
+    moment_affect_labels を保存用に正規化する。
+
+    方針:
+    - list[str] を期待するが、壊れた出力でも落とさない（空にする）
+    - 余計な改行を除去し、空要素を捨てる
+    - 重複は除去（順序は維持）
+    - 上限数を設けて入力肥大化を防ぐ
+    """
+    if not isinstance(labels_in, list):
+        return []
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in labels_in:
+        label = str(item or "").replace("\n", " ").replace("\r", " ").strip()
+        if not label:
+            continue
+        label = label[:24]
+        if label in seen:
+            continue
+        seen.add(label)
+        out.append(label)
+        if len(out) >= 6:
+            break
+    return out
 
 
 def _has_pending_or_running_job(db, *, kind: str) -> bool:
@@ -264,12 +333,18 @@ def _build_event_affect_embedding_text(aff: EventAffect) -> str:
     parts: list[str] = []
 
     # --- moment_affect_text ---
-    t = str(aff.moment_affect_text or "").strip()
+    t = _strip_face_tags(str(aff.moment_affect_text or "").strip())
     if t:
         parts.append(t)
 
+    # --- moment_affect_labels ---
+    labels = _parse_json_str_list(str(getattr(aff, "moment_affect_labels_json", "") or ""))
+    if labels:
+        parts.append("")
+        parts.append(f"【ラベル】 {', '.join(labels[:6])}")
+
     # --- inner_thought_text ---
-    it = str(aff.inner_thought_text or "").strip()
+    it = _strip_face_tags(str(aff.inner_thought_text or "").strip())
     if it:
         parts.append("")
         parts.append(f"【内心】 {it}")
@@ -329,7 +404,11 @@ def _write_plan_system_prompt(*, persona_text: str, addon_text: str, second_pers
             "- 例: 「アシスタントはメイド」→「私はメイドとして仕えている」",
             f'- 二人称（呼びかけ）は「{sp}」に固定する',
             "- 対象: state_updates.body_text / state_updates.reason / event_affect.* / long_mood_state（stateのbody_text）",
-            "- inner_thought_text は内部メモでも、人格の口調を崩さない（ただし短く簡潔に）。",
+            "- 禁止: state_updates / event_affect の文章に [face:Joy] のような会話装飾タグを混ぜること（これは会話本文専用）。",
+            "- moment_affect_text は短文で良いが「何を見て/何が起きて/どう感じたか」が分かる粒度にする（目安: 1〜2文、30〜160文字）。",
+            "- moment_affect_labels は moment_affect_text を要約する短いラベル配列（0〜6件）。",
+            '- 推奨ラベル例: ["うれしい","楽しい","安心","感謝","照れ","期待","不安","戸惑い","緊張","焦り","苛立ち","悲しい","疲れ","落ち着き","好奇心"]（迷ったら1〜2個だけ）。',
+            "- inner_thought_text は内部メモでも、人格の口調を崩さない（目安: 0〜1文、0〜120文字）。",
             "",
             "観測イベント（重要）:",
             "- event.source が desktop_watch / vision_detail の場合、event.user_text は「ユーザー発話」ではなく「画面の説明テキスト（内部生成）」である。",
@@ -375,6 +454,7 @@ def _write_plan_system_prompt(*, persona_text: str, addon_text: str, second_pers
             "  ],",
             '  "event_affect": {',
             '    "moment_affect_text": "string",',
+            '    "moment_affect_labels": ["string"],',
             '    "moment_affect_score_vad": {"v": 0.0, "a": 0.0, "d": 0.0},',
             '    "moment_affect_confidence": 0.0,',
             '    "inner_thought_text": null',
@@ -394,7 +474,8 @@ def _write_plan_system_prompt(*, persona_text: str, addon_text: str, second_pers
         [
             "",
             "人格設定（最優先）:",
-            "- 以下の persona/addon を最優先で守り、文章（state_updates / event_affect）に反映する。",
+            "- 以下の persona/addon は、文章の口調・語彙・価値観の参考として使う。",
+            "- ただし、会話用の装飾タグ（例: [face:Joy]）や会話の文字数制限などは WritePlan には適用しない。",
             "- persona/addon に口調指定が無い場合は、自然な日本語の一人称で書く。",
             "",
             "<<<PERSONA_TEXT>>>",
@@ -956,12 +1037,14 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         # --- event_affect（瞬間的な感情/内心） ---
         ea = plan.get("event_affect") if isinstance(plan, dict) else None
         if isinstance(ea, dict):
-            moment_text = str(ea.get("moment_affect_text") or "").strip()
+            moment_text = _strip_face_tags(str(ea.get("moment_affect_text") or "").strip())
             if moment_text:
                 score = ea.get("moment_affect_score_vad") if isinstance(ea.get("moment_affect_score_vad"), dict) else {}
                 conf = float(ea.get("moment_affect_confidence") or 0.0)
+                labels = _sanitize_moment_affect_labels(ea.get("moment_affect_labels"))
                 inner = ea.get("inner_thought_text")
-                inner_text = str(inner).strip() if inner is not None and str(inner).strip() else None
+                inner_text_raw = str(inner).strip() if inner is not None and str(inner).strip() else None
+                inner_text = (_strip_face_tags(inner_text_raw) if inner_text_raw is not None else None) or None
 
                 # NOTE: 1 event につき1件として扱い、既存があれば更新する（重複を避ける）
                 existing = (
@@ -975,7 +1058,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         event_id=int(event_id),
                         created_at=int(base_ts),
                         moment_affect_text=str(moment_text),
-                        moment_affect_labels_json="[]",
+                        moment_affect_labels_json=_json_dumps(labels),
                         inner_thought_text=inner_text,
                         vad_v=_clamp_vad(score.get("v")),
                         vad_a=_clamp_vad(score.get("a")),
@@ -996,6 +1079,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 else:
                     before = _affect_row_to_json(existing)
                     existing.moment_affect_text = str(moment_text)
+                    existing.moment_affect_labels_json = _json_dumps(labels)
                     existing.inner_thought_text = inner_text
                     existing.vad_v = _clamp_vad(score.get("v"))
                     existing.vad_a = _clamp_vad(score.get("a"))

@@ -193,7 +193,7 @@
 | event_id | INTEGER | 紐づくイベントID（FK） |
 | created_at | INTEGER | 作成時刻（UTC UNIX秒） |
 | moment_affect_text | TEXT | 瞬間感情のテキスト表現 |
-| moment_affect_labels_json | TEXT | 感情ラベル（JSON配列） |
+| moment_affect_labels_json | TEXT | 感情ラベル（JSON配列。WritePlanの `moment_affect_labels` をJSON化して保存） |
 | inner_thought_text | TEXT | 内心メモ（NULL可） |
 | vad_v | REAL | 快・不快（-1.0〜+1.0） |
 | vad_a | REAL | 覚醒（-1.0〜+1.0） |
