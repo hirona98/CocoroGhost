@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, text
@@ -149,6 +150,85 @@ def _clamp_vad(x: Any) -> float:
     return v
 
 
+def _clamp_01(x: Any) -> float:
+    """0.0..1.0 に丸める（壊れた出力でもDBを壊さないため）。"""
+    try:
+        v = float(x)
+    except Exception:  # noqa: BLE001
+        return 0.0
+    if v < 0.0:
+        return 0.0
+    if v > 1.0:
+        return 1.0
+    return v
+
+
+def _alpha_from_halflife(*, dt_seconds: int, half_life_seconds: int) -> float:
+    """半減期（秒）から、時刻差 dt の EMA 係数 alpha を返す。"""
+    dt = int(dt_seconds)
+    hl = int(half_life_seconds)
+    if dt <= 0:
+        return 0.0
+    if hl <= 0:
+        return 1.0
+    # --- 1 - 0.5^(dt/hl) を採用（dt=hl で 0.5 だけ追従） ---
+    try:
+        a = 1.0 - (0.5 ** (float(dt) / float(hl)))
+    except Exception:  # noqa: BLE001
+        a = 0.0
+    return _clamp_01(a)
+
+
+def _decay_from_halflife(*, dt_seconds: int, half_life_seconds: int) -> float:
+    """半減期（秒）から、時刻差 dt の減衰係数（0.0..1.0）を返す。"""
+    dt = int(dt_seconds)
+    hl = int(half_life_seconds)
+    if dt <= 0:
+        return 1.0
+    if hl <= 0:
+        return 0.0
+    try:
+        return _clamp_01(0.5 ** (float(dt) / float(hl)))
+    except Exception:  # noqa: BLE001
+        return 1.0
+
+
+def _vad_dict(v: Any, a: Any, d: Any) -> dict[str, float]:
+    """VAD を dict へ正規化して返す。"""
+    return {"v": _clamp_vad(v), "a": _clamp_vad(a), "d": _clamp_vad(d)}
+
+
+def _vad_add(x: dict[str, float], y: dict[str, float]) -> dict[str, float]:
+    """VAD同士を加算する（各軸はclampする）。"""
+    return _vad_dict(
+        float(x.get("v", 0.0)) + float(y.get("v", 0.0)),
+        float(x.get("a", 0.0)) + float(y.get("a", 0.0)),
+        float(x.get("d", 0.0)) + float(y.get("d", 0.0)),
+    )
+
+
+def _vad_sub(x: dict[str, float], y: dict[str, float]) -> dict[str, float]:
+    """VAD同士を減算する（各軸はclampする）。"""
+    return _vad_dict(
+        float(x.get("v", 0.0)) - float(y.get("v", 0.0)),
+        float(x.get("a", 0.0)) - float(y.get("a", 0.0)),
+        float(x.get("d", 0.0)) - float(y.get("d", 0.0)),
+    )
+
+
+def _vad_lerp(cur: dict[str, float], tgt: dict[str, float], alpha: float) -> dict[str, float]:
+    """VAD を EMA で更新する（cur + alpha*(tgt-cur)）。"""
+    a = _clamp_01(alpha)
+    dv = _vad_sub(tgt, cur)
+    return _vad_add(cur, {"v": float(dv["v"]) * a, "a": float(dv["a"]) * a, "d": float(dv["d"]) * a})
+
+
+def _local_day_key(ts_utc: int) -> str:
+    """UTCのUNIX秒から、ローカル日付キー（YYYY-MM-DD）を返す。"""
+    dt = datetime.fromtimestamp(int(ts_utc), tz=timezone.utc).astimezone()
+    return dt.date().isoformat()
+
+
 def _normalize_text_for_dedupe(text_in: str) -> str:
     """重複判定用に本文テキストを正規化する（空白の揺れを吸収）。"""
     s = str(text_in or "").strip()
@@ -199,6 +279,53 @@ def _sanitize_moment_affect_labels(labels_in: Any) -> list[str]:
         out.append(label)
         if len(out) >= 6:
             break
+    return out
+
+
+_LONG_MOOD_MODEL_VERSION = 2
+_LONG_MOOD_BASELINE_HALFLIFE_SECONDS = 24 * 60 * 60
+_LONG_MOOD_SHOCK_HALFLIFE_SECONDS = 60 * 60
+_LONG_MOOD_SHOCK_ALPHA = 0.6
+_LONG_MOOD_MAJOR_DELTA_THRESHOLD = 0.8
+_LONG_MOOD_MAJOR_BASELINE_ALPHA_FLOOR = 0.25
+
+
+def _parse_long_mood_payload(payload_json: str) -> dict[str, Any]:
+    """long_mood_state の payload_json を dict として返す（壊れていても落とさない）。"""
+    obj = _json_loads_maybe(payload_json)
+    return obj if isinstance(obj, dict) else {}
+
+
+def _extract_vad_from_payload_obj(obj: dict[str, Any], key: str) -> dict[str, float] | None:
+    """payload dict から VAD（{"v","a","d"}）を読む（無ければ None）。"""
+    v = obj.get(key)
+    if not isinstance(v, dict):
+        return None
+    if not all(k in v for k in ("v", "a", "d")):
+        return None
+    try:
+        return _vad_dict(v.get("v"), v.get("a"), v.get("d"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _build_long_mood_payload(
+    *,
+    baseline_vad: dict[str, float],
+    shock_vad: dict[str, float],
+    shock_note: str | None,
+    baseline_day_key: str | None,
+) -> dict[str, Any]:
+    """long_mood_state の payload を標準形へ整形する。"""
+    out: dict[str, Any] = {
+        "model_version": int(_LONG_MOOD_MODEL_VERSION),
+        "baseline_vad": _vad_dict(baseline_vad.get("v"), baseline_vad.get("a"), baseline_vad.get("d")),
+        "shock_vad": _vad_dict(shock_vad.get("v"), shock_vad.get("a"), shock_vad.get("d")),
+        "baseline_day_key": (str(baseline_day_key) if baseline_day_key else None),
+    }
+    note = str(shock_note or "").strip()
+    if note:
+        out["shock_note"] = note[:240]
     return out
 
 
@@ -986,6 +1113,15 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
 
     # --- まとめて1トランザクションで適用する（途中失敗で半端に残さない） ---
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        # --- LongMoodState 用に、今回の event_affect をメモしておく ---
+        # NOTE:
+        # - long_mood_state は「基調（baseline）」と「余韻（shock）」を分けて育てる。
+        # - event_affect（瞬間反応）を入力として、shock を即時反映し、baseline は日スケールでゆっくり追従させる。
+        moment_vad: dict[str, float] | None = None
+        moment_conf: float = 0.0
+        moment_note: str | None = None
+        baseline_text_candidate: str | None = None
+
         ev = db.query(Event).filter(Event.event_id == int(event_id)).one_or_none()
         if ev is None:
             return
@@ -1039,6 +1175,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 inner = ea.get("inner_thought_text")
                 inner_text_raw = str(inner).strip() if inner is not None and str(inner).strip() else None
                 inner_text = (_strip_face_tags(inner_text_raw) if inner_text_raw is not None else None) or None
+
+                # --- LongMoodState 更新用のメモ（保存の成否に依存しない入力） ---
+                moment_vad = _vad_dict(score.get("v"), score.get("a"), score.get("d"))
+                moment_conf = _clamp_01(conf)
+                moment_note = str(moment_text)[:240]
 
                 # NOTE: 1 event につき1件として扱い、既存があれば更新する（重複を避ける）
                 existing = (
@@ -1260,6 +1401,16 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     continue
 
                 if op == "upsert":
+                    # --- long_mood_state は「本文案」だけ拾う（数値はサーバ側で安定化する） ---
+                    # NOTE:
+                    # - long_mood_state を LLM の本文で毎ターン差し替えると、短期すぎる背景になりやすい。
+                    # - baseline/shock の数値モデルはサーバで決め、本文（baseline_text）は日スケールで更新する。
+                    if str(kind) == "long_mood_state":
+                        if body_text:
+                            baseline_text_candidate = str(body_text)
+                        # NOTE: ここでは upsert を続行せず、後段の「LongMoodState 統合更新」で扱う。
+                        continue
+
                     # --- 既存を更新するか、新規を作る ---
                     existing = db.query(State).filter(State.state_id == int(state_id_i)).one_or_none() if state_id_i else None
 
@@ -1408,6 +1559,184 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                             updated_at=int(now_ts),
                         )
                     )
+
+        # --- LongMoodState の統合更新（baseline + shock） ---
+        # NOTE:
+        # - WritePlan の state_updates.long_mood_state は「本文案」として扱う。
+        # - 数値（baseline/shock）は event_affect の moment_vad を入力として更新する。
+        # - event_affect が無いターンでも、日付が変わった等で本文案があれば本文だけ反映できるようにする。
+        if (moment_vad is not None and moment_conf > 0.0) or (baseline_text_candidate is not None and str(baseline_text_candidate).strip()):
+            # --- 既存の long_mood_state を読む（単一前提） ---
+            st = (
+                db.query(State)
+                .filter(State.kind == "long_mood_state")
+                .filter(State.searchable == 1)
+                .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+                .first()
+            )
+
+            # --- 既定値（初回） ---
+            baseline_vad = dict(moment_vad) if moment_vad is not None else _vad_dict(0.0, 0.0, 0.0)
+            shock_vad = _vad_dict(0.0, 0.0, 0.0)
+            baseline_day_key = _local_day_key(int(base_ts))
+            baseline_text = (str(baseline_text_candidate).strip() if baseline_text_candidate else "").strip()
+            confidence_for_save = float(moment_conf) if (moment_vad is not None and moment_conf > 0.0) else 0.0
+            shock_note_for_save = str(moment_note or "").strip() if moment_note else None
+            if st is not None:
+                # --- 既存の payload を読む ---
+                payload_prev = _parse_long_mood_payload(str(st.payload_json or ""))
+                b_prev = _extract_vad_from_payload_obj(payload_prev, "baseline_vad")
+                s_prev = _extract_vad_from_payload_obj(payload_prev, "shock_vad")
+
+                baseline_vad = b_prev if b_prev is not None else baseline_vad
+                shock_vad = s_prev if s_prev is not None else shock_vad
+                baseline_day_key_prev = str(payload_prev.get("baseline_day_key") or "").strip()
+                if baseline_day_key_prev:
+                    baseline_day_key = baseline_day_key_prev
+
+                # --- baseline_text は state.body_text を正とする（安定性優先） ---
+                baseline_text = str(st.body_text or "").strip()
+                # --- confidence/shock_note は「上書きしない」が既定（情報欠落を防ぐ） ---
+                confidence_for_save = float(st.confidence)
+                if str(payload_prev.get("shock_note") or "").strip():
+                    shock_note_for_save = str(payload_prev.get("shock_note") or "").strip()
+                # --- event_affect がある場合のみ、今回値で上書きする ---
+                if moment_vad is not None and moment_conf > 0.0:
+                    confidence_for_save = float(moment_conf)
+                    shock_note_for_save = str(moment_note or "").strip() if moment_note else shock_note_for_save
+
+            # --- dt を計算（last_confirmed_at は常にイベント時刻なので、イベント間隔になる） ---
+            dt_seconds = 0
+            if st is not None:
+                try:
+                    dt_seconds = int(base_ts) - int(st.last_confirmed_at)
+                except Exception:  # noqa: BLE001
+                    dt_seconds = 0
+            if dt_seconds < 0:
+                dt_seconds = 0
+
+            # --- baseline/shock の更新（event_affect がある場合だけ） ---
+            baseline_vad_new = dict(baseline_vad)
+            shock_vad_new = dict(shock_vad)
+            if moment_vad is not None and moment_conf > 0.0:
+                # --- baseline を日スケールで更新（confidence で重み付け） ---
+                alpha_base = _alpha_from_halflife(
+                    dt_seconds=dt_seconds, half_life_seconds=int(_LONG_MOOD_BASELINE_HALFLIFE_SECONDS)
+                )
+                alpha_base *= float(moment_conf)
+                alpha_base = _clamp_01(alpha_base)
+
+                # --- 重大イベントは baseline の追従を一時的に上げる ---
+                # NOTE:
+                # - baseline は日スケールだが、重大な出来事（別れ話など）は「その日の基調」自体を崩す。
+                # - ここで alpha の下限を持たせ、shock が [-1, +1] の範囲でも十分に効くようにする。
+                dv0 = _vad_sub(moment_vad, baseline_vad)
+                major_delta = max(abs(float(dv0["v"])), abs(float(dv0["a"])), abs(float(dv0["d"])))
+                if major_delta >= float(_LONG_MOOD_MAJOR_DELTA_THRESHOLD):
+                    alpha_base = max(alpha_base, float(_LONG_MOOD_MAJOR_BASELINE_ALPHA_FLOOR) * float(moment_conf))
+                    alpha_base = _clamp_01(alpha_base)
+
+                baseline_vad_new = _vad_lerp(baseline_vad, moment_vad, alpha_base)
+
+                # --- shock は短期で追従し、時間で減衰する ---
+                # NOTE:
+                # - 更新間隔 dt が短い場合でも「出来事が起きた」こと自体は重いので、
+                #   shock の追従率は dt に依存させず固定（confidence で重み付け）する。
+                decay = _decay_from_halflife(
+                    dt_seconds=dt_seconds, half_life_seconds=int(_LONG_MOOD_SHOCK_HALFLIFE_SECONDS)
+                )
+                shock_decayed = {
+                    "v": float(shock_vad.get("v", 0.0)) * float(decay),
+                    "a": float(shock_vad.get("a", 0.0)) * float(decay),
+                    "d": float(shock_vad.get("d", 0.0)) * float(decay),
+                }
+                # --- baselineとの差分へ寄せる（差分は範囲内へclampする） ---
+                delta = _vad_sub(moment_vad, baseline_vad_new)
+                alpha_shock = _clamp_01(float(_LONG_MOOD_SHOCK_ALPHA) * float(moment_conf))
+                shock_vad_new = _vad_lerp(
+                    _vad_dict(shock_decayed.get("v"), shock_decayed.get("a"), shock_decayed.get("d")),
+                    delta,
+                    alpha_shock,
+                )
+
+            # --- baseline_text の更新は「日付が変わった時だけ」 ---
+            new_day_key = _local_day_key(int(base_ts))
+            if (not baseline_text) or (new_day_key != str(baseline_day_key or "")):
+                # NOTE: 本文案が無い場合は、最低限の文章で埋める（NULL不可のため）。
+                candidate = (str(baseline_text_candidate or "").strip() or str(moment_note or "").strip()).strip()
+                baseline_text = candidate[:600] if candidate else "今日は落ち着かない気分が続いている。"
+                baseline_day_key = new_day_key
+
+            # --- payload を標準形へ整形する ---
+            payload_new = _build_long_mood_payload(
+                baseline_vad=baseline_vad_new,
+                shock_vad=shock_vad_new,
+                shock_note=shock_note_for_save,
+                baseline_day_key=baseline_day_key,
+            )
+
+            # --- upsert（単一更新） ---
+            if st is None:
+                st2 = State(
+                    kind="long_mood_state",
+                    body_text=str(baseline_text),
+                    payload_json=_json_dumps(payload_new),
+                    last_confirmed_at=int(base_ts),
+                    confidence=float(confidence_for_save),
+                    salience=float(0.7),
+                    valid_from_ts=None,
+                    valid_to_ts=None,
+                    created_at=int(base_ts),
+                    updated_at=int(now_ts),
+                )
+                db.add(st2)
+                db.flush()
+                add_revision(
+                    entity_type="state",
+                    entity_id=int(st2.state_id),
+                    before=None,
+                    after=_state_row_to_json(st2),
+                    reason="long_mood_state を更新した（baseline+shock）",
+                    evidence_event_ids=[int(event_id)],
+                )
+                changed_state_id = int(st2.state_id)
+            else:
+                before = _state_row_to_json(st)
+                st.kind = "long_mood_state"
+                st.body_text = str(baseline_text)
+                st.payload_json = _json_dumps(payload_new)
+                st.last_confirmed_at = int(base_ts)
+                st.confidence = float(confidence_for_save)
+                # NOTE: salience は固定でよい（長期気分は背景。検索の強さではなく注入で使う）。
+                st.salience = float(0.7)
+                st.valid_from_ts = None
+                st.valid_to_ts = None
+                st.updated_at = int(now_ts)
+                db.add(st)
+                db.flush()
+                add_revision(
+                    entity_type="state",
+                    entity_id=int(st.state_id),
+                    before=before,
+                    after=_state_row_to_json(st),
+                    reason="long_mood_state を更新した（baseline+shock）",
+                    evidence_event_ids=[int(event_id)],
+                )
+                changed_state_id = int(st.state_id)
+
+            # --- embedding job（long_mood_state も更新で育つので反映しておく） ---
+            db.add(
+                Job(
+                    kind="upsert_state_embedding",
+                    payload_json=_json_dumps({"state_id": int(changed_state_id)}),
+                    status=int(_JOB_PENDING),
+                    run_after=int(now_ts),
+                    tries=0,
+                    last_error=None,
+                    created_at=int(now_ts),
+                    updated_at=int(now_ts),
+                )
+            )
 
         # --- Nターンごとの整理ジョブ（chatターン回数ベース） ---
         # NOTE:
