@@ -59,6 +59,7 @@ def write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> 
             "- 対象: state_updates.body_text / state_updates.reason / event_affect.* / long_mood_state（stateのbody_text）",
             "- 禁止: state_updates / event_affect の文章に [face:Joy] のような会話装飾タグを混ぜること（これは会話本文専用）。",
             "- moment_affect_text は短文で良いが「何を見て/何が起きて/どう感じたか」が分かる粒度にする（目安: 1〜3文、60〜240文字）。",
+            "- 禁止: moment_affect_text を極端に短くする（例: 20文字以下）。短い場合は1文足して状況を補う。",
             "- moment_affect_labels は moment_affect_text を要約する短いラベル配列（0〜6件。基本は1〜3件）。",
             '- 推奨ラベル例: ["うれしい","楽しい","安心","感謝","照れ","期待","不安","戸惑い","緊張","焦り","苛立ち","悲しい","疲れ","落ち着き","好奇心"]（迷ったら1〜2個だけ）。',
             "- inner_thought_text は内部メモでも、人格の口調を崩さない（目安: 0〜2文、0〜200文字）。",
@@ -127,9 +128,9 @@ def write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> 
         [
             "",
             "人格設定（最優先）:",
-            "- 以下の persona/addon は、文章の口調・語彙・価値観の参考として使う。",
+            "- 以下の persona_text は、文章の口調・語彙・価値観の参考として使う。",
             "- ただし、会話用の装飾タグ（例: [face:Joy]）や会話の文字数制限などは WritePlan には適用しない。",
-            "- persona/addon に口調指定が無い場合は、自然な日本語の一人称で書く。",
+            "- persona_text に口調指定が無い場合は、自然な日本語の一人称で書く。",
             "",
             "<<<PERSONA_TEXT>>>",
             pt,
@@ -456,3 +457,25 @@ def reminder_user_prompt(*, time_jp: str, content: str, second_person_label: str
         ]
     ).strip()
 
+
+def meta_request_user_prompt(*, second_person_label: str, instruction: str, payload_text: str) -> str:
+    """
+    外部要求（meta-request）で「能動メッセージ」を生成させるための user prompt を返す。
+
+    NOTE:
+        - 外部要求が存在する事実を会話本文に出させない（自然な「自発」へ寄せる）。
+        - ここは会話本文向けの指示であり、WritePlan（内部JSON生成）には使わない。
+    """
+    sp = str(second_person_label or "").strip() or "あなた"
+    ins = str(instruction or "").strip()
+    pl = str(payload_text or "").strip()
+    return "\n".join(
+        [
+            "あなたは今、自分から話しかけたい話題を思いついた。",
+            f"次の材料を踏まえて、自然に{sp}へ話しかける短いメッセージを作る。",
+            "",
+            "材料:",
+            ins,
+            pl,
+        ]
+    ).strip()

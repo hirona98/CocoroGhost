@@ -72,6 +72,8 @@ def setup_logging(
         file_handler = RotatingFileHandler(
             log_path,
             maxBytes=int(log_file_max_bytes),
+            # NOTE:
+            # - 単一ユーザー運用でも「直近のログ」と「直前のログ」を見返せるよう、.1 を1つだけ残す。
             backupCount=1,
             encoding="utf-8",
         )
