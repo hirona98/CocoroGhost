@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, text
 
+from cocoro_ghost import affect
+from cocoro_ghost import common_utils, prompt_builders, vector_index
 from cocoro_ghost.db import memory_session_scope, upsert_vec_item
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.memory_models import Event, EventAffect, EventLink, EventThread, Job, Revision, State
@@ -31,12 +31,6 @@ from cocoro_ghost.time_utils import format_iso8601_local, parse_iso8601_to_utc_t
 
 
 logger = logging.getLogger(__name__)
-
-
-_VEC_KIND_EVENT = 1
-_VEC_KIND_STATE = 2
-_VEC_KIND_EVENT_AFFECT = 3
-_VEC_ID_STRIDE = 10_000_000_000
 
 
 _JOB_PENDING = 0
@@ -54,179 +48,6 @@ _TIDY_ACTIVE_STATE_FETCH_LIMIT = 5000
 def _now_utc_ts() -> int:
     """現在時刻（UTC）をUNIX秒で返す。"""
     return int(time.time())
-
-
-def _vec_item_id(kind: int, entity_id: int) -> int:
-    """vec_items の item_id を決定する（kind + entity_id の衝突を避ける）。"""
-    return int(kind) * int(_VEC_ID_STRIDE) + int(entity_id)
-
-
-def _json_loads_maybe(text_in: str) -> dict[str, Any]:
-    """JSON文字列をdictとして読む（失敗時は空dict）。"""
-    try:
-        obj = json.loads(str(text_in or ""))
-        return obj if isinstance(obj, dict) else {}
-    except Exception:  # noqa: BLE001
-        return {}
-
-
-def _parse_json_str_list(text_in: str) -> list[str]:
-    """JSON文字列を list[str] として読む（失敗時は空list）。"""
-    s = str(text_in or "").strip()
-    if not s:
-        return []
-    try:
-        obj = json.loads(s)
-    except Exception:  # noqa: BLE001
-        return []
-    if not isinstance(obj, list):
-        return []
-    out: list[str] = []
-    for item in obj:
-        t = str(item or "").replace("\n", " ").replace("\r", " ").strip()
-        if not t:
-            continue
-        out.append(t)
-    return out
-
-
-def _strip_face_tags(text_in: str) -> str:
-    """
-    テキストから会話装飾タグ（例: [face:Joy]）を除去する。
-
-    NOTE:
-    - [face:*] はユーザーに見せる返答用の表記であり、内部の記憶（WritePlan/state/event_affect）には不要。
-    - LLMが混入させてもDBへ保存しないように、保存前に必ず除去する。
-    """
-    s = str(text_in or "")
-    if not s:
-        return ""
-
-    # --- [face:...] 形式を一律で消す（種類は固定しない） ---
-    s2 = re.sub(r"\[face:[^\]]+\]", "", s)
-
-    # --- 余計な空白を整える ---
-    return " ".join(s2.replace("\r", " ").replace("\n", " ").split()).strip()
-
-
-def _json_dumps(payload: Any) -> str:
-    """DB保存向けにJSONを安定した形式でダンプする（日本語保持）。"""
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-
-
-def _parse_first_json_object(text_in: str) -> dict[str, Any]:
-    """LLM出力から最初のJSONオブジェクトを抽出してdictとして返す。"""
-    s = str(text_in or "").strip()
-    if not s:
-        raise RuntimeError("LLM output is empty")
-
-    # --- llm_client の内部ユーティリティで抽出/修復する ---
-    from cocoro_ghost.llm_client import _extract_first_json_value, _repair_json_like_text  # noqa: PLC0415
-
-    candidate = _extract_first_json_value(s)
-    if not candidate:
-        raise RuntimeError("JSON extract failed")
-
-    try:
-        obj = json.loads(candidate)
-    except json.JSONDecodeError:
-        obj = json.loads(_repair_json_like_text(candidate))
-
-    if not isinstance(obj, dict):
-        raise RuntimeError("JSON is not an object")
-    return obj
-
-
-def _clamp_vad(x: Any) -> float:
-    """VAD値を -1.0..+1.0 に丸める（壊れた出力でもDBを壊さないため）。"""
-    try:
-        v = float(x)
-    except Exception:  # noqa: BLE001
-        return 0.0
-    if v < -1.0:
-        return -1.0
-    if v > 1.0:
-        return 1.0
-    return v
-
-
-def _clamp_01(x: Any) -> float:
-    """0.0..1.0 に丸める（壊れた出力でもDBを壊さないため）。"""
-    try:
-        v = float(x)
-    except Exception:  # noqa: BLE001
-        return 0.0
-    if v < 0.0:
-        return 0.0
-    if v > 1.0:
-        return 1.0
-    return v
-
-
-def _alpha_from_halflife(*, dt_seconds: int, half_life_seconds: int) -> float:
-    """半減期（秒）から、時刻差 dt の EMA 係数 alpha を返す。"""
-    dt = int(dt_seconds)
-    hl = int(half_life_seconds)
-    if dt <= 0:
-        return 0.0
-    if hl <= 0:
-        return 1.0
-    # --- 1 - 0.5^(dt/hl) を採用（dt=hl で 0.5 だけ追従） ---
-    try:
-        a = 1.0 - (0.5 ** (float(dt) / float(hl)))
-    except Exception:  # noqa: BLE001
-        a = 0.0
-    return _clamp_01(a)
-
-
-def _decay_from_halflife(*, dt_seconds: int, half_life_seconds: int) -> float:
-    """半減期（秒）から、時刻差 dt の減衰係数（0.0..1.0）を返す。"""
-    dt = int(dt_seconds)
-    hl = int(half_life_seconds)
-    if dt <= 0:
-        return 1.0
-    if hl <= 0:
-        return 0.0
-    try:
-        return _clamp_01(0.5 ** (float(dt) / float(hl)))
-    except Exception:  # noqa: BLE001
-        return 1.0
-
-
-def _vad_dict(v: Any, a: Any, d: Any) -> dict[str, float]:
-    """VAD を dict へ正規化して返す。"""
-    return {"v": _clamp_vad(v), "a": _clamp_vad(a), "d": _clamp_vad(d)}
-
-
-def _vad_add(x: dict[str, float], y: dict[str, float]) -> dict[str, float]:
-    """VAD同士を加算する（各軸はclampする）。"""
-    return _vad_dict(
-        float(x.get("v", 0.0)) + float(y.get("v", 0.0)),
-        float(x.get("a", 0.0)) + float(y.get("a", 0.0)),
-        float(x.get("d", 0.0)) + float(y.get("d", 0.0)),
-    )
-
-
-def _vad_sub(x: dict[str, float], y: dict[str, float]) -> dict[str, float]:
-    """VAD同士を減算する（各軸はclampする）。"""
-    return _vad_dict(
-        float(x.get("v", 0.0)) - float(y.get("v", 0.0)),
-        float(x.get("a", 0.0)) - float(y.get("a", 0.0)),
-        float(x.get("d", 0.0)) - float(y.get("d", 0.0)),
-    )
-
-
-def _vad_lerp(cur: dict[str, float], tgt: dict[str, float], alpha: float) -> dict[str, float]:
-    """VAD を EMA で更新する（cur + alpha*(tgt-cur)）。"""
-    a = _clamp_01(alpha)
-    dv = _vad_sub(tgt, cur)
-    return _vad_add(cur, {"v": float(dv["v"]) * a, "a": float(dv["a"]) * a, "d": float(dv["d"]) * a})
-
-
-def _local_day_key(ts_utc: int) -> str:
-    """UTCのUNIX秒から、ローカル日付キー（YYYY-MM-DD）を返す。"""
-    dt = datetime.fromtimestamp(int(ts_utc), tz=timezone.utc).astimezone()
-    return dt.date().isoformat()
 
 
 def _normalize_text_for_dedupe(text_in: str) -> str:
@@ -253,82 +74,6 @@ def _canonicalize_json_for_dedupe(text_in: str) -> str:
         return s
 
 
-def _sanitize_moment_affect_labels(labels_in: Any) -> list[str]:
-    """
-    moment_affect_labels を保存用に正規化する。
-
-    方針:
-    - list[str] を期待するが、壊れた出力でも落とさない（空にする）
-    - 余計な改行を除去し、空要素を捨てる
-    - 重複は除去（順序は維持）
-    - 上限数を設けて入力肥大化を防ぐ
-    """
-    if not isinstance(labels_in, list):
-        return []
-
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in labels_in:
-        label = str(item or "").replace("\n", " ").replace("\r", " ").strip()
-        if not label:
-            continue
-        label = label[:24]
-        if label in seen:
-            continue
-        seen.add(label)
-        out.append(label)
-        if len(out) >= 6:
-            break
-    return out
-
-
-_LONG_MOOD_MODEL_VERSION = 2
-_LONG_MOOD_BASELINE_HALFLIFE_SECONDS = 24 * 60 * 60
-_LONG_MOOD_SHOCK_HALFLIFE_SECONDS = 60 * 60
-_LONG_MOOD_SHOCK_ALPHA = 0.6
-_LONG_MOOD_MAJOR_DELTA_THRESHOLD = 0.8
-_LONG_MOOD_MAJOR_BASELINE_ALPHA_FLOOR = 0.25
-
-
-def _parse_long_mood_payload(payload_json: str) -> dict[str, Any]:
-    """long_mood_state の payload_json を dict として返す（壊れていても落とさない）。"""
-    obj = _json_loads_maybe(payload_json)
-    return obj if isinstance(obj, dict) else {}
-
-
-def _extract_vad_from_payload_obj(obj: dict[str, Any], key: str) -> dict[str, float] | None:
-    """payload dict から VAD（{"v","a","d"}）を読む（無ければ None）。"""
-    v = obj.get(key)
-    if not isinstance(v, dict):
-        return None
-    if not all(k in v for k in ("v", "a", "d")):
-        return None
-    try:
-        return _vad_dict(v.get("v"), v.get("a"), v.get("d"))
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _build_long_mood_payload(
-    *,
-    baseline_vad: dict[str, float],
-    shock_vad: dict[str, float],
-    shock_note: str | None,
-    baseline_day_key: str | None,
-) -> dict[str, Any]:
-    """long_mood_state の payload を標準形へ整形する。"""
-    out: dict[str, Any] = {
-        "model_version": int(_LONG_MOOD_MODEL_VERSION),
-        "baseline_vad": _vad_dict(baseline_vad.get("v"), baseline_vad.get("a"), baseline_vad.get("d")),
-        "shock_vad": _vad_dict(shock_vad.get("v"), shock_vad.get("a"), shock_vad.get("d")),
-        "baseline_day_key": (str(baseline_day_key) if baseline_day_key else None),
-    }
-    note = str(shock_note or "").strip()
-    if note:
-        out["shock_note"] = note[:240]
-    return out
-
-
 def _has_pending_or_running_job(db, *, kind: str) -> bool:
     """指定kindの pending/running ジョブが存在するかを返す。"""
     n = (
@@ -352,7 +97,7 @@ def _last_tidy_watermark_event_id(db) -> int:
     if last is None:
         return 0
 
-    payload = _json_loads_maybe(str(last.payload_json or ""))
+    payload = common_utils.json_loads_maybe(str(last.payload_json or ""))
     try:
         return int(payload.get("watermark_event_id") or 0)
     except Exception:  # noqa: BLE001
@@ -371,7 +116,7 @@ def _enqueue_tidy_memory_job(
     db.add(
         Job(
             kind="tidy_memory",
-            payload_json=_json_dumps(
+            payload_json=common_utils.json_dumps(
                 {
                     "reason": str(reason),
                     "max_close_per_run": int(_TIDY_MAX_CLOSE_PER_RUN),
@@ -460,18 +205,18 @@ def _build_event_affect_embedding_text(aff: EventAffect) -> str:
     parts: list[str] = []
 
     # --- moment_affect_text ---
-    t = _strip_face_tags(str(aff.moment_affect_text or "").strip())
+    t = common_utils.strip_face_tags(str(aff.moment_affect_text or "").strip())
     if t:
         parts.append(t)
 
     # --- moment_affect_labels ---
-    labels = _parse_json_str_list(str(getattr(aff, "moment_affect_labels_json", "") or ""))
+    labels = common_utils.parse_json_str_list(str(getattr(aff, "moment_affect_labels_json", "") or ""))
     if labels:
         parts.append("")
         parts.append(f"【ラベル】 {', '.join(labels[:6])}")
 
     # --- inner_thought_text ---
-    it = _strip_face_tags(str(aff.inner_thought_text or "").strip())
+    it = common_utils.strip_face_tags(str(aff.inner_thought_text or "").strip())
     if it:
         parts.append("")
         parts.append(f"【内心】 {it}")
@@ -484,135 +229,6 @@ def _build_event_affect_embedding_text(aff: EventAffect) -> str:
     if len(text_out) > 8000:
         text_out = text_out[:8000]
     return text_out
-
-
-def _write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> str:
-    """
-    WritePlan生成用のsystem promptを返す（ペルソナ注入あり）。
-
-    Args:
-        persona_text: ペルソナ本文（ユーザー編集対象）。
-            NOTE: addon_text は会話本文向けの追加指示なので、WritePlan（内部JSON生成）には注入しない。
-        second_person_label: 二人称の呼称（例: マスター / あなた / 君 / ◯◯さん）。
-    """
-
-    # --- 二人称呼称を正規化 ---
-    sp = str(second_person_label or "").strip() or "あなた"
-
-    # --- ペルソナ本文を正規化 ---
-    # NOTE:
-    # - WritePlanは内部用のJSONだが、state_updates / event_affect の文章は人格の口調に揃える。
-    # - 行末（CRLF/LF）の揺れは暗黙的キャッシュの阻害になり得るため、ここで正規化する。
-    pt = str(persona_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-
-    # --- ベースプロンプト（スキーマ＋品質要件） ---
-    base = "\n".join(
-        [
-            "あなたは出来事ログ（event）から、記憶更新のための計画（WritePlan）を作る。",
-            "出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
-            "",
-            "目的:",
-            "- about_time（内容がいつの話か）と entities を推定する",
-            "- 状態（state）を更新して「次ターン以降に効く」形へ育てる",
-            "- 瞬間的な感情（event_affect）と長期的な気分（long_mood_state）を扱う",
-            "- 文脈グラフ（event_threads/event_links）の本更新案を作る",
-            "",
-            "品質（重要）:",
-            "- 入力（event/recent_events/recent_states）に無い事実は作らない。推測する場合は confidence を下げるか、更新しない。",
-            "- event.image_summaries / recent_events[*].image_summaries_preview は画像要約（内部用）。画像そのものは無いので、要約に無い細部は断定しない。",
-            "- state_updates は必要なものだけ。雑談だけなら空でもよい（ノイズを増やさない）。",
-            "- body_text は検索に使う短い本文（会話文の長文や箇条書きは避ける）。",
-            "- 矛盾がある場合は上書きせず、並存/期間分割（valid_from_ts/valid_to_ts）や close を使う。",
-            "",
-            "視点・口調（重要）:",
-            "- あなたは人格本人。本文は主観（一人称）で書く",
-            "- 自分を三人称で呼ばない",
-            "- 例: 「アシスタントはメイド」→「私はメイドとして仕えている」",
-            f'- 二人称（呼びかけ）は「{sp}」に固定する',
-            "- 対象: state_updates.body_text / state_updates.reason / event_affect.* / long_mood_state（stateのbody_text）",
-            "- 禁止: state_updates / event_affect の文章に [face:Joy] のような会話装飾タグを混ぜること（これは会話本文専用）。",
-            "- moment_affect_text は短文で良いが「何を見て/何が起きて/どう感じたか」が分かる粒度にする（目安: 1〜3文、60〜240文字）。",
-            "- moment_affect_labels は moment_affect_text を要約する短いラベル配列（0〜6件。基本は1〜3件）。",
-            '- 推奨ラベル例: ["うれしい","楽しい","安心","感謝","照れ","期待","不安","戸惑い","緊張","焦り","苛立ち","悲しい","疲れ","落ち着き","好奇心"]（迷ったら1〜2個だけ）。',
-            "- inner_thought_text は内部メモでも、人格の口調を崩さない（目安: 0〜2文、0〜200文字）。",
-            "",
-            "観測イベント（重要）:",
-            "- event.source が desktop_watch / vision_detail の場合、event.user_text は「ユーザー発話」ではなく「画面の説明テキスト（内部生成）」である。",
-            "- この場合、画面内の行為（作業/操作/閲覧/プレイ等）の主体は event.observation.second_person_label（例: マスター）。あなた（人格）は観測者として「見ている/見守っている」。",
-            "- 禁止: 画面内の行為を「私が〜している（プレイしている/作業している）」のように自分の行為として書く。",
-            "- 例: OK「私はマスターがリズムゲームをプレイしているデスクトップ画面を見ている」 / NG「私はリズムゲームをプレイしている」",
-            "",
-            "制約:",
-            "- VAD（v/a/d）は各軸 -1.0..+1.0",
-            "- confidence/salience/about_time_confidence は 0.0..1.0",
-            "- どの更新も evidence_event_ids に必ず現在の event_id を含める",
-            "- reason は短く具体的に（なぜそう判断したか）",
-            "- state_id はDB主キー（整数）か null（文字列IDを作らない）",
-            "- op=close/mark_done は state_id 必須（recent_states にあるIDのみ）。op=upsert は state_id=null で新規、state_id>0 で既存更新。",
-            "- 日時は ISO 8601（タイムゾーン付き）文字列で出す（例: 2026-01-10T13:24:00+09:00）",
-            "",
-            "出力スキーマ（キーは識別子なので英語のまま）:",
-            "{",
-            '  "event_annotations": {',
-            '    "about_start_ts": null,',
-            '    "about_end_ts": null,',
-            '    "about_year_start": null,',
-            '    "about_year_end": null,',
-            '    "life_stage": "elementary|middle|high|university|work|unknown",',
-            '    "about_time_confidence": 0.0,',
-            '    "entities": [{"type":"PERSON|ORG|PLACE|THING|TOPIC","name":"string","confidence":0.0}]',
-            "  },",
-            '  "state_updates": [',
-            "    {",
-            '      "op": "upsert|close|mark_done",',
-            '      "state_id": null,',
-            '      "kind": "fact|relation|task|summary|long_mood_state",',
-            '      "body_text": "検索に使う短い本文",',
-            '      "payload": {},',
-            '      "confidence": 0.0,',
-            '      "salience": 0.0,',
-            '      "valid_from_ts": null,',
-            '      "valid_to_ts": null,',
-            '      "last_confirmed_at": null,',
-            '      "evidence_event_ids": [0],',
-            '      "reason": "string"',
-            "    }",
-            "  ],",
-            '  "event_affect": {',
-            '    "moment_affect_text": "string",',
-            '    "moment_affect_labels": ["string"],',
-            '    "moment_affect_score_vad": {"v": 0.0, "a": 0.0, "d": 0.0},',
-            '    "moment_affect_confidence": 0.0,',
-            '    "inner_thought_text": null',
-            "  },",
-            '  "context_updates": {',
-            '    "threads": [{"thread_key":"string","confidence":0.0}],',
-            '    "links": [{"to_event_id":0,"label":"reply_to|same_topic|caused_by|continuation","confidence":0.0}]',
-            "  }",
-            "}",
-        ]
-    ).strip()
-
-    # --- ペルソナ注入 ---
-    # NOTE:
-    # - WritePlan はユーザーに見せないが、人格の「考え方/口調」を揃えるため、ペルソナ本文を最優先で参照させる。
-    persona = "\n".join(
-        [
-            "",
-            "人格設定（最優先）:",
-            "- 以下の persona/addon は、文章の口調・語彙・価値観の参考として使う。",
-            "- ただし、会話用の装飾タグ（例: [face:Joy]）や会話の文字数制限などは WritePlan には適用しない。",
-            "- persona/addon に口調指定が無い場合は、自然な日本語の一人称で書く。",
-            "",
-            "<<<PERSONA_TEXT>>>",
-            pt,
-            "<<<END>>>",
-            "",
-        ]
-    ).strip()
-
-    # persona/addon が空の場合も、空として明示して「未注入」と誤認しないようにする。
-    return "\n\n".join([base, persona]).strip()
 
 
 def _state_row_to_json(st: State) -> dict[str, Any]:
@@ -774,7 +390,7 @@ def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_clie
             return
 
         kind = str(job.kind or "").strip()
-        payload = _json_loads_maybe(job.payload_json)
+        payload = common_utils.json_loads_maybe(job.payload_json)
 
     # --- 実行 ---
     try:
@@ -883,7 +499,7 @@ def _handle_upsert_event_embedding(
         # - vec_items が残ると、ベクトル検索で再浮上する可能性がある。
         # - searchable=0 は「ログは残すが、想起には使わない」を表す。
         if int(getattr(ev, "searchable", 1) or 0) != 1:
-            item_id = _vec_item_id(int(_VEC_KIND_EVENT), int(event_id))
+            item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_EVENT), int(event_id))
             db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
             return
         text_in = _build_event_embedding_text(ev)
@@ -896,13 +512,13 @@ def _handle_upsert_event_embedding(
     emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.ASYNC_EVENT_EMBEDDING)[0]
 
     # --- vec_items へ書く（kind+entity_idの衝突を避ける） ---
-    item_id = _vec_item_id(int(_VEC_KIND_EVENT), int(event_id))
+    item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_EVENT), int(event_id))
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         upsert_vec_item(
             db,
             item_id=int(item_id),
             embedding=emb,
-            kind=int(_VEC_KIND_EVENT),
+            kind=int(vector_index.VEC_KIND_EVENT),
             rank_at=int(rank_at),
             active=1,
         )
@@ -1063,11 +679,11 @@ def _handle_generate_write_plan(
 
     # --- LLMでWritePlanを作る ---
     resp = llm_client.generate_json_response(
-        system_prompt=_write_plan_system_prompt(
+        system_prompt=prompt_builders.write_plan_system_prompt(
             persona_text=persona_text,
             second_person_label=second_person_label,
         ),
-        input_text=_json_dumps(input_obj),
+        input_text=common_utils.json_dumps(input_obj),
         purpose=LlmRequestPurpose.ASYNC_WRITE_PLAN,
         max_tokens=2400,
     )
@@ -1079,7 +695,7 @@ def _handle_generate_write_plan(
             content = str(resp.choices[0].message.content or "")
         except Exception:  # noqa: BLE001
             content = ""
-    plan_obj = _parse_first_json_object(content)
+    plan_obj = common_utils.parse_first_json_object_or_raise(content)
 
     # --- apply_write_plan を投入する（planはpayloadに入れて監査できるようにする） ---
     now_ts = _now_utc_ts()
@@ -1087,7 +703,7 @@ def _handle_generate_write_plan(
         db.add(
             Job(
                 kind="apply_write_plan",
-                payload_json=_json_dumps({"event_id": int(event_id), "write_plan": plan_obj}),
+                payload_json=common_utils.json_dumps({"event_id": int(event_id), "write_plan": plan_obj}),
                 status=int(_JOB_PENDING),
                 run_after=int(now_ts),
                 tries=0,
@@ -1146,7 +762,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             ev.life_stage = (str(life_stage) if life_stage is not None else None)
             ev.about_time_confidence = float(ann.get("about_time_confidence") or 0.0)
             entities = ann.get("entities") if isinstance(ann.get("entities"), list) else []
-            ev.entities_json = _json_dumps(entities)
+            ev.entities_json = common_utils.json_dumps(entities)
         ev.updated_at = int(now_ts)
         db.add(ev)
 
@@ -1156,10 +772,10 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 Revision(
                     entity_type=str(entity_type),
                     entity_id=int(entity_id),
-                    before_json=(_json_dumps(before) if before is not None else None),
-                    after_json=(_json_dumps(after) if after is not None else None),
+                    before_json=(common_utils.json_dumps(before) if before is not None else None),
+                    after_json=(common_utils.json_dumps(after) if after is not None else None),
                     reason=str(reason or "").strip() or "(no reason)",
-                    evidence_event_ids_json=_json_dumps([int(x) for x in evidence_event_ids if int(x) > 0]),
+                    evidence_event_ids_json=common_utils.json_dumps([int(x) for x in evidence_event_ids if int(x) > 0]),
                     created_at=int(now_ts),
                 )
             )
@@ -1167,18 +783,20 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         # --- event_affect（瞬間的な感情/内心） ---
         ea = plan.get("event_affect") if isinstance(plan, dict) else None
         if isinstance(ea, dict):
-            moment_text = _strip_face_tags(str(ea.get("moment_affect_text") or "").strip())
+            moment_text = common_utils.strip_face_tags(str(ea.get("moment_affect_text") or "").strip())
             if moment_text:
                 score = ea.get("moment_affect_score_vad") if isinstance(ea.get("moment_affect_score_vad"), dict) else {}
                 conf = float(ea.get("moment_affect_confidence") or 0.0)
-                labels = _sanitize_moment_affect_labels(ea.get("moment_affect_labels"))
+                labels = affect.sanitize_moment_affect_labels(ea.get("moment_affect_labels"))
                 inner = ea.get("inner_thought_text")
                 inner_text_raw = str(inner).strip() if inner is not None and str(inner).strip() else None
-                inner_text = (_strip_face_tags(inner_text_raw) if inner_text_raw is not None else None) or None
+                inner_text = (
+                    common_utils.strip_face_tags(inner_text_raw) if inner_text_raw is not None else None
+                ) or None
 
                 # --- LongMoodState 更新用のメモ（保存の成否に依存しない入力） ---
-                moment_vad = _vad_dict(score.get("v"), score.get("a"), score.get("d"))
-                moment_conf = _clamp_01(conf)
+                moment_vad = affect.vad_dict(score.get("v"), score.get("a"), score.get("d"))
+                moment_conf = affect.clamp_01(conf)
                 moment_note = str(moment_text)[:240]
 
                 # NOTE: 1 event につき1件として扱い、既存があれば更新する（重複を避ける）
@@ -1193,11 +811,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         event_id=int(event_id),
                         created_at=int(base_ts),
                         moment_affect_text=str(moment_text),
-                        moment_affect_labels_json=_json_dumps(labels),
+                        moment_affect_labels_json=common_utils.json_dumps(labels),
                         inner_thought_text=inner_text,
-                        vad_v=_clamp_vad(score.get("v")),
-                        vad_a=_clamp_vad(score.get("a")),
-                        vad_d=_clamp_vad(score.get("d")),
+                        vad_v=affect.clamp_vad(score.get("v")),
+                        vad_a=affect.clamp_vad(score.get("a")),
+                        vad_d=affect.clamp_vad(score.get("d")),
                         confidence=float(conf),
                     )
                     db.add(aff)
@@ -1214,11 +832,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 else:
                     before = _affect_row_to_json(existing)
                     existing.moment_affect_text = str(moment_text)
-                    existing.moment_affect_labels_json = _json_dumps(labels)
+                    existing.moment_affect_labels_json = common_utils.json_dumps(labels)
                     existing.inner_thought_text = inner_text
-                    existing.vad_v = _clamp_vad(score.get("v"))
-                    existing.vad_a = _clamp_vad(score.get("a"))
-                    existing.vad_d = _clamp_vad(score.get("d"))
+                    existing.vad_v = affect.clamp_vad(score.get("v"))
+                    existing.vad_a = affect.clamp_vad(score.get("a"))
+                    existing.vad_d = affect.clamp_vad(score.get("d"))
                     existing.confidence = float(conf)
                     db.add(existing)
                     db.flush()
@@ -1236,7 +854,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 db.add(
                     Job(
                         kind="upsert_event_affect_embedding",
-                        payload_json=_json_dumps({"affect_id": int(affect_id)}),
+                        payload_json=common_utils.json_dumps({"affect_id": int(affect_id)}),
                         status=int(_JOB_PENDING),
                         run_after=int(now_ts),
                         tries=0,
@@ -1272,7 +890,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         event_id=int(event_id),
                         thread_key=str(thread_key),
                         confidence=float(confidence),
-                        evidence_event_ids_json=_json_dumps([int(event_id)]),
+                        evidence_event_ids_json=common_utils.json_dumps([int(event_id)]),
                         created_at=int(now_ts),
                     )
                     db.add(th)
@@ -1288,7 +906,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 else:
                     before = _thread_row_to_json(existing)
                     existing.confidence = float(confidence)
-                    existing.evidence_event_ids_json = _json_dumps([int(event_id)])
+                    existing.evidence_event_ids_json = common_utils.json_dumps([int(event_id)])
                     db.add(existing)
                     db.flush()
                     add_revision(
@@ -1323,7 +941,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         to_event_id=int(to_event_id),
                         label=str(label),
                         confidence=float(confidence),
-                        evidence_event_ids_json=_json_dumps([int(event_id)]),
+                        evidence_event_ids_json=common_utils.json_dumps([int(event_id)]),
                         created_at=int(now_ts),
                     )
                     db.add(link)
@@ -1339,7 +957,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 else:
                     before = _link_row_to_json(existing)
                     existing.confidence = float(confidence)
-                    existing.evidence_event_ids_json = _json_dumps([int(event_id)])
+                    existing.evidence_event_ids_json = common_utils.json_dumps([int(event_id)])
                     db.add(existing)
                     db.flush()
                     add_revision(
@@ -1432,11 +1050,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
 
                     if existing is None:
                         if not body_text:
-                            body_text = _json_dumps(payload_obj)[:2000]
+                            body_text = common_utils.json_dumps(payload_obj)[:2000]
                         st = State(
                             kind=str(kind),
                             body_text=str(body_text),
-                            payload_json=_json_dumps(payload_obj),
+                            payload_json=common_utils.json_dumps(payload_obj),
                             last_confirmed_at=int(last_confirmed_at_i),
                             confidence=float(confidence),
                             salience=float(salience),
@@ -1461,7 +1079,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         existing.kind = str(kind)
                         if body_text:
                             existing.body_text = str(body_text)
-                        existing.payload_json = _json_dumps(payload_obj)
+                        existing.payload_json = common_utils.json_dumps(payload_obj)
                         existing.last_confirmed_at = int(last_confirmed_at_i)
                         existing.confidence = float(confidence)
                         existing.salience = float(salience)
@@ -1484,7 +1102,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     db.add(
                         Job(
                             kind="upsert_state_embedding",
-                            payload_json=_json_dumps({"state_id": int(changed_state_id)}),
+                            payload_json=common_utils.json_dumps({"state_id": int(changed_state_id)}),
                             status=int(_JOB_PENDING),
                             run_after=int(now_ts),
                             tries=0,
@@ -1516,7 +1134,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     db.add(
                         Job(
                             kind="upsert_state_embedding",
-                            payload_json=_json_dumps({"state_id": int(st.state_id)}),
+                            payload_json=common_utils.json_dumps({"state_id": int(st.state_id)}),
                             status=int(_JOB_PENDING),
                             run_after=int(now_ts),
                             tries=0,
@@ -1532,9 +1150,9 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         continue
                     before = _state_row_to_json(st)
                     # --- payload の status を done にする ---
-                    pj = _json_loads_maybe(st.payload_json)
+                    pj = common_utils.json_loads_maybe(st.payload_json)
                     pj["status"] = "done"
-                    st.payload_json = _json_dumps(pj)
+                    st.payload_json = common_utils.json_dumps(pj)
                     st.last_confirmed_at = int(last_confirmed_at_i)
                     st.updated_at = int(now_ts)
                     db.add(st)
@@ -1550,7 +1168,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     db.add(
                         Job(
                             kind="upsert_state_embedding",
-                            payload_json=_json_dumps({"state_id": int(st.state_id)}),
+                            payload_json=common_utils.json_dumps({"state_id": int(st.state_id)}),
                             status=int(_JOB_PENDING),
                             run_after=int(now_ts),
                             tries=0,
@@ -1574,115 +1192,48 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
                 .first()
             )
+            # --- 共通ロジックで baseline+shock を更新する ---
+            payload_prev_obj = affect.parse_long_mood_payload(str(st.payload_json or "")) if st is not None else None
+            prev_body_text = str(st.body_text or "") if st is not None else None
+            prev_confidence = float(st.confidence) if st is not None else None
+            prev_last_confirmed_at = int(st.last_confirmed_at) if st is not None else None
 
-            # --- 既定値（初回） ---
-            baseline_vad = dict(moment_vad) if moment_vad is not None else _vad_dict(0.0, 0.0, 0.0)
-            shock_vad = _vad_dict(0.0, 0.0, 0.0)
-            baseline_day_key = _local_day_key(int(base_ts))
-            baseline_text = (str(baseline_text_candidate).strip() if baseline_text_candidate else "").strip()
-            confidence_for_save = float(moment_conf) if (moment_vad is not None and moment_conf > 0.0) else 0.0
-            shock_note_for_save = str(moment_note or "").strip() if moment_note else None
-            if st is not None:
-                # --- 既存の payload を読む ---
-                payload_prev = _parse_long_mood_payload(str(st.payload_json or ""))
-                b_prev = _extract_vad_from_payload_obj(payload_prev, "baseline_vad")
-                s_prev = _extract_vad_from_payload_obj(payload_prev, "shock_vad")
-
-                baseline_vad = b_prev if b_prev is not None else baseline_vad
-                shock_vad = s_prev if s_prev is not None else shock_vad
-                baseline_day_key_prev = str(payload_prev.get("baseline_day_key") or "").strip()
-                if baseline_day_key_prev:
-                    baseline_day_key = baseline_day_key_prev
-
-                # --- baseline_text は state.body_text を正とする（安定性優先） ---
-                baseline_text = str(st.body_text or "").strip()
-                # --- confidence/shock_note は「上書きしない」が既定（情報欠落を防ぐ） ---
-                confidence_for_save = float(st.confidence)
-                if str(payload_prev.get("shock_note") or "").strip():
-                    shock_note_for_save = str(payload_prev.get("shock_note") or "").strip()
-                # --- event_affect がある場合のみ、今回値で上書きする ---
-                if moment_vad is not None and moment_conf > 0.0:
-                    confidence_for_save = float(moment_conf)
-                    shock_note_for_save = str(moment_note or "").strip() if moment_note else shock_note_for_save
-
-            # --- dt を計算（last_confirmed_at は常にイベント時刻なので、イベント間隔になる） ---
-            dt_seconds = 0
-            if st is not None:
-                try:
-                    dt_seconds = int(base_ts) - int(st.last_confirmed_at)
-                except Exception:  # noqa: BLE001
-                    dt_seconds = 0
-            if dt_seconds < 0:
-                dt_seconds = 0
-
-            # --- baseline/shock の更新（event_affect がある場合だけ） ---
-            baseline_vad_new = dict(baseline_vad)
-            shock_vad_new = dict(shock_vad)
-            if moment_vad is not None and moment_conf > 0.0:
-                # --- baseline を日スケールで更新（confidence で重み付け） ---
-                alpha_base = _alpha_from_halflife(
-                    dt_seconds=dt_seconds, half_life_seconds=int(_LONG_MOOD_BASELINE_HALFLIFE_SECONDS)
-                )
-                alpha_base *= float(moment_conf)
-                alpha_base = _clamp_01(alpha_base)
-
-                # --- 重大イベントは baseline の追従を一時的に上げる ---
-                # NOTE:
-                # - baseline は日スケールだが、重大な出来事（別れ話など）は「その日の基調」自体を崩す。
-                # - ここで alpha の下限を持たせ、shock が [-1, +1] の範囲でも十分に効くようにする。
-                dv0 = _vad_sub(moment_vad, baseline_vad)
-                major_delta = max(abs(float(dv0["v"])), abs(float(dv0["a"])), abs(float(dv0["d"])))
-                if major_delta >= float(_LONG_MOOD_MAJOR_DELTA_THRESHOLD):
-                    alpha_base = max(alpha_base, float(_LONG_MOOD_MAJOR_BASELINE_ALPHA_FLOOR) * float(moment_conf))
-                    alpha_base = _clamp_01(alpha_base)
-
-                baseline_vad_new = _vad_lerp(baseline_vad, moment_vad, alpha_base)
-
-                # --- shock は短期で追従し、時間で減衰する ---
-                # NOTE:
-                # - 更新間隔 dt が短い場合でも「出来事が起きた」こと自体は重いので、
-                #   shock の追従率は dt に依存させず固定（confidence で重み付け）する。
-                decay = _decay_from_halflife(
-                    dt_seconds=dt_seconds, half_life_seconds=int(_LONG_MOOD_SHOCK_HALFLIFE_SECONDS)
-                )
-                shock_decayed = {
-                    "v": float(shock_vad.get("v", 0.0)) * float(decay),
-                    "a": float(shock_vad.get("a", 0.0)) * float(decay),
-                    "d": float(shock_vad.get("d", 0.0)) * float(decay),
-                }
-                # --- baselineとの差分へ寄せる（差分は範囲内へclampする） ---
-                delta = _vad_sub(moment_vad, baseline_vad_new)
-                alpha_shock = _clamp_01(float(_LONG_MOOD_SHOCK_ALPHA) * float(moment_conf))
-                shock_vad_new = _vad_lerp(
-                    _vad_dict(shock_decayed.get("v"), shock_decayed.get("a"), shock_decayed.get("d")),
-                    delta,
-                    alpha_shock,
-                )
-
-            # --- baseline_text の更新は「日付が変わった時だけ」 ---
-            new_day_key = _local_day_key(int(base_ts))
-            if (not baseline_text) or (new_day_key != str(baseline_day_key or "")):
-                # NOTE: 本文案が無い場合は、最低限の文章で埋める（NULL不可のため）。
-                candidate = (str(baseline_text_candidate or "").strip() or str(moment_note or "").strip()).strip()
-                baseline_text = candidate[:600] if candidate else "今日は落ち着かない気分が続いている。"
-                baseline_day_key = new_day_key
-
-            # --- payload を標準形へ整形する ---
-            payload_new = _build_long_mood_payload(
-                baseline_vad=baseline_vad_new,
-                shock_vad=shock_vad_new,
-                shock_note=shock_note_for_save,
-                baseline_day_key=baseline_day_key,
+            update_result = affect.update_long_mood(
+                prev_state_exists=(st is not None),
+                prev_payload_obj=payload_prev_obj,
+                prev_body_text=prev_body_text,
+                prev_confidence=prev_confidence,
+                prev_last_confirmed_at=prev_last_confirmed_at,
+                event_ts=int(base_ts),
+                moment_vad=moment_vad,
+                moment_confidence=float(moment_conf),
+                moment_note=moment_note,
+                baseline_text_candidate=baseline_text_candidate,
             )
 
+            payload_new_json = common_utils.json_dumps(update_result.payload_obj)
+
+            # --- 変更が無い場合は何もしない（revisionノイズを避ける） ---
+            skip_upsert = False
+            if st is not None:
+                payload_prev_json = str(st.payload_json or "").strip()
+                same_payload = payload_prev_json == payload_new_json
+                same_text = str(st.body_text or "").strip() == str(update_result.body_text or "").strip()
+                same_conf = abs(float(st.confidence) - float(update_result.confidence)) < 1e-9
+                same_lca = int(st.last_confirmed_at) == int(update_result.last_confirmed_at)
+                if same_payload and same_text and same_conf and same_lca:
+                    skip_upsert = True
+
             # --- upsert（単一更新） ---
-            if st is None:
+            if skip_upsert:
+                changed_state_id = 0
+            elif st is None:
                 st2 = State(
                     kind="long_mood_state",
-                    body_text=str(baseline_text),
-                    payload_json=_json_dumps(payload_new),
-                    last_confirmed_at=int(base_ts),
-                    confidence=float(confidence_for_save),
+                    body_text=str(update_result.body_text),
+                    payload_json=payload_new_json,
+                    last_confirmed_at=int(update_result.last_confirmed_at),
+                    confidence=float(update_result.confidence),
                     salience=float(0.7),
                     valid_from_ts=None,
                     valid_to_ts=None,
@@ -1703,10 +1254,10 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             else:
                 before = _state_row_to_json(st)
                 st.kind = "long_mood_state"
-                st.body_text = str(baseline_text)
-                st.payload_json = _json_dumps(payload_new)
-                st.last_confirmed_at = int(base_ts)
-                st.confidence = float(confidence_for_save)
+                st.body_text = str(update_result.body_text)
+                st.payload_json = payload_new_json
+                st.last_confirmed_at = int(update_result.last_confirmed_at)
+                st.confidence = float(update_result.confidence)
                 # NOTE: salience は固定でよい（長期気分は背景。検索の強さではなく注入で使う）。
                 st.salience = float(0.7)
                 st.valid_from_ts = None
@@ -1725,18 +1276,19 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 changed_state_id = int(st.state_id)
 
             # --- embedding job（long_mood_state も更新で育つので反映しておく） ---
-            db.add(
-                Job(
-                    kind="upsert_state_embedding",
-                    payload_json=_json_dumps({"state_id": int(changed_state_id)}),
-                    status=int(_JOB_PENDING),
-                    run_after=int(now_ts),
-                    tries=0,
-                    last_error=None,
-                    created_at=int(now_ts),
-                    updated_at=int(now_ts),
+            if int(changed_state_id) > 0:
+                db.add(
+                    Job(
+                        kind="upsert_state_embedding",
+                        payload_json=common_utils.json_dumps({"state_id": int(changed_state_id)}),
+                        status=int(_JOB_PENDING),
+                        run_after=int(now_ts),
+                        tries=0,
+                        last_error=None,
+                        created_at=int(now_ts),
+                        updated_at=int(now_ts),
+                    )
                 )
-            )
 
         # --- Nターンごとの整理ジョブ（chatターン回数ベース） ---
         # NOTE:
@@ -1790,8 +1342,8 @@ def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, p
                 Revision(
                     entity_type=str(entity_type),
                     entity_id=int(entity_id),
-                    before_json=(_json_dumps(before) if before is not None else None),
-                    after_json=(_json_dumps(after) if after is not None else None),
+                    before_json=(common_utils.json_dumps(before) if before is not None else None),
+                    after_json=(common_utils.json_dumps(after) if after is not None else None),
                     reason=str(reason or "").strip() or "(no reason)",
                     evidence_event_ids_json="[]",
                     created_at=int(now_ts),
@@ -1851,7 +1403,7 @@ def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, p
             db.add(
                 Job(
                     kind="upsert_state_embedding",
-                    payload_json=_json_dumps({"state_id": int(state_id)}),
+                    payload_json=common_utils.json_dumps({"state_id": int(state_id)}),
                     status=int(_JOB_PENDING),
                     run_after=int(now_ts),
                     tries=0,
@@ -1888,12 +1440,12 @@ def _handle_upsert_state_embedding(
             return
         # --- 検索対象外（自動分離など）なら、vec_items を消して終了 ---
         if int(getattr(st, "searchable", 1) or 0) != 1:
-            item_id = _vec_item_id(int(_VEC_KIND_STATE), int(state_id))
+            item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_STATE), int(state_id))
             db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
             return
         text_in = _build_state_embedding_text(st)
         rank_at = int(st.last_confirmed_at)
-        payload_obj = _json_loads_maybe(st.payload_json)
+        payload_obj = common_utils.json_loads_maybe(st.payload_json)
         status = str(payload_obj.get("status") or "").strip()
         active = 0 if status == "done" else 1
         if st.valid_to_ts is not None and int(st.valid_to_ts) < int(_now_utc_ts()) - 86400:
@@ -1903,13 +1455,13 @@ def _handle_upsert_state_embedding(
         return
 
     emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.ASYNC_STATE_EMBEDDING)[0]
-    item_id = _vec_item_id(int(_VEC_KIND_STATE), int(state_id))
+    item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_STATE), int(state_id))
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         upsert_vec_item(
             db,
             item_id=int(item_id),
             embedding=emb,
-            kind=int(_VEC_KIND_STATE),
+            kind=int(vector_index.VEC_KIND_STATE),
             rank_at=int(rank_at),
             active=int(active),
         )
@@ -1937,7 +1489,7 @@ def _handle_upsert_event_affect_embedding(
         # - event_affect は event の派生であり、event が想起対象外なら affect も想起対象外とする。
         ev = db.query(Event).filter(Event.event_id == int(aff.event_id)).one_or_none()
         if ev is None or int(getattr(ev, "searchable", 1) or 0) != 1:
-            item_id = _vec_item_id(int(_VEC_KIND_EVENT_AFFECT), int(affect_id))
+            item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_EVENT_AFFECT), int(affect_id))
             db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
             return
         text_in = _build_event_affect_embedding_text(aff)
@@ -1947,13 +1499,13 @@ def _handle_upsert_event_affect_embedding(
         return
 
     emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.ASYNC_EVENT_AFFECT_EMBEDDING)[0]
-    item_id = _vec_item_id(int(_VEC_KIND_EVENT_AFFECT), int(affect_id))
+    item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_EVENT_AFFECT), int(affect_id))
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         upsert_vec_item(
             db,
             item_id=int(item_id),
             embedding=emb,
-            kind=int(_VEC_KIND_EVENT_AFFECT),
+            kind=int(vector_index.VEC_KIND_EVENT_AFFECT),
             rank_at=int(rank_at),
             active=1,
         )
