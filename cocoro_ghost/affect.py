@@ -14,11 +14,11 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from cocoro_ghost.common_utils import json_loads_maybe as _json_loads_maybe
 
 # --- LongMoodState パラメータ（1箇所で管理） ---
 LONG_MOOD_MODEL_VERSION = 2
@@ -149,15 +149,6 @@ def local_day_key(ts_utc: int) -> str:
     return dt.date().isoformat()
 
 
-def json_loads_maybe(text_in: str) -> dict[str, Any]:
-    """JSON文字列をdictとして読む（失敗時は空dict）。"""
-    try:
-        obj = json.loads(str(text_in or ""))
-        return obj if isinstance(obj, dict) else {}
-    except Exception:  # noqa: BLE001
-        return {}
-
-
 def sanitize_moment_affect_labels(labels_in: Any) -> list[str]:
     """
     moment_affect_labels を保存用に正規化する。
@@ -189,7 +180,7 @@ def sanitize_moment_affect_labels(labels_in: Any) -> list[str]:
 
 def parse_long_mood_payload(payload_json: str) -> dict[str, Any]:
     """long_mood_state の payload_json を dict として返す（壊れていても落とさない）。"""
-    obj = json_loads_maybe(payload_json)
+    obj = _json_loads_maybe(payload_json)
     return obj if isinstance(obj, dict) else {}
 
 
@@ -370,4 +361,3 @@ def update_long_mood(
         confidence=float(confidence_for_save),
         last_confirmed_at=int(last_confirmed_at_new),
     )
-

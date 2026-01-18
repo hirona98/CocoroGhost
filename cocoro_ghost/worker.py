@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from typing import Any
 
 from sqlalchemy import func, text
 
 from cocoro_ghost import affect
+from cocoro_ghost import common_utils, prompt_builders, vector_index
 from cocoro_ghost.db import memory_session_scope, upsert_vec_item
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.memory_models import Event, EventAffect, EventLink, EventThread, Job, Revision, State
@@ -31,12 +31,6 @@ from cocoro_ghost.time_utils import format_iso8601_local, parse_iso8601_to_utc_t
 
 
 logger = logging.getLogger(__name__)
-
-
-_VEC_KIND_EVENT = 1
-_VEC_KIND_STATE = 2
-_VEC_KIND_EVENT_AFFECT = 3
-_VEC_ID_STRIDE = 10_000_000_000
 
 
 _JOB_PENDING = 0
@@ -56,38 +50,24 @@ def _now_utc_ts() -> int:
     return int(time.time())
 
 
-def _vec_item_id(kind: int, entity_id: int) -> int:
-    """vec_items の item_id を決定する（kind + entity_id の衝突を避ける）。"""
-    return int(kind) * int(_VEC_ID_STRIDE) + int(entity_id)
-
-
 def _json_loads_maybe(text_in: str) -> dict[str, Any]:
-    """JSON文字列をdictとして読む（失敗時は空dict）。"""
-    try:
-        obj = json.loads(str(text_in or ""))
-        return obj if isinstance(obj, dict) else {}
-    except Exception:  # noqa: BLE001
-        return {}
+    """
+    JSON文字列をdictとして読む（失敗時は空dict）。
+
+    NOTE:
+        - 重複を避けるため、実体は common_utils に寄せる。
+    """
+    return common_utils.json_loads_maybe(text_in)
 
 
 def _parse_json_str_list(text_in: str) -> list[str]:
-    """JSON文字列を list[str] として読む（失敗時は空list）。"""
-    s = str(text_in or "").strip()
-    if not s:
-        return []
-    try:
-        obj = json.loads(s)
-    except Exception:  # noqa: BLE001
-        return []
-    if not isinstance(obj, list):
-        return []
-    out: list[str] = []
-    for item in obj:
-        t = str(item or "").replace("\n", " ").replace("\r", " ").strip()
-        if not t:
-            continue
-        out.append(t)
-    return out
+    """
+    JSON文字列を list[str] として読む（失敗時は空list）。
+
+    NOTE:
+        - 重複を避けるため、実体は common_utils に寄せる。
+    """
+    return common_utils.parse_json_str_list(text_in)
 
 
 def _strip_face_tags(text_in: str) -> str:
@@ -98,43 +78,28 @@ def _strip_face_tags(text_in: str) -> str:
     - [face:*] はユーザーに見せる返答用の表記であり、内部の記憶（WritePlan/state/event_affect）には不要。
     - LLMが混入させてもDBへ保存しないように、保存前に必ず除去する。
     """
-    s = str(text_in or "")
-    if not s:
-        return ""
-
-    # --- [face:...] 形式を一律で消す（種類は固定しない） ---
-    s2 = re.sub(r"\[face:[^\]]+\]", "", s)
-
-    # --- 余計な空白を整える ---
-    return " ".join(s2.replace("\r", " ").replace("\n", " ").split()).strip()
+    # NOTE: 重複を避けるため、実体は common_utils に寄せる。
+    return common_utils.strip_face_tags(text_in)
 
 
 def _json_dumps(payload: Any) -> str:
-    """DB保存向けにJSONを安定した形式でダンプする（日本語保持）。"""
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    """
+    DB保存向けにJSONを安定した形式でダンプする（日本語保持）。
+
+    NOTE:
+        - 重複を避けるため、実体は common_utils に寄せる。
+    """
+    return common_utils.json_dumps(payload)
 
 
 def _parse_first_json_object(text_in: str) -> dict[str, Any]:
-    """LLM出力から最初のJSONオブジェクトを抽出してdictとして返す。"""
-    s = str(text_in or "").strip()
-    if not s:
-        raise RuntimeError("LLM output is empty")
+    """
+    LLM出力から最初のJSONオブジェクトを抽出してdictとして返す。
 
-    # --- llm_client の内部ユーティリティで抽出/修復する ---
-    from cocoro_ghost.llm_client import _extract_first_json_value, _repair_json_like_text  # noqa: PLC0415
-
-    candidate = _extract_first_json_value(s)
-    if not candidate:
-        raise RuntimeError("JSON extract failed")
-
-    try:
-        obj = json.loads(candidate)
-    except json.JSONDecodeError:
-        obj = json.loads(_repair_json_like_text(candidate))
-
-    if not isinstance(obj, dict):
-        raise RuntimeError("JSON is not an object")
-    return obj
+    NOTE:
+        - 重複を避けるため、実体は common_utils に寄せる（raise版）。
+    """
+    return common_utils.parse_first_json_object_or_raise(text_in)
 
 
 def _normalize_text_for_dedupe(text_in: str) -> str:
@@ -341,124 +306,11 @@ def _write_plan_system_prompt(*, persona_text: str, second_person_label: str) ->
             NOTE: addon_text は会話本文向けの追加指示なので、WritePlan（内部JSON生成）には注入しない。
         second_person_label: 二人称の呼称（例: マスター / あなた / 君 / ◯◯さん）。
     """
-
-    # --- 二人称呼称を正規化 ---
-    sp = str(second_person_label or "").strip() or "あなた"
-
-    # --- ペルソナ本文を正規化 ---
-    # NOTE:
-    # - WritePlanは内部用のJSONだが、state_updates / event_affect の文章は人格の口調に揃える。
-    # - 行末（CRLF/LF）の揺れは暗黙的キャッシュの阻害になり得るため、ここで正規化する。
-    pt = str(persona_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-
-    # --- ベースプロンプト（スキーマ＋品質要件） ---
-    base = "\n".join(
-        [
-            "あなたは出来事ログ（event）から、記憶更新のための計画（WritePlan）を作る。",
-            "出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
-            "",
-            "目的:",
-            "- about_time（内容がいつの話か）と entities を推定する",
-            "- 状態（state）を更新して「次ターン以降に効く」形へ育てる",
-            "- 瞬間的な感情（event_affect）と長期的な気分（long_mood_state）を扱う",
-            "- 文脈グラフ（event_threads/event_links）の本更新案を作る",
-            "",
-            "品質（重要）:",
-            "- 入力（event/recent_events/recent_states）に無い事実は作らない。推測する場合は confidence を下げるか、更新しない。",
-            "- event.image_summaries / recent_events[*].image_summaries_preview は画像要約（内部用）。画像そのものは無いので、要約に無い細部は断定しない。",
-            "- state_updates は必要なものだけ。雑談だけなら空でもよい（ノイズを増やさない）。",
-            "- body_text は検索に使う短い本文（会話文の長文や箇条書きは避ける）。",
-            "- 矛盾がある場合は上書きせず、並存/期間分割（valid_from_ts/valid_to_ts）や close を使う。",
-            "",
-            "視点・口調（重要）:",
-            "- あなたは人格本人。本文は主観（一人称）で書く",
-            "- 自分を三人称で呼ばない",
-            "- 例: 「アシスタントはメイド」→「私はメイドとして仕えている」",
-            f'- 二人称（呼びかけ）は「{sp}」に固定する',
-            "- 対象: state_updates.body_text / state_updates.reason / event_affect.* / long_mood_state（stateのbody_text）",
-            "- 禁止: state_updates / event_affect の文章に [face:Joy] のような会話装飾タグを混ぜること（これは会話本文専用）。",
-            "- moment_affect_text は短文で良いが「何を見て/何が起きて/どう感じたか」が分かる粒度にする（目安: 1〜3文、60〜240文字）。",
-            "- moment_affect_labels は moment_affect_text を要約する短いラベル配列（0〜6件。基本は1〜3件）。",
-            '- 推奨ラベル例: ["うれしい","楽しい","安心","感謝","照れ","期待","不安","戸惑い","緊張","焦り","苛立ち","悲しい","疲れ","落ち着き","好奇心"]（迷ったら1〜2個だけ）。',
-            "- inner_thought_text は内部メモでも、人格の口調を崩さない（目安: 0〜2文、0〜200文字）。",
-            "",
-            "観測イベント（重要）:",
-            "- event.source が desktop_watch / vision_detail の場合、event.user_text は「ユーザー発話」ではなく「画面の説明テキスト（内部生成）」である。",
-            "- この場合、画面内の行為（作業/操作/閲覧/プレイ等）の主体は event.observation.second_person_label（例: マスター）。あなた（人格）は観測者として「見ている/見守っている」。",
-            "- 禁止: 画面内の行為を「私が〜している（プレイしている/作業している）」のように自分の行為として書く。",
-            "- 例: OK「私はマスターがリズムゲームをプレイしているデスクトップ画面を見ている」 / NG「私はリズムゲームをプレイしている」",
-            "",
-            "制約:",
-            "- VAD（v/a/d）は各軸 -1.0..+1.0",
-            "- confidence/salience/about_time_confidence は 0.0..1.0",
-            "- どの更新も evidence_event_ids に必ず現在の event_id を含める",
-            "- reason は短く具体的に（なぜそう判断したか）",
-            "- state_id はDB主キー（整数）か null（文字列IDを作らない）",
-            "- op=close/mark_done は state_id 必須（recent_states にあるIDのみ）。op=upsert は state_id=null で新規、state_id>0 で既存更新。",
-            "- 日時は ISO 8601（タイムゾーン付き）文字列で出す（例: 2026-01-10T13:24:00+09:00）",
-            "",
-            "出力スキーマ（キーは識別子なので英語のまま）:",
-            "{",
-            '  "event_annotations": {',
-            '    "about_start_ts": null,',
-            '    "about_end_ts": null,',
-            '    "about_year_start": null,',
-            '    "about_year_end": null,',
-            '    "life_stage": "elementary|middle|high|university|work|unknown",',
-            '    "about_time_confidence": 0.0,',
-            '    "entities": [{"type":"PERSON|ORG|PLACE|THING|TOPIC","name":"string","confidence":0.0}]',
-            "  },",
-            '  "state_updates": [',
-            "    {",
-            '      "op": "upsert|close|mark_done",',
-            '      "state_id": null,',
-            '      "kind": "fact|relation|task|summary|long_mood_state",',
-            '      "body_text": "検索に使う短い本文",',
-            '      "payload": {},',
-            '      "confidence": 0.0,',
-            '      "salience": 0.0,',
-            '      "valid_from_ts": null,',
-            '      "valid_to_ts": null,',
-            '      "last_confirmed_at": null,',
-            '      "evidence_event_ids": [0],',
-            '      "reason": "string"',
-            "    }",
-            "  ],",
-            '  "event_affect": {',
-            '    "moment_affect_text": "string",',
-            '    "moment_affect_labels": ["string"],',
-            '    "moment_affect_score_vad": {"v": 0.0, "a": 0.0, "d": 0.0},',
-            '    "moment_affect_confidence": 0.0,',
-            '    "inner_thought_text": null',
-            "  },",
-            '  "context_updates": {',
-            '    "threads": [{"thread_key":"string","confidence":0.0}],',
-            '    "links": [{"to_event_id":0,"label":"reply_to|same_topic|caused_by|continuation","confidence":0.0}]',
-            "  }",
-            "}",
-        ]
-    ).strip()
-
-    # --- ペルソナ注入 ---
-    # NOTE:
-    # - WritePlan はユーザーに見せないが、人格の「考え方/口調」を揃えるため、ペルソナ本文を最優先で参照させる。
-    persona = "\n".join(
-        [
-            "",
-            "人格設定（最優先）:",
-            "- 以下の persona/addon は、文章の口調・語彙・価値観の参考として使う。",
-            "- ただし、会話用の装飾タグ（例: [face:Joy]）や会話の文字数制限などは WritePlan には適用しない。",
-            "- persona/addon に口調指定が無い場合は、自然な日本語の一人称で書く。",
-            "",
-            "<<<PERSONA_TEXT>>>",
-            pt,
-            "<<<END>>>",
-            "",
-        ]
-    ).strip()
-
-    # persona/addon が空の場合も、空として明示して「未注入」と誤認しないようにする。
-    return "\n\n".join([base, persona]).strip()
+    # NOTE: 実体は prompt_builders に寄せる（プロンプト定義を1箇所で管理する）。
+    return prompt_builders.write_plan_system_prompt(
+        persona_text=str(persona_text or ""),
+        second_person_label=str(second_person_label or ""),
+    )
 
 
 def _state_row_to_json(st: State) -> dict[str, Any]:
@@ -729,7 +581,7 @@ def _handle_upsert_event_embedding(
         # - vec_items が残ると、ベクトル検索で再浮上する可能性がある。
         # - searchable=0 は「ログは残すが、想起には使わない」を表す。
         if int(getattr(ev, "searchable", 1) or 0) != 1:
-            item_id = _vec_item_id(int(_VEC_KIND_EVENT), int(event_id))
+            item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_EVENT), int(event_id))
             db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
             return
         text_in = _build_event_embedding_text(ev)
@@ -742,13 +594,13 @@ def _handle_upsert_event_embedding(
     emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.ASYNC_EVENT_EMBEDDING)[0]
 
     # --- vec_items へ書く（kind+entity_idの衝突を避ける） ---
-    item_id = _vec_item_id(int(_VEC_KIND_EVENT), int(event_id))
+    item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_EVENT), int(event_id))
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         upsert_vec_item(
             db,
             item_id=int(item_id),
             embedding=emb,
-            kind=int(_VEC_KIND_EVENT),
+            kind=int(vector_index.VEC_KIND_EVENT),
             rank_at=int(rank_at),
             active=1,
         )
@@ -1668,7 +1520,7 @@ def _handle_upsert_state_embedding(
             return
         # --- 検索対象外（自動分離など）なら、vec_items を消して終了 ---
         if int(getattr(st, "searchable", 1) or 0) != 1:
-            item_id = _vec_item_id(int(_VEC_KIND_STATE), int(state_id))
+            item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_STATE), int(state_id))
             db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
             return
         text_in = _build_state_embedding_text(st)
@@ -1683,13 +1535,13 @@ def _handle_upsert_state_embedding(
         return
 
     emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.ASYNC_STATE_EMBEDDING)[0]
-    item_id = _vec_item_id(int(_VEC_KIND_STATE), int(state_id))
+    item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_STATE), int(state_id))
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         upsert_vec_item(
             db,
             item_id=int(item_id),
             embedding=emb,
-            kind=int(_VEC_KIND_STATE),
+            kind=int(vector_index.VEC_KIND_STATE),
             rank_at=int(rank_at),
             active=int(active),
         )
@@ -1717,7 +1569,7 @@ def _handle_upsert_event_affect_embedding(
         # - event_affect は event の派生であり、event が想起対象外なら affect も想起対象外とする。
         ev = db.query(Event).filter(Event.event_id == int(aff.event_id)).one_or_none()
         if ev is None or int(getattr(ev, "searchable", 1) or 0) != 1:
-            item_id = _vec_item_id(int(_VEC_KIND_EVENT_AFFECT), int(affect_id))
+            item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_EVENT_AFFECT), int(affect_id))
             db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
             return
         text_in = _build_event_affect_embedding_text(aff)
@@ -1727,13 +1579,13 @@ def _handle_upsert_event_affect_embedding(
         return
 
     emb = llm_client.generate_embedding([text_in], purpose=LlmRequestPurpose.ASYNC_EVENT_AFFECT_EMBEDDING)[0]
-    item_id = _vec_item_id(int(_VEC_KIND_EVENT_AFFECT), int(affect_id))
+    item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_EVENT_AFFECT), int(affect_id))
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         upsert_vec_item(
             db,
             item_id=int(item_id),
             embedding=emb,
-            kind=int(_VEC_KIND_EVENT_AFFECT),
+            kind=int(vector_index.VEC_KIND_EVENT_AFFECT),
             rank_at=int(rank_at),
             active=1,
         )
