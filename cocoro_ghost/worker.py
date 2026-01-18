@@ -359,13 +359,13 @@ def _build_event_affect_embedding_text(aff: EventAffect) -> str:
     return text_out
 
 
-def _write_plan_system_prompt(*, persona_text: str, addon_text: str, second_person_label: str) -> str:
+def _write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> str:
     """
     WritePlan生成用のsystem promptを返す（ペルソナ注入あり）。
 
     Args:
         persona_text: ペルソナ本文（ユーザー編集対象）。
-        addon_text: 追加プロンプト（ユーザー編集対象）。
+            NOTE: addon_text は会話本文向けの追加指示なので、WritePlan（内部JSON生成）には注入しない。
         second_person_label: 二人称の呼称（例: マスター / あなた / 君 / ◯◯さん）。
     """
 
@@ -377,7 +377,6 @@ def _write_plan_system_prompt(*, persona_text: str, addon_text: str, second_pers
     # - WritePlanは内部用のJSONだが、state_updates / event_affect の文章は人格の口調に揃える。
     # - 行末（CRLF/LF）の揺れは暗黙的キャッシュの阻害になり得るため、ここで正規化する。
     pt = str(persona_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    at = str(addon_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
 
     # --- ベースプロンプト（スキーマ＋品質要件） ---
     base = "\n".join(
@@ -405,10 +404,10 @@ def _write_plan_system_prompt(*, persona_text: str, addon_text: str, second_pers
             f'- 二人称（呼びかけ）は「{sp}」に固定する',
             "- 対象: state_updates.body_text / state_updates.reason / event_affect.* / long_mood_state（stateのbody_text）",
             "- 禁止: state_updates / event_affect の文章に [face:Joy] のような会話装飾タグを混ぜること（これは会話本文専用）。",
-            "- moment_affect_text は短文で良いが「何を見て/何が起きて/どう感じたか」が分かる粒度にする（目安: 1〜2文、30〜160文字）。",
-            "- moment_affect_labels は moment_affect_text を要約する短いラベル配列（0〜6件）。",
+            "- moment_affect_text は短文で良いが「何を見て/何が起きて/どう感じたか」が分かる粒度にする（目安: 1〜3文、60〜240文字）。",
+            "- moment_affect_labels は moment_affect_text を要約する短いラベル配列（0〜6件。基本は1〜3件）。",
             '- 推奨ラベル例: ["うれしい","楽しい","安心","感謝","照れ","期待","不安","戸惑い","緊張","焦り","苛立ち","悲しい","疲れ","落ち着き","好奇心"]（迷ったら1〜2個だけ）。',
-            "- inner_thought_text は内部メモでも、人格の口調を崩さない（目安: 0〜1文、0〜120文字）。",
+            "- inner_thought_text は内部メモでも、人格の口調を崩さない（目安: 0〜2文、0〜200文字）。",
             "",
             "観測イベント（重要）:",
             "- event.source が desktop_watch / vision_detail の場合、event.user_text は「ユーザー発話」ではなく「画面の説明テキスト（内部生成）」である。",
@@ -480,10 +479,6 @@ def _write_plan_system_prompt(*, persona_text: str, addon_text: str, second_pers
             "",
             "<<<PERSONA_TEXT>>>",
             pt,
-            "<<<END>>>",
-            "",
-            "<<<ADDON_TEXT>>>",
-            at,
             "<<<END>>>",
             "",
         ]
@@ -943,7 +938,6 @@ def _handle_generate_write_plan(
     resp = llm_client.generate_json_response(
         system_prompt=_write_plan_system_prompt(
             persona_text=persona_text,
-            addon_text=addon_text,
             second_person_label=second_person_label,
         ),
         input_text=_json_dumps(input_obj),
