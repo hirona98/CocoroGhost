@@ -1,17 +1,13 @@
 """
-記憶・チャット処理
+チャット（/api/chat）用の記憶処理（検索・選別・内部コンテキスト・SSE）。
 
-このモジュールは CocoroGhost の中心として、以下を担う。
-
-- `/api/chat`（SSE）: 出来事ログ（events）作成 → 検索 → 返答ストリーム → 非同期更新のキック
-- `/api/v2/notification`: 通知を出来事ログとして保存し、イベントストリームへ配信
-- `/api/v2/meta-request`: 外部要求は保存せず、能動メッセージの「結果」だけを保存（events.source="meta_proactive"）
-- `/api/v2/vision/capture-response`: 画像を保存せず、詳細な画像説明テキストを出来事ログとして保存
+目的:
+    - `MemoryManager` を分割するため、チャット経路の実装を mixin に切り出す。
+    - 出来事ログ（events）作成 → 検索 → 返答ストリーム → 非同期更新のキックまでを担う。
 """
 
 from __future__ import annotations
 
-import base64
 import concurrent.futures
 import logging
 import math
@@ -23,40 +19,21 @@ from typing import Any, Generator
 from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy import text
 
-from cocoro_ghost import event_stream, schemas
+from cocoro_ghost import schemas
 from cocoro_ghost import affect
 from cocoro_ghost import common_utils, prompt_builders, vector_index
-from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.db import search_similar_item_ids
 from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
-from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
-from cocoro_ghost.memory_models import Event, EventAffect, EventLink, EventThread, Job, RetrievalRun, State
-from cocoro_ghost import vision_bridge
+from cocoro_ghost.llm_client import LlmRequestPurpose
+from cocoro_ghost.memory._image_mixin import default_input_text_when_images_only
+from cocoro_ghost.memory_models import Event, EventAffect, EventLink, EventThread, RetrievalRun, State
+from cocoro_ghost.memory._utils import now_utc_ts
 from cocoro_ghost.time_utils import format_iso8601_local
 
 
 logger = logging.getLogger(__name__)
 _warned_memory_disabled = False
-
-
-_JOB_PENDING = 0
-
-
-_CHAT_ALLOWED_IMAGE_MIME_TYPES = {
-    "image/png",
-    "image/jpeg",
-    "image/webp",
-}
-_CHAT_IMAGE_MAX_BYTES_PER_IMAGE = 5 * 1024 * 1024
-_CHAT_IMAGE_MAX_BYTES_TOTAL = 20 * 1024 * 1024
-_CHAT_IMAGE_SUMMARY_MAX_CHARS = 400
-_CHAT_DEFAULT_INPUT_TEXT_WHEN_IMAGES_ONLY = "これをみて"
-
-
-def _now_utc_ts() -> int:
-    """現在時刻（UTC）をUNIX秒で返す。"""
-    return int(time.time())
 
 
 def _parse_image_summaries_json(image_summaries_json: str | None) -> list[str]:
@@ -220,12 +197,8 @@ class _CandidateItem:
     hit_sources: list[str]
 
 
-class MemoryManager:
-    """記憶操作の窓口（API層から呼ばれる）。"""
-
-    def __init__(self, *, llm_client: LlmClient, config_store: ConfigStore) -> None:
-        self.llm_client = llm_client
-        self.config_store = config_store
+class _ChatMemoryMixin:
+    """チャット（/api/chat）経路の実装（mixin）。"""
 
     def _should_auto_forget_for_feedback_text(self, feedback_text: str) -> bool:
         """
@@ -286,7 +259,7 @@ class MemoryManager:
         if reply_to_event_id is None or int(reply_to_event_id) <= 0:
             return
 
-        now_ts = _now_utc_ts()
+        now_ts = now_utc_ts()
 
         # --- 直前ターンの retrieval_run を読む ---
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
@@ -619,67 +592,25 @@ class MemoryManager:
         client_id = str(request.client_id or "").strip()
         input_text = str(request.input_text or "").strip()
 
-        # --- 画像（data URI）を検証・デコードする ---
-        # 仕様:
-        # - 不正画像は「その画像だけ無視」して継続する
-        # - ただしサイズ上限（1枚/合計）を超える場合は event:error で終了する
+        # --- 画像（data URI）を検証し、画像要約（内部用）を生成する ---
         raw_images = list(request.images or [])
-        images_bytes_by_index: list[bytes | None] = [None for _ in raw_images]
-        valid_images_bytes: list[bytes] = []
-        valid_images_mimes: list[str] = []
-        valid_images_index: list[int] = []
-
-        total_image_bytes = 0
-        for idx, s in enumerate(raw_images):
-            # --- 形式検証（失敗したら無視して継続） ---
-            try:
-                mime, b64 = schemas.parse_data_uri_image(str(s or ""))
-            except Exception:  # noqa: BLE001
-                continue
-
-            # --- MIMEの許可（失敗したら無視して継続） ---
-            if str(mime) not in _CHAT_ALLOWED_IMAGE_MIME_TYPES:
-                continue
-
-            # --- base64 -> bytes（念のため例外は握って無視） ---
-            try:
-                image_bytes = base64.b64decode(str(b64))
-            except Exception:  # noqa: BLE001
-                continue
-
-            # --- サイズ上限（1枚） ---
-            if len(image_bytes) > int(_CHAT_IMAGE_MAX_BYTES_PER_IMAGE):
-                yield _sse(
-                    "error",
-                    {
-                        "message": "画像サイズが大きすぎます（1枚あたり5MBまで）",
-                        "code": "image_too_large",
-                    },
-                )
+        try:
+            image_summaries, has_valid_image, _valid_images_data_uris = self._process_data_uri_images(
+                raw_images=[str(x or "") for x in raw_images],
+                purpose=LlmRequestPurpose.SYNC_IMAGE_SUMMARY_CHAT,
+            )
+        except HTTPException as exc:
+            # NOTE: chat は SSE なので、400 は event:error として返す。
+            detail = getattr(exc, "detail", None)
+            if int(getattr(exc, "status_code", 0) or 0) == int(status.HTTP_400_BAD_REQUEST) and isinstance(detail, dict):
+                yield _sse("error", detail)
                 return
-
-            # --- サイズ上限（合計） ---
-            total_image_bytes += int(len(image_bytes))
-            if int(total_image_bytes) > int(_CHAT_IMAGE_MAX_BYTES_TOTAL):
-                yield _sse(
-                    "error",
-                    {
-                        "message": "画像サイズの合計が大きすぎます（合計20MBまで）",
-                        "code": "image_too_large",
-                    },
-                )
-                return
-
-            # --- 有効画像として採用 ---
-            images_bytes_by_index[int(idx)] = image_bytes
-            valid_images_bytes.append(image_bytes)
-            valid_images_mimes.append(str(mime))
-            valid_images_index.append(int(idx))
+            raise
 
         # --- input_text が空の場合は、画像の有無で扱いを分ける ---
         if not input_text:
-            if any(b is not None for b in images_bytes_by_index):
-                input_text = str(_CHAT_DEFAULT_INPUT_TEXT_WHEN_IMAGES_ONLY)
+            if bool(has_valid_image):
+                input_text = default_input_text_when_images_only()
             else:
                 yield _sse(
                     "error",
@@ -689,24 +620,6 @@ class MemoryManager:
                     },
                 )
                 return
-
-        # --- 画像要約（詳細）を作る（画像ごと、最大400文字） ---
-        # NOTE:
-        # - 画像そのものは保存しない（永続化しない）
-        # - 要約生成に失敗した画像は "" として継続する
-        image_summaries: list[str] = []
-        if raw_images:
-            image_summaries = ["" for _ in raw_images]
-            if valid_images_bytes:
-                summaries_valid = self.llm_client.generate_image_summary(
-                    valid_images_bytes,
-                    purpose=LlmRequestPurpose.SYNC_IMAGE_SUMMARY_CHAT,
-                    mime_types=list(valid_images_mimes),
-                    max_chars=int(_CHAT_IMAGE_SUMMARY_MAX_CHARS),
-                    best_effort=True,
-                )
-                for idx2, summary in zip(valid_images_index, summaries_valid, strict=False):
-                    image_summaries[int(idx2)] = str(summary or "").strip()
 
         # --- 検索/埋め込み向けに、画像要約（空でないもの）をクエリへ混ぜる ---
         non_empty_summaries = [s for s in image_summaries if str(s or "").strip()]
@@ -723,7 +636,7 @@ class MemoryManager:
                 .strip()
             )
 
-        now_ts = _now_utc_ts()
+        now_ts = now_utc_ts()
         last_chat_created_at_ts: int | None = None
         reply_to_event_id: int | None = None
 
@@ -987,7 +900,7 @@ class MemoryManager:
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
             db.execute(
                 text("UPDATE events SET assistant_text=:t, updated_at=:u WHERE event_id=:id"),
-                {"t": reply_text, "u": _now_utc_ts(), "id": int(event_id)},
+                {"t": reply_text, "u": now_utc_ts(), "id": int(event_id)},
             )
 
         # --- 10) 非同期: 埋め込み更新ジョブを積む（次ターンで効く） ---
@@ -1025,664 +938,6 @@ class MemoryManager:
 
         # --- 11) SSE完了 ---
         yield _sse("done", {"event_id": int(event_id), "reply_text": reply_text, "usage": {"finish_reason": finish_reason}})
-
-    def _process_data_uri_images(
-        self,
-        *,
-        raw_images: list[str],
-        purpose: str,
-    ) -> tuple[list[str], bool, list[str]]:
-        """
-        data URI画像を検証・デコードし、画像要約（詳細）を生成する。
-
-        Args:
-            raw_images: data URI 形式の画像リスト（入力順）。
-            purpose: LLM呼び出し目的ラベル（ログ用途）。
-
-        Returns:
-            (image_summaries, has_any_valid_image, valid_images)
-            - image_summaries: raw_images と同じ長さの要約配列（無視/失敗は ""）
-            - has_any_valid_image: 有効画像が1枚以上あったか
-            - valid_images: 検証済みのdata URI（入力順、無効は除外）
-
-        仕様:
-        - 不正画像は「その画像だけ無視」して継続する（入力順の対応は維持）。
-        - ただしサイズ上限（1枚/合計）を超える場合は 400 を返す（HTTP）。
-        """
-
-        # --- 入力を正規化 ---
-        images_in = [str(x or "") for x in list(raw_images or [])]
-
-        # --- デコード結果（入力順対応） ---
-        images_bytes_by_index: list[bytes | None] = [None for _ in images_in]
-        valid_images_bytes: list[bytes] = []
-        valid_images_mimes: list[str] = []
-        valid_images_index: list[int] = []
-        valid_images_data_uris: list[str] = []
-
-        # --- サイズ上限（合計） ---
-        total_image_bytes = 0
-        for idx, s in enumerate(images_in):
-            # --- 形式検証（失敗したら無視して継続） ---
-            try:
-                mime, b64 = schemas.parse_data_uri_image(str(s or ""))
-            except Exception:  # noqa: BLE001
-                continue
-
-            # --- MIMEの許可（失敗したら無視して継続） ---
-            if str(mime) not in _CHAT_ALLOWED_IMAGE_MIME_TYPES:
-                continue
-
-            # --- base64 -> bytes（念のため例外は握って無視） ---
-            try:
-                image_bytes = base64.b64decode(str(b64))
-            except Exception:  # noqa: BLE001
-                continue
-
-            # --- サイズ上限（1枚） ---
-            if len(image_bytes) > int(_CHAT_IMAGE_MAX_BYTES_PER_IMAGE):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={"message": "画像サイズが大きすぎます（1枚あたり5MBまで）", "code": "image_too_large"},
-                )
-
-            # --- サイズ上限（合計） ---
-            total_image_bytes += int(len(image_bytes))
-            if int(total_image_bytes) > int(_CHAT_IMAGE_MAX_BYTES_TOTAL):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={"message": "画像サイズの合計が大きすぎます（合計20MBまで）", "code": "image_too_large"},
-                )
-
-            # --- 有効画像として採用 ---
-            images_bytes_by_index[int(idx)] = image_bytes
-            valid_images_bytes.append(image_bytes)
-            valid_images_mimes.append(str(mime))
-            valid_images_index.append(int(idx))
-            # NOTE: クライアント配信用に、空白除去済みbase64へ正規化したdata URIを採用する。
-            valid_images_data_uris.append(f"data:{mime};base64,{b64}")
-
-        # --- 画像要約（詳細）を作る（画像ごと、最大400文字） ---
-        # NOTE:
-        # - 画像そのものは保存しない（永続化しない）
-        # - 要約生成に失敗した画像は "" として継続する
-        image_summaries: list[str] = []
-        if images_in:
-            image_summaries = ["" for _ in images_in]
-            if valid_images_bytes:
-                summaries_valid = self.llm_client.generate_image_summary(
-                    valid_images_bytes,
-                    purpose=str(purpose),
-                    mime_types=list(valid_images_mimes),
-                    max_chars=int(_CHAT_IMAGE_SUMMARY_MAX_CHARS),
-                    best_effort=True,
-                )
-                for idx2, summary in zip(valid_images_index, summaries_valid, strict=False):
-                    image_summaries[int(idx2)] = str(summary or "").strip()
-
-        has_valid = any(b is not None for b in images_bytes_by_index)
-        return (image_summaries, bool(has_valid), list(valid_images_data_uris))
-
-    def handle_notification(self, request: schemas.NotificationRequest, *, background_tasks: BackgroundTasks) -> None:
-        """通知を受け取り、出来事ログとして保存し、イベントとして配信する。"""
-
-        # --- 設定 ---
-        cfg = self.config_store.config
-        embedding_preset_id = str(cfg.embedding_preset_id).strip()
-        embedding_dimension = int(cfg.embedding_dimension)
-        now_ts = _now_utc_ts()
-
-        # --- 入力 ---
-        client_id = str(request.client_id or "").strip()
-        target_client_id = client_id if client_id else None
-        source_system = str(request.source_system or "").strip()
-        if not source_system:
-            source_system = "外部システム"
-        text_in = str(request.text or "").strip()
-        raw_images = list(request.images or [])
-
-        # --- 画像付き通知（/api/chat と同様の流れ） ---
-        image_summaries, has_valid_image, valid_images_data_uris = self._process_data_uri_images(
-            raw_images=[str(x or "") for x in raw_images],
-            purpose=LlmRequestPurpose.SYNC_IMAGE_SUMMARY_NOTIFICATION,
-        )
-        non_empty_summaries = [s for s in image_summaries if str(s or "").strip()]
-
-        # --- text が空の場合は、画像の有無で扱いを分ける ---
-        if not text_in:
-            if bool(has_valid_image):
-                text_in = str(_CHAT_DEFAULT_INPUT_TEXT_WHEN_IMAGES_ONLY)
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={"message": "text が空で、かつ有効な画像がありません", "code": "invalid_request"},
-                )
-
-        # --- LLMで「通知を受け取ったこと」をユーザーへ伝える発話を生成 ---
-        # NOTE:
-        # - 通知はユーザー発話ではないため、「教えてくれてありがとう」等が出ないように
-        #   通知専用の user prompt でガードする。
-        system_prompt = prompt_builders.reply_system_prompt(
-            persona_text=cfg.persona_text,
-            addon_text=cfg.addon_text,
-            second_person_label=cfg.second_person_label,
-        )
-        user_prompt = prompt_builders.notification_user_prompt(
-            source_system=str(source_system),
-            text=str(text_in),
-            has_any_valid_image=bool(has_valid_image),
-            second_person_label=cfg.second_person_label,
-        )
-
-        # --- 画像要約（内部用）を注入（本文に出さない） ---
-        conversation: list[dict[str, str]] = []
-        if non_empty_summaries:
-            conversation.append(
-                {
-                    "role": "assistant",
-                    "content": "\n".join(
-                        [
-                            "<<INTERNAL_CONTEXT>>",
-                            "ImageSummaries（通知・内部用。本文に出力しない）:",
-                            "\n".join([str(s) for s in non_empty_summaries]),
-                        ]
-                    ).strip(),
-                }
-            )
-        conversation.append({"role": "user", "content": user_prompt})
-
-        resp = self.llm_client.generate_reply_response(
-            system_prompt=system_prompt,
-            conversation=conversation,
-            purpose=LlmRequestPurpose.SYNC_NOTIFICATION,
-            stream=False,
-        )
-        message = common_utils.first_choice_content(resp).strip()
-
-        # --- 保存用テキスト（検索/記憶用途） ---
-        user_text = "\n".join([f"通知: {source_system}", text_in]).strip()
-
-        # --- events に保存 ---
-        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-            ev = Event(
-                created_at=now_ts,
-                updated_at=now_ts,
-                client_id=(str(target_client_id) if target_client_id else None),
-                source="notification",
-                user_text=user_text,
-                assistant_text=message,
-                image_summaries_json=(common_utils.json_dumps(image_summaries) if raw_images else None),
-                entities_json="[]",
-                client_context_json=None,
-            )
-            db.add(ev)
-            db.flush()
-            event_id = int(ev.event_id)
-
-        # --- events/stream へ配信 ---
-        event_stream.publish(
-            type="notification",
-            event_id=int(event_id),
-            data={
-                "system_text": f"[{source_system}] {text_in}",
-                "message": message,
-                "images": list(valid_images_data_uris),
-            },
-            target_client_id=(str(target_client_id) if target_client_id else None),
-        )
-
-        # --- 非同期: 埋め込み更新 ---
-        background_tasks.add_task(
-            self._enqueue_event_embedding_job,
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            event_id=int(event_id),
-        )
-
-        # --- 非同期: 記憶更新（WritePlan） ---
-        background_tasks.add_task(
-            self._enqueue_write_plan_job,
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            event_id=int(event_id),
-        )
-
-    def handle_meta_request(self, request: schemas.MetaRequestRequest, *, background_tasks: BackgroundTasks) -> None:
-        """メタ依頼を受け取り、外部要求は保存せず、能動メッセージの結果だけを保存する。"""
-
-        # --- 設定 ---
-        cfg = self.config_store.config
-        embedding_preset_id = str(cfg.embedding_preset_id).strip()
-        embedding_dimension = int(cfg.embedding_dimension)
-        now_ts = _now_utc_ts()
-
-        # --- 入力（永続化しない） ---
-        instruction = str(request.instruction or "").strip()
-        payload_text = str(request.payload_text or "").strip()
-        raw_images = list(request.images or [])
-
-        # --- 画像付きメタ依頼（/api/chat と同様の流れ） ---
-        image_summaries, has_valid_image, _valid_images_data_uris = self._process_data_uri_images(
-            raw_images=[str(x or "") for x in raw_images],
-            purpose=LlmRequestPurpose.SYNC_IMAGE_SUMMARY_META_REQUEST,
-        )
-        non_empty_summaries = [s for s in image_summaries if str(s or "").strip()]
-
-        # --- instruction/payload_text が空の場合は、画像の有無で扱いを分ける ---
-        if not instruction and not payload_text:
-            if bool(has_valid_image):
-                instruction = str(_CHAT_DEFAULT_INPUT_TEXT_WHEN_IMAGES_ONLY)
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={"message": "instruction/payload_text が空で、かつ有効な画像がありません", "code": "invalid_request"},
-                )
-
-        # --- LLMで能動メッセージを生成（外部要求だとは悟らせない） ---
-        system_prompt = prompt_builders.reply_system_prompt(
-            persona_text=cfg.persona_text,
-            addon_text=cfg.addon_text,
-            second_person_label=cfg.second_person_label,
-        )
-        user_prompt = prompt_builders.meta_request_user_prompt(
-            second_person_label=cfg.second_person_label,
-            instruction=instruction,
-            payload_text=payload_text,
-        )
-
-        # --- 画像要約（内部用）を注入（本文に出さない） ---
-        conversation: list[dict[str, str]] = []
-        if non_empty_summaries:
-            conversation.append(
-                {
-                    "role": "assistant",
-                    "content": "\n".join(
-                        [
-                            "<<INTERNAL_CONTEXT>>",
-                            "画像要約（内部用。本文に出力しない）:",
-                            "\n".join([str(s) for s in non_empty_summaries]),
-                        ]
-                    ).strip(),
-                }
-            )
-        conversation.append({"role": "user", "content": user_prompt})
-
-        resp = self.llm_client.generate_reply_response(
-            system_prompt=system_prompt,
-            conversation=conversation,
-            purpose=LlmRequestPurpose.SYNC_META_REQUEST,
-            stream=False,
-        )
-        message = common_utils.first_choice_content(resp).strip()
-
-        # --- events に保存（sourceで区別） ---
-        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-            ev = Event(
-                created_at=now_ts,
-                updated_at=now_ts,
-                client_id=None,
-                source="meta_proactive",
-                user_text=None,
-                assistant_text=message,
-                image_summaries_json=(common_utils.json_dumps(image_summaries) if raw_images else None),
-                entities_json="[]",
-                client_context_json=None,
-            )
-            db.add(ev)
-            db.flush()
-            event_id = int(ev.event_id)
-
-        # --- events/stream へ配信 ---
-        event_stream.publish(
-            type="meta-request",
-            event_id=int(event_id),
-            data={"message": message},
-            target_client_id=None,
-        )
-
-        # --- 非同期: 埋め込み更新 ---
-        background_tasks.add_task(
-            self._enqueue_event_embedding_job,
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            event_id=int(event_id),
-        )
-
-        # --- 非同期: 記憶更新（WritePlan） ---
-        background_tasks.add_task(
-            self._enqueue_write_plan_job,
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            event_id=int(event_id),
-        )
-
-    def handle_vision_capture_response(self, request: schemas.VisionCaptureResponseV2Request) -> None:
-        """視覚のcapture-responseを受け取り、待機中の要求へ紐づけ、画像説明を出来事ログへ保存する。"""
-
-        # --- まずは待機中の要求へ紐づける（タイムアウト済みなら何もしない） ---
-        ok = vision_bridge.fulfill_capture_response(
-            vision_bridge.VisionCaptureResponse(
-                request_id=str(request.request_id),
-                client_id=str(request.client_id),
-                images=list(request.images or []),
-                client_context=(request.client_context if request.client_context is not None else None),
-                error=(str(request.error).strip() if request.error is not None else None),
-            )
-        )
-        if not ok:
-            return
-
-        # --- 画像は保存しない。images があれば詳細説明テキストを生成して events に残す ---
-        if not request.images:
-            return
-        if request.error is not None:
-            return
-
-        # --- data URI -> bytes ---
-        images_bytes: list[bytes] = []
-        for s in list(request.images or []):
-            b64 = schemas.data_uri_image_to_base64(s)
-            images_bytes.append(base64.b64decode(b64))
-
-        # --- LLMで詳細説明 ---
-        descriptions = self.llm_client.generate_image_summary(
-            images_bytes,
-            purpose=LlmRequestPurpose.SYNC_IMAGE_DETAIL,
-        )
-        detail_text = "\n\n".join([d.strip() for d in descriptions if str(d or "").strip()]).strip()
-        if not detail_text:
-            return
-
-        # --- events に保存（画像は保持しない） ---
-        cfg = self.config_store.config
-        embedding_preset_id = str(cfg.embedding_preset_id).strip()
-        embedding_dimension = int(cfg.embedding_dimension)
-        now_ts = _now_utc_ts()
-        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-            ev = Event(
-                created_at=now_ts,
-                updated_at=now_ts,
-                client_id=str(request.client_id),
-                source="vision_detail",
-                user_text=detail_text,
-                assistant_text=None,
-                entities_json="[]",
-                client_context_json=(
-                    common_utils.json_dumps(request.client_context) if request.client_context is not None else None
-                ),
-            )
-            db.add(ev)
-            db.flush()
-            event_id = int(ev.event_id)
-
-        # NOTE: vision_detail はUIへ通知する必要がないため events/stream へは配信しない。
-
-        # --- 非同期: 埋め込み更新（次ターン以降で参照できる） ---
-        self._enqueue_event_embedding_job(
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            event_id=int(event_id),
-        )
-
-        # --- 非同期: 記憶更新（WritePlan） ---
-        self._enqueue_write_plan_job(
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            event_id=int(event_id),
-        )
-
-    def run_reminder_once(self, *, hhmm: str, content: str) -> None:
-        """
-        リマインダーを1件発火し、イベントストリームへブロードキャスト配信する。
-
-        仕様:
-        - events/stream の reminder は data.message のみを送る。
-        - 宛先（target_client_id）はリマインダー機能では扱わない。
-        """
-
-        def _format_hhmm_to_time_jp(hhmm: str) -> str:
-            """
-            HH:MM を「H時MM分」に変換する。
-
-            NOTE:
-            - 異常値の場合は「時刻」を返し、処理を継続する（発火を落とさない）。
-            """
-
-            s = str(hhmm or "").strip()
-            try:
-                parts = s.split(":")
-                if len(parts) != 2:
-                    return "時刻"
-                hour = int(parts[0])
-                minute = int(parts[1])
-                if not (0 <= hour <= 23 and 0 <= minute <= 59):
-                    return "時刻"
-                return f"{hour}時{minute:02d}分"
-            except Exception:  # noqa: BLE001
-                return "時刻"
-
-        # --- 設定 ---
-        cfg = self.config_store.config
-        embedding_preset_id = str(cfg.embedding_preset_id).strip()
-        embedding_dimension = int(cfg.embedding_dimension)
-        now_ts = _now_utc_ts()
-
-        # --- LLMで文面を生成（人格を必ず反映する） ---
-        time_jp = _format_hhmm_to_time_jp(str(hhmm))
-        content_one_line = " ".join(
-            [x.strip() for x in str(content or "").replace("\r\n", "\n").replace("\r", "\n").split("\n") if x.strip()]
-        ).strip()
-
-        system_prompt = prompt_builders.reply_system_prompt(
-            persona_text=cfg.persona_text,
-            addon_text=cfg.addon_text,
-            second_person_label=cfg.second_person_label,
-        )
-        user_prompt = prompt_builders.reminder_user_prompt(
-            time_jp=str(time_jp),
-            content=str(content_one_line),
-            second_person_label=cfg.second_person_label,
-        )
-
-        resp = self.llm_client.generate_reply_response(
-            system_prompt=system_prompt,
-            conversation=[{"role": "user", "content": user_prompt}],
-            purpose=LlmRequestPurpose.SYNC_REMINDER,
-            stream=False,
-        )
-        message = common_utils.first_choice_content(resp).strip()
-
-        # --- events に保存 ---
-        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-            ev = Event(
-                created_at=now_ts,
-                updated_at=now_ts,
-                client_id=None,
-                source="reminder",
-                user_text=str(content),
-                assistant_text=message,
-                entities_json="[]",
-                client_context_json=None,
-            )
-            db.add(ev)
-            db.flush()
-            event_id = int(ev.event_id)
-
-        # --- events/stream へ配信（バッファしない） ---
-        event_stream.publish(
-            type="reminder",
-            event_id=int(event_id),
-            data={
-                "message": message,
-            },
-            target_client_id=None,
-        )
-
-        # --- 非同期: 埋め込み更新 ---
-        self._enqueue_event_embedding_job(
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            event_id=int(event_id),
-        )
-
-        # --- 非同期: 記憶更新（WritePlan） ---
-        self._enqueue_write_plan_job(
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            event_id=int(event_id),
-        )
-
-    def run_desktop_watch_once(self, *, target_client_id: str) -> str:
-        """デスクトップウォッチを1回実行する（結果コードを返す）。"""
-
-        # --- 設定 ---
-        cfg = self.config_store.config
-        embedding_preset_id = str(cfg.embedding_preset_id).strip()
-        embedding_dimension = int(cfg.embedding_dimension)
-
-        # --- 視覚要求（命令） ---
-        resp = vision_bridge.request_capture_and_wait(
-            target_client_id=str(target_client_id),
-            source="desktop",
-            purpose="desktop_watch",
-            timeout_seconds=5.0,
-            timeout_ms=5000,
-        )
-        if resp is None:
-            return "skipped_idle"
-        if vision_bridge.is_capture_skipped_idle(resp.error):
-            return "skipped_idle"
-        if vision_bridge.is_capture_skipped_excluded_window_title(resp.error):
-            return "skipped_excluded_window_title"
-        if resp.error is not None:
-            return "failed"
-        if not resp.images:
-            return "failed"
-
-        # --- 画像説明（詳細） ---
-        images_bytes: list[bytes] = []
-        for s in list(resp.images or []):
-            b64 = schemas.data_uri_image_to_base64(s)
-            images_bytes.append(base64.b64decode(b64))
-        descriptions = self.llm_client.generate_image_summary(
-            images_bytes,
-            purpose=LlmRequestPurpose.SYNC_IMAGE_SUMMARY_DESKTOP_WATCH,
-        )
-        detail_text = "\n\n".join([d.strip() for d in descriptions if str(d or "").strip()]).strip()
-
-        # --- LLMで人格コメントを生成 ---
-        system_prompt = prompt_builders.reply_system_prompt(
-            persona_text=cfg.persona_text,
-            addon_text=cfg.addon_text,
-            second_person_label=cfg.second_person_label,
-        )
-        internal_context = prompt_builders.desktop_watch_internal_context(
-            detail_text=detail_text, client_context=resp.client_context
-        )
-        user_prompt = prompt_builders.desktop_watch_user_prompt(second_person_label=cfg.second_person_label)
-        resp2 = self.llm_client.generate_reply_response(
-            system_prompt=system_prompt,
-            conversation=[
-                {"role": "assistant", "content": internal_context},
-                {"role": "user", "content": user_prompt},
-            ],
-            purpose=LlmRequestPurpose.SYNC_DESKTOP_WATCH,
-            stream=False,
-        )
-        message = common_utils.first_choice_content(resp2).strip()
-
-        # --- events に保存（画像は保持しない） ---
-        now_ts = _now_utc_ts()
-        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-            ev = Event(
-                created_at=now_ts,
-                updated_at=now_ts,
-                client_id=str(target_client_id),
-                source="desktop_watch",
-                user_text=detail_text,
-                assistant_text=message,
-                entities_json="[]",
-                client_context_json=(
-                    common_utils.json_dumps(resp.client_context) if resp.client_context is not None else None
-                ),
-            )
-            db.add(ev)
-            db.flush()
-            event_id = int(ev.event_id)
-
-        # --- events/stream へ配信（リアルタイム性を優先してバッファしない） ---
-        ctx = dict(resp.client_context or {})
-        active_app = str(ctx.get("active_app") or "").strip()
-        window_title = str(ctx.get("window_title") or "").strip()
-        system_text = " ".join([x for x in ["[desktop_watch]", active_app, window_title] if str(x).strip()]).strip()
-        event_stream.publish(
-            type="desktop_watch",
-            event_id=int(event_id),
-            data={
-                "system_text": system_text,
-                "message": message,
-            },
-            target_client_id=str(target_client_id),
-        )
-
-        # --- 埋め込み更新 ---
-        self._enqueue_event_embedding_job(
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            event_id=int(event_id),
-        )
-
-        # --- 非同期: 記憶更新（WritePlan） ---
-        self._enqueue_write_plan_job(
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            event_id=int(event_id),
-        )
-        return "ok"
-
-    def _enqueue_event_embedding_job(self, *, embedding_preset_id: str, embedding_dimension: int, event_id: int) -> None:
-        """出来事ログの埋め込み更新ジョブを積む（次ターンで効かせる）。"""
-
-        # --- memory_enabled が無効なら何もしない ---
-        if not bool(self.config_store.memory_enabled):
-            return
-
-        now_ts = _now_utc_ts()
-        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-            db.add(
-                Job(
-                    kind="upsert_event_embedding",
-                    payload_json=common_utils.json_dumps({"event_id": int(event_id)}),
-                    status=int(_JOB_PENDING),
-                    run_after=int(now_ts),
-                    tries=0,
-                    last_error=None,
-                    created_at=int(now_ts),
-                    updated_at=int(now_ts),
-                )
-            )
-
-    def _enqueue_write_plan_job(self, *, embedding_preset_id: str, embedding_dimension: int, event_id: int) -> None:
-        """記憶更新のための WritePlan 生成ジョブを積む。"""
-
-        # --- memory_enabled が無効なら何もしない ---
-        if not bool(self.config_store.memory_enabled):
-            return
-
-        now_ts = _now_utc_ts()
-        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-            db.add(
-                Job(
-                    kind="generate_write_plan",
-                    payload_json=common_utils.json_dumps({"event_id": int(event_id)}),
-                    status=int(_JOB_PENDING),
-                    run_after=int(now_ts),
-                    tries=0,
-                    last_error=None,
-                    created_at=int(now_ts),
-                    updated_at=int(now_ts),
-                )
-            )
 
     def _collect_candidates(
         self,
@@ -2012,7 +1267,7 @@ class MemoryManager:
             mode = str(plan_obj.get("mode") or "").strip()
             rank_range = None
             if mode == "associative_recent":
-                today_day = int(_now_utc_ts()) // 86400
+                today_day = int(now_utc_ts()) // 86400
                 rank_range = (int(today_day) - 90, int(today_day) + 1)
 
             with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
