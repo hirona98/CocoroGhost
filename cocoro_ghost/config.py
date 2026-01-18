@@ -58,6 +58,7 @@ class RuntimeConfig:
 
     # GlobalSettings由来（DB設定）
     memory_enabled: bool          # 記憶機能の有効/無効
+    shared_conversation_id: str   # 端末跨ぎ会話の固定ID
 
     # 視覚（Vision）: デスクトップウォッチ
     desktop_watch_enabled: bool
@@ -232,6 +233,7 @@ def build_runtime_config(
         log_level=toml_config.log_level,
         # GlobalSettings由来
         memory_enabled=bool(getattr(global_settings, "memory_enabled", True)),
+        shared_conversation_id=str(getattr(global_settings, "shared_conversation_id", "") or "").strip(),
         # 視覚（Vision）: デスクトップウォッチ
         desktop_watch_enabled=bool(global_settings.desktop_watch_enabled),
         desktop_watch_interval_seconds=int(global_settings.desktop_watch_interval_seconds),

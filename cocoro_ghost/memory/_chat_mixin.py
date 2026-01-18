@@ -517,7 +517,7 @@ class _ChatMemoryMixin:
 
         # --- 設定を取得 ---
         cfg = self.config_store.config
-        embedding_preset_id = str(request.embedding_preset_id or cfg.embedding_preset_id).strip()
+        embedding_preset_id = str(cfg.embedding_preset_id).strip()
         embedding_dimension = int(cfg.embedding_dimension)
 
         # --- 記憶が無効なら、ベクトル索引/状態更新が育たない（初回だけ強くログする） ---
@@ -527,7 +527,15 @@ class _ChatMemoryMixin:
             logger.warning("memory_enabled=false のため、非同期ジョブ（埋め込み/状態更新）は実行されません")
 
         # --- 入力を正規化 ---
-        client_id = str(request.client_id or "").strip()
+        # NOTE:
+        # - 端末を跨いでも同じ会話の続きになるよう、サーバ側の固定IDを使用する。
+        # - 端末識別（WSの hello.client_id など）は別IDとして扱う。
+        client_id = str(getattr(cfg, "shared_conversation_id", "") or "").strip()
+        if not client_id:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={"message": "shared_conversation_id が未設定です", "code": "server_misconfigured"},
+            )
         input_text = str(request.input_text or "").strip()
 
         # --- 画像（data URI）を検証し、画像要約（内部用）を生成する ---
@@ -880,4 +888,3 @@ class _ChatMemoryMixin:
     # NOTE:
     # - 検索（候補収集/分散/pack生成）は `_ChatSearchMixin` に集約した。
     # - `_ChatMemoryMixin` には重複実装を置かない（MROで検索実装は一意）。
-

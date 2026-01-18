@@ -38,6 +38,10 @@ datas += collect_data_files("tiktoken_ext", include_py_files=True)
 # PyInstaller では自動で拾われないことがあるため、json を明示的に同梱する。
 datas += collect_data_files("litellm", includes=["**/*.json"])
 
+# Web UI の静的ファイル（root/static）を同梱する
+# NOTE: onedir では dist/<app>/_internal 配下へ入るため、実行時は sys._MEIPASS/static から読む。
+datas += [("static", "static")]
+
 
 # --- hidden imports ---
 # 関数内 import など、解析で落ちやすいものを明示

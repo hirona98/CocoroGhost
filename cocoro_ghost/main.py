@@ -9,33 +9,32 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, FastAPI
 from fastapi_utils.tasks import repeat_every
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from cocoro_ghost import event_stream, log_stream
-from cocoro_ghost.api import admin, chat, control, events, logs, meta_request, notification, reminders, settings, vision
-from cocoro_ghost.config import get_config_store
+from cocoro_ghost.api import (
+    admin,
+    auth,
+    chat,
+    control,
+    events,
+    logs,
+    meta_request,
+    notification,
+    reminders,
+    settings,
+    vision,
+)
 from cocoro_ghost.logging_config import setup_logging, suppress_uvicorn_access_log_paths
 from cocoro_ghost.desktop_watch import get_desktop_watch_service
 from cocoro_ghost.reminders_service import get_reminder_service
+from cocoro_ghost.api.http_auth import require_bearer_only, require_bearer_or_cookie_session
+from cocoro_ghost.resources import get_static_dir
 
-# Bearer認証スキーム
-security = HTTPBearer()
 logger = __import__("logging").getLogger(__name__)
-
-
-def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    """
-    Bearerトークンを検証し、OKならトークン文字列を返す。
-    認証失敗時は401エラーを発生させる。
-    """
-    token = get_config_store().config.token
-    # トークンの一致を確認
-    if credentials.credentials != token:
-        logger.warning("Authentication failed: invalid token")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
-    return credentials.credentials
 
 
 def create_app() -> FastAPI:
@@ -124,14 +123,16 @@ def create_app() -> FastAPI:
     app = FastAPI(title="CocoroGhost API")
 
     # APIルーターを登録（認証が必要なエンドポイント）
-    app.include_router(chat.router, dependencies=[Depends(verify_token)], prefix="/api")
-    app.include_router(notification.router, dependencies=[Depends(verify_token)], prefix="/api")
-    app.include_router(meta_request.router, dependencies=[Depends(verify_token)], prefix="/api")
-    app.include_router(vision.router, dependencies=[Depends(verify_token)], prefix="/api")
-    app.include_router(settings.router, dependencies=[Depends(verify_token)], prefix="/api")
-    app.include_router(reminders.router, dependencies=[Depends(verify_token)], prefix="/api")
-    app.include_router(admin.router, dependencies=[Depends(verify_token)], prefix="/api")
-    app.include_router(control.router, dependencies=[Depends(verify_token)], prefix="/api")
+    app.include_router(chat.router, dependencies=[Depends(require_bearer_or_cookie_session)], prefix="/api")
+    app.include_router(notification.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
+    app.include_router(meta_request.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
+    app.include_router(vision.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
+    app.include_router(settings.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
+    app.include_router(reminders.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
+    app.include_router(admin.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
+    app.include_router(control.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
+    # Web UI 認証（ログイン/ログアウト）
+    app.include_router(auth.router, prefix="/api")
     # 認証不要なエンドポイント（ログ/イベントストリーム）
     app.include_router(logs.router, prefix="/api")
     app.include_router(events.router, prefix="/api")
@@ -141,10 +142,15 @@ def create_app() -> FastAPI:
         """稼働確認用のヘルスチェックエンドポイント。"""
         return {"status": "healthy"}
 
+    # --- Web UI: 静的ファイル ---
+    static_dir = get_static_dir()
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
     @app.get("/")
     async def root():
-        """ルートの簡易応答（動作確認用）。"""
-        return {"message": "CocoroGhost API is running"}
+        """Web UI（index.html）を返す。"""
+        index_path = (static_dir / "index.html").resolve()
+        return FileResponse(index_path)
 
     @app.on_event("startup")
     async def start_log_stream_dispatcher() -> None:
