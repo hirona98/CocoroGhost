@@ -1,0 +1,10 @@
+#
+# CocoroGhost: Git attributes
+#
+# NOTE:
+# - Windows で `cmd.exe` から実行する .bat は CRLF が前提。
+# - LF だけになると、コメント行が実行扱いになったり、コマンドが分割されたりして壊れることがある。
+#
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
