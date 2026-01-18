@@ -11,12 +11,14 @@ from __future__ import annotations
 from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.memory._chat_mixin import _ChatMemoryMixin
+from cocoro_ghost.memory._chat_search_mixin import _ChatSearchMixin
 from cocoro_ghost.memory._external_mixin import _ExternalMemoryMixin
 from cocoro_ghost.memory._image_mixin import _ImageMemoryMixin
 from cocoro_ghost.memory._jobs_mixin import _JobsMemoryMixin
 
 
 class MemoryManager(
+    _ChatSearchMixin,
     _ChatMemoryMixin,
     _ExternalMemoryMixin,
     _ImageMemoryMixin,
@@ -28,4 +30,3 @@ class MemoryManager(
         # --- 依存を保持（mixin側から参照される） ---
         self.llm_client = llm_client
         self.config_store = config_store
-
