@@ -60,16 +60,6 @@ def _now_utc_ts() -> int:
     return int(time.time())
 
 
-def _json_dumps(payload: Any) -> str:
-    """
-    DB保存向けにJSONを安定した形式でダンプする（日本語保持）。
-
-    NOTE:
-        - 重複を避けるため、実体は common_utils に寄せる。
-    """
-    return common_utils.json_dumps(payload)
-
-
 def _parse_image_summaries_json(image_summaries_json: str | None) -> list[str]:
     """
     events.image_summaries_json を list[str] に正規化する。
@@ -94,24 +84,6 @@ def _parse_image_summaries_json(image_summaries_json: str | None) -> list[str]:
     return out
 
 
-def _parse_json_str_list(text_in: str | None) -> list[str]:
-    """
-    JSON文字列を list[str] として読む（失敗時は空list）。
-
-    NOTE:
-        - 重複を避けるため、実体は common_utils に寄せる。
-    """
-    return common_utils.parse_json_str_list(text_in)
-
-
-def _strip_face_tags(text_in: str) -> str:
-    """
-    テキストから会話装飾タグ（例: [face:Joy]）を除去する。
-
-    NOTE:
-        - 重複を避けるため、実体は common_utils に寄せる。
-    """
-    return common_utils.strip_face_tags(text_in)
 
 
 def _fts_or_query(terms: list[str]) -> str:
@@ -145,49 +117,11 @@ def _fts_or_query(terms: list[str]) -> str:
     return " OR ".join(cleaned[:8])
 
 
-def _vec_item_id(kind: int, entity_id: int) -> int:
-    """
-    vec_items の item_id を決定する（kind + entity_id の名前空間衝突を避ける）。
-
-    NOTE:
-        - 重複を避けるため、実体は vector_index に寄せる。
-    """
-    return vector_index.vec_item_id(kind, entity_id)
-
-
-def _vec_entity_id(item_id: int) -> int:
-    """
-    vec_items の item_id から entity_id を復元する。
-
-    NOTE:
-        - 重複を避けるため、実体は vector_index に寄せる。
-    """
-    return vector_index.vec_entity_id(item_id)
-
-
-def _first_choice_content(resp: Any) -> str:
-    """
-    LiteLLMのレスポンスから最初のchoiceのcontentを取り出す。
-
-    NOTE:
-        - 重複を避けるため、実体は common_utils に寄せる。
-    """
-    return common_utils.first_choice_content(resp)
-
-
-def _parse_first_json_object(text: str) -> dict[str, Any] | None:
-    """
-    LLM出力から最初のJSONオブジェクトを抽出してdictとして返す。
-
-    NOTE:
-        - 重複を避けるため、実体は common_utils に寄せる（None版）。
-    """
-    return common_utils.parse_first_json_object_or_none(text)
 
 
 def _sse(event: str, data: dict) -> str:
     """SSEの1イベントを文字列化する。"""
-    return f"event: {event}\n" + f"data: {_json_dumps(data)}\n\n"
+    return f"event: {event}\n" + f"data: {common_utils.json_dumps(data)}\n\n"
 
 
 class _UserVisibleReplySanitizer:
@@ -283,87 +217,6 @@ class _UserVisibleReplySanitizer:
             return True
 
         return False
-
-
-def _search_plan_system_prompt() -> str:
-    """SearchPlan生成用のsystem promptを返す。"""
-    # NOTE: プロンプト定義は prompt_builders に寄せる（1箇所で管理する）。
-    return prompt_builders.search_plan_system_prompt()
-
-
-def _selection_system_prompt() -> str:
-    """SearchResultPack生成（選別）用のsystem promptを返す。"""
-    # NOTE: プロンプト定義は prompt_builders に寄せる（1箇所で管理する）。
-    return prompt_builders.selection_system_prompt()
-
-
-def _reply_system_prompt(*, persona_text: str, addon_text: str, second_person_label: str) -> str:
-    """
-    返答生成用のsystem promptを組み立てる。
-
-    Args:
-        persona_text: ペルソナ本文（ユーザー編集対象）。
-        addon_text: 追加プロンプト（ユーザー編集対象）。
-        second_person_label: 二人称の呼称（例: マスター / あなた / 君 / ◯◯さん）。
-    """
-    # NOTE: プロンプト定義は prompt_builders に寄せる（1箇所で管理する）。
-    return prompt_builders.reply_system_prompt(
-        persona_text=str(persona_text or ""),
-        addon_text=str(addon_text or ""),
-        second_person_label=str(second_person_label or ""),
-    )
-
-
-def _desktop_watch_user_prompt(*, second_person_label: str) -> str:
-    """
-    デスクトップウォッチ向けの user prompt を組み立てる。
-
-    目的:
-    - 「second_person_label のデスクトップ画面を、人格（あなた）が見てコメントする」ことを明示して視点を固定する。
-    - 「覗かれている/監視されている」等の受け身の誤解（視点反転）を防ぐ。
-    - 返答を短く、コメント（セリフ）として自然に成立させる。
-    """
-
-    # NOTE: プロンプト定義は prompt_builders に寄せる（1箇所で管理する）。
-    return prompt_builders.desktop_watch_user_prompt(second_person_label=str(second_person_label or ""))
-
-
-def _desktop_watch_internal_context(*, detail_text: str, client_context: dict | None) -> str:
-    """
-    デスクトップウォッチ向けの内部コンテキスト文を組み立てる。
-
-    重要:
-    - <<INTERNAL_CONTEXT>> から開始し、system prompt の「内部用」ルールを確実に適用させる。
-    - ここには「材料（データ）」だけを載せ、指示文は user prompt 側に寄せる。
-    - 可能な限り JSON として表現し、観測（デバッグ）しやすくする。
-    """
-
-    # NOTE: プロンプト定義は prompt_builders に寄せる（1箇所で管理する）。
-    return prompt_builders.desktop_watch_internal_context(detail_text=str(detail_text or ""), client_context=client_context)
-
-
-def _notification_user_prompt(
-    *,
-    source_system: str,
-    text: str,
-    has_any_valid_image: bool,
-    second_person_label: str,
-) -> str:
-    """
-    通知要求（外部システム通知）向けの user prompt を組み立てる。
-
-    目的:
-    - 人格が「通知要求機能で通知を受信した」ことを自覚し、second_person_label へ自然に伝える。
-    - 通知テキストを「ユーザーの発話」と誤認して、お礼や許可取りをしてしまう事故を防ぐ。
-    """
-
-    # NOTE: プロンプト定義は prompt_builders に寄せる（1箇所で管理する）。
-    return prompt_builders.notification_user_prompt(
-        source_system=str(source_system or ""),
-        text=str(text or ""),
-        has_any_valid_image=bool(has_any_valid_image),
-        second_person_label=str(second_person_label or ""),
-    )
 
 
 @dataclass(frozen=True)
@@ -508,7 +361,7 @@ class MemoryManager:
                     {"u": int(now_ts), "id": int(target_event_id)},
                 )
                 # --- 埋め込み復活を防ぐ（vec_items を消す） ---
-                item_id = _vec_item_id(int(vector_index.VEC_KIND_EVENT), int(target_event_id))
+                item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_EVENT), int(target_event_id))
                 db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
                 return
 
@@ -518,14 +371,14 @@ class MemoryManager:
                     {"u": int(now_ts), "id": int(target_state_id)},
                 )
                 # --- 埋め込み復活を防ぐ（vec_items を消す） ---
-                item_id = _vec_item_id(int(vector_index.VEC_KIND_STATE), int(target_state_id))
+                item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_STATE), int(target_state_id))
                 db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
                 return
 
             # --- event_affect は行ごと削除する ---
             if t == "event_affect":
                 db.execute(text("DELETE FROM event_affects WHERE id=:id"), {"id": int(target_affect_id)})
-                item_id = _vec_item_id(int(vector_index.VEC_KIND_EVENT_AFFECT), int(target_affect_id))
+                item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_EVENT_AFFECT), int(target_affect_id))
                 db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
                 return
 
@@ -895,9 +748,11 @@ class MemoryManager:
                 source="chat",
                 user_text=input_text,
                 assistant_text=None,
-                image_summaries_json=(_json_dumps(image_summaries) if raw_images else None),
+                image_summaries_json=(common_utils.json_dumps(image_summaries) if raw_images else None),
                 entities_json="[]",
-                client_context_json=_json_dumps(request.client_context) if request.client_context is not None else None,
+                client_context_json=(
+                    common_utils.json_dumps(request.client_context) if request.client_context is not None else None
+                ),
             )
             db.add(ev)
             db.flush()
@@ -962,12 +817,12 @@ class MemoryManager:
         }
         try:
             resp = self.llm_client.generate_json_response(
-                system_prompt=_search_plan_system_prompt(),
+                system_prompt=prompt_builders.search_plan_system_prompt(),
                 input_text=augmented_query_text,
                 purpose=LlmRequestPurpose.SYNC_SEARCH_PLAN,
                 max_tokens=500,
             )
-            obj = _parse_first_json_object(_first_choice_content(resp))
+            obj = common_utils.parse_first_json_object_or_none(common_utils.first_choice_content(resp))
             if obj is not None:
                 plan_obj = obj
         except Exception as exc:  # noqa: BLE001
@@ -986,7 +841,7 @@ class MemoryManager:
         # --- 6) 選別（LLM → SearchResultPack） ---
         search_result_pack: dict[str, Any] = {"selected": []}
         try:
-            selection_input = _json_dumps(
+            selection_input = common_utils.json_dumps(
                 {
                     "user_input": input_text,
                     "image_summaries": list(non_empty_summaries),
@@ -995,12 +850,12 @@ class MemoryManager:
                 }
             )
             resp = self.llm_client.generate_json_response(
-                system_prompt=_selection_system_prompt(),
+                system_prompt=prompt_builders.selection_system_prompt(),
                 input_text=selection_input,
                 purpose=LlmRequestPurpose.SYNC_SEARCH_SELECT,
                 max_tokens=1500,
             )
-            obj = _parse_first_json_object(_first_choice_content(resp))
+            obj = common_utils.parse_first_json_object_or_none(common_utils.first_choice_content(resp))
             if obj is not None:
                 search_result_pack = obj
         except Exception as exc:  # noqa: BLE001
@@ -1022,14 +877,14 @@ class MemoryManager:
             rr = RetrievalRun(
                 event_id=int(event_id),
                 created_at=now_ts,
-                plan_json=_json_dumps(plan_obj),
-                candidates_json=_json_dumps(candidates_log_obj),
-                selected_json=_json_dumps(search_result_pack),
+                plan_json=common_utils.json_dumps(plan_obj),
+                candidates_json=common_utils.json_dumps(candidates_log_obj),
+                selected_json=common_utils.json_dumps(search_result_pack),
             )
             db.add(rr)
 
         # --- 8) 返答をSSEで生成（SearchResultPackを内部注入） ---
-        system_prompt = _reply_system_prompt(
+        system_prompt = prompt_builders.reply_system_prompt(
             persona_text=cfg.persona_text,
             addon_text=cfg.addon_text,
             second_person_label=cfg.second_person_label,
@@ -1040,7 +895,7 @@ class MemoryManager:
             if gap_seconds < 0:
                 gap_seconds = 0
 
-        internal_context = _json_dumps(
+        internal_context = common_utils.json_dumps(
             {
                 "TimeContext": {
                     "now": format_iso8601_local(int(now_ts)),
@@ -1318,12 +1173,12 @@ class MemoryManager:
         # NOTE:
         # - 通知はユーザー発話ではないため、「教えてくれてありがとう」等が出ないように
         #   通知専用の user prompt でガードする。
-        system_prompt = _reply_system_prompt(
+        system_prompt = prompt_builders.reply_system_prompt(
             persona_text=cfg.persona_text,
             addon_text=cfg.addon_text,
             second_person_label=cfg.second_person_label,
         )
-        user_prompt = _notification_user_prompt(
+        user_prompt = prompt_builders.notification_user_prompt(
             source_system=str(source_system),
             text=str(text_in),
             has_any_valid_image=bool(has_valid_image),
@@ -1353,7 +1208,7 @@ class MemoryManager:
             purpose=LlmRequestPurpose.SYNC_NOTIFICATION,
             stream=False,
         )
-        message = _first_choice_content(resp).strip()
+        message = common_utils.first_choice_content(resp).strip()
 
         # --- 保存用テキスト（検索/記憶用途） ---
         user_text = "\n".join([f"通知: {source_system}", text_in]).strip()
@@ -1367,7 +1222,7 @@ class MemoryManager:
                 source="notification",
                 user_text=user_text,
                 assistant_text=message,
-                image_summaries_json=(_json_dumps(image_summaries) if raw_images else None),
+                image_summaries_json=(common_utils.json_dumps(image_summaries) if raw_images else None),
                 entities_json="[]",
                 client_context_json=None,
             )
@@ -1435,7 +1290,7 @@ class MemoryManager:
                 )
 
         # --- LLMで能動メッセージを生成（外部要求だとは悟らせない） ---
-        system_prompt = _reply_system_prompt(
+        system_prompt = prompt_builders.reply_system_prompt(
             persona_text=cfg.persona_text,
             addon_text=cfg.addon_text,
             second_person_label=cfg.second_person_label,
@@ -1474,7 +1329,7 @@ class MemoryManager:
             purpose=LlmRequestPurpose.SYNC_META_REQUEST,
             stream=False,
         )
-        message = _first_choice_content(resp).strip()
+        message = common_utils.first_choice_content(resp).strip()
 
         # --- events に保存（sourceで区別） ---
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
@@ -1485,7 +1340,7 @@ class MemoryManager:
                 source="meta_proactive",
                 user_text=None,
                 assistant_text=message,
-                image_summaries_json=(_json_dumps(image_summaries) if raw_images else None),
+                image_summaries_json=(common_utils.json_dumps(image_summaries) if raw_images else None),
                 entities_json="[]",
                 client_context_json=None,
             )
@@ -1568,7 +1423,9 @@ class MemoryManager:
                 user_text=detail_text,
                 assistant_text=None,
                 entities_json="[]",
-                client_context_json=_json_dumps(request.client_context) if request.client_context is not None else None,
+                client_context_json=(
+                    common_utils.json_dumps(request.client_context) if request.client_context is not None else None
+                ),
             )
             db.add(ev)
             db.flush()
@@ -1620,22 +1477,6 @@ class MemoryManager:
             except Exception:  # noqa: BLE001
                 return "時刻"
 
-        def _build_reminder_user_prompt(*, time_jp: str, content: str, second_person_label: str) -> str:
-            """
-            リマインダー発火用の user prompt を組み立てる。
-
-            重要:
-            - 「設定しました」ではなく「発火（いま鳴っている）」を伝える。
-            - 内容（content）は原文を改変せず、必ずそのまま含める（引用推奨）。
-            - 内部コンテキスト/内心/JSONなどが混入しないよう、要件を強めに固定する。
-            """
-            # NOTE: プロンプト定義は prompt_builders に寄せる（1箇所で管理する）。
-            return prompt_builders.reminder_user_prompt(
-                time_jp=str(time_jp or ""),
-                content=str(content or ""),
-                second_person_label=str(second_person_label or ""),
-            )
-
         # --- 設定 ---
         cfg = self.config_store.config
         embedding_preset_id = str(cfg.embedding_preset_id).strip()
@@ -1648,12 +1489,12 @@ class MemoryManager:
             [x.strip() for x in str(content or "").replace("\r\n", "\n").replace("\r", "\n").split("\n") if x.strip()]
         ).strip()
 
-        system_prompt = _reply_system_prompt(
+        system_prompt = prompt_builders.reply_system_prompt(
             persona_text=cfg.persona_text,
             addon_text=cfg.addon_text,
             second_person_label=cfg.second_person_label,
         )
-        user_prompt = _build_reminder_user_prompt(
+        user_prompt = prompt_builders.reminder_user_prompt(
             time_jp=str(time_jp),
             content=str(content_one_line),
             second_person_label=cfg.second_person_label,
@@ -1665,7 +1506,7 @@ class MemoryManager:
             purpose=LlmRequestPurpose.SYNC_REMINDER,
             stream=False,
         )
-        message = _first_choice_content(resp).strip()
+        message = common_utils.first_choice_content(resp).strip()
 
         # --- events に保存 ---
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
@@ -1746,13 +1587,15 @@ class MemoryManager:
         detail_text = "\n\n".join([d.strip() for d in descriptions if str(d or "").strip()]).strip()
 
         # --- LLMで人格コメントを生成 ---
-        system_prompt = _reply_system_prompt(
+        system_prompt = prompt_builders.reply_system_prompt(
             persona_text=cfg.persona_text,
             addon_text=cfg.addon_text,
             second_person_label=cfg.second_person_label,
         )
-        internal_context = _desktop_watch_internal_context(detail_text=detail_text, client_context=resp.client_context)
-        user_prompt = _desktop_watch_user_prompt(second_person_label=cfg.second_person_label)
+        internal_context = prompt_builders.desktop_watch_internal_context(
+            detail_text=detail_text, client_context=resp.client_context
+        )
+        user_prompt = prompt_builders.desktop_watch_user_prompt(second_person_label=cfg.second_person_label)
         resp2 = self.llm_client.generate_reply_response(
             system_prompt=system_prompt,
             conversation=[
@@ -1762,7 +1605,7 @@ class MemoryManager:
             purpose=LlmRequestPurpose.SYNC_DESKTOP_WATCH,
             stream=False,
         )
-        message = _first_choice_content(resp2).strip()
+        message = common_utils.first_choice_content(resp2).strip()
 
         # --- events に保存（画像は保持しない） ---
         now_ts = _now_utc_ts()
@@ -1775,7 +1618,9 @@ class MemoryManager:
                 user_text=detail_text,
                 assistant_text=message,
                 entities_json="[]",
-                client_context_json=_json_dumps(resp.client_context) if resp.client_context is not None else None,
+                client_context_json=(
+                    common_utils.json_dumps(resp.client_context) if resp.client_context is not None else None
+                ),
             )
             db.add(ev)
             db.flush()
@@ -1823,7 +1668,7 @@ class MemoryManager:
             db.add(
                 Job(
                     kind="upsert_event_embedding",
-                    payload_json=_json_dumps({"event_id": int(event_id)}),
+                    payload_json=common_utils.json_dumps({"event_id": int(event_id)}),
                     status=int(_JOB_PENDING),
                     run_after=int(now_ts),
                     tries=0,
@@ -1845,7 +1690,7 @@ class MemoryManager:
             db.add(
                 Job(
                     kind="generate_write_plan",
-                    payload_json=_json_dumps({"event_id": int(event_id)}),
+                    payload_json=common_utils.json_dumps({"event_id": int(event_id)}),
                     status=int(_JOB_PENDING),
                     run_after=int(now_ts),
                     tries=0,
@@ -2242,7 +2087,7 @@ class MemoryManager:
                             continue
                         item_id = int(r[0])
                         distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
-                        event_id2 = _vec_entity_id(item_id)
+                        event_id2 = vector_index.vec_entity_id(item_id)
                         if int(event_id2) == int(event_id):
                             continue
                         out.append(("event", int(event_id2)))
@@ -2263,7 +2108,7 @@ class MemoryManager:
                             continue
                         item_id = int(r[0])
                         distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
-                        state_id2 = _vec_entity_id(item_id)
+                        state_id2 = vector_index.vec_entity_id(item_id)
                         out.append(("state", int(state_id2)))
                         dbg["hits"]["state"].append(
                             {"state_id": int(state_id2), "distance": distance, "item_id": int(item_id), "q": q_label}
@@ -2282,7 +2127,7 @@ class MemoryManager:
                             continue
                         item_id = int(r[0])
                         distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
-                        affect_id2 = _vec_entity_id(item_id)
+                        affect_id2 = vector_index.vec_entity_id(item_id)
                         out.append(("event_affect", int(affect_id2)))
                         dbg["hits"]["event_affect"].append(
                             {"affect_id": int(affect_id2), "distance": distance, "item_id": int(item_id), "q": q_label}
@@ -2481,10 +2326,12 @@ class MemoryManager:
 	                                "event_created_at": (
 	                                    format_iso8601_local(int(event_created_at)) if event_created_at is not None else None
 	                                ),
-	                                "moment_affect_text": _strip_face_tags(str(a.moment_affect_text or ""))[:600],
-	                                "moment_affect_labels": _parse_json_str_list(getattr(a, "moment_affect_labels_json", None))[:6],
+	                                "moment_affect_text": common_utils.strip_face_tags(str(a.moment_affect_text or ""))[:600],
+	                                "moment_affect_labels": common_utils.parse_json_str_list(getattr(a, "moment_affect_labels_json", None))[:6],
 	                                "inner_thought_text": (
-	                                    _strip_face_tags(str(a.inner_thought_text))[:600] if a.inner_thought_text is not None else None
+	                                    common_utils.strip_face_tags(str(a.inner_thought_text))[:600]
+	                                    if a.inner_thought_text is not None
+	                                    else None
 	                                ),
 	                                "vad": {"v": float(a.vad_v), "a": float(a.vad_a), "d": float(a.vad_d)},
 	                                "confidence": float(a.confidence),

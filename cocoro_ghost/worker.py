@@ -50,58 +50,6 @@ def _now_utc_ts() -> int:
     return int(time.time())
 
 
-def _json_loads_maybe(text_in: str) -> dict[str, Any]:
-    """
-    JSON文字列をdictとして読む（失敗時は空dict）。
-
-    NOTE:
-        - 重複を避けるため、実体は common_utils に寄せる。
-    """
-    return common_utils.json_loads_maybe(text_in)
-
-
-def _parse_json_str_list(text_in: str) -> list[str]:
-    """
-    JSON文字列を list[str] として読む（失敗時は空list）。
-
-    NOTE:
-        - 重複を避けるため、実体は common_utils に寄せる。
-    """
-    return common_utils.parse_json_str_list(text_in)
-
-
-def _strip_face_tags(text_in: str) -> str:
-    """
-    テキストから会話装飾タグ（例: [face:Joy]）を除去する。
-
-    NOTE:
-    - [face:*] はユーザーに見せる返答用の表記であり、内部の記憶（WritePlan/state/event_affect）には不要。
-    - LLMが混入させてもDBへ保存しないように、保存前に必ず除去する。
-    """
-    # NOTE: 重複を避けるため、実体は common_utils に寄せる。
-    return common_utils.strip_face_tags(text_in)
-
-
-def _json_dumps(payload: Any) -> str:
-    """
-    DB保存向けにJSONを安定した形式でダンプする（日本語保持）。
-
-    NOTE:
-        - 重複を避けるため、実体は common_utils に寄せる。
-    """
-    return common_utils.json_dumps(payload)
-
-
-def _parse_first_json_object(text_in: str) -> dict[str, Any]:
-    """
-    LLM出力から最初のJSONオブジェクトを抽出してdictとして返す。
-
-    NOTE:
-        - 重複を避けるため、実体は common_utils に寄せる（raise版）。
-    """
-    return common_utils.parse_first_json_object_or_raise(text_in)
-
-
 def _normalize_text_for_dedupe(text_in: str) -> str:
     """重複判定用に本文テキストを正規化する（空白の揺れを吸収）。"""
     s = str(text_in or "").strip()
@@ -124,20 +72,6 @@ def _canonicalize_json_for_dedupe(text_in: str) -> str:
         return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     except Exception:  # noqa: BLE001
         return s
-
-
-def _sanitize_moment_affect_labels(labels_in: Any) -> list[str]:
-    """
-    moment_affect_labels を保存用に正規化する。
-
-    方針:
-    - list[str] を期待するが、壊れた出力でも落とさない（空にする）
-    - 余計な改行を除去し、空要素を捨てる
-    - 重複は除去（順序は維持）
-    - 上限数を設けて入力肥大化を防ぐ
-    """
-    # NOTE: 共通化のため、実体は affect に寄せる。
-    return affect.sanitize_moment_affect_labels(labels_in)
 
 
 def _has_pending_or_running_job(db, *, kind: str) -> bool:
@@ -163,7 +97,7 @@ def _last_tidy_watermark_event_id(db) -> int:
     if last is None:
         return 0
 
-    payload = _json_loads_maybe(str(last.payload_json or ""))
+    payload = common_utils.json_loads_maybe(str(last.payload_json or ""))
     try:
         return int(payload.get("watermark_event_id") or 0)
     except Exception:  # noqa: BLE001
@@ -182,7 +116,7 @@ def _enqueue_tidy_memory_job(
     db.add(
         Job(
             kind="tidy_memory",
-            payload_json=_json_dumps(
+            payload_json=common_utils.json_dumps(
                 {
                     "reason": str(reason),
                     "max_close_per_run": int(_TIDY_MAX_CLOSE_PER_RUN),
@@ -271,18 +205,18 @@ def _build_event_affect_embedding_text(aff: EventAffect) -> str:
     parts: list[str] = []
 
     # --- moment_affect_text ---
-    t = _strip_face_tags(str(aff.moment_affect_text or "").strip())
+    t = common_utils.strip_face_tags(str(aff.moment_affect_text or "").strip())
     if t:
         parts.append(t)
 
     # --- moment_affect_labels ---
-    labels = _parse_json_str_list(str(getattr(aff, "moment_affect_labels_json", "") or ""))
+    labels = common_utils.parse_json_str_list(str(getattr(aff, "moment_affect_labels_json", "") or ""))
     if labels:
         parts.append("")
         parts.append(f"【ラベル】 {', '.join(labels[:6])}")
 
     # --- inner_thought_text ---
-    it = _strip_face_tags(str(aff.inner_thought_text or "").strip())
+    it = common_utils.strip_face_tags(str(aff.inner_thought_text or "").strip())
     if it:
         parts.append("")
         parts.append(f"【内心】 {it}")
@@ -295,22 +229,6 @@ def _build_event_affect_embedding_text(aff: EventAffect) -> str:
     if len(text_out) > 8000:
         text_out = text_out[:8000]
     return text_out
-
-
-def _write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> str:
-    """
-    WritePlan生成用のsystem promptを返す（ペルソナ注入あり）。
-
-    Args:
-        persona_text: ペルソナ本文（ユーザー編集対象）。
-            NOTE: addon_text は会話本文向けの追加指示なので、WritePlan（内部JSON生成）には注入しない。
-        second_person_label: 二人称の呼称（例: マスター / あなた / 君 / ◯◯さん）。
-    """
-    # NOTE: 実体は prompt_builders に寄せる（プロンプト定義を1箇所で管理する）。
-    return prompt_builders.write_plan_system_prompt(
-        persona_text=str(persona_text or ""),
-        second_person_label=str(second_person_label or ""),
-    )
 
 
 def _state_row_to_json(st: State) -> dict[str, Any]:
@@ -472,7 +390,7 @@ def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_clie
             return
 
         kind = str(job.kind or "").strip()
-        payload = _json_loads_maybe(job.payload_json)
+        payload = common_utils.json_loads_maybe(job.payload_json)
 
     # --- 実行 ---
     try:
@@ -761,11 +679,11 @@ def _handle_generate_write_plan(
 
     # --- LLMでWritePlanを作る ---
     resp = llm_client.generate_json_response(
-        system_prompt=_write_plan_system_prompt(
+        system_prompt=prompt_builders.write_plan_system_prompt(
             persona_text=persona_text,
             second_person_label=second_person_label,
         ),
-        input_text=_json_dumps(input_obj),
+        input_text=common_utils.json_dumps(input_obj),
         purpose=LlmRequestPurpose.ASYNC_WRITE_PLAN,
         max_tokens=2400,
     )
@@ -777,7 +695,7 @@ def _handle_generate_write_plan(
             content = str(resp.choices[0].message.content or "")
         except Exception:  # noqa: BLE001
             content = ""
-    plan_obj = _parse_first_json_object(content)
+    plan_obj = common_utils.parse_first_json_object_or_raise(content)
 
     # --- apply_write_plan を投入する（planはpayloadに入れて監査できるようにする） ---
     now_ts = _now_utc_ts()
@@ -785,7 +703,7 @@ def _handle_generate_write_plan(
         db.add(
             Job(
                 kind="apply_write_plan",
-                payload_json=_json_dumps({"event_id": int(event_id), "write_plan": plan_obj}),
+                payload_json=common_utils.json_dumps({"event_id": int(event_id), "write_plan": plan_obj}),
                 status=int(_JOB_PENDING),
                 run_after=int(now_ts),
                 tries=0,
@@ -844,7 +762,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             ev.life_stage = (str(life_stage) if life_stage is not None else None)
             ev.about_time_confidence = float(ann.get("about_time_confidence") or 0.0)
             entities = ann.get("entities") if isinstance(ann.get("entities"), list) else []
-            ev.entities_json = _json_dumps(entities)
+            ev.entities_json = common_utils.json_dumps(entities)
         ev.updated_at = int(now_ts)
         db.add(ev)
 
@@ -854,10 +772,10 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 Revision(
                     entity_type=str(entity_type),
                     entity_id=int(entity_id),
-                    before_json=(_json_dumps(before) if before is not None else None),
-                    after_json=(_json_dumps(after) if after is not None else None),
+                    before_json=(common_utils.json_dumps(before) if before is not None else None),
+                    after_json=(common_utils.json_dumps(after) if after is not None else None),
                     reason=str(reason or "").strip() or "(no reason)",
-                    evidence_event_ids_json=_json_dumps([int(x) for x in evidence_event_ids if int(x) > 0]),
+                    evidence_event_ids_json=common_utils.json_dumps([int(x) for x in evidence_event_ids if int(x) > 0]),
                     created_at=int(now_ts),
                 )
             )
@@ -865,14 +783,16 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         # --- event_affect（瞬間的な感情/内心） ---
         ea = plan.get("event_affect") if isinstance(plan, dict) else None
         if isinstance(ea, dict):
-            moment_text = _strip_face_tags(str(ea.get("moment_affect_text") or "").strip())
+            moment_text = common_utils.strip_face_tags(str(ea.get("moment_affect_text") or "").strip())
             if moment_text:
                 score = ea.get("moment_affect_score_vad") if isinstance(ea.get("moment_affect_score_vad"), dict) else {}
                 conf = float(ea.get("moment_affect_confidence") or 0.0)
-                labels = _sanitize_moment_affect_labels(ea.get("moment_affect_labels"))
+                labels = affect.sanitize_moment_affect_labels(ea.get("moment_affect_labels"))
                 inner = ea.get("inner_thought_text")
                 inner_text_raw = str(inner).strip() if inner is not None and str(inner).strip() else None
-                inner_text = (_strip_face_tags(inner_text_raw) if inner_text_raw is not None else None) or None
+                inner_text = (
+                    common_utils.strip_face_tags(inner_text_raw) if inner_text_raw is not None else None
+                ) or None
 
                 # --- LongMoodState 更新用のメモ（保存の成否に依存しない入力） ---
                 moment_vad = affect.vad_dict(score.get("v"), score.get("a"), score.get("d"))
@@ -891,7 +811,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         event_id=int(event_id),
                         created_at=int(base_ts),
                         moment_affect_text=str(moment_text),
-                        moment_affect_labels_json=_json_dumps(labels),
+                        moment_affect_labels_json=common_utils.json_dumps(labels),
                         inner_thought_text=inner_text,
                         vad_v=affect.clamp_vad(score.get("v")),
                         vad_a=affect.clamp_vad(score.get("a")),
@@ -912,7 +832,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 else:
                     before = _affect_row_to_json(existing)
                     existing.moment_affect_text = str(moment_text)
-                    existing.moment_affect_labels_json = _json_dumps(labels)
+                    existing.moment_affect_labels_json = common_utils.json_dumps(labels)
                     existing.inner_thought_text = inner_text
                     existing.vad_v = affect.clamp_vad(score.get("v"))
                     existing.vad_a = affect.clamp_vad(score.get("a"))
@@ -934,7 +854,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 db.add(
                     Job(
                         kind="upsert_event_affect_embedding",
-                        payload_json=_json_dumps({"affect_id": int(affect_id)}),
+                        payload_json=common_utils.json_dumps({"affect_id": int(affect_id)}),
                         status=int(_JOB_PENDING),
                         run_after=int(now_ts),
                         tries=0,
@@ -970,7 +890,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         event_id=int(event_id),
                         thread_key=str(thread_key),
                         confidence=float(confidence),
-                        evidence_event_ids_json=_json_dumps([int(event_id)]),
+                        evidence_event_ids_json=common_utils.json_dumps([int(event_id)]),
                         created_at=int(now_ts),
                     )
                     db.add(th)
@@ -986,7 +906,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 else:
                     before = _thread_row_to_json(existing)
                     existing.confidence = float(confidence)
-                    existing.evidence_event_ids_json = _json_dumps([int(event_id)])
+                    existing.evidence_event_ids_json = common_utils.json_dumps([int(event_id)])
                     db.add(existing)
                     db.flush()
                     add_revision(
@@ -1021,7 +941,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         to_event_id=int(to_event_id),
                         label=str(label),
                         confidence=float(confidence),
-                        evidence_event_ids_json=_json_dumps([int(event_id)]),
+                        evidence_event_ids_json=common_utils.json_dumps([int(event_id)]),
                         created_at=int(now_ts),
                     )
                     db.add(link)
@@ -1037,7 +957,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 else:
                     before = _link_row_to_json(existing)
                     existing.confidence = float(confidence)
-                    existing.evidence_event_ids_json = _json_dumps([int(event_id)])
+                    existing.evidence_event_ids_json = common_utils.json_dumps([int(event_id)])
                     db.add(existing)
                     db.flush()
                     add_revision(
@@ -1130,11 +1050,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
 
                     if existing is None:
                         if not body_text:
-                            body_text = _json_dumps(payload_obj)[:2000]
+                            body_text = common_utils.json_dumps(payload_obj)[:2000]
                         st = State(
                             kind=str(kind),
                             body_text=str(body_text),
-                            payload_json=_json_dumps(payload_obj),
+                            payload_json=common_utils.json_dumps(payload_obj),
                             last_confirmed_at=int(last_confirmed_at_i),
                             confidence=float(confidence),
                             salience=float(salience),
@@ -1159,7 +1079,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         existing.kind = str(kind)
                         if body_text:
                             existing.body_text = str(body_text)
-                        existing.payload_json = _json_dumps(payload_obj)
+                        existing.payload_json = common_utils.json_dumps(payload_obj)
                         existing.last_confirmed_at = int(last_confirmed_at_i)
                         existing.confidence = float(confidence)
                         existing.salience = float(salience)
@@ -1182,7 +1102,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     db.add(
                         Job(
                             kind="upsert_state_embedding",
-                            payload_json=_json_dumps({"state_id": int(changed_state_id)}),
+                            payload_json=common_utils.json_dumps({"state_id": int(changed_state_id)}),
                             status=int(_JOB_PENDING),
                             run_after=int(now_ts),
                             tries=0,
@@ -1214,7 +1134,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     db.add(
                         Job(
                             kind="upsert_state_embedding",
-                            payload_json=_json_dumps({"state_id": int(st.state_id)}),
+                            payload_json=common_utils.json_dumps({"state_id": int(st.state_id)}),
                             status=int(_JOB_PENDING),
                             run_after=int(now_ts),
                             tries=0,
@@ -1230,9 +1150,9 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         continue
                     before = _state_row_to_json(st)
                     # --- payload の status を done にする ---
-                    pj = _json_loads_maybe(st.payload_json)
+                    pj = common_utils.json_loads_maybe(st.payload_json)
                     pj["status"] = "done"
-                    st.payload_json = _json_dumps(pj)
+                    st.payload_json = common_utils.json_dumps(pj)
                     st.last_confirmed_at = int(last_confirmed_at_i)
                     st.updated_at = int(now_ts)
                     db.add(st)
@@ -1248,7 +1168,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     db.add(
                         Job(
                             kind="upsert_state_embedding",
-                            payload_json=_json_dumps({"state_id": int(st.state_id)}),
+                            payload_json=common_utils.json_dumps({"state_id": int(st.state_id)}),
                             status=int(_JOB_PENDING),
                             run_after=int(now_ts),
                             tries=0,
@@ -1291,7 +1211,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 baseline_text_candidate=baseline_text_candidate,
             )
 
-            payload_new_json = _json_dumps(update_result.payload_obj)
+            payload_new_json = common_utils.json_dumps(update_result.payload_obj)
 
             # --- 変更が無い場合は何もしない（revisionノイズを避ける） ---
             skip_upsert = False
@@ -1360,7 +1280,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 db.add(
                     Job(
                         kind="upsert_state_embedding",
-                        payload_json=_json_dumps({"state_id": int(changed_state_id)}),
+                        payload_json=common_utils.json_dumps({"state_id": int(changed_state_id)}),
                         status=int(_JOB_PENDING),
                         run_after=int(now_ts),
                         tries=0,
@@ -1422,8 +1342,8 @@ def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, p
                 Revision(
                     entity_type=str(entity_type),
                     entity_id=int(entity_id),
-                    before_json=(_json_dumps(before) if before is not None else None),
-                    after_json=(_json_dumps(after) if after is not None else None),
+                    before_json=(common_utils.json_dumps(before) if before is not None else None),
+                    after_json=(common_utils.json_dumps(after) if after is not None else None),
                     reason=str(reason or "").strip() or "(no reason)",
                     evidence_event_ids_json="[]",
                     created_at=int(now_ts),
@@ -1483,7 +1403,7 @@ def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, p
             db.add(
                 Job(
                     kind="upsert_state_embedding",
-                    payload_json=_json_dumps({"state_id": int(state_id)}),
+                    payload_json=common_utils.json_dumps({"state_id": int(state_id)}),
                     status=int(_JOB_PENDING),
                     run_after=int(now_ts),
                     tries=0,
@@ -1525,7 +1445,7 @@ def _handle_upsert_state_embedding(
             return
         text_in = _build_state_embedding_text(st)
         rank_at = int(st.last_confirmed_at)
-        payload_obj = _json_loads_maybe(st.payload_json)
+        payload_obj = common_utils.json_loads_maybe(st.payload_json)
         status = str(payload_obj.get("status") or "").strip()
         active = 0 if status == "done" else 1
         if st.valid_to_ts is not None and int(st.valid_to_ts) < int(_now_utc_ts()) - 86400:
