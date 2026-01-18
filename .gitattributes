@@ -8,3 +8,13 @@
 
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# NOTE:
+# - Python/Markdown は LF に固定する（環境差で巨大な差分が出ないようにする）。
+# - ここで eol を明示しておくと、Windows/WSL/CI の混在でも差分が安定する。
+*.py text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
