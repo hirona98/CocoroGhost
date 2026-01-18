@@ -25,6 +25,7 @@ from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy import text
 
 from cocoro_ghost import event_stream, schemas
+from cocoro_ghost import affect
 from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.db import search_similar_item_ids
@@ -838,59 +839,22 @@ class MemoryManager:
             shock_vad: dict[str, float] | None = None
             combined_vad: dict[str, float] | None = None
 
-            def _clamp_vad(x: Any) -> float:
-                try:
-                    v = float(x)
-                except Exception:  # noqa: BLE001
-                    return 0.0
-                if v < -1.0:
-                    return -1.0
-                if v > 1.0:
-                    return 1.0
-                return v
-
-            def _vad_dict(v: Any, a: Any, d: Any) -> dict[str, float]:
-                return {"v": _clamp_vad(v), "a": _clamp_vad(a), "d": _clamp_vad(d)}
-
-            def _vad_add(x: dict[str, float], y: dict[str, float]) -> dict[str, float]:
-                return _vad_dict(float(x.get("v", 0.0)) + float(y.get("v", 0.0)), float(x.get("a", 0.0)) + float(y.get("a", 0.0)), float(x.get("d", 0.0)) + float(y.get("d", 0.0)))
-
-            def _extract_vad(obj: Any) -> dict[str, float] | None:
-                if not isinstance(obj, dict):
-                    return None
-                if not all(k in obj for k in ("v", "a", "d")):
-                    return None
-                try:
-                    return _vad_dict(obj.get("v"), obj.get("a"), obj.get("d"))
-                except Exception:  # noqa: BLE001
-                    return None
-
+            # --- payload から VAD を読み取る（無ければ None） ---
             if isinstance(payload_obj, dict):
-                baseline_vad = _extract_vad(payload_obj.get("baseline_vad"))
-                shock_vad = _extract_vad(payload_obj.get("shock_vad"))
+                baseline_vad = affect.extract_vad_from_payload_obj(payload_obj, "baseline_vad")
+                shock_vad = affect.extract_vad_from_payload_obj(payload_obj, "shock_vad")
 
-            # --- shock の時間減衰（半減期=1h） ---
-            shock_decayed = shock_vad if shock_vad is not None else _vad_dict(0.0, 0.0, 0.0)
+            # --- shock の時間減衰（半減期は affect 側の既定に従う） ---
             try:
                 dt = int(now_ts) - int(st.last_confirmed_at)
             except Exception:  # noqa: BLE001
                 dt = 0
             if dt < 0:
                 dt = 0
-            half_life = 60 * 60
-            if dt > 0:
-                try:
-                    decay = 0.5 ** (float(dt) / float(half_life))
-                except Exception:  # noqa: BLE001
-                    decay = 1.0
-                shock_decayed = _vad_dict(
-                    float(shock_decayed.get("v", 0.0)) * float(decay),
-                    float(shock_decayed.get("a", 0.0)) * float(decay),
-                    float(shock_decayed.get("d", 0.0)) * float(decay),
-                )
+            shock_decayed = affect.decay_shock_for_snapshot(shock_vad=shock_vad, dt_seconds=int(dt))
 
             if baseline_vad is not None:
-                combined_vad = _vad_add(baseline_vad, shock_decayed)
+                combined_vad = affect.vad_add(baseline_vad, shock_decayed)
 
             return {
                 "state_id": int(st.state_id),
