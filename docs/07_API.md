@@ -6,8 +6,18 @@
 
 ## 認証
 
-- `Authorization: Bearer <TOKEN>`
+基本:
+
+- `Authorization: Bearer <TOKEN>`（ネイティブ/外部連携向け）
 - トークンの正は `settings.db` に置く
+
+Web UI:
+
+- Web UI は `POST /api/auth/login` でログインし、以後は Cookie セッションで認証する
+- Cookie 認証を許可するエンドポイントは次に限定する
+  - `POST /api/chat`
+  - `WS /api/events/stream`
+  - `POST /api/auth/logout`
 
 注記:
 
@@ -29,8 +39,6 @@
 
 ```json
 {
-  "embedding_preset_id": "uuid",
-  "client_id": "stable-client-id",
   "input_text": "string (optional)",
   "images": [
     "data:image/png;base64,iVBORw0KGgo...",
@@ -40,6 +48,8 @@
 }
 ```
 
+- `/api/chat` は `embedding_preset_id` を要求しない（サーバ側のアクティブ設定を使用する）
+- 会話の継続はサーバ側の `shared_conversation_id` により行う（クライアントが `client_id` を送る必要はない）
 - `images` は省略可能（最大5枚）
 - `images` の要素は `data:image/*;base64,...` 形式の Data URI
   - 許可MIME: `image/png` / `image/jpeg` / `image/webp`
@@ -68,6 +78,34 @@ data: {"message":"...","code":"..."}
 
 - `event_id` は「このターンの出来事ログ（`events`）」を指すID（整数、`INTEGER`）とする
 - 画像付きチャットの詳細は `docs/12_画像付きチャット.md` を参照
+
+## `/api/auth/login`
+
+Web UI 用ログイン。
+
+### `POST /api/auth/login`
+
+#### リクエスト（JSON）
+
+```json
+{ "token": "string" }
+```
+
+#### レスポンス
+
+- `204 No Content`
+- 成功時は `Set-Cookie` でセッション Cookie（`cocoro_session`）が発行される
+
+## `/api/auth/logout`
+
+Web UI 用ログアウト。
+
+### `POST /api/auth/logout`
+
+#### レスポンス
+
+- `204 No Content`
+- サーバ側のセッションを破棄し、Cookie を削除する（`Max-Age=0`）
 
 ## `/api/v2/notification`
 
@@ -416,7 +454,7 @@ UI向けの「全設定」取得/更新。
 ## `/api/events/stream`（WebSocket）
 
 - URL: `ws(s)://<host>/api/events/stream`
-- 認証: `Authorization: Bearer <TOKEN>`
+- 認証: `Authorization: Bearer <TOKEN>` または Cookie セッション（`cocoro_session`）
 - 目的:
   - `POST /api/v2/notification` / `POST /api/v2/meta-request` を受信したとき、接続中クライアントへイベントを配信する
   - リマインダーが発火したとき、`reminder` をブロードキャスト配信する
@@ -525,6 +563,12 @@ UI向けの「全設定」取得/更新。
   "caps": ["vision.desktop", "vision.camera"]
 }
 ```
+
+補足:
+
+- ここで登録する `client_id` は「端末識別用ID（`ws_client_id`）」として扱う
+  - Web UI は `ws_client_id` を `localStorage` に保存して再利用する（UIに表示しない）
+- 会話継続用の `shared_conversation_id` は `/api/chat` 側でサーバが固定で扱うため、WS の `hello.client_id` と混ぜない
 
 ## `/api/control`
 

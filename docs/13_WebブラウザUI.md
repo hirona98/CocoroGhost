@@ -47,10 +47,11 @@
 セッション仕様（推奨）:
 
 - Cookie: `Secure` / `HttpOnly` / `SameSite=Strict`
+- Cookie 名: `cocoro_session`
 - セッション寿命: 24 時間（スライディング更新）
 - セッション保存先: メモリ（プロセス再起動でログアウト扱い）
 
-## shared client_id（全クライアントで会話を共有）
+## 端末を跨いだ会話継続（会話IDと端末IDを分ける）
 
 目的:
 
@@ -58,13 +59,19 @@
 
 方針:
 
-- サーバに `shared_client_id` を 1つ持たせる
-- クライアントが送ってきた `client_id` は採用せず、常に `shared_client_id` を使用する
+- **会話継続用ID（`shared_conversation_id`）** と **端末識別用ID（`ws_client_id`）** を分ける
+  - 会話継続用ID（`shared_conversation_id`）: サーバが 1つだけ持つ固定ID
+    - `/api/chat` は常にこのIDで会話スレッドを扱う（クライアントが送る `client_id` は採用しない）
+    - サーバ再起動でも会話を継続するため、`settings.db` に永続化する
+  - 端末識別用ID（`ws_client_id`）: 端末ごとに別ID（UIに見えなくてよい）
+    - `WS /api/events/stream` 接続直後の `hello.client_id` は `ws_client_id` として登録する
+    - 視覚（Vision）等の「宛先指定」配信は `ws_client_id` を前提とする（会話IDで上書きしない）
 
 運用制約:
 
-- 複数端末から同時に送信すると会話が混ざり得る
-- 初期は「同時送信しない」運用でよい（サーバ側の厳密な排他は必須にしない）
+- 複数端末から同時にチャット送信すると会話が混ざり得る
+- シンプルさ優先で、サーバ側で `shared_conversation_id` 単位の排他を入れる（推奨）
+  - 送信中に別端末から来たら `409 Conflict` で弾く（UIは「別端末で送信中」程度の表示）
 
 ## Web UI 仕様（最小）
 
@@ -80,6 +87,7 @@
   - `event: token` のたびに「生成中」吹き出しへ追記
   - `event: done` で確定
   - `event: error` は吹き出し内で短く表示
+- `/api/chat` は `embedding_preset_id` を要求しない（サーバ側のアクティブ設定を使用する）
 
 画像付きチャット:
 
@@ -93,14 +101,17 @@
 
 - `WS /api/events/stream` に接続し、`notification` / `reminder` を受信したら **AI 側の吹き出し**として表示する
 - 接続直後に `hello` を送信してクライアント登録する
+  - `hello.client_id` は `ws_client_id`（端末固有ID）
+  - `ws_client_id` は Web UI なら `localStorage` に保存して再利用する（UIに表示しない）
 
 ## 追加/変更するエンドポイント（概要）
 
 - `GET /`（Web UI）
+- `GET /static/*`（Web UI 静的ファイル）
 - `POST /api/auth/login`（トークン入力 → セッション Cookie 発行）
 - `POST /api/auth/logout`（セッション破棄）
 
 注記:
 
 - `GET /api/settings` は秘密情報（API キー等）を含むため Web UI からは扱わない
-- Web UI に必要な最小情報がある場合は `GET /api/web/bootstrap` のような専用 API を追加する
+- Web UI に追加で必要な最小情報が出てきた場合は `GET /api/web/bootstrap` のような専用 API を追加する（`/api/settings` は公開しない）
