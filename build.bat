@@ -45,7 +45,7 @@ set PYTHONNOUSERSITE=1
 
 REM --- dist が使用中で消せずにビルドが失敗するのを防ぐ ---
 REM ※ CocoroGhost.exe を起動したままビルドすると dist\CocoroGhost がロックされることがあります
-taskkill /f /im CocoroGhost.exe >nul 2>&1
+taskkill.exe /f /im CocoroGhost.exe >nul 2>&1
 
 set "DISTROOT=dist"
 set "BUILDROOT=build"
