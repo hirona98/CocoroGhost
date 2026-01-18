@@ -51,7 +51,7 @@ _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
 _MEMORY_DB_USER_VERSION = 4
-_SETTINGS_DB_USER_VERSION = 1
+_SETTINGS_DB_USER_VERSION = 2
 
 
 def get_db_dir() -> Path:
@@ -674,6 +674,17 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
 
     # 既にアクティブなプリセットがあれば何もしない
     global_settings = session.query(models.GlobalSettings).first()
+
+    # --- Web UI: 端末跨ぎ会話の固定ID ---
+    # NOTE:
+    # - shared_conversation_id はサーバ側で会話の継続に使うため、必ず埋める。
+    # - ここは「初期設定の作成」だけでなく「最低限の必須値の補完」も担う。
+    if global_settings is not None and not getattr(global_settings, "shared_conversation_id", ""):
+        import uuid
+
+        global_settings.shared_conversation_id = str(uuid.uuid4())
+        session.commit()
+
     if global_settings is not None and getattr(global_settings, "token", ""):
         ids = [
             global_settings.active_llm_preset_id,

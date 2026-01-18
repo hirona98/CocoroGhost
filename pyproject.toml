@@ -8,6 +8,7 @@ dependencies = [
   "fastapi-utils",
   "uvicorn[standard]",
   "sqlalchemy",
+  "cryptography",
   "litellm",
   "pydantic",
   "python-multipart",

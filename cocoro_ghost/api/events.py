@@ -17,7 +17,7 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from cocoro_ghost import event_stream
-from cocoro_ghost.api.ws_auth import authenticate_ws_bearer
+from cocoro_ghost.api.ws_auth import authenticate_ws_bearer_or_cookie_session
 
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -32,7 +32,7 @@ async def stream_events(websocket: WebSocket) -> None:
     通知完了、メタ要求完了などのイベントをリアルタイムで配信する。
     Bearer認証後に接続を受け入れ、切断時は自動でクライアント登録解除。
     """
-    if not await authenticate_ws_bearer(websocket):
+    if not await authenticate_ws_bearer_or_cookie_session(websocket):
         return
 
     await websocket.accept()

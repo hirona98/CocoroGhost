@@ -106,7 +106,7 @@
 
 - ID を2種類に分ける
   - 会話継続用ID（`shared_conversation_id`）: サーバが 1つだけ持つ固定ID（永続化）
-    - `/api/chat` は常に `shared_conversation_id` を使う（リクエスト `client_id` は無視してよい）
+    - `/api/chat` は常に `shared_conversation_id` を使う（クライアントは `client_id` を送らない）
     - 永続化先は `settings.db`（単一ユーザー前提の単一行）
   - 端末識別用ID（`ws_client_id`）: 端末ごとに別ID（UIに見えなくてよい）
     - `WS /api/events/stream` の `hello.client_id` は `ws_client_id` として登録する

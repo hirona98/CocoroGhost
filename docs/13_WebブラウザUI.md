@@ -61,7 +61,7 @@
 
 - **会話継続用ID（`shared_conversation_id`）** と **端末識別用ID（`ws_client_id`）** を分ける
   - 会話継続用ID（`shared_conversation_id`）: サーバが 1つだけ持つ固定ID
-    - `/api/chat` は常にこのIDで会話スレッドを扱う（クライアントが送る `client_id` は採用しない）
+    - `/api/chat` は常にこのIDで会話スレッドを扱う（クライアントは `client_id` を送らない）
     - サーバ再起動でも会話を継続するため、`settings.db` に永続化する
   - 端末識別用ID（`ws_client_id`）: 端末ごとに別ID（UIに見えなくてよい）
     - `WS /api/events/stream` 接続直後の `hello.client_id` は `ws_client_id` として登録する

@@ -44,6 +44,10 @@ class GlobalSettings(Base):
     # 記憶機能の有効/無効
     memory_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    # --- Web UI / 端末跨ぎ会話 ---
+    # 会話継続用ID（端末を跨いでも同じ会話として扱う）
+    shared_conversation_id: Mapped[str] = mapped_column(String(_UUID_STR_LEN), nullable=False, default=_uuid_str)
+
     # --- 視覚（Vision）: デスクトップウォッチ ---
     # デスクトップウォッチの有効/無効
     desktop_watch_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

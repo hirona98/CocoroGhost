@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # data URI 形式の画像を検出する正規表現
 _DATA_URI_IMAGE_RE = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.*)$", re.DOTALL)
@@ -60,25 +60,11 @@ class ChatRequest(BaseModel):
     /chat 用リクエスト。
     ユーザーのメッセージと添付画像を受け付ける。
     """
-    embedding_preset_id: Optional[str] = None
-    client_id: str                      # 発話者（クライアント）ID（必須）
+    model_config = ConfigDict(extra="forbid")
+
     input_text: str = ""                 # 入力テキスト（省略可。空の場合は画像が必要）
     images: List[str] = Field(default_factory=list, max_length=5)  # data URI形式の画像（最大5枚）
     client_context: Optional[Dict[str, Any]] = None  # クライアント側コンテキスト
-
-    @field_validator("client_id")
-    @classmethod
-    def _validate_client_id_non_empty(cls, v: str) -> str:
-        """
-        client_id を必須・非空として扱う。
-
-        NOTE:
-        - 空白だけの値も不正として弾く。
-        """
-        s = str(v or "").strip()
-        if not s:
-            raise ValueError("client_id must not be empty")
-        return s
 
     @field_validator("images")
     @classmethod
