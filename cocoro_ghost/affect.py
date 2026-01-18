@@ -9,7 +9,7 @@
     - VAD は各軸 -1.0..+1.0（v=valence, a=arousal, d=dominance）。
     - LongMoodState は「基調（baseline）」と「余韻（shock）」の2層で表す。
       - baseline: 日スケールでゆっくり変わる
-      - shock: 直近の出来事に強く反応し、時間で減衰する
+      - shock: 直近の出来事に強く反応し、時間で減衰する（重大イベントほど減衰を遅くする）
 """
 
 from __future__ import annotations
@@ -21,23 +21,18 @@ from typing import Any
 from cocoro_ghost.common_utils import json_loads_maybe as _json_loads_maybe
 
 # --- LongMoodState パラメータ（1箇所で管理） ---
-LONG_MOOD_MODEL_VERSION = 2
+LONG_MOOD_MODEL_VERSION = 3
 
 # NOTE:
 # - baseline は「1日くらい」で変化させたいので、半減期=24h を既定とする。
-# - shock は「余韻」なので、半減期=1h を既定とする（会話が止まっても自然に落ち着く）。
+# - shock は「余韻」なので、半減期は可変にする（小さな出来事は短く、重大な出来事は長い）。
 LONG_MOOD_BASELINE_HALFLIFE_SECONDS = 24 * 60 * 60
-LONG_MOOD_SHOCK_HALFLIFE_SECONDS = 60 * 60
+LONG_MOOD_SHOCK_HALFLIFE_SECONDS_MIN = 60 * 60
+LONG_MOOD_SHOCK_HALFLIFE_SECONDS_MAX = 24 * 60 * 60
 
 # NOTE:
 # - shock の追従率は dt（イベント間隔）に依存させない。出来事が起きたら即座に効いてほしいため。
-LONG_MOOD_SHOCK_ALPHA = 0.6
-
-# NOTE:
-# - 「重大な出来事」のときだけ baseline の追従を一時的に上げる。
-# - ここでいう重大とは「moment が baseline から大きく離れている」こと。
-LONG_MOOD_MAJOR_DELTA_THRESHOLD = 0.8
-LONG_MOOD_MAJOR_BASELINE_ALPHA_FLOOR = 0.25
+LONG_MOOD_SHOCK_ALPHA_BASE = 0.6
 
 
 @dataclass(frozen=True)
@@ -217,7 +212,12 @@ def build_long_mood_payload(
     return out
 
 
-def decay_shock_for_snapshot(*, shock_vad: dict[str, float] | None, dt_seconds: int) -> dict[str, float]:
+def decay_shock_for_snapshot(
+    *,
+    shock_vad: dict[str, float] | None,
+    dt_seconds: int,
+    shock_halflife_seconds: int = 0,
+) -> dict[str, float]:
     """
     余韻（shock）を読み出し時点で時間減衰させた VAD を返す。
 
@@ -226,8 +226,51 @@ def decay_shock_for_snapshot(*, shock_vad: dict[str, float] | None, dt_seconds: 
         - dt は now_ts - last_confirmed_at を想定する。
     """
     base = shock_vad if shock_vad is not None else vad_dict(0.0, 0.0, 0.0)
-    decay = decay_from_halflife(dt_seconds=int(dt_seconds), half_life_seconds=int(LONG_MOOD_SHOCK_HALFLIFE_SECONDS))
+    hl = int(shock_halflife_seconds or 0)
+    if hl <= 0:
+        hl = int(LONG_MOOD_SHOCK_HALFLIFE_SECONDS_MIN)
+    decay = decay_from_halflife(dt_seconds=int(dt_seconds), half_life_seconds=int(hl))
     return vad_scale(base, float(decay))
+
+
+def shock_severity(*, baseline_vad: dict[str, float], moment_vad: dict[str, float]) -> float:
+    """
+    baseline と moment の乖離から、ショックの強さ（0.0..1.0）を返す。
+
+    方針:
+        - 各軸は -1..+1 なので、差の最大は 2
+        - ここでは「最大軸差 / 2」を severity とする（直感的で調整が容易）
+    """
+    dv = vad_sub(moment_vad, baseline_vad)
+    major_delta = max(abs(float(dv["v"])), abs(float(dv["a"])), abs(float(dv["d"])))
+    return clamp_01(float(major_delta) / 2.0)
+
+
+def shock_halflife_seconds_from_severity(sev: float) -> int:
+    """
+    severity から shock の半減期（秒）を返す。
+
+    方針:
+        - 小さな出来事はすぐ落ち着く（min）
+        - 重大な出来事は長く尾を引く（max）
+        - 曲線は二乗で「軽い出来事を短く」寄りにする
+    """
+    s = clamp_01(sev)
+    w = float(s) * float(s)
+    hl = int(round(float(LONG_MOOD_SHOCK_HALFLIFE_SECONDS_MIN) + (float(LONG_MOOD_SHOCK_HALFLIFE_SECONDS_MAX) - float(LONG_MOOD_SHOCK_HALFLIFE_SECONDS_MIN)) * w))
+    return max(int(LONG_MOOD_SHOCK_HALFLIFE_SECONDS_MIN), min(int(LONG_MOOD_SHOCK_HALFLIFE_SECONDS_MAX), int(hl)))
+
+
+def shock_alpha_from_severity(sev: float) -> float:
+    """
+    severity から shock の追従率（0.0..1.0）を返す。
+
+    NOTE:
+        - 重大イベントは「即座に効いてほしい」ため、alpha をやや上げる。
+        - ただし 1.0 に固定するとノイズを増やしやすいので、上限は控えめにする。
+    """
+    s = clamp_01(sev)
+    return clamp_01(float(LONG_MOOD_SHOCK_ALPHA_BASE) + 0.3 * float(s))
 
 
 def update_long_mood(
@@ -249,7 +292,7 @@ def update_long_mood(
     更新ルール:
         - event_affect がある場合（moment_vad がある）:
             - baseline: 半減期=24h の EMA で更新（confidence で重み付け）
-            - shock: 直前shockを時間減衰→（moment - baseline_new）へ固定alphaで追従
+            - shock: 直前shockを時間減衰→（moment - baseline_new）へ追従（重大イベントほど減衰を遅くする）
             - last_confirmed_at: event_ts へ更新
         - event_affect が無い場合:
             - 数値は更新しない（baseline/shock/last_confirmed_at を維持）
@@ -265,6 +308,16 @@ def update_long_mood(
     # --- baseline/shock の初期値 ---
     baseline_vad = baseline_prev if baseline_prev is not None else (dict(moment_vad) if moment_vad is not None else vad_dict(0.0, 0.0, 0.0))
     shock_vad = shock_prev if shock_prev is not None else vad_dict(0.0, 0.0, 0.0)
+
+    # --- shock 半減期（前回値。無ければ最小） ---
+    shock_halflife_prev = int(LONG_MOOD_SHOCK_HALFLIFE_SECONDS_MIN)
+    if isinstance(payload_prev, dict):
+        try:
+            shock_halflife_prev = int(payload_prev.get("shock_halflife_seconds") or 0)
+        except Exception:  # noqa: BLE001
+            shock_halflife_prev = int(LONG_MOOD_SHOCK_HALFLIFE_SECONDS_MIN)
+    if shock_halflife_prev <= 0:
+        shock_halflife_prev = int(LONG_MOOD_SHOCK_HALFLIFE_SECONDS_MIN)
 
     # --- baseline_day_key の初期値 ---
     baseline_day_key = str(payload_prev.get("baseline_day_key") or "").strip()
@@ -312,24 +365,23 @@ def update_long_mood(
         )
         alpha_base = clamp_01(float(alpha_base) * float(moment_conf))
 
-        # --- 重大イベントは baseline の追従を一時的に上げる ---
-        dv0 = vad_sub(moment_vad, baseline_vad)
-        major_delta = max(abs(float(dv0["v"])), abs(float(dv0["a"])), abs(float(dv0["d"])))
-        if major_delta >= float(LONG_MOOD_MAJOR_DELTA_THRESHOLD):
-            alpha_base = max(alpha_base, float(LONG_MOOD_MAJOR_BASELINE_ALPHA_FLOOR) * float(moment_conf))
-            alpha_base = clamp_01(alpha_base)
-
         baseline_vad_new = vad_lerp(baseline_vad, moment_vad, float(alpha_base))
 
         # --- shock は短期で追従し、時間で減衰する ---
+        # NOTE:
+        # - 重大イベントは余韻が長く残るため、半減期を延ばす。
+        # - 余韻の強さ（severity）は baseline_new と moment の乖離で決める。
+        sev = shock_severity(baseline_vad=baseline_vad_new, moment_vad=moment_vad)
+        shock_halflife_new = shock_halflife_seconds_from_severity(float(sev))
+
         decay = decay_from_halflife(
-            dt_seconds=int(dt_seconds), half_life_seconds=int(LONG_MOOD_SHOCK_HALFLIFE_SECONDS)
+            dt_seconds=int(dt_seconds), half_life_seconds=int(shock_halflife_prev)
         )
         shock_decayed = vad_scale(shock_vad, float(decay))
 
         # --- baselineとの差分へ寄せる（差分は範囲内へclampする） ---
         delta = vad_sub(moment_vad, baseline_vad_new)
-        alpha_shock = clamp_01(float(LONG_MOOD_SHOCK_ALPHA) * float(moment_conf))
+        alpha_shock = clamp_01(float(shock_alpha_from_severity(float(sev))) * float(moment_conf))
         shock_vad_new = vad_lerp(shock_decayed, delta, float(alpha_shock))
 
         # --- 数値更新をしたときだけ last_confirmed_at を進める ---
@@ -354,6 +406,11 @@ def update_long_mood(
         shock_note=shock_note_for_save,
         baseline_day_key=baseline_day_key,
     )
+    if has_moment:
+        # --- 直近イベント由来のパラメータを残す（デバッグ/可視化用） ---
+        payload_new["baseline_halflife_seconds"] = int(LONG_MOOD_BASELINE_HALFLIFE_SECONDS)
+        payload_new["shock_halflife_seconds"] = int(shock_halflife_new)
+        payload_new["shock_severity"] = float(sev)
 
     return LongMoodUpdateResult(
         body_text=str(baseline_text),

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import base64
 import concurrent.futures
-import json
 import logging
 import math
 import re
@@ -69,19 +68,10 @@ def _parse_image_summaries_json(image_summaries_json: str | None) -> list[str]:
       ここで安全にパースして扱えるようにする。
     - JSONが壊れている場合は空として扱う（例外は投げない）。
     """
-    s = str(image_summaries_json or "").strip()
-    if not s:
-        return []
-    try:
-        obj = json.loads(s)
-    except Exception:  # noqa: BLE001
-        return []
-    if not isinstance(obj, list):
-        return []
-    out: list[str] = []
-    for item in obj:
-        out.append(str(item or "").strip())
-    return out
+    # NOTE:
+    # - 画像要約は JSON 文字列の list[str] を正とする。
+    # - 解析に失敗した場合は空として扱い、例外は投げない。
+    return common_utils.parse_json_str_list(image_summaries_json)
 
 
 
@@ -310,11 +300,8 @@ class MemoryManager:
                 return
 
             # --- selected_json をパース ---
-            try:
-                pack = json.loads(str(rr.selected_json or "").strip() or "{}")
-            except Exception:  # noqa: BLE001
-                return
-            if not isinstance(pack, dict):
+            pack = common_utils.json_loads_maybe(str(rr.selected_json or "").strip())
+            if not pack:
                 return
 
             selected = pack.get("selected")
@@ -468,15 +455,7 @@ class MemoryManager:
                 return None
 
             # --- payload_json を dict として扱えるようにする ---
-            payload_raw = str(st.payload_json or "").strip()
-            payload_obj: Any
-            if payload_raw:
-                try:
-                    payload_obj = json.loads(payload_raw)
-                except Exception:  # noqa: BLE001
-                    payload_obj = {"_raw": payload_raw}
-            else:
-                payload_obj = {}
+            payload_obj: Any = affect.parse_long_mood_payload(str(st.payload_json or ""))
 
             # --- VAD（baseline + shock）を計算する ---
             # NOTE:
@@ -498,7 +477,17 @@ class MemoryManager:
                 dt = 0
             if dt < 0:
                 dt = 0
-            shock_decayed = affect.decay_shock_for_snapshot(shock_vad=shock_vad, dt_seconds=int(dt))
+            shock_halflife_seconds = 0
+            if isinstance(payload_obj, dict):
+                try:
+                    shock_halflife_seconds = int(payload_obj.get("shock_halflife_seconds") or 0)
+                except Exception:  # noqa: BLE001
+                    shock_halflife_seconds = 0
+            shock_decayed = affect.decay_shock_for_snapshot(
+                shock_vad=shock_vad,
+                dt_seconds=int(dt),
+                shock_halflife_seconds=int(shock_halflife_seconds),
+            )
 
             if baseline_vad is not None:
                 combined_vad = affect.vad_add(baseline_vad, shock_decayed)
@@ -1295,16 +1284,11 @@ class MemoryManager:
             addon_text=cfg.addon_text,
             second_person_label=cfg.second_person_label,
         )
-        user_prompt = "\n".join(
-            [
-                "あなたは今、自分から話しかけたい話題を思いついた。",
-                f"次の材料を踏まえて、自然に{str(cfg.second_person_label)}へ話しかける短いメッセージを作る。",
-                "",
-                "材料:",
-                instruction,
-                payload_text,
-            ]
-        ).strip()
+        user_prompt = prompt_builders.meta_request_user_prompt(
+            second_person_label=cfg.second_person_label,
+            instruction=instruction,
+            payload_text=payload_text,
+        )
 
         # --- 画像要約（内部用）を注入（本文に出さない） ---
         conversation: list[dict[str, str]] = []
