@@ -796,7 +796,7 @@ class MemoryManager:
         return out
 
     def _load_long_mood_state_snapshot(
-        self, *, embedding_preset_id: str, embedding_dimension: int
+        self, *, embedding_preset_id: str, embedding_dimension: int, now_ts: int
     ) -> dict[str, Any] | None:
         """
         長期気分（state.kind="long_mood_state"）の最新スナップショットを返す。
@@ -830,36 +830,76 @@ class MemoryManager:
             else:
                 payload_obj = {}
 
-            # --- VAD を取り出せる場合は、見やすい形で別キーにする ---
-            vad: dict[str, float] | None = None
+            # --- VAD（baseline + shock）を計算する ---
+            # NOTE:
+            # - shock は「余韻」なので、読み出し時点（now_ts）で時間減衰させる。
+            # - 更新（apply_write_plan）はイベント間隔で更新するが、無操作時間でも自然に落ち着く必要がある。
+            baseline_vad: dict[str, float] | None = None
+            shock_vad: dict[str, float] | None = None
+            combined_vad: dict[str, float] | None = None
+
+            def _clamp_vad(x: Any) -> float:
+                try:
+                    v = float(x)
+                except Exception:  # noqa: BLE001
+                    return 0.0
+                if v < -1.0:
+                    return -1.0
+                if v > 1.0:
+                    return 1.0
+                return v
+
+            def _vad_dict(v: Any, a: Any, d: Any) -> dict[str, float]:
+                return {"v": _clamp_vad(v), "a": _clamp_vad(a), "d": _clamp_vad(d)}
+
+            def _vad_add(x: dict[str, float], y: dict[str, float]) -> dict[str, float]:
+                return _vad_dict(float(x.get("v", 0.0)) + float(y.get("v", 0.0)), float(x.get("a", 0.0)) + float(y.get("a", 0.0)), float(x.get("d", 0.0)) + float(y.get("d", 0.0)))
+
+            def _extract_vad(obj: Any) -> dict[str, float] | None:
+                if not isinstance(obj, dict):
+                    return None
+                if not all(k in obj for k in ("v", "a", "d")):
+                    return None
+                try:
+                    return _vad_dict(obj.get("v"), obj.get("a"), obj.get("d"))
+                except Exception:  # noqa: BLE001
+                    return None
+
             if isinstance(payload_obj, dict):
-                if all(k in payload_obj for k in ["v", "a", "d"]):
-                    try:
-                        vad = {
-                            "v": float(payload_obj.get("v")),  # type: ignore[arg-type]
-                            "a": float(payload_obj.get("a")),  # type: ignore[arg-type]
-                            "d": float(payload_obj.get("d")),  # type: ignore[arg-type]
-                        }
-                    except Exception:  # noqa: BLE001
-                        vad = None
-                elif isinstance(payload_obj.get("vad"), dict):
-                    vv = payload_obj.get("vad")
-                    if isinstance(vv, dict) and all(k in vv for k in ["v", "a", "d"]):
-                        try:
-                            vad = {
-                                "v": float(vv.get("v")),  # type: ignore[arg-type]
-                                "a": float(vv.get("a")),  # type: ignore[arg-type]
-                                "d": float(vv.get("d")),  # type: ignore[arg-type]
-                            }
-                        except Exception:  # noqa: BLE001
-                            vad = None
+                baseline_vad = _extract_vad(payload_obj.get("baseline_vad"))
+                shock_vad = _extract_vad(payload_obj.get("shock_vad"))
+
+            # --- shock の時間減衰（半減期=1h） ---
+            shock_decayed = shock_vad if shock_vad is not None else _vad_dict(0.0, 0.0, 0.0)
+            try:
+                dt = int(now_ts) - int(st.last_confirmed_at)
+            except Exception:  # noqa: BLE001
+                dt = 0
+            if dt < 0:
+                dt = 0
+            half_life = 60 * 60
+            if dt > 0:
+                try:
+                    decay = 0.5 ** (float(dt) / float(half_life))
+                except Exception:  # noqa: BLE001
+                    decay = 1.0
+                shock_decayed = _vad_dict(
+                    float(shock_decayed.get("v", 0.0)) * float(decay),
+                    float(shock_decayed.get("a", 0.0)) * float(decay),
+                    float(shock_decayed.get("d", 0.0)) * float(decay),
+                )
+
+            if baseline_vad is not None:
+                combined_vad = _vad_add(baseline_vad, shock_decayed)
 
             return {
                 "state_id": int(st.state_id),
                 "kind": str(st.kind),
                 "body_text": str(st.body_text),
                 "payload": payload_obj,
-                "vad": vad,
+                "vad": combined_vad,
+                "baseline_vad": baseline_vad,
+                "shock_vad": shock_decayed,
                 "confidence": float(st.confidence),
                 "salience": float(st.salience),
                 "last_confirmed_at": format_iso8601_local(int(st.last_confirmed_at)),
@@ -1256,6 +1296,7 @@ class MemoryManager:
                 "LongMoodState": self._load_long_mood_state_snapshot(
                     embedding_preset_id=embedding_preset_id,
                     embedding_dimension=embedding_dimension,
+                    now_ts=int(now_ts),
                 ),
                 "SearchResultPack": self._inflate_search_result_pack(
                     embedding_preset_id=embedding_preset_id,
