@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
 
     <!--
-      CocoroGhost Web UI (minimal)
+      CocoroGhost Web UI (CocoroUI.png 互換レイアウト)
 
       方針:
       - 単一ユーザー前提
@@ -17,51 +17,106 @@
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
-    <!-- Header -->
-    <header class="app-header">
-      <div class="brand">
-        <div class="brand-title">CocoroAI</div>
-        <div class="brand-sub">CocoroGhost</div>
-      </div>
-      <div class="header-actions">
-        <button id="btn-logout" class="btn btn-secondary" type="button">Logout</button>
-      </div>
-    </header>
+    <div class="app">
+      <!-- Header -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <div class="topbar-title">CocoroAI</div>
+        </div>
+        <div class="topbar-right">
+          <!--
+            右上アイコン群（CocoroUI.png 風）
+            実装は最小に留め、設定（⚙）のみ logout に使う。
+          -->
+          <button class="icon-btn" id="btn-mic" type="button" title="Mic (not implemented)" aria-label="Mic">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"
+              ></path>
+              <path d="M4 4l16 16" stroke="currentColor" stroke-width="2" fill="none"></path>
+            </svg>
+          </button>
+          <button class="icon-btn" id="btn-sound" type="button" title="Sound (not implemented)" aria-label="Sound">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 10v4h4l5 4V6L7 10H3z"></path>
+              <path d="M16.5 12a4.5 4.5 0 0 0-2.5-4.03v8.06A4.5 4.5 0 0 0 16.5 12z"></path>
+            </svg>
+          </button>
+          <button class="icon-btn" id="btn-screen" type="button" title="Screen (not implemented)" aria-label="Screen">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 5h16v10H4V5zm0 12h16v2H4v-2z"></path>
+              <path d="M4 4l16 16" stroke="currentColor" stroke-width="2" fill="none"></path>
+            </svg>
+          </button>
+          <button class="icon-btn" id="btn-gear" type="button" title="Logout" aria-label="Logout">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.2 7.2 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.58.22-1.12.52-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.7 7.8a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.82 14.5a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.41 1.05.72 1.63.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.58-.22 1.12-.52 1.63-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.56zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z"
+              ></path>
+            </svg>
+          </button>
+        </div>
+      </header>
 
-    <!-- Main -->
-    <main class="app-main">
-      <!-- Login panel -->
-      <section id="panel-login" class="panel">
-        <h1 class="panel-title">ログイン</h1>
-        <p class="panel-desc">Token を入力してログインしてください（HTTPS 前提）。</p>
-        <div class="form-row">
-          <label class="label" for="login-token">Token</label>
-          <input id="login-token" class="input" type="password" autocomplete="current-password" />
+      <!-- Main -->
+      <main class="main">
+        <!-- Login panel -->
+        <section id="panel-login" class="login">
+          <div class="login-inner">
+            <div class="login-title">ログイン</div>
+            <div class="login-desc">Token を入力してログインしてください（HTTPS 前提）。</div>
+            <div class="login-row">
+              <input id="login-token" class="login-input" type="password" autocomplete="current-password" placeholder="Token" />
+              <button id="btn-login" class="login-btn" type="button">Login</button>
+            </div>
+            <div id="login-status" class="status"></div>
+          </div>
+        </section>
+
+        <!-- Chat panel -->
+        <section id="panel-chat" class="chat hidden" aria-live="polite">
+          <div id="chat-scroll" class="chat-scroll"></div>
+        </section>
+      </main>
+
+      <!-- Input (LINE/スマホアプリ風) -->
+      <section id="input-panel" class="composer hidden">
+        <div id="attachments" class="attachments" aria-label="添付ファイル一覧"></div>
+        <div class="composer-row">
+          <label class="composer-icon" for="file-input" title="画像を追加" aria-label="画像を追加">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M16.5 6.5l-7.78 7.78a2 2 0 1 0 2.83 2.83l8.49-8.49a4 4 0 0 0-5.66-5.66L6.4 11.44a6 6 0 0 0 8.49 8.49l7.07-7.07"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              ></path>
+            </svg>
+          </label>
+          <input id="file-input" class="file-hidden" type="file" accept="image/*" multiple />
+
+          <div class="composer-field">
+            <textarea
+              id="text-input"
+              class="composer-textarea"
+              rows="1"
+              placeholder="テキストと画像の入力が可能です"
+            ></textarea>
+          </div>
+
+          <button id="btn-send" class="composer-send" type="button" disabled>送信</button>
         </div>
-        <div class="form-row">
-          <button id="btn-login" class="btn btn-primary" type="button">Login</button>
-        </div>
-        <div id="login-status" class="status"></div>
       </section>
 
-      <!-- Chat panel -->
-      <section id="panel-chat" class="panel hidden">
-        <div id="chat-scroll" class="chat-scroll" aria-live="polite"></div>
-        <div id="chat-status" class="status"></div>
-      </section>
-    </main>
-
-    <!-- Composer -->
-    <footer id="composer" class="composer hidden">
-      <div class="composer-row">
-        <input id="file-input" class="file" type="file" accept="image/*" multiple />
-        <textarea id="text-input" class="textarea" rows="1" placeholder="メッセージ..."></textarea>
-        <button id="btn-send" class="btn btn-primary" type="button">Send</button>
-      </div>
-      <div id="attachments" class="attachments"></div>
-    </footer>
+      <!-- Status bar -->
+      <footer class="statusbar">
+        <div id="status-left" class="statusbar-left">状態: CocoroGhost起動待ち</div>
+        <div id="status-right" class="statusbar-right"></div>
+      </footer>
+    </div>
 
     <script src="/static/app.js"></script>
   </body>
 </html>
-
