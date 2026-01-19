@@ -19,7 +19,8 @@
   const apiLoginPath = "/api/auth/login";
   const apiLogoutPath = "/api/auth/logout";
   const apiChatPath = "/api/chat";
-  const webSocketEventsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events/stream`;
+  // NOTE: CocoroGhost は HTTPS 必須（自己署名TLS）なので WebSocket も wss を使う。
+  const webSocketEventsUrl = `wss://${location.host}/api/events/stream`;
 
   // --- DOM refs ---
   const panelLogin = document.getElementById("panel-login");

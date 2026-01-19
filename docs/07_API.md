@@ -4,6 +4,14 @@
 
 - APIは `/api` をプレフィックスにする（例: `/api/chat`）
 
+## 通信方式（HTTPSのみ / 自己署名）
+
+- CocoroGhost は起動時に TLS（自己署名）を必ず有効化するため、`http://` では接続できない
+- 例: `https://127.0.0.1:55601/api/...`
+- 自己署名証明書のため、クライアント側で証明書検証を回避するか、端末側で証明書を信頼させる必要がある
+  - `curl.exe` を使う場合は `-k`（insecure）を付ける
+- WebSocket は `wss://<host>/api/events/stream` を使う
+
 ## 認証
 
 基本:
@@ -147,7 +155,7 @@ Web UI 用ログアウト。
 ### 例（`curl.exe`）
 
 ```bash
-curl.exe -X POST http://127.0.0.1:55601/api/v2/notification \
+curl.exe -k -X POST https://127.0.0.1:55601/api/v2/notification \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d "{\"source_system\":\"MyApp\",\"text\":\"処理完了\",\"images\":[\"data:image/jpeg;base64,...\"]}"
@@ -156,11 +164,10 @@ curl.exe -X POST http://127.0.0.1:55601/api/v2/notification \
 ### 例（PowerShell）
 
 ```powershell
-Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:55601/api/v2/notification" `
-  -ContentType "application/json; charset=utf-8" `
-  -Headers @{ Authorization = "Bearer <TOKEN>" } `
-  -Body '{"source_system":"MyApp","text":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
+curl.exe -k -X POST "https://127.0.0.1:55601/api/v2/notification" `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer <TOKEN>" `
+  -d "{\"source_system\":\"MyApp\",\"text\":\"結果\",\"images\":[\"data:image/jpeg;base64,...\",\"data:image/png;base64,...\"]}"
 ```
 
 補足:
@@ -207,7 +214,7 @@ Invoke-RestMethod -Method Post `
 ### 例（`curl.exe`）
 
 ```bash
-curl.exe -X POST http://127.0.0.1:55601/api/v2/meta-request \
+curl.exe -k -X POST https://127.0.0.1:55601/api/v2/meta-request \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d "{\"instruction\":\"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。\",\"payload_text\":\"～ニュース内容～\"}"
@@ -216,11 +223,10 @@ curl.exe -X POST http://127.0.0.1:55601/api/v2/meta-request \
 ### 例（PowerShell）
 
 ```powershell
-Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:55601/api/v2/meta-request" `
-  -ContentType "application/json; charset=utf-8" `
-  -Headers @{ Authorization = "Bearer <TOKEN>" } `
-  -Body '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
+curl.exe -k -X POST "https://127.0.0.1:55601/api/v2/meta-request" `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer <TOKEN>" `
+  -d "{\"instruction\":\"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。\",\"payload_text\":\"～ニュース内容～\"}"
 ```
 
 補足:

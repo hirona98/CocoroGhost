@@ -17,7 +17,11 @@ from pathlib import Path
 import httpx
 
 # APIのベースURL
-BASE_URL = "http://localhost:55601/api"
+# NOTE:
+# - CocoroGhost は自己署名TLSで起動するため HTTPS を使う。
+# - 自己署名のため、このスクリプトでは証明書検証を無効化する。
+BASE_URL = "https://localhost:55601/api"
+VERIFY_TLS = False
 # 認証トークン（環境変数から取得）
 TOKEN = os.environ.get("COCORO_GHOST_TOKEN", "")
 
@@ -33,10 +37,10 @@ def get_headers():
     return {"Authorization": f"Bearer {token}"}
 
 
-def load_test_image_base64(filename: str) -> str:
+def load_test_image_base64(filename: str) -> str | None:
     """
     tmpディレクトリからテスト画像を読み込んでbase64エンコードする。
-    画像ファイルが存在しない場合はNoneを返す。
+    画像ファイルが存在しない場合は None を返す。
     """
     # テスト画像のパスを構築
     image_path = Path(__file__).parent.parent / "tmp" / filename
@@ -63,7 +67,7 @@ def test_settings_get():
     """
     print("\n=== GET /settings ===")
     try:
-        r = httpx.get(f"{BASE_URL}/settings", headers=get_headers(), timeout=10)
+        r = httpx.get(f"{BASE_URL}/settings", headers=get_headers(), timeout=10, verify=VERIFY_TLS)
         print(f"  Status: {r.status_code}")
         if r.status_code == 200:
             data = r.json()
@@ -140,7 +144,8 @@ def test_chat():
             f"{BASE_URL}/chat",
             headers=get_headers(),
             json=payload,
-            timeout=60
+            timeout=60,
+            verify=VERIFY_TLS,
         ) as r:
             print(f"  Status: {r.status_code}")
             if r.status_code != 200:
@@ -195,7 +200,8 @@ def test_chat_with_image():
     # 画像付きリクエストペイロード
     payload = {
         "input_text": "この画像について教えてください（テスト）",
-        "images": [{"type": "data_uri", "base64": base64_data}]
+        # NOTE: /api/chat の images は data URI（文字列）配列。
+        "images": [make_data_uri(base64_data)]
     }
     try:
         event_lines = []
@@ -205,7 +211,8 @@ def test_chat_with_image():
             f"{BASE_URL}/chat",
             headers=get_headers(),
             json=payload,
-            timeout=60
+            timeout=60,
+            verify=VERIFY_TLS,
         ) as r:
             print(f"  Status: {r.status_code}")
             if r.status_code != 200:
@@ -263,7 +270,13 @@ def test_notification():
         payload["images"] = []
 
     try:
-        r = httpx.post(f"{BASE_URL}/v2/notification", headers=get_headers(), json=payload, timeout=30)
+        r = httpx.post(
+            f"{BASE_URL}/v2/notification",
+            headers=get_headers(),
+            json=payload,
+            timeout=30,
+            verify=VERIFY_TLS,
+        )
         print(f"  Status: {r.status_code}")
         # 204 No Contentが成功
         if r.status_code == 204:
@@ -296,7 +309,13 @@ def test_meta_request():
         payload["images"] = []
 
     try:
-        r = httpx.post(f"{BASE_URL}/v2/meta-request", headers=get_headers(), json=payload, timeout=30)
+        r = httpx.post(
+            f"{BASE_URL}/v2/meta-request",
+            headers=get_headers(),
+            json=payload,
+            timeout=30,
+            verify=VERIFY_TLS,
+        )
         print(f"  Status: {r.status_code}")
         if r.status_code == 204:
             print("  [OK] メタ要求成功")
