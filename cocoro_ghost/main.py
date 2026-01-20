@@ -73,6 +73,7 @@ def create_app() -> FastAPI:
     # uvicorn の access log から特定リクエストだけ除外（開発時にノイズになりがち）
     suppress_uvicorn_access_log_paths(
         "/api/health",
+        "/favicon.ico",
     )
 
     # 2. 設定DB初期化
@@ -151,6 +152,13 @@ def create_app() -> FastAPI:
         """Web UI（index.html）を返す。"""
         index_path = (static_dir / "index.html").resolve()
         return FileResponse(index_path)
+
+    # --- Web UI: favicon ---
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        """Web UI の favicon.ico を返す。"""
+        favicon_path = (static_dir / "favicon.ico").resolve()
+        return FileResponse(favicon_path, media_type="image/x-icon")
 
     @app.on_event("startup")
     async def start_log_stream_dispatcher() -> None:
