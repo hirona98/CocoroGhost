@@ -53,6 +53,8 @@
   let chatAbortController = null;
   /** @type {HTMLElement|null} */
   let inflightAssistantBubble = null;
+  /** @type {boolean} */
+  let wsReauthInProgress = false;
 
   // --- UI helpers ---
   function setLoginStatus(text, isError) {
@@ -76,7 +78,7 @@
     panelLogin.classList.add("hidden");
     panelChat.classList.remove("hidden");
     inputPanel.classList.remove("hidden");
-    setStatusBar("状態: 接続中", "");
+    setStatusBar("状態: 正常動作中", "");
   }
 
   function scrollToBottom() {
@@ -159,13 +161,38 @@
       // --- hello を送る（端末識別） ---
       const clientId = ensureWebSocketClientId();
       socket.send(JSON.stringify({ type: "hello", client_id: clientId, caps: [] }));
-      setStatusBar("状態: 接続中", "WS: connected");
+      setStatusBar("状態: 正常動作中", "WS: connected");
     };
 
     socket.onclose = (event) => {
       // --- 認証エラー（policy violation）は再接続しても無駄 ---
       if (event && Number(event.code) === 1008) {
-        setStatusBar("状態: ログインが必要です", "WS: auth failed");
+        // --- 自動ログインが有効なら、Cookie セッションを再発行して再接続する ---
+        if (!wsReauthInProgress) {
+          wsReauthInProgress = true;
+          setStatusBar("状態: 認証を更新中...", "WS: auth failed");
+          (async () => {
+            try {
+              const ok = await apiAutoLogin();
+              if (ok) {
+                setStatusBar("状態: 再接続中...", "WS: reauth ok");
+                connectEventsSocket();
+                return;
+              }
+
+              // --- 自動ログインが無効 or 失敗: 手動ログインへ ---
+              closeEventsSocket();
+              showLogin();
+              setLoginStatus("ログインが必要です（再起動した場合は再ログインしてください）", true);
+              setStatusBar("状態: ログインが必要です", "WS: auth failed");
+            } finally {
+              wsReauthInProgress = false;
+            }
+          })();
+          return;
+        }
+
+        setStatusBar("状態: 認証を更新中...", "WS: auth failed");
         return;
       }
 
