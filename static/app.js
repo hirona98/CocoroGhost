@@ -428,7 +428,12 @@
   }
 
   // --- Events wiring ---
-  loginButton.addEventListener("click", async () => {
+  /**
+   * ログイン処理（手動ログイン）。
+   * ボタン押下/Enter どちらでも同じ挙動にする。
+   */
+  async function submitLogin() {
+    // --- Token を送ってログイン ---
     setLoginStatus("ログイン中...", false);
     const ok = await apiLogin(loginTokenInput.value);
     if (!ok) {
@@ -443,6 +448,18 @@
     showChat();
     connectEventsSocket();
     refreshSendButtonEnabled();
+  }
+
+  loginButton.addEventListener("click", async () => {
+    // --- ボタン押下でログイン ---
+    await submitLogin();
+  });
+
+  loginTokenInput.addEventListener("keydown", async (event) => {
+    // --- Enter でログイン（Shift+Enter は何もしない） ---
+    if (event.key !== "Enter" || event.shiftKey) return;
+    event.preventDefault();
+    await submitLogin();
   });
 
   // --- Icons: no-op except gear (logout) ---
