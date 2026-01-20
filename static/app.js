@@ -55,6 +55,10 @@
   let inflightAssistantBubble = null;
   /** @type {boolean} */
   let wsReauthInProgress = false;
+  /** @type {boolean} */
+  let wsReconnectEnabled = false;
+  /** @type {number|null} */
+  let wsReconnectTimerId = null;
 
   // --- UI helpers ---
   function setLoginStatus(text, isError) {
@@ -143,16 +147,49 @@
   }
 
   // --- WebSocket (events) ---
-  function closeEventsSocket() {
+  /**
+   * WebSocket を閉じる（再接続の有効/無効は変更しない）。
+   */
+  function closeEventsSocketInternal() {
     if (!eventsSocket) return;
     try {
+      // --- イベントハンドラを外す（明示クローズで reconnect が走るのを防ぐ） ---
+      eventsSocket.onopen = null;
+      eventsSocket.onclose = null;
+      eventsSocket.onerror = null;
+      eventsSocket.onmessage = null;
       eventsSocket.close();
     } catch (_) {}
     eventsSocket = null;
   }
 
+  /**
+   * WebSocket の再接続タイマーを解除する。
+   */
+  function clearEventsReconnectTimer() {
+    if (wsReconnectTimerId == null) return;
+    try {
+      clearTimeout(wsReconnectTimerId);
+    } catch (_) {}
+    wsReconnectTimerId = null;
+  }
+
+  /**
+   * WebSocket を停止する（ログアウト等の明示操作）。
+   * 再接続を無効化し、接続を閉じ、再接続タイマーも消す。
+   */
+  function stopEventsSocket() {
+    // --- 明示停止は再接続しない ---
+    wsReconnectEnabled = false;
+    clearEventsReconnectTimer();
+    closeEventsSocketInternal();
+  }
+
   function connectEventsSocket() {
-    closeEventsSocket();
+    // --- ログイン中/チャット中は再接続を有効にする ---
+    wsReconnectEnabled = true;
+    clearEventsReconnectTimer();
+    closeEventsSocketInternal();
 
     const socket = new WebSocket(webSocketEventsUrl);
     eventsSocket = socket;
@@ -165,6 +202,9 @@
     };
 
     socket.onclose = (event) => {
+      // --- ログアウト等の明示停止中は再接続しない ---
+      if (!wsReconnectEnabled) return;
+
       // --- 認証エラー（policy violation）は再接続しても無駄 ---
       if (event && Number(event.code) === 1008) {
         // --- 自動ログインが有効なら、Cookie セッションを再発行して再接続する ---
@@ -181,7 +221,7 @@
               }
 
               // --- 自動ログインが無効 or 失敗: 手動ログインへ ---
-              closeEventsSocket();
+              stopEventsSocket();
               showLogin();
               setLoginStatus("ログインが必要です（再起動した場合は再ログインしてください）", true);
               setStatusBar("状態: ログインが必要です", "WS: auth failed");
@@ -197,7 +237,8 @@
       }
 
       setStatusBar("状態: 再接続中...", "WS: reconnecting");
-      setTimeout(() => connectEventsSocket(), 1500);
+      clearEventsReconnectTimer();
+      wsReconnectTimerId = setTimeout(() => connectEventsSocket(), 1500);
     };
 
     socket.onerror = () => {
@@ -471,7 +512,7 @@
     const ok = confirm("ログアウトしますか？");
     if (!ok) return;
 
-    closeEventsSocket();
+    stopEventsSocket();
     await apiLogout();
     showLogin();
     setLoginStatus("", false);
@@ -514,6 +555,7 @@
     }
 
     // --- 従来ログインへフォールバック ---
+    stopEventsSocket();
     showLogin();
     setLoginStatus("※自己署名HTTPSの警告は許容してください", false);
     autoResizeTextarea();
