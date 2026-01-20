@@ -226,12 +226,16 @@ body {
 .bubble.ai {
   background: var(--bubble-ai);
   color: var(--bubble-ai-text);
+  /* --- AI側: 左下の丸めを無効化（吹き出し感） --- */
+  border-bottom-left-radius: 0;
   border-top-left-radius: 6px;
 }
 
 .bubble.user {
   background: var(--bubble-user);
   color: var(--bubble-user-text);
+  /* --- ユーザー側: 右下の丸めを無効化（吹き出し感） --- */
+  border-bottom-right-radius: 0;
   border-top-right-radius: 6px;
 }
 
