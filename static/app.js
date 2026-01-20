@@ -17,6 +17,7 @@
   // --- Constants ---
   const webSocketClientIdKey = "cocoro_ws_client_id";
   const apiLoginPath = "/api/auth/login";
+  const apiAutoLoginPath = "/api/auth/auto_login";
   const apiLogoutPath = "/api/auth/logout";
   const apiChatPath = "/api/chat";
   // NOTE: CocoroGhost は HTTPS 必須（自己署名TLS）なので WebSocket も wss を使う。
@@ -125,6 +126,12 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: String(token || "") }),
     });
+    return response.status === 204;
+  }
+
+  async function apiAutoLogin() {
+    // --- 自動ログイン（サーバー設定で有効なときだけ 204 を返す） ---
+    const response = await fetch(apiAutoLoginPath, { method: "POST" });
     return response.status === 204;
   }
 
@@ -448,8 +455,24 @@
   });
 
   // --- Init ---
-  showLogin();
-  setLoginStatus("※自己署名HTTPSの警告は許容してください", false);
-  autoResizeTextarea();
-  refreshSendButtonEnabled();
+  (async () => {
+    // --- まず自動ログインを試す（有効ならログイン画面を出さない） ---
+    setLoginStatus("自動ログイン中...", false);
+    const ok = await apiAutoLogin();
+    if (ok) {
+      // --- Switch UI ---
+      setLoginStatus("", false);
+      showChat();
+      connectEventsSocket();
+      autoResizeTextarea();
+      refreshSendButtonEnabled();
+      return;
+    }
+
+    // --- 従来ログインへフォールバック ---
+    showLogin();
+    setLoginStatus("※自己署名HTTPSの警告は許容してください", false);
+    autoResizeTextarea();
+    refreshSendButtonEnabled();
+  })();
 })();

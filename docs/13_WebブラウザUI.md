@@ -42,6 +42,7 @@
 方針:
 
 - Web UI はログインして **Cookie セッション**で認証する
+- `web_auto_login_enabled=true` の場合は Web UI 起動時に自動ログインする（トークン入力不要）
 - 既存ネイティブクライアントは **Bearer トークン**で従来通り利用できる
 
 セッション仕様（推奨）:
@@ -109,6 +110,7 @@
 - `GET /`（Web UI）
 - `GET /static/*`（Web UI 静的ファイル）
 - `POST /api/auth/login`（トークン入力 → セッション Cookie 発行）
+- `POST /api/auth/auto_login`（自動ログイン → セッション Cookie 発行、設定で有効なときのみ）
 - `POST /api/auth/logout`（セッション破棄）
 
 注記:
