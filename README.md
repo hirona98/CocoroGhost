@@ -57,6 +57,7 @@ setup.bat
    `config/setting.toml` を編集して、最小限の起動設定を記述：
 
    - `token`: API認証トークン
+   - `web_auto_login_enabled`: Web UI 自動ログインの有効/無効
    - `log_level`: ログレベル
 
    ※ DBファイルは（実行場所の）`data/settings.db` と `data/memory_<embedding_preset_id>.db` に自動作成されます
@@ -76,6 +77,7 @@ start.bat
 `config/setting.toml` で以下を設定：
 
 - `token`: API認証トークン
+- `web_auto_login_enabled`: Web UI 自動ログインの有効/無効
 - `log_level`: ログレベル（DEBUG, INFO, WARNING, ERROR）
 - `log_file_enabled`: ファイルログの有効/無効
 - `log_file_path`: ファイルログの保存先

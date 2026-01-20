@@ -22,9 +22,11 @@
 Web UI:
 
 - Web UI は `POST /api/auth/login` でログインし、以後は Cookie セッションで認証する
+- `web_auto_login_enabled=true` の場合、`POST /api/auth/auto_login` でトークン無しの自動ログインが可能
 - Cookie 認証を許可するエンドポイントは次に限定する
   - `POST /api/chat`
   - `WS /api/events/stream`
+  - `POST /api/auth/auto_login`
   - `POST /api/auth/logout`
 
 注記:
@@ -114,6 +116,17 @@ Web UI 用ログアウト。
 
 - `204 No Content`
 - サーバ側のセッションを破棄し、Cookie を削除する（`Max-Age=0`）
+
+## `/api/auth/auto_login`
+
+Web UI 用の自動ログイン（サーバ設定で有効なときのみ）。
+
+### `POST /api/auth/auto_login`
+
+#### レスポンス
+
+- `204 No Content`（成功時は `Set-Cookie` でセッション Cookie（`cocoro_session`）が発行される）
+- `404 Not Found`（`web_auto_login_enabled=false` のとき）
 
 ## `/api/v2/notification`
 
