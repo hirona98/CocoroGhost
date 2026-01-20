@@ -457,7 +457,7 @@
     closeEventsSocket();
     await apiLogout();
     showLogin();
-    setLoginStatus("※自己署名HTTPSの警告は許容してください", false);
+    setLoginStatus("", false);
   });
 
   // --- Input handling ---
