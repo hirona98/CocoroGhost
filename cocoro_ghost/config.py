@@ -35,6 +35,7 @@ class Config:
     """
     cocoro_ghost_port: int  # CocoroGhost API の待受ポート
     token: str           # API認証用トークン
+    web_auto_login_enabled: bool  # Web UI を自動ログインにする（Cookieセッションを自動発行）
     log_level: str       # ログレベル（DEBUG, INFO, WARNING, ERROR）
     llm_log_level: str   # LLM送受信ログレベル（DEBUG, INFO, OFF）
     log_file_enabled: bool  # ファイルログ有効/無効
@@ -55,9 +56,11 @@ class RuntimeConfig:
     # TOML由来（変更不可）
     token: str       # API認証トークン
     log_level: str   # ログレベル
+    web_auto_login_enabled: bool  # Web UI を自動ログインにする（Cookieセッションを自動発行）
 
     # GlobalSettings由来（DB設定）
     memory_enabled: bool          # 記憶機能の有効/無効
+    shared_conversation_id: str   # 端末跨ぎ会話の固定ID
 
     # 視覚（Vision）: デスクトップウォッチ
     desktop_watch_enabled: bool
@@ -169,6 +172,7 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
     allowed_keys = {
         "cocoro_ghost_port",
         "token",
+        "web_auto_login_enabled",
         "log_level",
         "llm_log_level",
         "log_file_enabled",
@@ -193,6 +197,8 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         # --- サーバー待受ポート（必須） ---
         cocoro_ghost_port=int(_require(data, "cocoro_ghost_port")),
         token=_require(data, "token"),
+        # --- Web UI の自動ログイン（既定: 無効） ---
+        web_auto_login_enabled=bool(data.get("web_auto_login_enabled", False)),
         log_level=_require(data, "log_level"),
         llm_log_level=data.get("llm_log_level", "INFO"),
         log_file_enabled=bool(data.get("log_file_enabled", False)),
@@ -230,8 +236,10 @@ def build_runtime_config(
         # TOML由来
         token=global_settings.token or toml_config.token,
         log_level=toml_config.log_level,
+        web_auto_login_enabled=bool(toml_config.web_auto_login_enabled),
         # GlobalSettings由来
         memory_enabled=bool(getattr(global_settings, "memory_enabled", True)),
+        shared_conversation_id=str(getattr(global_settings, "shared_conversation_id", "") or "").strip(),
         # 視覚（Vision）: デスクトップウォッチ
         desktop_watch_enabled=bool(global_settings.desktop_watch_enabled),
         desktop_watch_interval_seconds=int(global_settings.desktop_watch_interval_seconds),

@@ -1,0 +1,398 @@
+/*
+  CocoroGhost Web UI
+  - CocoroUI.png 互換レイアウト（ゼロベース）
+
+  方針:
+  - 色は CocoroUI.png の雰囲気（青ヘッダ / 白基調 / 淡い青のAIバブル）
+  - 余計な装飾は入れない（シンプル）
+  - レイアウト優先（デスクトップ/スマホ両対応）
+*/
+
+:root {
+  /* --- Palette --- */
+  /* NOTE: 一番外側の“ベース”は出さない（全面フラット）。 */
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --border: #cfd5e3;
+  --text: #0f172a;
+  --muted: #475569;
+  --header: #3f6fc6;
+  --header-text: #ffffff;
+  --danger: #d92d20;
+
+  /* --- Chat bubbles --- */
+  --bubble-user: #3f6fc6;
+  --bubble-user-text: #ffffff;
+  --bubble-ai: #c9d9f7;
+  --bubble-ai-text: #0f172a;
+
+  /* --- Layout --- */
+  /* NOTE: 外枠で中央寄せしないため、幅制限は使わない。 */
+  --app-max-width: 100%;
+  --radius: 8px;
+  --shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
+
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", "Hiragino Sans",
+    "Yu Gothic UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* --- App frame --- */
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+}
+
+/* --- Header (blue bar) --- */
+.topbar {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  background: var(--header);
+  color: var(--header-text);
+}
+
+.topbar-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.topbar-right {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.92);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.icon-btn svg {
+  width: 22px;
+  height: 22px;
+  fill: currentColor;
+}
+
+/* --- Main --- */
+.main {
+  /* --- 外枠（ベース）を作らないため、余白なし --- */
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  min-height: 0; /* grid/flex 内スクロールのため必須 */
+}
+
+/* --- Login --- */
+.login {
+  width: min(var(--app-max-width), 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.login-inner {
+  width: min(520px, 100%);
+  /* --- login もフラットに寄せる（最低限の枠のみ） --- */
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+.login {
+  padding: 24px 12px;
+}
+
+.login-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.login-desc {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.login-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.login-input {
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 14px;
+}
+
+.login-btn {
+  height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--header);
+  color: var(--header-text);
+  font-weight: 700;
+}
+
+/* --- Status text --- */
+.status {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  min-height: 16px;
+}
+
+.status.error {
+  color: var(--danger);
+}
+
+/* --- Chat panel --- */
+.chat {
+  width: min(var(--app-max-width), 100%);
+  /* --- 外枠（カード）を作らず、フラットにする --- */
+  border: 0;
+  border-radius: 0;
+  background: var(--panel);
+  box-shadow: none;
+  overflow: hidden;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0; /* 子の overflow を効かせる */
+}
+
+.chat-scroll {
+  height: 100%;
+  overflow: auto;
+  padding: 12px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* --- Chat bubbles --- */
+.bubble {
+  display: inline-block;
+  max-width: 78%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  margin: 10px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+  font-size: 14px;
+}
+
+.bubble.ai {
+  background: var(--bubble-ai);
+  color: var(--bubble-ai-text);
+  /* --- AI側: 左下の丸めを無効化（吹き出し感） --- */
+  border-bottom-left-radius: 0;
+  border-top-left-radius: 6px;
+}
+
+.bubble.user {
+  background: var(--bubble-user);
+  color: var(--bubble-user-text);
+  /* --- ユーザー側: 右下の丸めを無効化（吹き出し感） --- */
+  border-bottom-right-radius: 0;
+  border-top-right-radius: 6px;
+}
+
+.bubble-row {
+  display: flex;
+}
+
+.bubble-row.ai {
+  justify-content: flex-start;
+}
+
+.bubble-row.user {
+  justify-content: flex-end;
+}
+
+/* --- Input panel (CocoroUI.png 風) --- */
+/* --- Input panel (LINE/スマホアプリ風) --- */
+.composer {
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  padding: 8px 10px calc(10px + env(safe-area-inset-bottom)) 10px;
+}
+
+.composer-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.composer-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  background: #ffffff;
+}
+
+.composer-icon:hover {
+  background: #f6f8ff;
+}
+
+.composer-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.composer-field {
+  flex: 1 1 auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+}
+
+.composer-textarea {
+  width: 100%;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 20px;
+  padding: 0;
+  min-height: 20px;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.composer-send {
+  width: 74px;
+  height: 36px;
+  border: 0;
+  border-radius: 18px;
+  font-weight: 700;
+  background: #d9d9d9;
+  color: #6b7280;
+}
+
+.composer-send:enabled {
+  background: var(--header);
+  color: var(--header-text);
+}
+
+.file-hidden {
+  display: none;
+}
+
+/* NOTE: 添付表示（chips）はUIでは出さない。 */
+.attachments {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 6px 44px; /* アイコン分だけ右に寄せる */
+}
+
+/* NOTE: 画像が無いときは高さゼロ（=表示しない） */
+.attachments:empty {
+  display: none;
+  margin: 0;
+}
+
+.chip {
+  border: 1px solid var(--border);
+  background: #ffffff;
+  border-radius: 999px;
+  padding: 4px 8px;
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- Status bar --- */
+.statusbar {
+  height: 28px;
+  background: #ffffff;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.statusbar-left {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.statusbar-right {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* --- Responsive --- */
+@media (max-width: 560px) {
+  .topbar-title {
+    font-size: 20px;
+  }
+
+  .composer-send {
+    width: 68px;
+  }
+
+  .bubble {
+    max-width: 90%;
+  }
+}
