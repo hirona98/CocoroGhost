@@ -443,6 +443,8 @@ class LlmClient:
         max_tokens: int = 4096,
         max_tokens_vision: int = 4096,
         image_timeout_seconds: int = 60,
+        timeout_seconds: int = 30,
+        stream_timeout_seconds: int = 60,
     ):
         """
         LLMクライアントを初期化する。
@@ -461,6 +463,8 @@ class LlmClient:
             max_tokens: 通常時の最大トークン数
             max_tokens_vision: 画像認識時の最大トークン数
             image_timeout_seconds: 画像処理タイムアウト秒数
+            timeout_seconds: LLM API（非ストリーム）のタイムアウト秒数
+            stream_timeout_seconds: LLM API（ストリーム開始）のタイムアウト秒数
         """
         self.logger = logging.getLogger(__name__)
         # NOTE: LLM送受信ログは出力先ごとにロガーを分ける。
@@ -479,6 +483,11 @@ class LlmClient:
         self.max_tokens = max_tokens
         self.max_tokens_vision = max_tokens_vision
         self.image_timeout_seconds = image_timeout_seconds
+        # NOTE:
+        # - 外部LLMがハング/停滞するとAPI応答が返らなくなるため、上限を設ける。
+        # - stream_timeout_seconds は「ストリーム開始（最初の接続確立）」までの待ち上限として使う。
+        self.timeout_seconds = int(timeout_seconds)
+        self.stream_timeout_seconds = int(stream_timeout_seconds)
 
     def _get_llm_log_level(self) -> str:
         """設定から llm_log_level を取得する。"""
@@ -698,6 +707,10 @@ class LlmClient:
             base_url=self.llm_base_url,
             max_tokens=self.max_tokens,
             stream=stream,
+            # NOTE:
+            # - stream=False は「レスポンス全体」が返るまで待つため、短めの上限を設ける。
+            # - stream=True は開始が返らない（=無限待ち）を防ぐ目的で、開始までの上限を設ける。
+            timeout=(self.stream_timeout_seconds if stream else self.timeout_seconds),
         )
 
         msg_count = len(messages)
@@ -800,6 +813,7 @@ class LlmClient:
             base_url=self.llm_base_url,
             max_tokens=requested_max_tokens,
             response_format={"type": "json_object"},
+            timeout=self.timeout_seconds,
         )
 
         if llm_log_level != "OFF":
@@ -916,6 +930,9 @@ class LlmClient:
             kwargs["api_key"] = self.embedding_api_key
         if api_base_for_request:
             kwargs["api_base"] = api_base_for_request
+        # NOTE:
+        # - 埋め込み取得がハングすると記憶検索が止まり、結果としてチャット応答が返らなくなるため上限を設ける。
+        kwargs["timeout"] = int(self.timeout_seconds)
 
         try:
             resp = litellm.embedding(**kwargs)

@@ -45,6 +45,8 @@ def get_llm_client() -> LlmClient:
         max_tokens=cfg.max_tokens,
         max_tokens_vision=cfg.max_tokens_vision,
         image_timeout_seconds=cfg.image_timeout_seconds,
+        timeout_seconds=cfg.llm_timeout_seconds,
+        stream_timeout_seconds=cfg.llm_stream_timeout_seconds,
     )
 
 

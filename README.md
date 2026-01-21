@@ -82,6 +82,8 @@ start.bat
 - `log_file_enabled`: ファイルログの有効/無効
 - `log_file_path`: ファイルログの保存先
 - `log_file_max_bytes`: ログローテーションサイズ（bytes、既定は200000=200KB）
+- `llm_timeout_seconds`: LLMのタイムアウト秒数（非ストリーム、JSON生成など）
+- `llm_stream_timeout_seconds`: LLMのタイムアウト秒数（ストリーム開始まで）
 
 #### 2. LLM設定
 
