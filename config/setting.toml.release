@@ -21,6 +21,12 @@ llm_log_level = "DEBUG"
 #llm_log_level = "ERROR"
 #llm_log_level = "OFF"
 
+# LLMのタイムアウト（秒）
+# - llm_timeout_seconds: 非ストリーム（JSON生成など）の上限
+# - llm_stream_timeout_seconds: ストリーム開始までの上限
+llm_timeout_seconds = 30
+llm_stream_timeout_seconds = 60
+
 # LLM送受信ログの最大文字数（ターミナル/ファイル）
 llm_log_console_max_chars = 1000
 llm_log_file_max_chars = 20000

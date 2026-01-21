@@ -395,8 +395,25 @@ class _ChatSearchMixin:
                 budget_seconds = 2.0
                 started = time.perf_counter()
                 remaining = max(0.0, float(budget_seconds) - float(time.perf_counter() - started))
-                embeddings = vector_embedding_future.result(timeout=float(remaining))
-                embedding_source = "precomputed_input_only"
+                try:
+                    embeddings = vector_embedding_future.result(timeout=float(remaining))
+                    embedding_source = "precomputed_input_only"
+                except concurrent.futures.TimeoutError:
+                    # NOTE:
+                    # - 先行埋め込みは「体感速度改善」のための最適化であり、失敗しても検索自体は継続する。
+                    # - ここで例外を投げるとチャット応答が返らなくなるため、同期で取り直す。
+                    embeddings = self.llm_client.generate_embedding(  # type: ignore[attr-defined]
+                        [str(x) for x in vector_query_texts],
+                        purpose=LlmRequestPurpose.SYNC_RETRIEVAL_QUERY_EMBEDDING,
+                    )
+                    embedding_source = "generated_after_precompute_timeout"
+                except Exception:  # noqa: BLE001
+                    # NOTE: 予期しない失敗でも、検索を止めずに同期で取り直す。
+                    embeddings = self.llm_client.generate_embedding(  # type: ignore[attr-defined]
+                        [str(x) for x in vector_query_texts],
+                        purpose=LlmRequestPurpose.SYNC_RETRIEVAL_QUERY_EMBEDDING,
+                    )
+                    embedding_source = "generated_after_precompute_error"
             else:
                 embeddings = self.llm_client.generate_embedding(  # type: ignore[attr-defined]
                     [str(x) for x in vector_query_texts],
@@ -982,4 +999,3 @@ class _ChatSearchMixin:
                 item2["image_summaries"] = summaries_by_event_id.get(int(eid), [])
 
         return {"selected": out_selected}
-

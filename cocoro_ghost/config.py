@@ -10,7 +10,7 @@ from __future__ import annotations
 import pathlib
 import threading
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import json
 import tomli
@@ -38,6 +38,8 @@ class Config:
     web_auto_login_enabled: bool  # Web UI を自動ログインにする（Cookieセッションを自動発行）
     log_level: str       # ログレベル（DEBUG, INFO, WARNING, ERROR）
     llm_log_level: str   # LLM送受信ログレベル（DEBUG, INFO, OFF）
+    llm_timeout_seconds: int  # LLM API（非ストリーム）のタイムアウト秒数
+    llm_stream_timeout_seconds: int  # LLM API（ストリーム開始）のタイムアウト秒数
     log_file_enabled: bool  # ファイルログ有効/無効
     log_file_path: str      # ファイルログの保存先パス
     log_file_max_bytes: int  # ファイルログのローテーションサイズ（bytes）
@@ -57,6 +59,8 @@ class RuntimeConfig:
     token: str       # API認証トークン
     log_level: str   # ログレベル
     web_auto_login_enabled: bool  # Web UI を自動ログインにする（Cookieセッションを自動発行）
+    llm_timeout_seconds: int  # LLM API（非ストリーム）のタイムアウト秒数
+    llm_stream_timeout_seconds: int  # LLM API（ストリーム開始）のタイムアウト秒数
 
     # GlobalSettings由来（DB設定）
     memory_enabled: bool          # 記憶機能の有効/無効
@@ -143,7 +147,7 @@ class ConfigStore:
         return bool(self._runtime.memory_enabled)
 
 
-def _require(config_dict: dict, key: str) -> str:
+def _require(config_dict: dict, key: str) -> Any:
     """
     設定辞書から必須キーを取得する。
     キーが存在しないか空の場合はValueErrorを発生させる。
@@ -175,6 +179,8 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         "web_auto_login_enabled",
         "log_level",
         "llm_log_level",
+        "llm_timeout_seconds",
+        "llm_stream_timeout_seconds",
         "log_file_enabled",
         "log_file_path",
         "log_file_max_bytes",
@@ -193,6 +199,15 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
     raw_log_file_path = str(data.get("log_file_path", str(paths.get_logs_dir() / "cocoro_ghost.log")))
     resolved_log_file_path = str(paths.resolve_path_under_app_root(raw_log_file_path))
 
+    # --- LLMタイムアウト（必須・正の整数） ---
+    # NOTE: 0以下だと実質的に「無限待ち」になり得るため、起動時に弾く。
+    llm_timeout_seconds = int(_require(data, "llm_timeout_seconds"))
+    llm_stream_timeout_seconds = int(_require(data, "llm_stream_timeout_seconds"))
+    if llm_timeout_seconds <= 0:
+        raise ValueError("llm_timeout_seconds must be a positive integer")
+    if llm_stream_timeout_seconds <= 0:
+        raise ValueError("llm_stream_timeout_seconds must be a positive integer")
+
     config = Config(
         # --- サーバー待受ポート（必須） ---
         cocoro_ghost_port=int(_require(data, "cocoro_ghost_port")),
@@ -201,6 +216,12 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         web_auto_login_enabled=bool(data.get("web_auto_login_enabled", False)),
         log_level=_require(data, "log_level"),
         llm_log_level=data.get("llm_log_level", "INFO"),
+        # --- LLM タイムアウト（必須） ---
+        # NOTE:
+        # - 外部LLMがハングするとAPI応答も返らなくなるため、明示的に上限を設ける。
+        # - stream は「開始まで」の待ちを制限する目的（本文生成はストリームで継続受信する）。
+        llm_timeout_seconds=int(llm_timeout_seconds),
+        llm_stream_timeout_seconds=int(llm_stream_timeout_seconds),
         log_file_enabled=bool(data.get("log_file_enabled", False)),
         log_file_path=resolved_log_file_path,
         log_file_max_bytes=int(data.get("log_file_max_bytes", 200_000)),
@@ -237,6 +258,8 @@ def build_runtime_config(
         token=global_settings.token or toml_config.token,
         log_level=toml_config.log_level,
         web_auto_login_enabled=bool(toml_config.web_auto_login_enabled),
+        llm_timeout_seconds=int(toml_config.llm_timeout_seconds),
+        llm_stream_timeout_seconds=int(toml_config.llm_stream_timeout_seconds),
         # GlobalSettings由来
         memory_enabled=bool(getattr(global_settings, "memory_enabled", True)),
         shared_conversation_id=str(getattr(global_settings, "shared_conversation_id", "") or "").strip(),
