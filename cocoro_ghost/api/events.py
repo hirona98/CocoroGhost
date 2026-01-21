@@ -17,7 +17,7 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from cocoro_ghost import event_stream
-from cocoro_ghost.api.ws_auth import authenticate_ws_bearer
+from cocoro_ghost.api.ws_auth import authenticate_ws_bearer_or_cookie_session
 
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -32,10 +32,22 @@ async def stream_events(websocket: WebSocket) -> None:
     通知完了、メタ要求完了などのイベントをリアルタイムで配信する。
     Bearer認証後に接続を受け入れ、切断時は自動でクライアント登録解除。
     """
-    if not await authenticate_ws_bearer(websocket):
+    # --- 接続を受け入れる ---
+    # NOTE:
+    # - 認証失敗時に accept せず return すると、サーバ側ログが 403 で埋まりやすい（再接続ループ時）。
+    # - 先に accept し、認証NGなら policy violation(1008) で close することで、
+    #   クライアント側が「auth failed」として扱いやすくする。
+    await websocket.accept()
+
+    # --- 認証を検証 ---
+    if not await authenticate_ws_bearer_or_cookie_session(websocket):
+        try:
+            await websocket.close(code=1008)
+        except Exception:  # noqa: BLE001
+            pass
+        logger.info("events websocket rejected (auth failed)")
         return
 
-    await websocket.accept()
     await event_stream.add_client(websocket)
     logger.info("events websocket connected")
 

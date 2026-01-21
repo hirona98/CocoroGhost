@@ -4,10 +4,30 @@
 
 - APIは `/api` をプレフィックスにする（例: `/api/chat`）
 
+## 通信方式（HTTPSのみ / 自己署名）
+
+- CocoroGhost は起動時に TLS（自己署名）を必ず有効化するため、`http://` では接続できない
+- 例: `https://127.0.0.1:55601/api/...`
+- 自己署名証明書のため、クライアント側で証明書検証を回避するか、端末側で証明書を信頼させる必要がある
+  - `curl.exe` を使う場合は `-k`（insecure）を付ける
+- WebSocket は `wss://<host>/api/events/stream` を使う
+
 ## 認証
 
-- `Authorization: Bearer <TOKEN>`
+基本:
+
+- `Authorization: Bearer <TOKEN>`（ネイティブ/外部連携向け）
 - トークンの正は `settings.db` に置く
+
+Web UI:
+
+- Web UI は `POST /api/auth/login` でログインし、以後は Cookie セッションで認証する
+- `web_auto_login_enabled=true` の場合、`POST /api/auth/auto_login` でトークン無しの自動ログインが可能
+- Cookie 認証を許可するエンドポイントは次に限定する
+  - `POST /api/chat`
+  - `WS /api/events/stream`
+  - `POST /api/auth/auto_login`
+  - `POST /api/auth/logout`
 
 注記:
 
@@ -29,8 +49,6 @@
 
 ```json
 {
-  "embedding_preset_id": "uuid",
-  "client_id": "stable-client-id",
   "input_text": "string (optional)",
   "images": [
     "data:image/png;base64,iVBORw0KGgo...",
@@ -40,6 +58,8 @@
 }
 ```
 
+- `/api/chat` は `embedding_preset_id` を要求しない（サーバ側のアクティブ設定を使用する）
+- 会話の継続はサーバ側の `shared_conversation_id` により行う（クライアントが `client_id` を送る必要はない）
 - `images` は省略可能（最大5枚）
 - `images` の要素は `data:image/*;base64,...` 形式の Data URI
   - 許可MIME: `image/png` / `image/jpeg` / `image/webp`
@@ -68,6 +88,45 @@ data: {"message":"...","code":"..."}
 
 - `event_id` は「このターンの出来事ログ（`events`）」を指すID（整数、`INTEGER`）とする
 - 画像付きチャットの詳細は `docs/12_画像付きチャット.md` を参照
+
+## `/api/auth/login`
+
+Web UI 用ログイン。
+
+### `POST /api/auth/login`
+
+#### リクエスト（JSON）
+
+```json
+{ "token": "string" }
+```
+
+#### レスポンス
+
+- `204 No Content`
+- 成功時は `Set-Cookie` でセッション Cookie（`cocoro_session`）が発行される
+
+## `/api/auth/logout`
+
+Web UI 用ログアウト。
+
+### `POST /api/auth/logout`
+
+#### レスポンス
+
+- `204 No Content`
+- サーバ側のセッションを破棄し、Cookie を削除する（`Max-Age=0`）
+
+## `/api/auth/auto_login`
+
+Web UI 用の自動ログイン（サーバ設定で有効なときのみ）。
+
+### `POST /api/auth/auto_login`
+
+#### レスポンス
+
+- `204 No Content`（成功時は `Set-Cookie` でセッション Cookie（`cocoro_session`）が発行される）
+- `404 Not Found`（`web_auto_login_enabled=false` のとき）
 
 ## `/api/v2/notification`
 
@@ -109,7 +168,7 @@ data: {"message":"...","code":"..."}
 ### 例（`curl.exe`）
 
 ```bash
-curl.exe -X POST http://127.0.0.1:55601/api/v2/notification \
+curl.exe -k -X POST https://127.0.0.1:55601/api/v2/notification \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d "{\"source_system\":\"MyApp\",\"text\":\"処理完了\",\"images\":[\"data:image/jpeg;base64,...\"]}"
@@ -118,11 +177,10 @@ curl.exe -X POST http://127.0.0.1:55601/api/v2/notification \
 ### 例（PowerShell）
 
 ```powershell
-Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:55601/api/v2/notification" `
-  -ContentType "application/json; charset=utf-8" `
-  -Headers @{ Authorization = "Bearer <TOKEN>" } `
-  -Body '{"source_system":"MyApp","text":"結果","images":["data:image/jpeg;base64,...","data:image/png;base64,..."]}'
+curl.exe -k -X POST "https://127.0.0.1:55601/api/v2/notification" `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer <TOKEN>" `
+  -d "{\"source_system\":\"MyApp\",\"text\":\"結果\",\"images\":[\"data:image/jpeg;base64,...\",\"data:image/png;base64,...\"]}"
 ```
 
 補足:
@@ -169,7 +227,7 @@ Invoke-RestMethod -Method Post `
 ### 例（`curl.exe`）
 
 ```bash
-curl.exe -X POST http://127.0.0.1:55601/api/v2/meta-request \
+curl.exe -k -X POST https://127.0.0.1:55601/api/v2/meta-request \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <TOKEN>" \
   -d "{\"instruction\":\"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。\",\"payload_text\":\"～ニュース内容～\"}"
@@ -178,11 +236,10 @@ curl.exe -X POST http://127.0.0.1:55601/api/v2/meta-request \
 ### 例（PowerShell）
 
 ```powershell
-Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:55601/api/v2/meta-request" `
-  -ContentType "application/json; charset=utf-8" `
-  -Headers @{ Authorization = "Bearer <TOKEN>" } `
-  -Body '{"instruction":"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。","payload_text":"～ニュース内容～"}'
+curl.exe -k -X POST "https://127.0.0.1:55601/api/v2/meta-request" `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer <TOKEN>" `
+  -d "{\"instruction\":\"これは直近1時間のニュースです。内容をユーザに説明するとともに感想を述べてください。\",\"payload_text\":\"～ニュース内容～\"}"
 ```
 
 補足:
@@ -416,7 +473,7 @@ UI向けの「全設定」取得/更新。
 ## `/api/events/stream`（WebSocket）
 
 - URL: `ws(s)://<host>/api/events/stream`
-- 認証: `Authorization: Bearer <TOKEN>`
+- 認証: `Authorization: Bearer <TOKEN>` または Cookie セッション（`cocoro_session`）
 - 目的:
   - `POST /api/v2/notification` / `POST /api/v2/meta-request` を受信したとき、接続中クライアントへイベントを配信する
   - リマインダーが発火したとき、`reminder` をブロードキャスト配信する
@@ -525,6 +582,12 @@ UI向けの「全設定」取得/更新。
   "caps": ["vision.desktop", "vision.camera"]
 }
 ```
+
+補足:
+
+- ここで登録する `client_id` は「端末識別用ID（`ws_client_id`）」として扱う
+  - Web UI は `ws_client_id` を `localStorage` に保存して再利用する（UIに表示しない）
+- 会話継続用の `shared_conversation_id` は `/api/chat` 側でサーバが固定で扱うため、WS の `hello.client_id` と混ぜない
 
 ## `/api/control`
 

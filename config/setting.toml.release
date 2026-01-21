@@ -5,6 +5,9 @@ cocoro_ghost_port = 55601
 
 token = "cocoro_token"
 
+# Web UI 自動ログイン（Cookieセッションをトークン無しで自動発行）
+web_auto_login_enabled = true
+
 # ログレベル
 log_level = "DEBUG"
 #log_level = "INFO"

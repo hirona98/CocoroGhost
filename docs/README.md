@@ -27,6 +27,8 @@
 8. `docs/06_ストレージ（SQLite）.md`
 9. `docs/07_API.md`
 10. `docs/12_画像付きチャット.md`
-11. `docs/08_観測とデバッグ.md`
-12. `docs/09_感情.md`
-13. `docs/10_実行フロー.md`
+11. `docs/13_WebブラウザUI.md`
+12. `docs/14_WebUI_HTTPS_実装設計.md`
+13. `docs/08_観測とデバッグ.md`
+14. `docs/09_感情.md`
+15. `docs/10_実行フロー.md`

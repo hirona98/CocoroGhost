@@ -20,6 +20,12 @@ def main() -> None:
     paths.get_db_dir()
     paths.get_logs_dir()
 
+    # --- TLS（自己署名）を用意する ---
+    # NOTE: LAN 内でも HTTPS を必須にする。
+    from cocoro_ghost.tls import ensure_self_signed_tls_files
+
+    cert_path, key_path = ensure_self_signed_tls_files()
+
     # --- 設定ファイルが無い場合は、案内して終了 ---
     # 初回起動時に stacktrace を出すよりも、ユーザーが取るべき行動を明確にする。
     config_path = paths.get_default_config_file_path()
@@ -41,7 +47,14 @@ def main() -> None:
 
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=toml_config.cocoro_ghost_port, reload=False)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=toml_config.cocoro_ghost_port,
+        reload=False,
+        ssl_certfile=str(cert_path),
+        ssl_keyfile=str(key_path),
+    )
 
 
 if __name__ == "__main__":
