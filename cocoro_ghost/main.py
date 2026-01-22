@@ -23,6 +23,7 @@ from cocoro_ghost.api import (
     events,
     logs,
     meta_request,
+    mood,
     notification,
     reminders,
     settings,
@@ -131,6 +132,7 @@ def create_app() -> FastAPI:
     app.include_router(settings.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
     app.include_router(reminders.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
     app.include_router(admin.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
+    app.include_router(mood.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
     app.include_router(control.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
     # Web UI 認証（ログイン/ログアウト）
     app.include_router(auth.router, prefix="/api")

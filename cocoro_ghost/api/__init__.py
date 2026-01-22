@@ -11,6 +11,7 @@ FastAPI の APIRouter を使用して各エンドポイントを実装する。
 - vision: 視覚（Vision）: capture-response API
 - settings: 設定取得/更新API
 - admin: 管理API（Unit操作等）
+- mood: 気分（LongMoodState）デバッグAPI
 - control: プロセス制御API（終了要求等）
 - events: イベントSSEストリーム
 - logs: ログSSEストリーム

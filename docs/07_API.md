@@ -612,6 +612,58 @@ Ghostプロセス自体の制御コマンド。
 
 - 受理後、Ghostは自プロセスへ `SIGTERM` を送って終了する
 
+## `/api/mood/debug`（管理/デバッグ）
+
+現在の「背景の気分（LongMoodState）」を、デバッグ観測向けに返す。
+
+目的:
+
+- 運用前のため互換は付けない
+- 感情（VAD + 本文 + payload）と「shock減衰込みの現在値」を、1回のAPIで確認できるようにする
+
+### `GET /api/mood/debug`
+
+認証:
+
+- `Authorization: Bearer <TOKEN>`
+
+動作:
+
+- `embedding_preset_id` は **サーバのアクティブ設定**を使用する（クライアントからは受け取らない）
+- `long_mood_state` が存在しない場合は `mood: null` を返す
+- `shock_vad` は **読み出し時点（now）で時間減衰**させた値を返す
+  - `dt_seconds = now_ts - last_confirmed_at` を用いる
+
+レスポンス（成功）:
+
+```json
+{
+  "mood": {
+    "state_id": 123,
+    "body_text": "string",
+    "confidence": 0.0,
+    "salience": 0.7,
+    "payload": {},
+    "baseline_vad": {"v": 0.0, "a": 0.0, "d": 0.0},
+    "shock_vad": {"v": 0.0, "a": 0.0, "d": 0.0},
+    "vad": {"v": 0.0, "a": 0.0, "d": 0.0},
+    "now": "2026-01-10T14:06:59+09:00",
+    "dt_seconds": 1019,
+    "last_confirmed_at": "2026-01-10T13:50:00+09:00"
+  }
+}
+```
+
+レスポンス（long_mood_state 未作成）:
+
+```json
+{ "mood": null }
+```
+
+エラー:
+
+- `503 Service Unavailable`（記憶機能が無効: `memory_enabled=false`）
+
 ## 管理API（案）
 
 運用前のため互換は付けない。観測とデバッグを優先する。
