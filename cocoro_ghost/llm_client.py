@@ -1032,14 +1032,30 @@ class LlmClient:
             b64 = base64.b64encode(image_bytes).decode("ascii")
             # --- 指示文（必要なら最大文字数を明示） ---
             # NOTE: 受信側の暴走対策として、後段でも念のため切り詰める。
-            instructions: list[str] = [
-                "この画像を日本語で詳細に説明してください。",
-            ]
+            #
+            # NOTE:
+            # - visionモデルに「画像」と言ってしまうと、戻り文が「この画像は〜」になりやすい。
+            # - デスクトップウォッチは「画面（スクリーンショット）」として扱うのが意図なので、
+            #   purpose に応じてタスク定義の語彙だけを差し替える。
+            is_desktop_watch_summary = str(purpose or "").strip() == LlmRequestPurpose.SYNC_IMAGE_SUMMARY_DESKTOP_WATCH
+            if is_desktop_watch_summary:
+                system_text = "あなたは日本語で説明します。"
+                instruction_head = "これはデスクトップ画面（スクリーンショット）です。"
+                instruction_body = "画面の内容を詳細に説明してください。"
+            else:
+                system_text = "あなたは日本語で画像を説明します。"
+                instruction_head = ""
+                instruction_body = "この画像を詳細に説明してください。"
+
+            instructions: list[str] = []
+            if instruction_head:
+                instructions.append(instruction_head)
+            instructions.append(instruction_body)
             if max_chars is not None and int(max_chars) > 0:
                 instructions.append(f"必須: {int(max_chars)}文字以内。")
             instruction_text = " ".join(instructions).strip()
             messages = [
-                {"role": "system", "content": "あなたは日本語で画像を説明します。"},
+                {"role": "system", "content": system_text},
                 {
                     "role": "user",
                     "content": [
