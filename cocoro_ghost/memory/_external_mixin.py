@@ -279,6 +279,12 @@ class _ExternalMemoryMixin:
     def handle_vision_capture_response(self, request: schemas.VisionCaptureResponseV2Request) -> None:
         """視覚のcapture-responseを受け取り、待機中の要求へ紐づけ、画像説明を出来事ログへ保存する。"""
 
+        # --- 画像説明テキストの最大長（文字） ---
+        # NOTE:
+        # - vision_detail は出来事ログとして保持するため、極端な長文は避ける。
+        # - ここでは「画像説明（詳細）」の上限を 600 文字に揃える。
+        image_detail_max_chars = 600
+
         # --- まずは待機中の要求へ紐づける（タイムアウト済みなら何もしない） ---
         ok = vision_bridge.fulfill_capture_response(
             vision_bridge.VisionCaptureResponse(
@@ -308,6 +314,7 @@ class _ExternalMemoryMixin:
         descriptions = self.llm_client.generate_image_summary(  # type: ignore[attr-defined]
             images_bytes,
             purpose=LlmRequestPurpose.SYNC_IMAGE_DETAIL,
+            max_chars=int(image_detail_max_chars),
         )
         detail_text = "\n\n".join([d.strip() for d in descriptions if str(d or "").strip()]).strip()
         if not detail_text:
@@ -439,6 +446,12 @@ class _ExternalMemoryMixin:
         embedding_preset_id = str(cfg.embedding_preset_id).strip()
         embedding_dimension = int(cfg.embedding_dimension)
 
+        # --- 画像説明テキストの最大長（文字） ---
+        # NOTE:
+        # - デスクトップウォッチの画像説明は「画面の材料」だが、長すぎると後段プロンプトのノイズになりやすい。
+        # - ここでは vision 側の出力を 600 文字に制限し、扱いやすい粒度に揃える。
+        image_detail_max_chars = 600
+
         # --- 視覚要求（命令） ---
         resp = vision_bridge.request_capture_and_wait(
             target_client_id=str(target_client_id),
@@ -466,6 +479,7 @@ class _ExternalMemoryMixin:
         descriptions = self.llm_client.generate_image_summary(  # type: ignore[attr-defined]
             images_bytes,
             purpose=LlmRequestPurpose.SYNC_IMAGE_SUMMARY_DESKTOP_WATCH,
+            max_chars=int(image_detail_max_chars),
         )
         detail_text = "\n\n".join([d.strip() for d in descriptions if str(d or "").strip()]).strip()
 
@@ -538,4 +552,3 @@ class _ExternalMemoryMixin:
             event_id=int(event_id),
         )
         return "ok"
-
