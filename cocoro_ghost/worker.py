@@ -641,10 +641,10 @@ def _handle_generate_write_plan(
                 "event_id": int(x.event_id),
                 "created_at": format_iso8601_local(int(x.created_at)),
                 "source": str(x.source),
-                "user_text": str(x.user_text or "")[:600],
-                "assistant_text": str(x.assistant_text or "")[:600],
+                "user_text": str(x.user_text or "")[:1000],
+                "assistant_text": str(x.assistant_text or "")[:1000],
                 "image_summaries_preview": (
-                    "\n".join(_image_summaries_list(getattr(x, "image_summaries_json", None)))[:600] or None
+                    "\n".join(_image_summaries_list(getattr(x, "image_summaries_json", None)))[:1000] or None
                 ),
             }
             for x in recent_events
@@ -653,8 +653,8 @@ def _handle_generate_write_plan(
             {
                 "state_id": int(s.state_id),
                 "kind": str(s.kind),
-                "body_text": str(s.body_text)[:600],
-                "payload_json": str(s.payload_json)[:800],
+                "body_text": str(s.body_text)[:1000],
+                "payload_json": str(s.payload_json)[:1000],
                 "last_confirmed_at": format_iso8601_local(int(s.last_confirmed_at)),
                 # NOTE: DBはUNIX秒だが、LLMにはISOで渡す。
                 "valid_from_ts": (
