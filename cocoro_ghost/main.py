@@ -71,11 +71,6 @@ def create_app() -> FastAPI:
         log_file_path=toml_config.log_file_path,
         log_file_max_bytes=toml_config.log_file_max_bytes,
     )
-    # uvicorn の access log から特定リクエストだけ除外（開発時にノイズになりがち）
-    suppress_uvicorn_access_log_paths(
-        "/api/health",
-        "/favicon.ico",
-    )
 
     # 2. 設定DB初期化
     init_settings_db()
@@ -123,6 +118,20 @@ def create_app() -> FastAPI:
 
     # 6. FastAPIアプリ作成
     app = FastAPI(title="CocoroGhost API")
+
+    # --- uvicorn access log のノイズ抑制 ---
+    # NOTE:
+    # - PyInstaller/配布版では `entrypoint.py` が先に `app` を import してから uvicorn を起動する。
+    # - その場合、create_app() 内で uvicorn.access に filter を付与しても、uvicorn 側のログ初期化で上書きされ得る。
+    # - startup event で付与すれば、uvicorn のログ設定後に確実に反映できる。
+    @app.on_event("startup")
+    async def suppress_noisy_uvicorn_access_logs() -> None:
+        """頻繁なアクセスログ（ノイズ）を uvicorn.access から除外する。"""
+        suppress_uvicorn_access_log_paths(
+            "/api/health",
+            "/api/mood/debug",
+            "/favicon.ico",
+        )
 
     # APIルーターを登録（認証が必要なエンドポイント）
     app.include_router(chat.router, dependencies=[Depends(require_bearer_or_cookie_session)], prefix="/api")
