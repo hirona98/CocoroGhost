@@ -26,7 +26,16 @@ from cocoro_ghost import affect
 from cocoro_ghost import common_utils, prompt_builders, vector_index
 from cocoro_ghost.db import memory_session_scope, upsert_vec_item
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
-from cocoro_ghost.memory_models import Event, EventAffect, EventLink, EventThread, Job, Revision, State
+from cocoro_ghost.memory_models import (
+    Event,
+    EventAffect,
+    EventAssistantSummary,
+    EventLink,
+    EventThread,
+    Job,
+    Revision,
+    State,
+)
 from cocoro_ghost.time_utils import format_iso8601_local, parse_iso8601_to_utc_ts
 
 
@@ -231,6 +240,54 @@ def _build_event_affect_embedding_text(aff: EventAffect) -> str:
     return text_out
 
 
+def _build_event_assistant_summary_input(ev: Event) -> str:
+    """要約生成のための入力テキストを組み立てる。
+
+    方針:
+        - 事実追加を防ぐため、材料は events の本文（user/assistant/画像要約）だけに限定する。
+        - LLMが読みやすいようにラベルを付ける。
+        - 長文は切り詰める（workerでのコスト暴れを防ぐ）。
+    """
+
+    parts: list[str] = []
+
+    # --- user_text ---
+    ut = str(ev.user_text or "").strip()
+    if ut:
+        parts.append("[user_text]")
+        parts.append(ut)
+
+    # --- assistant_text ---
+    at = common_utils.strip_face_tags(str(ev.assistant_text or "").strip())
+    if at:
+        if parts:
+            parts.append("")
+        parts.append("[assistant_text]")
+        parts.append(at)
+
+    # --- 画像要約（内部用） ---
+    img_json = str(getattr(ev, "image_summaries_json", None) or "").strip()
+    if img_json:
+        try:
+            obj = json.loads(img_json)
+        except Exception:  # noqa: BLE001
+            obj = None
+        if isinstance(obj, list):
+            summaries = [str(x or "").strip() for x in obj if str(x or "").strip()]
+            if summaries:
+                if parts:
+                    parts.append("")
+                parts.append("[image_summaries]")
+                parts.extend(summaries[:5])
+
+    text_out = "\n".join([p for p in parts if p is not None]).strip()
+
+    # --- 長すぎる場合は頭側を優先して切る（要約の目的は「何の話か」） ---
+    if len(text_out) > 6000:
+        text_out = text_out[:6000]
+    return text_out
+
+
 def _state_row_to_json(st: State) -> dict[str, Any]:
     """State行をJSON化する（LLM入力/Revision保存の両方で使う）。"""
     return {
@@ -430,6 +487,13 @@ def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_clie
             )
         elif kind == "upsert_event_affect_embedding":
             _handle_upsert_event_affect_embedding(
+                embedding_preset_id=embedding_preset_id,
+                embedding_dimension=embedding_dimension,
+                llm_client=llm_client,
+                payload=payload,
+            )
+        elif kind == "upsert_event_assistant_summary":
+            _handle_upsert_event_assistant_summary(
                 embedding_preset_id=embedding_preset_id,
                 embedding_dimension=embedding_dimension,
                 llm_client=llm_client,
@@ -1323,6 +1387,85 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         reason="chat_turn_interval",
                         watermark_event_id=int(watermark_event_id),
                     )
+
+
+def _handle_upsert_event_assistant_summary(
+    *,
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    llm_client: LlmClient,
+    payload: dict[str, Any],
+) -> None:
+    """events.assistant_text の要約を生成し、event_assistant_summaries へ upsert する。"""
+
+    # --- payload を読む ---
+    event_id = int(payload.get("event_id") or 0)
+    if event_id <= 0:
+        raise RuntimeError("payload.event_id is required")
+
+    # --- event を読む（必要な材料だけ） ---
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        ev = db.query(Event).filter(Event.event_id == int(event_id)).one_or_none()
+        if ev is None:
+            return
+
+        # --- 本文が無いなら要約しない ---
+        assistant_text = str(ev.assistant_text or "").strip()
+        if not assistant_text:
+            return
+
+        # --- 既に最新の要約があるならスキップ ---
+        existing = db.query(EventAssistantSummary).filter(EventAssistantSummary.event_id == int(event_id)).one_or_none()
+        if existing is not None:
+            if int(existing.event_updated_at) == int(ev.updated_at) and str(existing.summary_text or "").strip():
+                return
+
+        input_text = _build_event_assistant_summary_input(ev)
+        event_updated_at = int(ev.updated_at)
+
+    if not input_text:
+        return
+
+    # --- LLMで要約（JSONのみ） ---
+    resp = llm_client.generate_json_response(
+        system_prompt=prompt_builders.event_assistant_summary_system_prompt(),
+        input_text=input_text,
+        purpose=LlmRequestPurpose.ASYNC_EVENT_ASSISTANT_SUMMARY,
+        max_tokens=300,
+    )
+    obj = common_utils.parse_first_json_object_or_none(common_utils.first_choice_content(resp))
+    summary = str((obj or {}).get("summary") or "").strip()
+    summary = common_utils.strip_face_tags(summary)
+    summary = " ".join(summary.replace("\r", " ").replace("\n", " ").split()).strip()
+
+    # --- 空/異常は保存しない（ノイズを増やさない） ---
+    if not summary:
+        return
+    if len(summary) > 280:
+        summary = summary[:280].rstrip()
+
+    # --- DBへ upsert（event_id 1:1） ---
+    now_ts = _now_utc_ts()
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        db.execute(
+            text(
+                """
+                INSERT INTO event_assistant_summaries(event_id, summary_text, event_updated_at, created_at, updated_at)
+                VALUES (:event_id, :summary_text, :event_updated_at, :created_at, :updated_at)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    summary_text=excluded.summary_text,
+                    event_updated_at=excluded.event_updated_at,
+                    updated_at=excluded.updated_at
+                """
+            ),
+            {
+                "event_id": int(event_id),
+                "summary_text": str(summary),
+                "event_updated_at": int(event_updated_at),
+                "created_at": int(now_ts),
+                "updated_at": int(now_ts),
+            },
+        )
 
 
 def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, payload: dict[str, Any]) -> None:

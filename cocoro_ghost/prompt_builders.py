@@ -252,6 +252,43 @@ def selection_system_prompt() -> str:
     ).strip()
 
 
+def event_assistant_summary_system_prompt() -> str:
+    """イベントのアシスタント本文（events.assistant_text）要約用のsystem promptを返す。
+
+    目的:
+        - SearchResultPack の「選別」入力（candidates）を軽量化し、SSE開始までの体感速度を改善する。
+        - 返答生成（会話本文）では元の events.* を使い、要約は「選別の材料」専用とする。
+    """
+
+    return "\n".join(
+        [
+            "あなたは、1件のイベント（user_text/assistant_text/画像要約）を短く要約する。",
+            "出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
+            "",
+            "目的:",
+            "- 検索候補の選別で「何の話だったか」を素早く判別できる短文要約を作る。",
+            "",
+            "品質（重要）:",
+            "- 入力に無い事実は作らない。推測や補完はしない。",
+            "- 固有名詞/型番/数値/年月などは、入力にある範囲でなるべく保持する。",
+            "- 口調は中立で良い（人格の口調に寄せる必要はない）。",
+            "",
+            "長さ:",
+            "- 1〜2文。",
+            "- 目安: 80〜180文字（長すぎる場合は短くする）。",
+            "",
+            "禁止:",
+            "- [face:Joy] のような会話装飾タグを混ぜない。",
+            "- 改行だらけの文章や箇条書きにしない。",
+            "",
+            "出力スキーマ:",
+            "{",
+            '  "summary": "string"',
+            "}",
+        ]
+    ).strip()
+
+
 def reply_system_prompt(*, persona_text: str, addon_text: str, second_person_label: str) -> str:
     """
     返答生成用のsystem promptを組み立てる。
