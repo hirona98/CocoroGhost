@@ -103,7 +103,7 @@ class LlmPreset(Base):
     llm_model: Mapped[str] = mapped_column(String, nullable=False)
     llm_base_url: Mapped[Optional[str]] = mapped_column(String)
     reasoning_effort: Mapped[Optional[str]] = mapped_column(String)
-    max_turns_window: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    max_turns_window: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
     max_tokens_vision: Mapped[int] = mapped_column(Integer, nullable=False, default=4096)
     max_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=4096)
 
