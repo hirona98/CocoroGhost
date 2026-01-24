@@ -40,6 +40,7 @@ class Config:
     llm_log_level: str   # LLM送受信ログレベル（DEBUG, INFO, OFF）
     llm_timeout_seconds: int  # LLM API（非ストリーム）のタイムアウト秒数
     llm_stream_timeout_seconds: int  # LLM API（ストリーム開始）のタイムアウト秒数
+    retrieval_max_candidates: int  # 記憶検索: 候補収集の最大件数（SearchResultPack選別入力の上限）
     log_file_enabled: bool  # ファイルログ有効/無効
     log_file_path: str      # ファイルログの保存先パス
     log_file_max_bytes: int  # ファイルログのローテーションサイズ（bytes）
@@ -181,6 +182,7 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         "llm_log_level",
         "llm_timeout_seconds",
         "llm_stream_timeout_seconds",
+        "retrieval_max_candidates",
         "log_file_enabled",
         "log_file_path",
         "log_file_max_bytes",
@@ -208,6 +210,15 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
     if llm_stream_timeout_seconds <= 0:
         raise ValueError("llm_stream_timeout_seconds must be a positive integer")
 
+    # --- 記憶検索: 候補数上限（既定: 80） ---
+    # NOTE:
+    # - SearchResultPack の「候補収集 → LLM選別」は SSE 開始前の同期経路なので、候補が膨らむと体感が悪化する。
+    # - ここは品質を維持しつつ体感を改善するための「上限」で、実装側で必ず強制する。
+    retrieval_max_candidates = int(data.get("retrieval_max_candidates", 80))
+    if retrieval_max_candidates <= 0:
+        raise ValueError("retrieval_max_candidates must be a positive integer")
+    retrieval_max_candidates = max(1, min(400, int(retrieval_max_candidates)))
+
     config = Config(
         # --- サーバー待受ポート（必須） ---
         cocoro_ghost_port=int(_require(data, "cocoro_ghost_port")),
@@ -222,6 +233,8 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         # - stream は「開始まで」の待ちを制限する目的（本文生成はストリームで継続受信する）。
         llm_timeout_seconds=int(llm_timeout_seconds),
         llm_stream_timeout_seconds=int(llm_stream_timeout_seconds),
+        # --- 記憶検索（候補上限） ---
+        retrieval_max_candidates=int(retrieval_max_candidates),
         log_file_enabled=bool(data.get("log_file_enabled", False)),
         log_file_path=resolved_log_file_path,
         log_file_max_bytes=int(data.get("log_file_max_bytes", 200_000)),

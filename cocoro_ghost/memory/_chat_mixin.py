@@ -906,12 +906,17 @@ class _ChatMemoryMixin:
                 pass
 
         # --- 4) SearchPlan（LLM） ---
+        # --- 起動設定（TOML）: 候補上限 ---
+        # NOTE:
+        # - SearchPlan は LLM が返すため、limits.max_candidates が過大になる可能性がある。
+        # - 実装側で必ず上限を強制するが、既定planにも反映して「意図しない膨張」を避ける。
+        toml_max_candidates = int(self.config_store.toml_config.retrieval_max_candidates)
         plan_obj: dict[str, Any] = {
             "mode": "associative_recent",
             "queries": [augmented_query_text],
             "time_hint": {"about_year_start": None, "about_year_end": None, "life_stage_hint": ""},
             "diversify": {"by": ["life_stage", "about_year_bucket"], "per_bucket": 5},
-            "limits": {"max_candidates": 200, "max_selected": 12},
+            "limits": {"max_candidates": int(toml_max_candidates), "max_selected": 12},
         }
         try:
             resp = self.llm_client.generate_json_response(
@@ -925,6 +930,19 @@ class _ChatMemoryMixin:
                 plan_obj = obj
         except Exception as exc:  # noqa: BLE001
             logger.warning("SearchPlan generation failed; fallback to default", exc_info=exc)
+
+        # --- SearchPlan.limits の正規化（実装が強制する上限を反映） ---
+        # NOTE:
+        # - 候補収集の実体は _ChatSearchMixin 側で上限を強制する。
+        # - ここで plan_obj にも反映しておくと、LLM選別入力/ログが実際の挙動と一致しやすい。
+        limits_obj = plan_obj.get("limits") if isinstance(plan_obj, dict) else None
+        if not isinstance(limits_obj, dict):
+            limits_obj = {}
+            plan_obj["limits"] = limits_obj
+        raw_plan_max = limits_obj.get("max_candidates")
+        plan_max = int(raw_plan_max) if isinstance(raw_plan_max, (int, float)) else int(toml_max_candidates)
+        plan_max = max(1, min(400, int(plan_max)))
+        limits_obj["max_candidates"] = int(min(int(plan_max), int(toml_max_candidates)))
 
         # --- 5) 候補収集（取りこぼし防止優先・可能なものは並列） ---
         candidates: list[_CandidateItem] = self._collect_candidates(

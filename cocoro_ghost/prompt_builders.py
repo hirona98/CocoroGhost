@@ -163,7 +163,7 @@ def search_plan_system_prompt() -> str:
             '    "life_stage_hint": ""',
             "  },",
             '  "diversify": {"by": ["life_stage", "about_year_bucket"], "per_bucket": 5},',
-            '  "limits": {"max_candidates": 200, "max_selected": 12}',
+            '  "limits": {"max_candidates": 80, "max_selected": 12}',
             "}",
             "",
             "ルール:",

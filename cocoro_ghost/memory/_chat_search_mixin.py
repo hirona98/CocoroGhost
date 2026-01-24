@@ -111,6 +111,14 @@ class _ChatSearchMixin:
             max_candidates = int(limits.get("max_candidates") or 200)
         max_candidates = max(1, min(400, max_candidates))
 
+        # --- 起動設定（TOML）の上限を強制する ---
+        # NOTE:
+        # - SearchPlan は LLM が返すため、limits.max_candidates が過大になり得る。
+        # - 体感速度の劣化を防ぐため、TOMLの上限を最終的な上限として必ず適用する。
+        toml_max_candidates = int(self.config_store.toml_config.retrieval_max_candidates)  # type: ignore[attr-defined]
+        toml_max_candidates = max(1, min(400, int(toml_max_candidates)))
+        max_candidates = int(min(int(max_candidates), int(toml_max_candidates)))
+
         # --- 並列候補収集（タイムアウトで全体が破綻しない） ---
         # NOTE:
         # - セッションはスレッドセーフではないため、各タスクで個別に開く。
