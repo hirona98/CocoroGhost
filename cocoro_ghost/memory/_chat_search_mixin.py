@@ -79,6 +79,218 @@ def _fts_or_query(terms: list[str]) -> str:
 class _ChatSearchMixin:
     """チャット検索（候補収集/分散/pack生成）の実装（mixin）。"""
 
+    def _apply_source_quota(
+        self,
+        *,
+        candidates: list[_CandidateItem],
+        plan_obj: dict[str, Any],
+        max_candidates: int,
+    ) -> list[_CandidateItem]:
+        """
+        候補の「経路偏り」を抑えるため、TOML設定の割合配分で候補を間引く。
+
+        目的:
+            - trigram / context / vector など「増えやすい経路」が席を独占すると、選別入力が膨らみ体感が悪化する。
+            - 一方で品質（取りこぼし）を落とさないため、multi-hit（複数経路一致）と state を優先的に残す。
+
+        方針:
+            - まず候補をカテゴリに分ける（「何を残したいか」を明示して、偏りを抑える）。
+              - state: 事実/タスクなど。会話の安定性に効くため、経路より優先して確保する。
+              - multi-hit: 複数経路で一致した候補（hit_sources>=2）。取りこぼし防止に効くため厚めに確保する。
+              - *-only: hit_sourcesが1件の候補を「どの経路だけで当たったか」で分類する。
+                - vector-only: 語一致しないが意味が近いケースの拾い上げに効く
+                - context-only: 返信連鎖/同一文脈/因果など「流れ」維持に効く
+                - trigram-only: 固有名詞/型番/部分一致に効くが、ノイズも増えやすい
+                - recent-only: 直近の連想に効くが、弱い一致が増えやすい
+                - about_time-only: 年/ライフステージのヒント検索（全期間モード向け）
+              - affect: event_affect（瞬間感情）。会話トーン補助だが、候補を食い過ぎやすいので「最大割合」だけ設ける。
+            - mode に応じて、retrieval_max_candidates（=N）のX%を各カテゴリへ割り当てる（TOMLで設定）。
+            - X%枠が埋まらない場合は「次カテゴリへ繰り越し」し、最終的にN件を確保する（不足は元の順位順で埋める）。
+        """
+
+        # --- 入力の正規化 ---
+        if not candidates:
+            return []
+        cap = max(1, int(max_candidates))
+        cap = max(1, min(400, int(cap)))
+
+        # --- mode に応じた割合設定を取得する ---
+        # NOTE:
+        # - associative_recent は「直近の連想」が中心なので multi-hit / vector-only / context-only を厚めにする。
+        # - targeted_broad/explicit_about_time は「全期間」なので about_time-only を厚めにする。
+        mode = str(plan_obj.get("mode") or "").strip()
+        tc = self.config_store.toml_config  # type: ignore[attr-defined]
+        if mode in ("targeted_broad", "explicit_about_time"):
+            # --- 全期間モード向けの配分 ---
+            # NOTE:
+            # - multi-hit/state を確保しつつ、期間ヒント（about_time-only）を厚めにする。
+            # - context-only は「今の流れ」寄りなので薄め。
+            quota_percent = {
+                "state": int(tc.retrieval_quota_broad_state_percent),
+                "multi_hit": int(tc.retrieval_quota_broad_multi_hit_percent),
+                "about_time_only": int(tc.retrieval_quota_broad_about_time_only_percent),
+                "vector_only": int(tc.retrieval_quota_broad_vector_only_percent),
+                "context_only": int(tc.retrieval_quota_broad_context_only_percent),
+                "trigram_only": int(tc.retrieval_quota_broad_trigram_only_percent),
+            }
+            category_order = [
+                "state",
+                "multi_hit",
+                "about_time_only",
+                "vector_only",
+                "context_only",
+                "trigram_only",
+            ]
+        else:
+            # --- 直近連想モード向けの配分 ---
+            # NOTE:
+            # - multi-hit/state を確保しつつ、意味近傍（vector-only）と流れ（context-only）を厚めにする。
+            # - trigram-only/recent-only は増えやすい割にノイズも増えるため薄め。
+            quota_percent = {
+                "state": int(tc.retrieval_quota_assoc_state_percent),
+                "multi_hit": int(tc.retrieval_quota_assoc_multi_hit_percent),
+                "vector_only": int(tc.retrieval_quota_assoc_vector_only_percent),
+                "context_only": int(tc.retrieval_quota_assoc_context_only_percent),
+                "trigram_only": int(tc.retrieval_quota_assoc_trigram_only_percent),
+                "recent_only": int(tc.retrieval_quota_assoc_recent_only_percent),
+            }
+            category_order = [
+                "state",
+                "multi_hit",
+                "vector_only",
+                "context_only",
+                "trigram_only",
+                "recent_only",
+            ]
+
+        # --- event_affect の最大割合（上限） ---
+        # NOTE:
+        # - event_affect は「トーン調整」の補助。候補を食い過ぎると本筋（state/event）の候補が減りやすい。
+        # - ここは「最大割合」で縛るだけ（= 上限キャップ）。無理に最低件数を確保するとノイズが混ざりやすいので行わない。
+        #   - 例: retrieval_max_candidates=80, retrieval_event_affect_max_percent=5 の場合、event_affect は最大4件まで。
+        #   - 0% にすると、event_affect は候補に入らない（= トーン調整を候補で行わない）。
+        affect_max_percent = max(0, min(100, int(tc.retrieval_event_affect_max_percent)))
+        affect_cap = int(math.floor(float(cap) * (float(affect_max_percent) / 100.0)))
+        affect_cap = max(0, min(int(cap), int(affect_cap)))
+
+        # --- カテゴリ判定 ---
+        # NOTE:
+        # - state / event_affect は「種別が重要」なので、経路に関係なく先に分ける。
+        # - multi-hit は複数経路一致（len(hit_sources)>=2）。経路の信頼度を直接比較しない代わりに、
+        #   「複数の根拠がある候補」を優先して残し、取りこぼしを抑える。
+        # - *-only は hit_sources が1件の候補を「どの経路だけで当たったか」で分類する。
+        #   これにより、量が増えやすい経路が候補を独占するのを抑えられる。
+        def category_of(c: _CandidateItem) -> str:
+            if str(c.type) == "state":
+                return "state"
+            if str(c.type) == "event_affect":
+                return "affect"
+            hs = list(c.hit_sources or [])
+            if len(hs) >= 2:
+                return "multi_hit"
+            if len(hs) == 1:
+                src = str(hs[0] or "").strip()
+                if src == "vector_all":
+                    return "vector_only"
+                if src == "about_time":
+                    return "about_time_only"
+                if src == "trigram_events":
+                    return "trigram_only"
+                if src == "recent_events":
+                    return "recent_only"
+                if src in ("reply_chain", "context_threads", "context_links"):
+                    # NOTE:
+                    # - reply_chain: 返信連鎖（直前文脈）
+                    # - context_threads: 同一スレッド（話題の流れ）
+                    # - context_links: same_topic/caused_by/continuation（話題/因果/継続）
+                    return "context_only"
+            return "other"
+
+        # --- カテゴリごとに候補を分配（元の順序を保持） ---
+        by_cat: dict[str, list[_CandidateItem]] = {}
+        for c in candidates:
+            k = category_of(c)
+            lst = by_cat.get(k)
+            if lst is None:
+                lst = []
+                by_cat[k] = lst
+            lst.append(c)
+
+        # --- 割合（%）→ 上限件数へ変換 ---
+        # NOTE:
+        # - 端数は floor で落とす（例: N=80, 5% → 4件）。
+        # - 割合の合計が100%未満でもOK。残りは後段で埋めて取りこぼしを抑える。
+        # - 逆に100%ちょうどでも「そのカテゴリに候補が無い」場合があるため、繰り越しが重要。
+        quotas: dict[str, int] = {}
+        for k, pct in quota_percent.items():
+            p = max(0, min(100, int(pct)))
+            quotas[str(k)] = int(math.floor(float(cap) * (float(p) / 100.0)))
+
+        # --- 選抜（カテゴリ枠 → 余りは順位順で埋める） ---
+        selected: list[_CandidateItem] = []
+        selected_keys: set[str] = set()
+        selected_affects = 0
+
+        def try_add(item: _CandidateItem) -> bool:
+            nonlocal selected_affects
+            if len(selected) >= int(cap):
+                return False
+            key = f"{str(item.type)}:{int(item.id)}"
+            if key in selected_keys:
+                return False
+            # --- affect 上限 ---
+            if str(item.type) == "event_affect":
+                if int(affect_cap) <= 0:
+                    return False
+                if int(selected_affects) >= int(affect_cap):
+                    return False
+                selected_affects += 1
+            selected.append(item)
+            selected_keys.add(key)
+            return True
+
+        # --- 1) カテゴリ枠で採用（余りは次カテゴリへ繰り越す） ---
+        # NOTE:
+        # - 「X%を厳密固定」すると、候補が薄いカテゴリがある場合に総数が不足しやすい。
+        # - ここでは「枠の余り」を carry して次カテゴリへ回し、候補総数を安定させる（品質優先）。
+        carry = 0
+        for cat in category_order:
+            base_limit = int(quotas.get(str(cat), 0))
+            limit = int(base_limit) + int(carry)
+            if limit <= 0:
+                carry = int(carry) + int(base_limit)
+                continue
+            pool = by_cat.get(str(cat), [])
+            used = 0
+            for item in pool:
+                if used >= int(limit):
+                    break
+                if try_add(item):
+                    used += 1
+            carry = int(limit) - int(used)
+
+        # --- 2) 余りをカテゴリ優先順で埋める（soft quota） ---
+        # NOTE:
+        # - ここは「不足分を埋める」段階。
+        # - まずはカテゴリ優先順（state/multi-hit/...）で追加し、偏りを抑えたまま総数を確保する。
+        # - affect は上限を維持したまま埋める。
+        if len(selected) < int(cap):
+            for cat in list(category_order) + ["other"]:
+                for item in by_cat.get(str(cat), []):
+                    if len(selected) >= int(cap):
+                        break
+                    try_add(item)
+
+        # --- 3) 最終フォールバック: 元の順位順で埋める ---
+        # NOTE: どのカテゴリにも属さない候補が多い場合でも、総数を確保して取りこぼしを減らす。
+        if len(selected) < int(cap):
+            for item in candidates:
+                if len(selected) >= int(cap):
+                    break
+                try_add(item)
+
+        return selected
+
     def _collect_candidates(
         self,
         *,
@@ -775,6 +987,11 @@ class _ChatSearchMixin:
         # - mode=targeted_broad/explicit_about_time のときだけ適用する（associative_recentは最近性優先）。
         # - 現状は event にしか about_time（life_stage/about_year）が無いため、eventのみ対象にする。
         out = self._apply_diversify_inplace(candidates=out, plan_obj=plan_obj)
+
+        # --- quota（経路偏り抑制）: modeごとの割合配分で候補を間引く ---
+        # NOTE:
+        # - ここでの間引きは「選別入力の安定化」が目的。取りこぼしを減らすため、余りは元の順位順で埋める。
+        out = self._apply_source_quota(candidates=out, plan_obj=plan_obj, max_candidates=int(max_candidates))
 
         return out[:max_candidates]
 
