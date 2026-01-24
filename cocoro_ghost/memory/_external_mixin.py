@@ -159,6 +159,14 @@ class _ExternalMemoryMixin:
             event_id=int(event_id),
         )
 
+        # --- 非同期: アシスタント本文要約（選別入力の高速化） ---
+        background_tasks.add_task(
+            self._enqueue_event_assistant_summary_job,  # type: ignore[attr-defined]
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
         # --- 非同期: 記憶更新（WritePlan） ---
         background_tasks.add_task(
             self._enqueue_write_plan_job,  # type: ignore[attr-defined]
@@ -351,6 +359,13 @@ class _ExternalMemoryMixin:
             event_id=int(event_id),
         )
 
+        # --- 非同期: アシスタント本文要約（選別入力の高速化） ---
+        self._enqueue_event_assistant_summary_job(  # type: ignore[attr-defined]
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
         # --- 非同期: 記憶更新（WritePlan） ---
         self._enqueue_write_plan_job(  # type: ignore[attr-defined]
             embedding_preset_id=embedding_preset_id,
@@ -426,6 +441,13 @@ class _ExternalMemoryMixin:
 
         # --- 非同期: 埋め込み更新 ---
         self._enqueue_event_embedding_job(  # type: ignore[attr-defined]
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+        # --- 非同期: アシスタント本文要約（選別入力の高速化） ---
+        self._enqueue_event_assistant_summary_job(  # type: ignore[attr-defined]
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),
@@ -540,6 +562,13 @@ class _ExternalMemoryMixin:
 
         # --- 埋め込み更新 ---
         self._enqueue_event_embedding_job(  # type: ignore[attr-defined]
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+        # --- 非同期: アシスタント本文要約（選別入力の高速化） ---
+        self._enqueue_event_assistant_summary_job(  # type: ignore[attr-defined]
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),

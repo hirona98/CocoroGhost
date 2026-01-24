@@ -24,7 +24,7 @@ from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 from cocoro_ghost.llm_client import LlmRequestPurpose
 from cocoro_ghost.memory._chat_search_mixin import _CandidateItem
 from cocoro_ghost.memory._image_mixin import default_input_text_when_images_only
-from cocoro_ghost.memory_models import Event, EventLink, RetrievalRun, State
+from cocoro_ghost.memory_models import Event, EventAssistantSummary, EventLink, RetrievalRun, State
 from cocoro_ghost.memory._utils import now_utc_ts
 from cocoro_ghost.time_utils import format_iso8601_local
 
@@ -123,7 +123,66 @@ def _encode_hit_sources_for_selection(hit_sources: list[str]) -> list[str]:
     return uniq
 
 
-def _build_compact_candidates_for_selection(candidates: list[_CandidateItem]) -> list[dict[str, Any]]:
+def _load_event_assistant_summaries_for_selection(
+    *,
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    candidates: list[_CandidateItem],
+) -> dict[int, str]:
+    """選別入力向けに、イベント要約（assistant_summary）をまとめてロードする。
+
+    方針:
+        - 返答生成（SearchResultPack注入）には使わず、あくまで「選別の材料」だけを軽くする。
+        - events.updated_at と一致する要約のみ採用し、古い要約は無視する（安全寄り）。
+    """
+
+    # --- event_id を集める ---
+    event_ids: list[int] = []
+    for c in (candidates or []):
+        if str(getattr(c, "type", "")) != "event":
+            continue
+        meta = getattr(c, "meta", None)
+        if not isinstance(meta, dict):
+            continue
+        eid = int(meta.get("event_id") or 0)
+        if eid > 0:
+            event_ids.append(int(eid))
+    event_ids = sorted({int(x) for x in event_ids if int(x) > 0})
+    if not event_ids:
+        return {}
+
+    # --- DBからまとめて引く ---
+    out: dict[int, str] = {}
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        rows = (
+            db.query(EventAssistantSummary.event_id, EventAssistantSummary.summary_text)
+            .join(Event, Event.event_id == EventAssistantSummary.event_id)
+            .filter(EventAssistantSummary.event_id.in_([int(x) for x in event_ids]))
+            .filter(EventAssistantSummary.event_updated_at == Event.updated_at)
+            .all()
+        )
+        for r in rows:
+            if not r:
+                continue
+            try:
+                eid = int(r[0] or 0)
+            except Exception:  # noqa: BLE001
+                continue
+            t = str(r[1] or "").strip()
+            if eid <= 0 or not t:
+                continue
+            # --- 異常に長い要約は安全に切る（選別入力の肥大化を防ぐ） ---
+            if len(t) > 600:
+                t = t[:600]
+            out[int(eid)] = t
+    return out
+
+
+def _build_compact_candidates_for_selection(
+    candidates: list[_CandidateItem],
+    *,
+    event_id_to_summary: dict[int, str] | None = None,
+) -> list[dict[str, Any]]:
     """SearchResultPack選別用の候補リスト（圧縮形式）を作る。"""
 
     # --- プレビューは「品質を落とさず短く」を狙う ---
@@ -136,6 +195,12 @@ def _build_compact_candidates_for_selection(candidates: list[_CandidateItem]) ->
     state_payload_limit = 180
     affect_moment_limit = 280
 
+    # --- event_id -> assistant_summary_text（存在すればこちらを優先） ---
+    # NOTE:
+    # - 要約は worker が作る派生情報であり、返答生成（SearchResultPack注入）には使わない。
+    # - 選別入力だけを軽くして、SSE開始までの待ちを削る。
+    summary_map: dict[int, str] = dict(event_id_to_summary or {})
+
     out: list[dict[str, Any]] = []
     for c in (candidates or []):
         meta = dict(c.meta or {})
@@ -144,16 +209,20 @@ def _build_compact_candidates_for_selection(candidates: list[_CandidateItem]) ->
         # --- event ---
         if str(c.type) == "event":
             at = meta.get("about_time") if isinstance(meta.get("about_time"), dict) else {}
+            event_id = int(meta.get("event_id") or 0)
+            assistant_text_raw = str(meta.get("assistant_text") or "")
+            assistant_summary = str(summary_map.get(int(event_id)) or "")
+            assistant_for_selection = assistant_summary if assistant_summary else assistant_text_raw
             out.append(
                 {
                     "t": "e",
-                    "id": int(meta.get("event_id") or 0),
+                    "id": int(event_id),
                     "ts": str(meta.get("created_at") or ""),
                     "src": str(meta.get("source") or ""),
                     "th": list(meta.get("thread_keys") or []),
                     "u": _preview_text_for_selection(str(meta.get("user_text") or ""), limit_chars=event_user_limit),
                     "a": _preview_text_for_selection(
-                        str(meta.get("assistant_text") or ""), limit_chars=event_asst_limit
+                        str(assistant_for_selection or ""), limit_chars=event_asst_limit
                     ),
                     "img": _preview_text_for_selection(
                         str(meta.get("image_summaries_preview") or ""), limit_chars=240
@@ -871,7 +940,14 @@ class _ChatMemoryMixin:
         search_result_pack: dict[str, Any] = {"selected": []}
         try:
             # --- 選別入力は圧縮して渡す（体感速度優先） ---
-            compact_candidates = _build_compact_candidates_for_selection(candidates)
+            event_id_to_summary = _load_event_assistant_summaries_for_selection(
+                embedding_preset_id=str(embedding_preset_id),
+                embedding_dimension=int(embedding_dimension),
+                candidates=candidates,
+            )
+            compact_candidates = _build_compact_candidates_for_selection(
+                candidates, event_id_to_summary=event_id_to_summary
+            )
             selection_input = common_utils.json_dumps(
                 {
                     "user_input": input_text,
@@ -1041,6 +1117,17 @@ class _ChatMemoryMixin:
         # --- 10) 非同期: 埋め込み更新ジョブを積む（次ターンで効く） ---
         background_tasks.add_task(
             self._enqueue_event_embedding_job,
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+        # --- 10.2) 非同期: アシスタント本文要約（選別入力の高速化） ---
+        # NOTE:
+        # - 返答本文（events.assistant_text）そのものは会話生成に使うので保持する。
+        # - 要約は「選別（SearchResultPack）入力の軽量化」専用の派生情報として worker で作る。
+        background_tasks.add_task(
+            self._enqueue_event_assistant_summary_job,
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),
