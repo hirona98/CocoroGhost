@@ -40,6 +40,187 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\n" + f"data: {common_utils.json_dumps(data)}\n\n"
 
 
+# --- SearchResultPack 選別: 入力を圧縮して体感速度を上げる ---
+#
+# 背景:
+# - 選別（SearchResultPack）はSSE開始前の同期経路なので、ここが遅いと体感が悪化する。
+# - 候補の「本文」をそのまま渡すと入力トークンが増え、選別が遅く/不安定になりやすい。
+# - 一方で、出力（selected）は ID を返せば、後段でDBから詳細を注入できる。
+#
+# 方針:
+# - 候補は「短いプレビュー＋メタ情報」に圧縮し、キー名も短縮する。
+# - 出力スキーマ（selectedの type/event_id/state_id/affect_id 等）は維持する。
+_HIT_SOURCE_TO_CODE: dict[str, str] = {
+    "recent_events": "re",
+    "trigram_events": "tg",
+    "reply_chain": "rc",
+    "context_threads": "ct",
+    "context_links": "cl",
+    "recent_states": "rs",
+    "about_time": "at",
+    "vector_all": "va",
+}
+
+
+def _preview_text_for_selection(text_in: str, *, limit_chars: int) -> str:
+    """LLM選別入力向けにテキストを短く整形する。
+
+    目的:
+        - 入力トークンを削減して選別を高速化する。
+        - 重要情報が末尾にある場合もあるため、単純な先頭切り捨てではなく「頭+末尾」を残す。
+
+    Args:
+        text_in: 入力テキスト。
+        limit_chars: 目安の最大文字数（文字数ベースで切る）。
+    """
+
+    # --- 正規化（会話装飾タグ除去＋空白整形） ---
+    s = common_utils.strip_face_tags(str(text_in or ""))
+    if not s:
+        return ""
+
+    # --- 既に短いならそのまま ---
+    limit = max(1, int(limit_chars))
+    if len(s) <= limit:
+        return s
+
+    # --- 頭+末尾で保持（末尾側の手がかりを残す） ---
+    head_len = max(1, int(limit * 0.65))
+    tail_len = max(1, int(limit - head_len - 1))
+    head = s[:head_len].rstrip()
+    tail = s[-tail_len:].lstrip() if tail_len > 0 else ""
+    if not tail:
+        return head
+    return f"{head}…{tail}"
+
+
+def _encode_hit_sources_for_selection(hit_sources: list[str]) -> list[str]:
+    """hit_sources を短いコード列に圧縮する。
+
+    NOTE:
+        - 未知のラベルは落とさずにそのまま残す（診断性と品質を優先）。
+    """
+
+    # --- 正規化 ---
+    hs = [str(x or "").strip() for x in (hit_sources or [])]
+    hs = [x for x in hs if x]
+    if not hs:
+        return []
+
+    # --- 短縮コード化 ---
+    out: list[str] = []
+    for x in hs:
+        out.append(_HIT_SOURCE_TO_CODE.get(x, x))
+
+    # --- 重複除去（順序は安定化） ---
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for x in out:
+        if x in seen:
+            continue
+        seen.add(x)
+        uniq.append(x)
+    return uniq
+
+
+def _build_compact_candidates_for_selection(candidates: list[_CandidateItem]) -> list[dict[str, Any]]:
+    """SearchResultPack選別用の候補リスト（圧縮形式）を作る。"""
+
+    # --- プレビューは「品質を落とさず短く」を狙う ---
+    # NOTE:
+    # - ここはSSE開始前の同期経路なので、CPU側コストは最小にする（正規表現の多用は避ける）。
+    # - 文字数上限は「候補数が多い」状況を想定し、過度に大きくしない。
+    event_user_limit = 360
+    event_asst_limit = 420
+    state_body_limit = 420
+    state_payload_limit = 180
+    affect_moment_limit = 280
+
+    out: list[dict[str, Any]] = []
+    for c in (candidates or []):
+        meta = dict(c.meta or {})
+        hs = _encode_hit_sources_for_selection(list(c.hit_sources or []))
+
+        # --- event ---
+        if str(c.type) == "event":
+            at = meta.get("about_time") if isinstance(meta.get("about_time"), dict) else {}
+            out.append(
+                {
+                    "t": "e",
+                    "id": int(meta.get("event_id") or 0),
+                    "ts": str(meta.get("created_at") or ""),
+                    "src": str(meta.get("source") or ""),
+                    "th": list(meta.get("thread_keys") or []),
+                    "u": _preview_text_for_selection(str(meta.get("user_text") or ""), limit_chars=event_user_limit),
+                    "a": _preview_text_for_selection(
+                        str(meta.get("assistant_text") or ""), limit_chars=event_asst_limit
+                    ),
+                    "img": _preview_text_for_selection(
+                        str(meta.get("image_summaries_preview") or ""), limit_chars=240
+                    )
+                    or None,
+                    "at": {
+                        "y0": at.get("about_year_start"),
+                        "y1": at.get("about_year_end"),
+                        "ls": str(at.get("life_stage") or ""),
+                        "c": float(at.get("confidence") or 0.0),
+                    },
+                    "hs": hs,
+                }
+            )
+            continue
+
+        # --- state ---
+        if str(c.type) == "state":
+            out.append(
+                {
+                    "t": "s",
+                    "id": int(meta.get("state_id") or 0),
+                    "k": str(meta.get("kind") or ""),
+                    "ts": str(meta.get("last_confirmed_at") or ""),
+                    "b": _preview_text_for_selection(str(meta.get("body_text") or ""), limit_chars=state_body_limit),
+                    "p": _preview_text_for_selection(
+                        str(meta.get("payload_json") or ""), limit_chars=state_payload_limit
+                    ),
+                    "vf": meta.get("valid_from_ts"),
+                    "vt": meta.get("valid_to_ts"),
+                    "hs": hs,
+                }
+            )
+            continue
+
+        # --- event_affect ---
+        if str(c.type) == "event_affect":
+            vad = meta.get("vad") if isinstance(meta.get("vad"), dict) else {}
+            out.append(
+                {
+                    "t": "a",
+                    "id": int(meta.get("affect_id") or 0),
+                    "eid": int(meta.get("event_id") or 0),
+                    "ts": str(meta.get("created_at") or ""),
+                    "ets": str(meta.get("event_created_at") or ""),
+                    "m": _preview_text_for_selection(
+                        str(meta.get("moment_affect_text") or ""), limit_chars=affect_moment_limit
+                    ),
+                    "lab": list(meta.get("moment_affect_labels") or []),
+                    "vad": [float(vad.get("v") or 0.0), float(vad.get("a") or 0.0), float(vad.get("d") or 0.0)],
+                    "c": float(meta.get("confidence") or 0.0),
+                    "hs": hs,
+                }
+            )
+            continue
+
+    # --- 不正な候補は除外し、入力を安定させる ---
+    # NOTE: LLMに無意味な0 IDを渡すと「存在しないID」を返すリスクが上がるため、ここで落とす。
+    cleaned: list[dict[str, Any]] = []
+    for x in out:
+        t = str(x.get("t") or "")
+        i = int(x.get("id") or 0)
+        if t in ("e", "s", "a") and i > 0:
+            cleaned.append(x)
+    return cleaned
+
+
 class _UserVisibleReplySanitizer:
     """ユーザーに見せる本文から、内部コンテキストの混入を除去する。"""
 
@@ -689,14 +870,22 @@ class _ChatMemoryMixin:
         # --- 6) 選別（LLM → SearchResultPack） ---
         search_result_pack: dict[str, Any] = {"selected": []}
         try:
+            # --- 選別入力は圧縮して渡す（体感速度優先） ---
+            compact_candidates = _build_compact_candidates_for_selection(candidates)
             selection_input = common_utils.json_dumps(
                 {
                     "user_input": input_text,
                     "image_summaries": list(non_empty_summaries),
                     "plan": plan_obj,
-                    "candidates": [dict(c.meta) | {"hit_sources": c.hit_sources} for c in candidates],
+                    "candidates": compact_candidates,
                 }
             )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "SearchResultPack selection input prepared candidates=%d chars=%d",
+                    int(len(compact_candidates)),
+                    int(len(selection_input)),
+                )
             resp = self.llm_client.generate_json_response(
                 system_prompt=prompt_builders.selection_system_prompt(),
                 input_text=selection_input,
