@@ -143,45 +143,6 @@ def write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> 
     return "\n\n".join([base, persona]).strip()
 
 
-def search_plan_system_prompt() -> str:
-    """SearchPlan生成用のsystem promptを返す。"""
-    return "\n".join(
-        [
-            "あなたは会話用の記憶検索計画（SearchPlan）を作る。",
-            "出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
-            "",
-            "目的:",
-            "- ユーザー入力に対して「最近の連想」か「全期間の目的検索」かを選び、候補収集の方針を固定する",
-            "",
-            "出力スキーマ（型が重要）:",
-            "{",
-            '  "mode": "associative_recent|targeted_broad|explicit_about_time",',
-            '  "queries": ["string"],',
-            '  "time_hint": {',
-            '    "about_year_start": null,',
-            '    "about_year_end": null,',
-            '    "life_stage_hint": ""',
-            "  },",
-            '  "diversify": {"by": ["life_stage", "about_year_bucket"], "per_bucket": 5},',
-            '  "limits": {"max_candidates": 80, "max_selected": 12}',
-            "}",
-            "",
-            "ルール:",
-            "- 日本語の会話前提。queries は短い検索語（固有名詞/話題/型番など）を1〜5個とする。",
-            "- 指示語だけで検索語が作れない場合は、queries=[ユーザー入力そのまま] とする。",
-            "- about_year_start/about_year_end は整数（年）か null。文字列の年（\"2018\"）は出さない。",
-            "- life_stage_hint は elementary|middle|high|university|work|unknown のどれか。分からなければ \"\"。",
-            "",
-            "mode の選び方:",
-            "- 直近の続き/指示語が多い/\"さっき\" など → associative_recent",
-            "- \"昔\" \"子供の頃\" \"学生の頃\" など（全期間から探したい） → targeted_broad",
-            "- 年や時期が明示（例: 2018年、高校の頃） → explicit_about_time（time_hintも埋める）",
-            "- 迷ったら associative_recent",
-            "",
-        ]
-    ).strip()
-
-
 def selection_system_prompt() -> str:
     """SearchResultPack生成（選別）用のsystem promptを返す。"""
     return "\n".join(
@@ -209,7 +170,8 @@ def selection_system_prompt() -> str:
             "- cl: context_links（文脈リンク）",
             "- rs: recent_states（最近状態）",
             "- at: about_time（期間ヒント）",
-            "- va: vector_all（ベクトル類似）",
+            "- vr: vector_recent（ベクトル類似: 直近寄り）",
+            "- vg: vector_global（ベクトル類似: 全期間/ひらめき枠）",
             "",
             "選び方（品質）:",
             "- まずは state（fact/relation/task/summary）を優先し、足りない分を event（具体エピソード）で補う。",
