@@ -27,6 +27,11 @@ llm_log_level = "DEBUG"
 llm_timeout_seconds = 30
 llm_stream_timeout_seconds = 60
 
+# 記憶検索（SearchResultPack）の候補数上限
+# - 大きいほど取りこぼしが減るが、検索候補の選別が遅くなる
+# - 推奨: 60〜120（既定: 80）
+retrieval_max_candidates = 80
+
 # LLM送受信ログの最大文字数（ターミナル/ファイル）
 llm_log_console_max_chars = 1000
 llm_log_file_max_chars = 20000
