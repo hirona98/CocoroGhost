@@ -79,6 +79,7 @@ retrieval_entity_expand_max_entities = 12
 retrieval_entity_expand_per_entity_event_limit = 10
 retrieval_entity_expand_per_entity_state_limit = 6
 retrieval_entity_expand_min_confidence = 0.45
+retrieval_entity_expand_min_seed_occurrences = 2
 
 # LLM送受信ログの最大文字数（ターミナル/ファイル）
 llm_log_console_max_chars = 1000

@@ -893,12 +893,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         ev.updated_at = int(now_ts)
         db.add(ev)
 
-        # --- state の変更IDを集め、後で entity索引を付与する ---
-        # NOTE:
-        # - 現行は「イベントで抽出した entities を、そのイベントで更新した state に付与」する。
-        # - state本文からの再抽出などは、実装/品質の重さが上がるため後続に回す。
-        changed_state_ids: set[int] = set()
-
         # --- revisions を追加するヘルパ ---
         def add_revision(*, entity_type: str, entity_id: int, before: Any, after: Any, reason: str, evidence_event_ids: list[int]) -> None:
             db.add(
@@ -1109,6 +1103,12 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 if not isinstance(u, dict):
                     continue
 
+                # --- state_entities 用の entities（state単位） ---
+                # NOTE:
+                # - 以前は event_annotations.entities を stateへ流用していたが、精度が粗くなりやすい。
+                # - 本来は「stateごとに関係するentity」を付与するのが自然なので、WritePlanで分けて出す。
+                entities_norm_for_state = entity_utils.normalize_entities(u.get("entities"))
+
                 op = str(u.get("op") or "").strip()
                 kind = str(u.get("kind") or "").strip()
                 reason = str(u.get("reason") or "").strip() or "(no reason)"
@@ -1233,7 +1233,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
 
                     # --- state entity索引（後で一括で付与） ---
                     if int(changed_state_id) > 0:
-                        changed_state_ids.add(int(changed_state_id))
+                        # --- state単位のentitiesを付与（delete→insert） ---
+                        replace_state_entities(
+                            state_id_in=int(changed_state_id),
+                            entities_norm_in=list(entities_norm_for_state),
+                        )
 
                     # --- state embedding job ---
                     db.add(
@@ -1269,7 +1273,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         evidence_event_ids=evidence_ids,
                     )
                     # --- state entity索引（後で一括で付与） ---
-                    changed_state_ids.add(int(st.state_id))
+                    if str(st.kind) != "long_mood_state":
+                        replace_state_entities(
+                            state_id_in=int(st.state_id),
+                            entities_norm_in=list(entities_norm_for_state),
+                        )
                     db.add(
                         Job(
                             kind="upsert_state_embedding",
@@ -1305,7 +1313,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         evidence_event_ids=evidence_ids,
                     )
                     # --- state entity索引（後で一括で付与） ---
-                    changed_state_ids.add(int(st.state_id))
+                    if str(st.kind) != "long_mood_state":
+                        replace_state_entities(
+                            state_id_in=int(st.state_id),
+                            entities_norm_in=list(entities_norm_for_state),
+                        )
                     db.add(
                         Job(
                             kind="upsert_state_embedding",
@@ -1431,12 +1443,9 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     )
                 )
 
-        # --- state_entities を更新（イベント由来の entities を付与） ---
         # NOTE:
-        # - entities が空の場合も「付与しない」ではなく「空に更新」する（索引を健全化）。
-        # - changed_state_ids が空なら何もしない。
-        for sid in sorted({int(x) for x in changed_state_ids if int(x) > 0}):
-            replace_state_entities(state_id_in=int(sid), entities_norm_in=list(entities_norm))
+        # - state_entities は各 state_update の entities を正にして即時反映している。
+        # - ここでは何もしない（ループ内で確定した state_id に対して更新済み）。
 
         # --- Nターンごとの整理ジョブ（chatターン回数ベース） ---
         # NOTE:

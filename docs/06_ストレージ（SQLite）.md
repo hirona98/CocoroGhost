@@ -69,8 +69,7 @@
 方針:
 
 - WritePlan の `event_annotations.entities` を正規化し、`event_entities` を event_id 単位で作り直す（delete→insert）
-- 同じターンで更新した state に対しては、同じ entities を `state_entities` に付与する（delete→insert）
-- `kind="long_mood_state"` は背景（注入で使う）なので、entity展開の軸にしない（`state_entities` は付与しない）
+- WritePlan の `state_updates[*].entities` を正規化し、`state_entities` を state_id 単位で作り直す（delete→insert）
 - 運用前のためマイグレーションは扱わない（DB作り直し前提）
 
 主要カラム（概念）:
