@@ -63,6 +63,7 @@ class Config:
     retrieval_entity_expand_per_entity_event_limit: int  # 記憶検索: entityごとの関連event上限
     retrieval_entity_expand_per_entity_state_limit: int  # 記憶検索: entityごとの関連state上限
     retrieval_entity_expand_min_confidence: float  # 記憶検索: entity展開のconfidence足切り（0.0..1.0）
+    retrieval_entity_expand_min_seed_occurrences: int  # 記憶検索: entity展開のseed内出現回数の足切り
     log_file_enabled: bool  # ファイルログ有効/無効
     log_file_path: str      # ファイルログの保存先パス
     log_file_max_bytes: int  # ファイルログのローテーションサイズ（bytes）
@@ -227,6 +228,7 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         "retrieval_entity_expand_per_entity_event_limit",
         "retrieval_entity_expand_per_entity_state_limit",
         "retrieval_entity_expand_min_confidence",
+        "retrieval_entity_expand_min_seed_occurrences",
         "log_file_enabled",
         "log_file_path",
         "log_file_max_bytes",
@@ -351,6 +353,8 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
     except Exception:  # noqa: BLE001
         retrieval_entity_expand_min_confidence = 0.45
     retrieval_entity_expand_min_confidence = max(0.0, min(1.0, float(retrieval_entity_expand_min_confidence)))
+    retrieval_entity_expand_min_seed_occurrences = int(data.get("retrieval_entity_expand_min_seed_occurrences", 2))
+    retrieval_entity_expand_min_seed_occurrences = max(1, int(retrieval_entity_expand_min_seed_occurrences))
 
     config = Config(
         # --- サーバー待受ポート（必須） ---
@@ -390,6 +394,7 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         retrieval_entity_expand_per_entity_event_limit=int(retrieval_entity_expand_per_entity_event_limit),
         retrieval_entity_expand_per_entity_state_limit=int(retrieval_entity_expand_per_entity_state_limit),
         retrieval_entity_expand_min_confidence=float(retrieval_entity_expand_min_confidence),
+        retrieval_entity_expand_min_seed_occurrences=int(retrieval_entity_expand_min_seed_occurrences),
         log_file_enabled=bool(data.get("log_file_enabled", False)),
         log_file_path=resolved_log_file_path,
         log_file_max_bytes=int(data.get("log_file_max_bytes", 200_000)),

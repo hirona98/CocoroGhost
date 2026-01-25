@@ -898,6 +898,7 @@ class _ChatSearchMixin:
             per_entity_state_limit = max(0, int(getattr(tc, "retrieval_entity_expand_per_entity_state_limit", 6)))
             min_conf = float(getattr(tc, "retrieval_entity_expand_min_confidence", 0.45))
             min_conf = max(0.0, min(1.0, float(min_conf)))
+            min_seed_occ = max(1, int(getattr(tc, "retrieval_entity_expand_min_seed_occurrences", 2)))
 
             # --- seed の選定（multi-hit優先 + 最近性っぽくID降順） ---
             # NOTE:
@@ -954,6 +955,8 @@ class _ChatSearchMixin:
                                 continue
                             if conf < float(min_conf):
                                 continue
+                            if int(cnt) < int(min_seed_occ):
+                                continue
                             k = (t_norm, name_norm)
                             cur = stats.get(k)
                             if cur is None:
@@ -985,6 +988,8 @@ class _ChatSearchMixin:
                             if not t_norm or not name_norm:
                                 continue
                             if conf < float(min_conf):
+                                continue
+                            if int(cnt) < int(min_seed_occ):
                                 continue
                             k = (t_norm, name_norm)
                             cur = stats.get(k)
