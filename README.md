@@ -92,10 +92,9 @@ start.bat
 
 ## 依存関係管理
 
-依存関係は `pyproject.toml` で管理されています。以下のパッケージが含まれます：
+依存関係は `pyproject.toml` で管理されています（安定動作のため、バージョンを固定しています）。以下のパッケージが含まれます：
 
 - **fastapi** - Web フレームワーク
-- **fastapi-utils** - FastAPI ユーティリティ
 - **uvicorn[standard]** - ASGI サーバー
 - **sqlalchemy** - ORM
 - **litellm** - LLM クライアント

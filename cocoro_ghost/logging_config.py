@@ -84,6 +84,14 @@ def setup_logging(
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
         handlers=handlers or None,
     )
+
+    # --- warnings を logging に集約する ---
+    # 目的:
+    # - Pydantic serializer warning 等が stderr に生で出ると「壊れている」ように見える。
+    # - ただし黙らせるのではなく、logging へ集約して見える状態を保つ。
+    logging.captureWarnings(True)
+    _setup_warnings_logger()
+
     _setup_llm_io_loggers(root_level, console_handler, file_handler)
     # 外部ライブラリの冗長なログを抑制
     for name, lib_level in [
@@ -99,6 +107,43 @@ def setup_logging(
         logging.getLogger(name).setLevel(lib_level)
     # LiteLLMの空行ログだけを抑制する（モデル名などはそのまま残す）。
     _setup_litellm_log_filter()
+
+
+class _OneLineLogFilter(logging.Filter):
+    """
+    ログメッセージを1行に整形するフィルタ。
+
+    warnings の出力は複数行になりがちなので、空白を潰して1行に統一する。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        """
+        ログメッセージの改行を除去し、空行を抑制する。
+        """
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        msg = msg.strip()
+        if not msg:
+            return False
+        msg = " ".join(msg.split())
+        record.msg = msg
+        record.args = ()
+        return True
+
+
+def _setup_warnings_logger() -> None:
+    """
+    warnings を logging に流すためのロガー設定を行う。
+
+    logging.captureWarnings(True) を前提に、py.warnings のログを1行に整形する。
+    """
+    warnings_logger = logging.getLogger("py.warnings")
+    warnings_logger.setLevel(logging.WARNING)
+    if any(isinstance(f, _OneLineLogFilter) for f in warnings_logger.filters):
+        return
+    warnings_logger.addFilter(_OneLineLogFilter())
 
 
 class _LiteLLMLogFilter(logging.Filter):

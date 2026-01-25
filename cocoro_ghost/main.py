@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import Depends, FastAPI
-from fastapi_utils.tasks import repeat_every
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -33,6 +32,7 @@ from cocoro_ghost.logging_config import setup_logging, suppress_uvicorn_access_l
 from cocoro_ghost.desktop_watch import get_desktop_watch_service
 from cocoro_ghost.reminders_service import get_reminder_service
 from cocoro_ghost.api.http_auth import require_bearer_only, require_bearer_or_cookie_session
+from cocoro_ghost.periodic import start_periodic_task, stop_periodic_tasks
 from cocoro_ghost.resources import get_static_dir
 
 logger = __import__("logging").getLogger(__name__)
@@ -200,27 +200,54 @@ def create_app() -> FastAPI:
             extra={"embedding_preset_id": runtime_config.embedding_preset_id, "memory_enabled": runtime_config.memory_enabled},
         )
 
-    # NOTE:
-    # - デスクトップウォッチ/リマインダーは別スレッドから event_stream.publish() を呼ぶ。
-    # - event_stream の install/start_dispatcher より先に動くと命令（vision.capture_request等）が落ち得る。
     @app.on_event("startup")
-    @repeat_every(seconds=1, wait_first=True)
-    async def periodic_desktop_watch() -> None:
-        """デスクトップウォッチ（能動視覚）の定期実行。"""
-        service = get_desktop_watch_service()
-        await asyncio.to_thread(service.tick)
+    async def start_periodic_services() -> None:
+        """デスクトップウォッチ/リマインダーの定期実行タスクを起動する。"""
 
-    @app.on_event("startup")
-    @repeat_every(seconds=1, wait_first=True)
-    async def periodic_reminders() -> None:
-        """リマインダーの定期実行。"""
-        service = get_reminder_service()
-        await asyncio.to_thread(service.tick)
+        # NOTE:
+        # - デスクトップウォッチ/リマインダーは別スレッドから event_stream.publish() を呼ぶ。
+        # - event_stream の install/start_dispatcher より先に動くと命令（vision.capture_request等）が落ち得る。
+        # - そのため、定期タスクの登録は start_event_stream_dispatcher より後に行う。
+
+        # --- 1秒周期: デスクトップウォッチ（能動視覚） ---
+        async def _desktop_watch_tick() -> None:
+            service = get_desktop_watch_service()
+            await asyncio.to_thread(service.tick)
+
+        start_periodic_task(
+            app,
+            name="periodic_desktop_watch",
+            interval_seconds=1.0,
+            wait_first=True,
+            func=_desktop_watch_tick,
+            logger=logger,
+        )
+
+        # --- 1秒周期: リマインダー ---
+        async def _reminders_tick() -> None:
+            service = get_reminder_service()
+            await asyncio.to_thread(service.tick)
+
+        start_periodic_task(
+            app,
+            name="periodic_reminders",
+            interval_seconds=1.0,
+            wait_first=True,
+            func=_reminders_tick,
+            logger=logger,
+        )
+
+        logger.info("periodic services started")
 
     @app.on_event("shutdown")
     async def stop_log_stream_dispatcher() -> None:
         """ログSSE配信のdispatcherを停止。"""
         await log_stream.stop_dispatcher()
+
+    @app.on_event("shutdown")
+    async def stop_periodic_services() -> None:
+        """定期実行タスクを停止（先に止めて publish レースを避ける）。"""
+        await stop_periodic_tasks(app, logger=logger)
 
     @app.on_event("shutdown")
     async def stop_event_stream_dispatcher() -> None:
