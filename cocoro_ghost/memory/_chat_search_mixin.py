@@ -79,6 +79,224 @@ def _fts_or_query(terms: list[str]) -> str:
 class _ChatSearchMixin:
     """チャット検索（候補収集/分散/pack生成）の実装（mixin）。"""
 
+    def _apply_source_quota(
+        self,
+        *,
+        candidates: list[_CandidateItem],
+        plan_obj: dict[str, Any],
+        max_candidates: int,
+    ) -> list[_CandidateItem]:
+        """
+        候補の「経路偏り」を抑えるため、TOML設定の割合配分で候補を間引く。
+
+        目的:
+            - trigram / context / vector など「増えやすい経路」が席を独占すると、選別入力が膨らみ体感が悪化する。
+            - 一方で品質（取りこぼし）を落とさないため、multi-hit（複数経路一致）と state を優先的に残す。
+
+        方針:
+            - まず候補をカテゴリに分ける（「何を残したいか」を明示して、偏りを抑える）。
+              - state: 事実/タスクなど。会話の安定性に効くため、経路より優先して確保する。
+              - multi-hit: 複数経路で一致した候補（hit_sources>=2）。取りこぼし防止に効くため厚めに確保する。
+              - *-only: hit_sourcesが1件の候補を「どの経路だけで当たったか」で分類する。
+                - vector-only: 語一致しないが意味が近いケースの拾い上げに効く
+                - context-only: 返信連鎖/同一文脈/因果など「流れ」維持に効く
+                - trigram-only: 固有名詞/型番/部分一致に効くが、ノイズも増えやすい
+                - recent-only: 直近の連想に効くが、弱い一致が増えやすい
+                - about_time-only: 年/ライフステージのヒント検索（全期間モード向け）
+              - affect: event_affect（瞬間感情）。会話トーン補助だが、候補を食い過ぎやすいので「最大割合」だけ設ける。
+            - mode に応じて、retrieval_max_candidates（=N）のX%を各カテゴリへ割り当てる（TOMLで設定）。
+            - X%枠が埋まらない場合は「次カテゴリへ繰り越し」し、最終的にN件を確保する（不足は元の順位順で埋める）。
+        """
+
+        # --- 入力の正規化 ---
+        if not candidates:
+            return []
+        cap = max(1, int(max_candidates))
+        cap = max(1, min(400, int(cap)))
+
+        # --- mode に応じた割合設定を取得する ---
+        # NOTE:
+        # - associative_recent は「直近の連想」が中心なので multi-hit / vector-only / context-only を厚めにする。
+        # - targeted_broad/explicit_about_time は「全期間」なので about_time-only を厚めにする。
+        mode = str(plan_obj.get("mode") or "").strip()
+        tc = self.config_store.toml_config  # type: ignore[attr-defined]
+        if mode in ("targeted_broad", "explicit_about_time"):
+            # --- 全期間モード向けの配分 ---
+            # NOTE:
+            # - multi-hit/state を確保しつつ、期間ヒント（about_time-only）を厚めにする。
+            # - context-only は「今の流れ」寄りなので薄め。
+            quota_percent = {
+                "state": int(tc.retrieval_quota_broad_state_percent),
+                "multi_hit": int(tc.retrieval_quota_broad_multi_hit_percent),
+                "about_time_only": int(tc.retrieval_quota_broad_about_time_only_percent),
+                "vector_global_only": int(tc.retrieval_explore_global_vector_percent),
+                "vector_only": int(tc.retrieval_quota_broad_vector_only_percent),
+                "context_only": int(tc.retrieval_quota_broad_context_only_percent),
+                "trigram_only": int(tc.retrieval_quota_broad_trigram_only_percent),
+            }
+            category_order = [
+                "state",
+                "multi_hit",
+                "about_time_only",
+                "vector_global_only",
+                "vector_only",
+                "context_only",
+                "trigram_only",
+            ]
+        else:
+            # --- 直近連想モード向けの配分 ---
+            # NOTE:
+            # - multi-hit/state を確保しつつ、意味近傍（vector-only）と流れ（context-only）を厚めにする。
+            # - trigram-only/recent-only は増えやすい割にノイズも増えるため薄め。
+            quota_percent = {
+                "state": int(tc.retrieval_quota_assoc_state_percent),
+                "multi_hit": int(tc.retrieval_quota_assoc_multi_hit_percent),
+                "vector_global_only": int(tc.retrieval_explore_global_vector_percent),
+                "vector_only": int(tc.retrieval_quota_assoc_vector_only_percent),
+                "context_only": int(tc.retrieval_quota_assoc_context_only_percent),
+                "trigram_only": int(tc.retrieval_quota_assoc_trigram_only_percent),
+                "recent_only": int(tc.retrieval_quota_assoc_recent_only_percent),
+            }
+            category_order = [
+                "state",
+                "multi_hit",
+                "vector_global_only",
+                "vector_only",
+                "context_only",
+                "trigram_only",
+                "recent_only",
+            ]
+
+        # --- event_affect の最大割合（上限） ---
+        # NOTE:
+        # - event_affect は「トーン調整」の補助。候補を食い過ぎると本筋（state/event）の候補が減りやすい。
+        # - ここは「最大割合」で縛るだけ（= 上限キャップ）。無理に最低件数を確保するとノイズが混ざりやすいので行わない。
+        #   - 例: retrieval_max_candidates=80, retrieval_event_affect_max_percent=5 の場合、event_affect は最大4件まで。
+        #   - 0% にすると、event_affect は候補に入らない（= トーン調整を候補で行わない）。
+        affect_max_percent = max(0, min(100, int(tc.retrieval_event_affect_max_percent)))
+        affect_cap = int(math.floor(float(cap) * (float(affect_max_percent) / 100.0)))
+        affect_cap = max(0, min(int(cap), int(affect_cap)))
+
+        # --- カテゴリ判定 ---
+        # NOTE:
+        # - state / event_affect は「種別が重要」なので、経路に関係なく先に分ける。
+        # - multi-hit は複数経路一致（len(hit_sources)>=2）。経路の信頼度を直接比較しない代わりに、
+        #   「複数の根拠がある候補」を優先して残し、取りこぼしを抑える。
+        # - *-only は hit_sources が1件の候補を「どの経路だけで当たったか」で分類する。
+        #   これにより、量が増えやすい経路が候補を独占するのを抑えられる。
+        def category_of(c: _CandidateItem) -> str:
+            if str(c.type) == "state":
+                return "state"
+            if str(c.type) == "event_affect":
+                return "affect"
+            hs = list(c.hit_sources or [])
+            if len(hs) >= 2:
+                return "multi_hit"
+            if len(hs) == 1:
+                src = str(hs[0] or "").strip()
+                if src == "vector_recent":
+                    return "vector_only"
+                if src == "vector_global":
+                    return "vector_global_only"
+                if src == "about_time":
+                    return "about_time_only"
+                if src == "trigram_events":
+                    return "trigram_only"
+                if src == "recent_events":
+                    return "recent_only"
+                if src in ("reply_chain", "context_threads", "context_links"):
+                    # NOTE:
+                    # - reply_chain: 返信連鎖（直前文脈）
+                    # - context_threads: 同一スレッド（話題の流れ）
+                    # - context_links: same_topic/caused_by/continuation（話題/因果/継続）
+                    return "context_only"
+            return "other"
+
+        # --- カテゴリごとに候補を分配（元の順序を保持） ---
+        by_cat: dict[str, list[_CandidateItem]] = {}
+        for c in candidates:
+            k = category_of(c)
+            lst = by_cat.get(k)
+            if lst is None:
+                lst = []
+                by_cat[k] = lst
+            lst.append(c)
+
+        # --- 割合（%）→ 上限件数へ変換 ---
+        # NOTE:
+        # - 端数は floor で落とす（例: N=80, 5% → 4件）。
+        # - 割合の合計が100%未満でもOK。残りは後段で埋めて取りこぼしを抑える。
+        # - 逆に100%ちょうどでも「そのカテゴリに候補が無い」場合があるため、繰り越しが重要。
+        quotas: dict[str, int] = {}
+        for k, pct in quota_percent.items():
+            p = max(0, min(100, int(pct)))
+            quotas[str(k)] = int(math.floor(float(cap) * (float(p) / 100.0)))
+
+        # --- 選抜（カテゴリ枠 → 余りは順位順で埋める） ---
+        selected: list[_CandidateItem] = []
+        selected_keys: set[str] = set()
+        selected_affects = 0
+
+        def try_add(item: _CandidateItem) -> bool:
+            nonlocal selected_affects
+            if len(selected) >= int(cap):
+                return False
+            key = f"{str(item.type)}:{int(item.id)}"
+            if key in selected_keys:
+                return False
+            # --- affect 上限 ---
+            if str(item.type) == "event_affect":
+                if int(affect_cap) <= 0:
+                    return False
+                if int(selected_affects) >= int(affect_cap):
+                    return False
+                selected_affects += 1
+            selected.append(item)
+            selected_keys.add(key)
+            return True
+
+        # --- 1) カテゴリ枠で採用（余りは次カテゴリへ繰り越す） ---
+        # NOTE:
+        # - 「X%を厳密固定」すると、候補が薄いカテゴリがある場合に総数が不足しやすい。
+        # - ここでは「枠の余り」を carry して次カテゴリへ回し、候補総数を安定させる（品質優先）。
+        carry = 0
+        for cat in category_order:
+            base_limit = int(quotas.get(str(cat), 0))
+            limit = int(base_limit) + int(carry)
+            if limit <= 0:
+                carry = int(carry) + int(base_limit)
+                continue
+            pool = by_cat.get(str(cat), [])
+            used = 0
+            for item in pool:
+                if used >= int(limit):
+                    break
+                if try_add(item):
+                    used += 1
+            carry = int(limit) - int(used)
+
+        # --- 2) 余りをカテゴリ優先順で埋める（soft quota） ---
+        # NOTE:
+        # - ここは「不足分を埋める」段階。
+        # - まずはカテゴリ優先順（state/multi-hit/...）で追加し、偏りを抑えたまま総数を確保する。
+        # - affect は上限を維持したまま埋める。
+        if len(selected) < int(cap):
+            for cat in list(category_order) + ["other"]:
+                for item in by_cat.get(str(cat), []):
+                    if len(selected) >= int(cap):
+                        break
+                    try_add(item)
+
+        # --- 3) 最終フォールバック: 元の順位順で埋める ---
+        # NOTE: どのカテゴリにも属さない候補が多い場合でも、総数を確保して取りこぼしを減らす。
+        if len(selected) < int(cap):
+            for item in candidates:
+                if len(selected) >= int(cap):
+                    break
+                try_add(item)
+
+        return selected
+
     def _collect_candidates(
         self,
         *,
@@ -97,11 +315,11 @@ class _ChatSearchMixin:
             embedding_dimension: 埋め込み次元。
             event_id: 現在ターンの event_id（除外用）。
             input_text: ユーザー入力。
-            plan_obj: SearchPlan（文字n-gram/期間補助/上限制御などに使う）。
+            plan_obj: RetrievalPlan（SearchPlan互換dict。文字n-gram/期間補助/上限制御などに使う）。
             vector_embedding_future:
                 先行して開始した「input_text のみ」の埋め込み取得結果。
-                - これが渡された場合、vector_all は原則この結果を使う（SearchPlanのqueriesは使わない）。
-                - 目的: SearchPlan生成と埋め込み取得を重ねて体感を上げ、vec候補の欠落を減らす。
+                - これが渡された場合、vec検索は原則この結果を使う（vec側は input_text を正とする）。
+                - 目的: SSE開始までの体感を上げ、vec候補の欠落を減らす。
         """
 
         # --- 上限 ---
@@ -111,13 +329,21 @@ class _ChatSearchMixin:
             max_candidates = int(limits.get("max_candidates") or 200)
         max_candidates = max(1, min(400, max_candidates))
 
+        # --- 起動設定（TOML）の上限を強制する ---
+        # NOTE:
+        # - plan_obj は同一プロセス内のルール生成だが、運用時の安全弁としてTOML上限を最終適用する。
+        # - 体感速度（選別入力の膨張）を守るため、ここは常に強制する。
+        toml_max_candidates = int(self.config_store.toml_config.retrieval_max_candidates)  # type: ignore[attr-defined]
+        toml_max_candidates = max(1, min(400, int(toml_max_candidates)))
+        max_candidates = int(min(int(max_candidates), int(toml_max_candidates)))
+
         # --- 並列候補収集（タイムアウトで全体が破綻しない） ---
         # NOTE:
         # - セッションはスレッドセーフではないため、各タスクで個別に開く。
         # - 遅い経路（特に embedding）があっても、全体を止めない。
         sources_by_key: dict[tuple[str, int], set[str]] = {}
 
-        # --- 検索語（SearchPlan）を正として、複数クエリで広めに拾う ---
+        # --- 検索語（plan_obj.queries）を正として、複数クエリで広めに拾う ---
         queries_raw = plan_obj.get("queries") if isinstance(plan_obj, dict) else None
         query_texts: list[str] = [str(input_text or "").strip()]
         if isinstance(queries_raw, list):
@@ -132,7 +358,7 @@ class _ChatSearchMixin:
         # --- ベクトル検索は「input_text のみ」で先行埋め込みを使えるようにする ---
         # NOTE:
         # - 段階化（追加クエリの追い埋め込み）はしない（シンプル優先）。
-        # - SearchPlan.queries は文字n-gram側の補助としては使えるが、vec側は input_text を正にする。
+        # - plan_obj.queries は文字n-gram側の補助としては使えるが、vec側は input_text を正にする。
         vector_query_texts: list[str] = [str(input_text or "").strip()]
         vector_query_texts = [q for q in vector_query_texts if q]
 
@@ -368,13 +594,14 @@ class _ChatSearchMixin:
                 rows = q.order_by(Event.created_at.desc(), Event.event_id.desc()).limit(int(limit)).all()
                 return [("event", int(r[0])) for r in rows if r and r[0] is not None]
 
-        def task_vector_all() -> tuple[list[tuple[str, int]], dict[str, Any]]:
+        def task_vector_recent_global() -> tuple[dict[str, list[tuple[str, int]]], dict[str, Any]]:
             # --- 類似検索の件数（k）を設定から決める ---
             # NOTE:
             # - embedding_preset.similar_episodes_limit は「類似イベント（episodes）の上限」を表す。
             # - 今回は vec 側は input_text を正とし、総量が暴れないように per-query に割り当てる。
             # - state / event_affect は従来の比率（60:40:20）を踏襲し、events を基準に派生させる。
             cfg = self.config_store.config  # type: ignore[attr-defined]
+            tc = self.config_store.toml_config  # type: ignore[attr-defined]
             total_event_k = max(1, min(200, int(cfg.similar_episodes_limit)))
             qn = max(1, len(vector_query_texts))
 
@@ -384,14 +611,26 @@ class _ChatSearchMixin:
             per_query_state_k = max(1, int(math.ceil(float(total_state_k) / float(qn))))
             per_query_affect_k = max(1, int(math.ceil(float(total_affect_k) / float(qn))))
 
+            # --- 「ひらめき枠」用の global vec(event) を少数だけ拾う ---
+            # NOTE:
+            # - 目的は「毎ターン、少数だけ全期間から混ぜる」ことで、会話の着想を得やすくすること。
+            # - 最終的な混入割合は quota（TOML）で制御するため、ここでは「候補プール」を適度に確保するだけ。
+            # - 0% にした場合は探索を完全に止め、無駄な検索を行わない（速度/安定性優先）。
+            explore_percent = max(0, min(100, int(tc.retrieval_explore_global_vector_percent)))
+            explore_cap = int(math.floor(float(max_candidates) * (float(explore_percent) / 100.0)))
+            global_event_k_total = int(min(80, max(0, int(explore_cap) * 6)))
+            per_query_global_event_k = (
+                max(1, int(math.ceil(float(global_event_k_total) / float(qn)))) if global_event_k_total > 0 else 0
+            )
+
             # --- embedding を用意する（重いので、可能なら先行開始した結果を使う） ---
             # NOTE:
-            # - 先行埋め込みがあれば、SearchPlan生成（同期）と埋め込み取得を重ねて待ちを削る。
+            # - 先行埋め込みがあれば、SSE開始前の他処理と埋め込み取得を重ねて待ちを削る。
             # - 先行埋め込みが無い場合のみ、ここで取得する。
             embeddings: list[Any]
-            embedding_source: str = "generated_in_vector_all"
+            embedding_source: str = "generated_in_vector_task"
             if vector_embedding_future is not None:
-                # --- vec_all タスク内での待ち時間を抑える（SQLite検索の時間を確保） ---
+                # --- vec タスク内での待ち時間を抑える（SQLite検索の時間を確保） ---
                 budget_seconds = 2.0
                 started = time.perf_counter()
                 remaining = max(0.0, float(budget_seconds) - float(time.perf_counter() - started))
@@ -420,31 +659,42 @@ class _ChatSearchMixin:
                     purpose=LlmRequestPurpose.SYNC_RETRIEVAL_QUERY_EMBEDDING,
                 )
 
-            # --- mode によって最近性フィルタを使う ---
+            # --- 最近性フィルタ（eventのみ） ---
+            # NOTE:
+            # - 毎ターン「最近の連想」は会話の自然さに効くため、eventは常に recent と global を分けて拾う。
+            # - 期間指定（explicit_about_time）のときでも recent を混ぜるが、最終配分は quota が抑制する。
             mode = str(plan_obj.get("mode") or "").strip()
-            rank_range = None
-            if mode == "associative_recent":
-                today_day = int(now_utc_ts()) // 86400
-                rank_range = (int(today_day) - 90, int(today_day) + 1)
+            today_day = int(now_utc_ts()) // 86400
+            recent_rank_range = (int(today_day) - 90, int(today_day) + 1)
 
             with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-                out: list[tuple[str, int]] = []
+                out_recent: list[tuple[str, int]] = []
+                out_global: list[tuple[str, int]] = []
+                out_states: list[tuple[str, int]] = []
+                out_affects: list[tuple[str, int]] = []
+
+                recent_event_ids: set[int] = set()
+                global_event_ids: set[int] = set()
+                state_ids: set[int] = set()
+                affect_ids: set[int] = set()
+
                 dbg: dict[str, Any] = {
                     "embedding_preset_id": str(embedding_preset_id),
                     "memory_enabled": bool(self.config_store.memory_enabled),  # type: ignore[attr-defined]
                     "mode": str(mode),
-                    "rank_day_range": (list(rank_range) if rank_range is not None else None),
+                    "recent_rank_day_range": list(recent_rank_range),
                     "vector_query_texts": list(vector_query_texts),
                     "trigram_query_texts": list(query_texts),
                     "embedding_source": str(embedding_source),
                     "similar_episodes_limit": int(total_event_k),
                     "k_per_query": {
-                        "event": int(per_query_event_k),
+                        "event_recent": int(per_query_event_k),
+                        "event_global": int(per_query_global_event_k),
                         "state": int(per_query_state_k),
                         "event_affect": int(per_query_affect_k),
                     },
                     "vec_items_counts": {},
-                    "hits": {"event": [], "state": [], "event_affect": []},
+                    "hits": {"event_recent": [], "event_global": [], "state": [], "event_affect": []},
                 }
 
                 # --- vec_items の状況（育っていない時の診断用） ---
@@ -476,12 +726,13 @@ class _ChatSearchMixin:
                 for q_text, q_emb in zip(vector_query_texts, embeddings, strict=False):
                     q_label = str(q_text)[:60]
 
+                    # --- event（recent） ---
                     rows_e = search_similar_item_ids(
                         db,
                         query_embedding=q_emb,
                         k=int(per_query_event_k),
                         kind=int(vector_index.VEC_KIND_EVENT),
-                        rank_day_range=rank_range,
+                        rank_day_range=recent_rank_range,
                         active_only=True,
                     )
                     for r in rows_e:
@@ -492,11 +743,44 @@ class _ChatSearchMixin:
                         event_id2 = vector_index.vec_entity_id(item_id)
                         if int(event_id2) == int(event_id):
                             continue
-                        out.append(("event", int(event_id2)))
-                        dbg["hits"]["event"].append(
+                        if int(event_id2) in recent_event_ids:
+                            continue
+                        recent_event_ids.add(int(event_id2))
+                        out_recent.append(("event", int(event_id2)))
+                        dbg["hits"]["event_recent"].append(
                             {"event_id": int(event_id2), "distance": distance, "item_id": int(item_id), "q": q_label}
                         )
 
+                    # --- event（global / ひらめき枠） ---
+                    if int(per_query_global_event_k) > 0:
+                        rows_eg = search_similar_item_ids(
+                            db,
+                            query_embedding=q_emb,
+                            k=int(per_query_global_event_k),
+                            kind=int(vector_index.VEC_KIND_EVENT),
+                            rank_day_range=None,
+                            active_only=True,
+                        )
+                        for r in rows_eg:
+                            if not r or r[0] is None:
+                                continue
+                            item_id = int(r[0])
+                            distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
+                            event_id2 = vector_index.vec_entity_id(item_id)
+                            if int(event_id2) == int(event_id):
+                                continue
+                            # NOTE: recentと重複するなら「ひらめき枠」の意味が薄いので除外する。
+                            if int(event_id2) in recent_event_ids:
+                                continue
+                            if int(event_id2) in global_event_ids:
+                                continue
+                            global_event_ids.add(int(event_id2))
+                            out_global.append(("event", int(event_id2)))
+                            dbg["hits"]["event_global"].append(
+                                {"event_id": int(event_id2), "distance": distance, "item_id": int(item_id), "q": q_label}
+                            )
+
+                    # --- state ---
                     rows_s = search_similar_item_ids(
                         db,
                         query_embedding=q_emb,
@@ -511,11 +795,15 @@ class _ChatSearchMixin:
                         item_id = int(r[0])
                         distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
                         state_id2 = vector_index.vec_entity_id(item_id)
-                        out.append(("state", int(state_id2)))
+                        if int(state_id2) in state_ids:
+                            continue
+                        state_ids.add(int(state_id2))
+                        out_states.append(("state", int(state_id2)))
                         dbg["hits"]["state"].append(
                             {"state_id": int(state_id2), "distance": distance, "item_id": int(item_id), "q": q_label}
                         )
 
+                    # --- event_affect ---
                     rows_a = search_similar_item_ids(
                         db,
                         query_embedding=q_emb,
@@ -530,12 +818,23 @@ class _ChatSearchMixin:
                         item_id = int(r[0])
                         distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
                         affect_id2 = vector_index.vec_entity_id(item_id)
-                        out.append(("event_affect", int(affect_id2)))
+                        if int(affect_id2) in affect_ids:
+                            continue
+                        affect_ids.add(int(affect_id2))
+                        out_affects.append(("event_affect", int(affect_id2)))
                         dbg["hits"]["event_affect"].append(
                             {"affect_id": int(affect_id2), "distance": distance, "item_id": int(item_id), "q": q_label}
                         )
 
-                return out, dbg
+                # --- 結果をラベル別に返す（hit_sourcesに反映する） ---
+                # NOTE:
+                # - state/event_affect は種別が優先されるため、vec由来であることだけ分かればよい。
+                # - eventは「recent」と「global（ひらめき枠）」を分け、quotaで混入割合を制御する。
+                out_by_label: dict[str, list[tuple[str, int]]] = {
+                    "vector_recent": list(out_recent) + list(out_states) + list(out_affects),
+                    "vector_global": list(out_global),
+                }
+                return out_by_label, dbg
 
         # --- 並列実行（遅い経路があっても全体が破綻しない） ---
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
@@ -547,7 +846,7 @@ class _ChatSearchMixin:
                 "context_links": ex.submit(task_context_links_events),
                 "recent_states": ex.submit(task_recent_states),
                 "about_time": ex.submit(task_about_time_events),
-                "vector_all": ex.submit(task_vector_all),
+                "vector": ex.submit(task_vector_recent_global),
             }
 
             timeouts = {
@@ -558,21 +857,23 @@ class _ChatSearchMixin:
                 "context_links": 0.35,
                 "recent_states": 0.25,
                 "about_time": 0.4,
-                "vector_all": 2.2,
+                "vector": 2.2,
             }
 
             vector_debug: dict[str, Any] | None = None
             for label, fut in futures.items():
                 try:
                     result = fut.result(timeout=float(timeouts.get(label, 0.5)))
-                    if label == "vector_all":
-                        keys, vector_debug = result
+                    if label == "vector":
+                        by_label, vector_debug = result
+                        for sub_label, keys in (by_label or {}).items():
+                            add_sources([(str(t), int(i)) for (t, i) in (keys or [])], label=str(sub_label))
                     else:
                         keys = result
-                    add_sources([(str(t), int(i)) for (t, i) in keys], label=str(label))
+                        add_sources([(str(t), int(i)) for (t, i) in keys], label=str(label))
                 except Exception as exc:  # noqa: BLE001
-                    if label == "vector_all":
-                        vector_debug = {"error": f"vector_all failed or timed out: {type(exc).__name__}: {exc}"}
+                    if label == "vector":
+                        vector_debug = {"error": f"vector task failed or timed out: {type(exc).__name__}: {exc}"}
                     continue
 
         # --- レコードをまとめて引く（ORMのDetachedを避けるため、候補のdict化までセッション内で行う） ---
@@ -745,8 +1046,8 @@ class _ChatSearchMixin:
         # --- デバッグ: 埋め込みDB（vec_items）由来の候補を表示する ---
         # NOTE:
         # - ここはLLMへ投げる情報の一部なので、LLM I/O ログ（DEBUG）へ揃えて出す。
-        # - vector_all の経路でヒットした候補を中心に表示する（取りこぼしと重複の確認用）。
-        vector_loaded_preview = [c.meta for c in out if "vector_all" in (c.hit_sources or [])][:30]
+        # - vec由来候補（recent/global）を中心に表示する（取りこぼしと重複の確認用）。
+        vector_loaded_preview = [c.meta for c in out if {"vector_recent", "vector_global"} & set(c.hit_sources or [])][:30]
         if vector_debug is not None:
             self._log_retrieval_debug(  # type: ignore[attr-defined]
                 "（（埋め込みDBから候補取得））",
@@ -768,11 +1069,16 @@ class _ChatSearchMixin:
         # - 現状は event にしか about_time（life_stage/about_year）が無いため、eventのみ対象にする。
         out = self._apply_diversify_inplace(candidates=out, plan_obj=plan_obj)
 
+        # --- quota（経路偏り抑制）: modeごとの割合配分で候補を間引く ---
+        # NOTE:
+        # - ここでの間引きは「選別入力の安定化」が目的。取りこぼしを減らすため、余りは元の順位順で埋める。
+        out = self._apply_source_quota(candidates=out, plan_obj=plan_obj, max_candidates=int(max_candidates))
+
         return out[:max_candidates]
 
     def _apply_diversify_inplace(self, *, candidates: list[_CandidateItem], plan_obj: dict[str, Any]) -> list[_CandidateItem]:
         """
-        SearchPlan.diversify に基づき、event候補の並び順だけを調整する。
+        plan_obj.diversify に基づき、event候補の並び順だけを調整する。
 
         目的:
             - max_candidates で切り詰める前に「偏り」を抑え、LLM選別の入力を安定させる。

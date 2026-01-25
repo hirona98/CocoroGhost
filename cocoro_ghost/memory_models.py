@@ -133,6 +133,37 @@ class EventAffect(MemoryBase):
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
 
+class EventAssistantSummary(MemoryBase):
+    """イベントのアシスタント本文（events.assistant_text）の要約（派生情報）。
+
+    目的:
+        - SearchResultPack の「選別」入力を軽量化し、SSE開始までの体感速度を改善する。
+        - 会話生成（返答本文）では元の events.* を使い、要約は「選別のための材料」に限定する。
+
+    方針:
+        - 1イベントにつき1件（event_id を主キー）として保持する。
+        - events.updated_at の値を一緒に保存し、元本文が更新された場合は作り直せるようにする。
+        - 運用前のためマイグレーションは扱わない（DBを作り直す前提）。
+    """
+
+    __tablename__ = "event_assistant_summaries"
+
+    # --- 主キー（events と 1:1） ---
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("events.event_id", ondelete="CASCADE"), primary_key=True, autoincrement=False
+    )
+
+    # --- 要約本文 ---
+    summary_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    # --- 整合性チェック（events の更新時刻） ---
+    event_updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class State(MemoryBase):
     """更新で育つ状態（単一テーブル）。
 
@@ -237,4 +268,3 @@ class Job(MemoryBase):
     # --- タイムスタンプ ---
     created_at: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
-

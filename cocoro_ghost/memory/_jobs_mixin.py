@@ -66,3 +66,27 @@ class _JobsMemoryMixin:
                 )
             )
 
+    def _enqueue_event_assistant_summary_job(
+        self, *, embedding_preset_id: str, embedding_dimension: int, event_id: int
+    ) -> None:
+        """イベントのアシスタント本文要約ジョブを積む（SearchResultPack選別の高速化）。"""
+
+        # --- memory_enabled が無効なら何もしない ---
+        if not bool(self.config_store.memory_enabled):  # type: ignore[attr-defined]
+            return
+
+        # --- jobs に投入 ---
+        now_ts = now_utc_ts()
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            db.add(
+                Job(
+                    kind="upsert_event_assistant_summary",
+                    payload_json=common_utils.json_dumps({"event_id": int(event_id)}),
+                    status=int(_JOB_PENDING),
+                    run_after=int(now_ts),
+                    tries=0,
+                    last_error=None,
+                    created_at=int(now_ts),
+                    updated_at=int(now_ts),
+                )
+            )

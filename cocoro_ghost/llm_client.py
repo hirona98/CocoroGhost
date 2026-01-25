@@ -382,7 +382,6 @@ class LlmRequestPurpose:
 
     # --- 同期（API処理中） ---
     SYNC_CONVERSATION = "【同期】＜＜ 会話応答作成 ＞＞"
-    SYNC_SEARCH_PLAN = "【同期】＜＜ 検索計画作成（SearchPlan） ＞＞"
     SYNC_SEARCH_SELECT = "【同期】＜＜ 検索候補の選別（SearchResultPack） ＞＞"
     SYNC_NOTIFICATION = "【同期】＜＜ 通知（受信報告） ＞＞"
     SYNC_META_REQUEST = "【同期】＜＜ メタ要求対応 ＞＞"
@@ -400,6 +399,7 @@ class LlmRequestPurpose:
     ASYNC_STATE_EMBEDDING = "【WORKER】＜＜ 状態埋め込み（state） ＞＞"
     ASYNC_EVENT_AFFECT_EMBEDDING = "【WORKER】＜＜ 感情埋め込み（event_affect） ＞＞"
     ASYNC_WRITE_PLAN = "【WORKER】＜＜ 記憶更新計画作成（WritePlan） ＞＞"
+    ASYNC_EVENT_ASSISTANT_SUMMARY = "【WORKER】＜＜ アシスタント本文要約（events） ＞＞"
 
 
 def _normalize_purpose(purpose: str) -> str:
