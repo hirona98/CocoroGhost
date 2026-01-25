@@ -8,6 +8,7 @@
   - リマインダー状態
 - `data/memory_<embedding_preset_id>.db`
   - 出来事ログ（`events`）
+  - 出来事ログのアシスタント本文要約（`event_assistant_summaries`、選別入力の高速化用）
   - 状態（`state`、`kind` で種別を持つ）
   - 改訂履歴（`revisions`）
   - 検索インデックス（ベクトル/文字n-gram）
@@ -56,6 +57,28 @@
 - クライアント入力には文脈IDが無い前提でよい
 - 文脈参照（文脈スレッド/返信関係）は、**イベント同士の関係を別テーブルとして構築**して、検索・更新で参照できるようにする
 - 同期で張る `reply_to` は「同じ `client_id` の直前チャットイベント」を指す（それ以外は非同期で補正する）
+
+### `event_assistant_summaries`（選別入力向けの派生要約）
+
+目的:
+
+- `SearchResultPack` の「選別」入力を軽量化して、SSE開始までの体感速度を改善する
+
+方針:
+
+- `events.assistant_text` の要約を **派生情報**として保持する（本文の代替にはしない）
+- `events.updated_at` と突き合わせて整合性を取る（本文が更新されたら作り直す）
+- 運用前のためマイグレーションは扱わない（作り直し前提）
+
+主要カラム:
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| event_id | INTEGER | 主キー（eventsと1:1、FK） |
+| summary_text | TEXT | アシスタント本文の要約（選別用） |
+| event_updated_at | INTEGER | events.updated_at（整合性チェック用） |
+| created_at | INTEGER | 作成時刻（UTC UNIX秒） |
+| updated_at | INTEGER | 更新時刻（UTC UNIX秒） |
 
 ### `event_threads` / `event_links`（文脈グラフ）
 
@@ -165,6 +188,25 @@
 - テーブル名は `revisions` とする
 - 通常の会話検索は「出来事ログ（`events`）/状態（`state`）」を中心にし、`revisions` は「なぜ変えた？」の説明・デバッグに寄せる
 
+### 観測ログ（`retrieval_runs`）
+
+検索（思い出す）の「なぜそうなったか」を追えるようにするためのログ。
+
+主要カラム（概念）:
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| run_id | INTEGER | 主キー（自動採番） |
+| event_id | INTEGER | 対象イベント（FK） |
+| created_at | INTEGER | 実行時刻（UTC UNIX秒） |
+| plan_json | TEXT | RetrievalPlan（SearchPlan互換、ルール生成） |
+| candidates_json | TEXT | 候補の統計（件数/ソース内訳など。本文は保持しない） |
+| selected_json | TEXT | SearchResultPack（selectedと理由） |
+
+注記:
+
+- `candidates_json` は「候補本文」ではなく、候補数や `hit_sources` を中心とした観測用データに限定する（ログ肥大化を防ぐ）。
+
 ### 文字検索（文字n-gram / FTS5 `trigram`）
 
 - `events` を対象にする（表記一致の補助）
@@ -241,5 +283,5 @@
 
 注記:
 
-- 全項目を主要経路で検索するとノイズとコストが増えるため、`SearchPlan` で「どれを使うか」を切り替える前提にする
+- 全項目を主要経路で検索するとノイズとコストが増えるため、RetrievalPlan（ルール生成）と「候補上限/経路クォータ（TOML）」で、混入量を制御する
 - ただし原則は「広め」を正とし、ベクトル/文字n-gram/文脈グラフは基本ONにする（最後の選別でノイズを落とす）

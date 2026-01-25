@@ -40,6 +40,21 @@ class Config:
     llm_log_level: str   # LLM送受信ログレベル（DEBUG, INFO, OFF）
     llm_timeout_seconds: int  # LLM API（非ストリーム）のタイムアウト秒数
     llm_stream_timeout_seconds: int  # LLM API（ストリーム開始）のタイムアウト秒数
+    retrieval_max_candidates: int  # 記憶検索: 候補収集の最大件数（SearchResultPack選別入力の上限）
+    retrieval_explore_global_vector_percent: int  # 記憶検索: 探索枠（全期間ベクトル候補）の割合（retrieval_max_candidatesのX%）
+    retrieval_event_affect_max_percent: int  # 記憶検索: event_affect 候補の最大割合（候補を食い過ぎない上限）
+    retrieval_quota_assoc_state_percent: int  # 記憶検索: associative_recent の state 割合
+    retrieval_quota_assoc_multi_hit_percent: int  # 記憶検索: associative_recent の multi-hit 割合
+    retrieval_quota_assoc_vector_only_percent: int  # 記憶検索: associative_recent の vector-only 割合
+    retrieval_quota_assoc_context_only_percent: int  # 記憶検索: associative_recent の context-only 割合
+    retrieval_quota_assoc_trigram_only_percent: int  # 記憶検索: associative_recent の trigram-only 割合
+    retrieval_quota_assoc_recent_only_percent: int  # 記憶検索: associative_recent の recent-only 割合
+    retrieval_quota_broad_state_percent: int  # 記憶検索: targeted_broad/explicit_about_time の state 割合
+    retrieval_quota_broad_multi_hit_percent: int  # 記憶検索: targeted_broad/explicit_about_time の multi-hit 割合
+    retrieval_quota_broad_about_time_only_percent: int  # 記憶検索: targeted_broad/explicit_about_time の about_time-only 割合
+    retrieval_quota_broad_vector_only_percent: int  # 記憶検索: targeted_broad/explicit_about_time の vector-only 割合
+    retrieval_quota_broad_context_only_percent: int  # 記憶検索: targeted_broad/explicit_about_time の context-only 割合
+    retrieval_quota_broad_trigram_only_percent: int  # 記憶検索: targeted_broad/explicit_about_time の trigram-only 割合
     log_file_enabled: bool  # ファイルログ有効/無効
     log_file_path: str      # ファイルログの保存先パス
     log_file_max_bytes: int  # ファイルログのローテーションサイズ（bytes）
@@ -181,6 +196,21 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         "llm_log_level",
         "llm_timeout_seconds",
         "llm_stream_timeout_seconds",
+        "retrieval_max_candidates",
+        "retrieval_explore_global_vector_percent",
+        "retrieval_event_affect_max_percent",
+        "retrieval_quota_assoc_state_percent",
+        "retrieval_quota_assoc_multi_hit_percent",
+        "retrieval_quota_assoc_vector_only_percent",
+        "retrieval_quota_assoc_context_only_percent",
+        "retrieval_quota_assoc_trigram_only_percent",
+        "retrieval_quota_assoc_recent_only_percent",
+        "retrieval_quota_broad_state_percent",
+        "retrieval_quota_broad_multi_hit_percent",
+        "retrieval_quota_broad_about_time_only_percent",
+        "retrieval_quota_broad_vector_only_percent",
+        "retrieval_quota_broad_context_only_percent",
+        "retrieval_quota_broad_trigram_only_percent",
         "log_file_enabled",
         "log_file_path",
         "log_file_max_bytes",
@@ -208,6 +238,85 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
     if llm_stream_timeout_seconds <= 0:
         raise ValueError("llm_stream_timeout_seconds must be a positive integer")
 
+    # --- 記憶検索: 候補数上限（既定: 80） ---
+    # NOTE:
+    # - SearchResultPack の「候補収集 → LLM選別」は SSE 開始前の同期経路なので、候補が膨らむと体感が悪化する。
+    # - ここは品質を維持しつつ体感を改善するための「上限」で、実装側で必ず強制する。
+    retrieval_max_candidates = int(data.get("retrieval_max_candidates", 80))
+    if retrieval_max_candidates <= 0:
+        raise ValueError("retrieval_max_candidates must be a positive integer")
+    retrieval_max_candidates = max(1, min(400, int(retrieval_max_candidates)))
+
+    # --- 記憶検索: 割合配分（既定は品質優先の推奨値） ---
+    # NOTE:
+    # - 目的: 特定経路（trigram/context/vectorなど）が大量に出たときに、候補が偏って選別入力が膨らむのを抑える。
+    # - multi-hit は「複数経路で当たった候補」で、品質（取りこぼし防止）に効くので厚めにする。
+    # - state は会話の安定性に効くため、一定割合を確保する。
+    # - event_affect は候補を食い過ぎやすいので「最大割合」のみ設ける（最小件数は強制しない）。
+    #
+    # 設計方針（重要）:
+    # - 「割合の合計が100%」である必要はない（100%未満でもOK）。
+    #   足りない分は実装側で埋めるため、細かい調整がしやすい。
+    # - 100%を超える設定は入力の意味が崩れるため起動時に弾く。
+    def require_percent(key: str, default: int) -> int:
+        v = int(data.get(key, default))
+        if v < 0 or v > 100:
+            raise ValueError(f"{key} must be in 0..100")
+        return int(v)
+
+    # --- 探索枠（全期間ベクトル候補）の割合 ---
+    # NOTE:
+    # - 「ひらめき」を得るため、ユーザーが期間指定しなくても、毎ターン少量だけ“全期間”の候補を混ぜる。
+    # - ここは retrieval_max_candidates（候補数）に対する割合（X%）で指定する。
+    # - 0% にすると探索枠は無効になる（= 従来の確度重視だけになる）。
+    retrieval_explore_global_vector_percent = require_percent("retrieval_explore_global_vector_percent", 5)
+
+    # --- event_affect の最大割合（候補の上限キャップ） ---
+    # NOTE:
+    # - event_affect は会話のトーン調整には効くが、候補が増えると state/event の枠を圧迫しやすい。
+    # - ここは「最低件数を保証」せず「最大割合だけ」を設定する（不足時に無理に混ぜてノイズを増やさない）。
+    retrieval_event_affect_max_percent = require_percent("retrieval_event_affect_max_percent", 5)
+
+    # associative_recent
+    retrieval_quota_assoc_state_percent = require_percent("retrieval_quota_assoc_state_percent", 20)
+    retrieval_quota_assoc_multi_hit_percent = require_percent("retrieval_quota_assoc_multi_hit_percent", 40)
+    # NOTE: vector_only は「最近寄り」の意味近傍。探索枠（全期間）とは別に扱う。
+    retrieval_quota_assoc_vector_only_percent = require_percent("retrieval_quota_assoc_vector_only_percent", 15)
+    retrieval_quota_assoc_context_only_percent = require_percent("retrieval_quota_assoc_context_only_percent", 10)
+    retrieval_quota_assoc_trigram_only_percent = require_percent("retrieval_quota_assoc_trigram_only_percent", 5)
+    retrieval_quota_assoc_recent_only_percent = require_percent("retrieval_quota_assoc_recent_only_percent", 5)
+    assoc_sum = (
+        int(retrieval_quota_assoc_state_percent)
+        + int(retrieval_quota_assoc_multi_hit_percent)
+        + int(retrieval_explore_global_vector_percent)
+        + int(retrieval_quota_assoc_vector_only_percent)
+        + int(retrieval_quota_assoc_context_only_percent)
+        + int(retrieval_quota_assoc_trigram_only_percent)
+        + int(retrieval_quota_assoc_recent_only_percent)
+    )
+    if assoc_sum > 100:
+        raise ValueError("retrieval_quota_assoc_*_percent sum must be <= 100")
+
+    # targeted_broad / explicit_about_time
+    retrieval_quota_broad_state_percent = require_percent("retrieval_quota_broad_state_percent", 20)
+    retrieval_quota_broad_multi_hit_percent = require_percent("retrieval_quota_broad_multi_hit_percent", 30)
+    retrieval_quota_broad_about_time_only_percent = require_percent("retrieval_quota_broad_about_time_only_percent", 25)
+    # NOTE: vector_only は「最近寄り」の意味近傍。探索枠（全期間）とは別に扱う。
+    retrieval_quota_broad_vector_only_percent = require_percent("retrieval_quota_broad_vector_only_percent", 10)
+    retrieval_quota_broad_context_only_percent = require_percent("retrieval_quota_broad_context_only_percent", 5)
+    retrieval_quota_broad_trigram_only_percent = require_percent("retrieval_quota_broad_trigram_only_percent", 5)
+    broad_sum = (
+        int(retrieval_quota_broad_state_percent)
+        + int(retrieval_quota_broad_multi_hit_percent)
+        + int(retrieval_quota_broad_about_time_only_percent)
+        + int(retrieval_explore_global_vector_percent)
+        + int(retrieval_quota_broad_vector_only_percent)
+        + int(retrieval_quota_broad_context_only_percent)
+        + int(retrieval_quota_broad_trigram_only_percent)
+    )
+    if broad_sum > 100:
+        raise ValueError("retrieval_quota_broad_*_percent sum must be <= 100")
+
     config = Config(
         # --- サーバー待受ポート（必須） ---
         cocoro_ghost_port=int(_require(data, "cocoro_ghost_port")),
@@ -222,6 +331,22 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         # - stream は「開始まで」の待ちを制限する目的（本文生成はストリームで継続受信する）。
         llm_timeout_seconds=int(llm_timeout_seconds),
         llm_stream_timeout_seconds=int(llm_stream_timeout_seconds),
+        # --- 記憶検索（候補上限） ---
+        retrieval_max_candidates=int(retrieval_max_candidates),
+        retrieval_explore_global_vector_percent=int(retrieval_explore_global_vector_percent),
+        retrieval_event_affect_max_percent=int(retrieval_event_affect_max_percent),
+        retrieval_quota_assoc_state_percent=int(retrieval_quota_assoc_state_percent),
+        retrieval_quota_assoc_multi_hit_percent=int(retrieval_quota_assoc_multi_hit_percent),
+        retrieval_quota_assoc_vector_only_percent=int(retrieval_quota_assoc_vector_only_percent),
+        retrieval_quota_assoc_context_only_percent=int(retrieval_quota_assoc_context_only_percent),
+        retrieval_quota_assoc_trigram_only_percent=int(retrieval_quota_assoc_trigram_only_percent),
+        retrieval_quota_assoc_recent_only_percent=int(retrieval_quota_assoc_recent_only_percent),
+        retrieval_quota_broad_state_percent=int(retrieval_quota_broad_state_percent),
+        retrieval_quota_broad_multi_hit_percent=int(retrieval_quota_broad_multi_hit_percent),
+        retrieval_quota_broad_about_time_only_percent=int(retrieval_quota_broad_about_time_only_percent),
+        retrieval_quota_broad_vector_only_percent=int(retrieval_quota_broad_vector_only_percent),
+        retrieval_quota_broad_context_only_percent=int(retrieval_quota_broad_context_only_percent),
+        retrieval_quota_broad_trigram_only_percent=int(retrieval_quota_broad_trigram_only_percent),
         log_file_enabled=bool(data.get("log_file_enabled", False)),
         log_file_path=resolved_log_file_path,
         log_file_max_bytes=int(data.get("log_file_max_bytes", 200_000)),

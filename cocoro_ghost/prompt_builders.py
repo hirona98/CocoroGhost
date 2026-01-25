@@ -143,45 +143,6 @@ def write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> 
     return "\n\n".join([base, persona]).strip()
 
 
-def search_plan_system_prompt() -> str:
-    """SearchPlan生成用のsystem promptを返す。"""
-    return "\n".join(
-        [
-            "あなたは会話用の記憶検索計画（SearchPlan）を作る。",
-            "出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
-            "",
-            "目的:",
-            "- ユーザー入力に対して「最近の連想」か「全期間の目的検索」かを選び、候補収集の方針を固定する",
-            "",
-            "出力スキーマ（型が重要）:",
-            "{",
-            '  "mode": "associative_recent|targeted_broad|explicit_about_time",',
-            '  "queries": ["string"],',
-            '  "time_hint": {',
-            '    "about_year_start": null,',
-            '    "about_year_end": null,',
-            '    "life_stage_hint": ""',
-            "  },",
-            '  "diversify": {"by": ["life_stage", "about_year_bucket"], "per_bucket": 5},',
-            '  "limits": {"max_candidates": 200, "max_selected": 12}',
-            "}",
-            "",
-            "ルール:",
-            "- 日本語の会話前提。queries は短い検索語（固有名詞/話題/型番など）を1〜5個とする。",
-            "- 指示語だけで検索語が作れない場合は、queries=[ユーザー入力そのまま] とする。",
-            "- about_year_start/about_year_end は整数（年）か null。文字列の年（\"2018\"）は出さない。",
-            "- life_stage_hint は elementary|middle|high|university|work|unknown のどれか。分からなければ \"\"。",
-            "",
-            "mode の選び方:",
-            "- 直近の続き/指示語が多い/\"さっき\" など → associative_recent",
-            "- \"昔\" \"子供の頃\" \"学生の頃\" など（全期間から探したい） → targeted_broad",
-            "- 年や時期が明示（例: 2018年、高校の頃） → explicit_about_time（time_hintも埋める）",
-            "- 迷ったら associative_recent",
-            "",
-        ]
-    ).strip()
-
-
 def selection_system_prompt() -> str:
     """SearchResultPack生成（選別）用のsystem promptを返す。"""
     return "\n".join(
@@ -189,8 +150,28 @@ def selection_system_prompt() -> str:
             "あなたは会話のために、候補記憶から必要なものだけを選び、SearchResultPackを作る。",
             "出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
             "",
-            "入力: user_input, plan, candidates（event/state/event_affect）。",
+            "入力: user_input, plan, candidates（圧縮形式）。",
             "目的: ユーザー入力に答えるのに必要な記憶だけを最大 max_selected 件まで選ぶ（ノイズは捨てる）。",
+            "",
+            "candidates の形式（重要）:",
+            "- candidates は「プレビュー＋メタ」の圧縮表現。本文全文は入っていない。",
+            "- 候補の t（種別）と id（主キー）で、必ずID参照できるようにしてある。",
+            "",
+            "candidate（圧縮）スキーマ（概略）:",
+            "- event: {t:\"e\", id:<event_id>, ts:<created_at>, src:<source>, th:[thread_key], u:<user_preview>, a:<assistant_preview>, img:<image_preview|null>, at:{y0,y1,ls,c}, hs:[source_code]}",
+            "- state: {t:\"s\", id:<state_id>, k:<kind>, ts:<last_confirmed_at>, b:<body_preview>, p:<payload_preview>, vf, vt, hs:[source_code]}",
+            "- event_affect: {t:\"a\", id:<affect_id>, eid:<event_id>, ts:<created_at>, ets:<event_created_at>, m:<moment_preview>, lab:[labels], vad:[v,a,d], c:<confidence>, hs:[source_code]}",
+            "",
+            "hs（hit_sources）コード表:",
+            "- re: recent_events（最近イベント）",
+            "- tg: trigram_events（文字n-gram）",
+            "- rc: reply_chain（返信連鎖）",
+            "- ct: context_threads（文脈スレッド）",
+            "- cl: context_links（文脈リンク）",
+            "- rs: recent_states（最近状態）",
+            "- at: about_time（期間ヒント）",
+            "- vr: vector_recent（ベクトル類似: 直近寄り）",
+            "- vg: vector_global（ベクトル類似: 全期間/ひらめき枠）",
             "",
             "選び方（品質）:",
             "- まずは state（fact/relation/task/summary）を優先し、足りない分を event（具体エピソード）で補う。",
@@ -203,6 +184,10 @@ def selection_system_prompt() -> str:
             "- selected の各要素は、必ず次のキーを全て含める: type, event_id, state_id, affect_id, why, snippet",
             "- type は event|state|event_affect のいずれか。",
             "- event_id/state_id/affect_id はDBの主キー。入力の candidates に存在するIDのみを使い、絶対に作り出さない。",
+            "- candidates から出力へ変換（重要）:",
+            "  - t=e の候補を選ぶ → type=event, event_id=id, state_id=0, affect_id=0",
+            "  - t=s の候補を選ぶ → type=state, state_id=id, event_id=0, affect_id=0",
+            "  - t=a の候補を選ぶ → type=event_affect, affect_id=id, event_id=0, state_id=0",
             "- type=event の場合: event_id>0, state_id=0, affect_id=0",
             "- type=state の場合: state_id>0, event_id=0, affect_id=0",
             "- type=event_affect の場合: affect_id>0, event_id=0, state_id=0",
@@ -225,6 +210,43 @@ def selection_system_prompt() -> str:
             "注意:",
             "- why は短く具体的に（会話にどう効くか）。snippet は短い抜粋（不要なら空文字列でよい）。",
             "- event_affect（内心）は内部用。本文にそのまま出さない前提で、返答の雰囲気調整に使う。",
+        ]
+    ).strip()
+
+
+def event_assistant_summary_system_prompt() -> str:
+    """イベントのアシスタント本文（events.assistant_text）要約用のsystem promptを返す。
+
+    目的:
+        - SearchResultPack の「選別」入力（candidates）を軽量化し、SSE開始までの体感速度を改善する。
+        - 返答生成（会話本文）では元の events.* を使い、要約は「選別の材料」専用とする。
+    """
+
+    return "\n".join(
+        [
+            "あなたは、1件のイベント（user_text/assistant_text/画像要約）を短く要約する。",
+            "出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
+            "",
+            "目的:",
+            "- 検索候補の選別で「何の話だったか」を素早く判別できる短文要約を作る。",
+            "",
+            "品質（重要）:",
+            "- 入力に無い事実は作らない。推測や補完はしない。",
+            "- 固有名詞/型番/数値/年月などは、入力にある範囲でなるべく保持する。",
+            "- 口調は中立で良い（人格の口調に寄せる必要はない）。",
+            "",
+            "長さ:",
+            "- 1〜2文。",
+            "- 目安: 80〜180文字（長すぎる場合は短くする）。",
+            "",
+            "禁止:",
+            "- [face:Joy] のような会話装飾タグを混ぜない。",
+            "- 改行だらけの文章や箇条書きにしない。",
+            "",
+            "出力スキーマ:",
+            "{",
+            '  "summary": "string"',
+            "}",
         ]
     ).strip()
 

@@ -36,13 +36,13 @@ setup.bat
 
 1. **仮想環境の作成**
    ```bash
-   python -m venv .venv
+   python.exe -m venv .venv
    ```
 
 2. **依存パッケージのインストール**
    ```bash
    .venv\Scripts\activate
-   pip install -e .
+   python.exe -m pip install -e .
    ```
 
    依存関係は `pyproject.toml` で管理されています。
@@ -92,10 +92,9 @@ start.bat
 
 ## 依存関係管理
 
-依存関係は `pyproject.toml` で管理されています。以下のパッケージが含まれます：
+依存関係は `pyproject.toml` で管理されています（安定動作のため、バージョンを固定しています）。以下のパッケージが含まれます：
 
 - **fastapi** - Web フレームワーク
-- **fastapi-utils** - FastAPI ユーティリティ
 - **uvicorn[standard]** - ASGI サーバー
 - **sqlalchemy** - ORM
 - **litellm** - LLM クライアント
@@ -111,7 +110,6 @@ start.bat
 ## 開発時の注意
 
 - Python実行時は必ず `-X utf8` オプションを付けること
-- WSL環境ではpowershell.exe経由でPowerShellコマンドを実行すること
 - 開発モードでインストール（`pip install -e .`）すると、コード変更が即座に反映されます
 
 ### 設定ファイルが見つからない
@@ -143,7 +141,7 @@ copy config\setting.toml.release config\setting.toml
 
 ```bash
 .venv\Scripts\activate
-pip install pyinstaller
+python.exe -m pip install pyinstaller
 ```
 
 2) ビルド（推奨: バッチ）

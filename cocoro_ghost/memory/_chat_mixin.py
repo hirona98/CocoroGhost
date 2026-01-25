@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import re
 import time
 from typing import Any, Generator
 
@@ -24,7 +25,7 @@ from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 from cocoro_ghost.llm_client import LlmRequestPurpose
 from cocoro_ghost.memory._chat_search_mixin import _CandidateItem
 from cocoro_ghost.memory._image_mixin import default_input_text_when_images_only
-from cocoro_ghost.memory_models import Event, EventLink, RetrievalRun, State
+from cocoro_ghost.memory_models import Event, EventAssistantSummary, EventLink, RetrievalRun, State
 from cocoro_ghost.memory._utils import now_utc_ts
 from cocoro_ghost.time_utils import format_iso8601_local
 
@@ -38,6 +39,340 @@ _warned_memory_disabled = False
 def _sse(event: str, data: dict) -> str:
     """SSEの1イベントを文字列化する。"""
     return f"event: {event}\n" + f"data: {common_utils.json_dumps(data)}\n\n"
+
+
+# --- SearchResultPack 選別: 入力を圧縮して体感速度を上げる ---
+#
+# 背景:
+# - 選別（SearchResultPack）はSSE開始前の同期経路なので、ここが遅いと体感が悪化する。
+# - 候補の「本文」をそのまま渡すと入力トークンが増え、選別が遅く/不安定になりやすい。
+# - 一方で、出力（selected）は ID を返せば、後段でDBから詳細を注入できる。
+#
+# 方針:
+# - 候補は「短いプレビュー＋メタ情報」に圧縮し、キー名も短縮する。
+# - 出力スキーマ（selectedの type/event_id/state_id/affect_id 等）は維持する。
+_HIT_SOURCE_TO_CODE: dict[str, str] = {
+    "recent_events": "re",
+    "trigram_events": "tg",
+    "reply_chain": "rc",
+    "context_threads": "ct",
+    "context_links": "cl",
+    "recent_states": "rs",
+    "about_time": "at",
+    "vector_recent": "vr",
+    "vector_global": "vg",
+}
+
+
+# --- RetrievalPlan（SearchPlan）: ルールベース ---
+#
+# 背景:
+# - SearchPlan（LLM）を毎ターン呼ぶと、SSE開始前の同期待ちが増えて体感が悪化する。
+# - 一方で「昔話/期間指定」だけは拾い漏れやすいので、ユーザーが明示した時だけ軽いルールで補助する。
+#
+# 方針:
+# - LLMによるSearchPlan生成は行わない（常にルールで固定planを作る）。
+# - mode は「ユーザーが明示した期間ヒントがあるか」でのみ切り替える（指定を要求しない）。
+_YEAR_RE = re.compile(r"(?:^|[^0-9])((?:19|20)[0-9]{2})(?:[^0-9]|$)")
+
+
+def _preview_text_for_selection(text_in: str, *, limit_chars: int) -> str:
+    """LLM選別入力向けにテキストを短く整形する。
+
+    目的:
+        - 入力トークンを削減して選別を高速化する。
+        - 重要情報が末尾にある場合もあるため、単純な先頭切り捨てではなく「頭+末尾」を残す。
+
+    Args:
+        text_in: 入力テキスト。
+        limit_chars: 目安の最大文字数（文字数ベースで切る）。
+    """
+
+    # --- 正規化（会話装飾タグ除去＋空白整形） ---
+    s = common_utils.strip_face_tags(str(text_in or ""))
+    if not s:
+        return ""
+
+    # --- 既に短いならそのまま ---
+    limit = max(1, int(limit_chars))
+    if len(s) <= limit:
+        return s
+
+    # --- 頭+末尾で保持（末尾側の手がかりを残す） ---
+    head_len = max(1, int(limit * 0.65))
+    tail_len = max(1, int(limit - head_len - 1))
+    head = s[:head_len].rstrip()
+    tail = s[-tail_len:].lstrip() if tail_len > 0 else ""
+    if not tail:
+        return head
+    return f"{head}…{tail}"
+
+
+def _encode_hit_sources_for_selection(hit_sources: list[str]) -> list[str]:
+    """hit_sources を短いコード列に圧縮する。
+
+    NOTE:
+        - 未知のラベルは落とさずにそのまま残す（診断性と品質を優先）。
+    """
+
+    # --- 正規化 ---
+    hs = [str(x or "").strip() for x in (hit_sources or [])]
+    hs = [x for x in hs if x]
+    if not hs:
+        return []
+
+    # --- 短縮コード化 ---
+    out: list[str] = []
+    for x in hs:
+        out.append(_HIT_SOURCE_TO_CODE.get(x, x))
+
+    # --- 重複除去（順序は安定化） ---
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for x in out:
+        if x in seen:
+            continue
+        seen.add(x)
+        uniq.append(x)
+    return uniq
+
+
+def _load_event_assistant_summaries_for_selection(
+    *,
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    candidates: list[_CandidateItem],
+) -> dict[int, str]:
+    """選別入力向けに、イベント要約（assistant_summary）をまとめてロードする。
+
+    方針:
+        - 返答生成（SearchResultPack注入）には使わず、あくまで「選別の材料」だけを軽くする。
+        - events.updated_at と一致する要約のみ採用し、古い要約は無視する（安全寄り）。
+    """
+
+    # --- event_id を集める ---
+    event_ids: list[int] = []
+    for c in (candidates or []):
+        if str(getattr(c, "type", "")) != "event":
+            continue
+        meta = getattr(c, "meta", None)
+        if not isinstance(meta, dict):
+            continue
+        eid = int(meta.get("event_id") or 0)
+        if eid > 0:
+            event_ids.append(int(eid))
+    event_ids = sorted({int(x) for x in event_ids if int(x) > 0})
+    if not event_ids:
+        return {}
+
+    # --- DBからまとめて引く ---
+    out: dict[int, str] = {}
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        rows = (
+            db.query(EventAssistantSummary.event_id, EventAssistantSummary.summary_text)
+            .join(Event, Event.event_id == EventAssistantSummary.event_id)
+            .filter(EventAssistantSummary.event_id.in_([int(x) for x in event_ids]))
+            .filter(EventAssistantSummary.event_updated_at == Event.updated_at)
+            .all()
+        )
+        for r in rows:
+            if not r:
+                continue
+            try:
+                eid = int(r[0] or 0)
+            except Exception:  # noqa: BLE001
+                continue
+            t = str(r[1] or "").strip()
+            if eid <= 0 or not t:
+                continue
+            # --- 異常に長い要約は安全に切る（選別入力の肥大化を防ぐ） ---
+            if len(t) > 600:
+                t = t[:600]
+            out[int(eid)] = t
+    return out
+
+
+def _build_rule_based_retrieval_plan(
+    *,
+    user_input: str,
+    max_candidates: int,
+) -> dict[str, Any]:
+    """
+    ルールベースでRetrievalPlan（SearchPlan互換のdict）を作る。
+
+    目的:
+        - SearchPlan（LLM）を廃止し、SSE開始前の同期待ちを減らす。
+        - ただしユーザーが明示した「年/学生区分」などは拾えるようにして、期間指定の取りこぼしを抑える。
+
+    Args:
+        user_input: ユーザー入力（augmentedではなく、元の入力を推奨）。
+        max_candidates: 候補収集の最大件数（上限は別途TOMLで強制される）。
+    """
+
+    # --- 正規化 ---
+    text_in = str(user_input or "").strip()
+
+    # --- time_hint: 年（4桁）を抽出 ---
+    y0: int | None = None
+    y1: int | None = None
+    m = _YEAR_RE.search(text_in)
+    if m:
+        try:
+            year = int(m.group(1))
+            if 1900 <= int(year) <= 2100:
+                y0 = int(year)
+                y1 = int(year)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # --- time_hint: life_stage_hint を抽出（ユーザーが明示した場合のみ） ---
+    # NOTE:
+    # - ここは「期間指定を要求しない」が方針なので、強いキーワードがある場合だけヒントを入れる。
+    # - 迷ったら空にして、探索枠（全期間vector）で“ひらめき”を狙う。
+    life_stage_hint = ""
+    if "小学生" in text_in:
+        life_stage_hint = "elementary"
+    elif "中学生" in text_in or "中学" in text_in:
+        life_stage_hint = "middle"
+    elif "高校" in text_in or "高1" in text_in or "高2" in text_in or "高3" in text_in:
+        life_stage_hint = "high"
+    elif "大学" in text_in:
+        life_stage_hint = "university"
+    elif "社会人" in text_in or "仕事" in text_in:
+        life_stage_hint = "work"
+
+    # --- mode: 明示ヒントがある場合だけ explicit_about_time とする ---
+    # NOTE:
+    # - これにより about_time 経路が走る。
+    # - それ以外は associative_recent とし、会話の流れ（直近性）は別経路で担保する。
+    mode = "associative_recent"
+    if y0 is not None or y1 is not None or life_stage_hint:
+        mode = "explicit_about_time"
+
+    # --- plan を構築（SearchPlan互換） ---
+    # NOTE:
+    # - queries は「ユーザー入力そのまま」だけにする（追加生成は行わない）。
+    # - limits.max_candidates は上位でTOMLにより強制されるが、入力/ログ整合性のためここにも反映する。
+    plan_obj: dict[str, Any] = {
+        "mode": str(mode),
+        "queries": ([str(text_in)] if str(text_in) else []),
+        "time_hint": {"about_year_start": y0, "about_year_end": y1, "life_stage_hint": str(life_stage_hint)},
+        "diversify": {"by": ["life_stage", "about_year_bucket"], "per_bucket": 5},
+        "limits": {"max_candidates": int(max(1, min(400, int(max_candidates)))), "max_selected": 12},
+    }
+    return plan_obj
+
+
+def _build_compact_candidates_for_selection(
+    candidates: list[_CandidateItem],
+    *,
+    event_id_to_summary: dict[int, str] | None = None,
+) -> list[dict[str, Any]]:
+    """SearchResultPack選別用の候補リスト（圧縮形式）を作る。"""
+
+    # --- プレビューは「品質を落とさず短く」を狙う ---
+    # NOTE:
+    # - ここはSSE開始前の同期経路なので、CPU側コストは最小にする（正規表現の多用は避ける）。
+    # - 文字数上限は「候補数が多い」状況を想定し、過度に大きくしない。
+    event_user_limit = 360
+    event_asst_limit = 420
+    state_body_limit = 420
+    state_payload_limit = 180
+    affect_moment_limit = 280
+
+    # --- event_id -> assistant_summary_text（存在すればこちらを優先） ---
+    # NOTE:
+    # - 要約は worker が作る派生情報であり、返答生成（SearchResultPack注入）には使わない。
+    # - 選別入力だけを軽くして、SSE開始までの待ちを削る。
+    summary_map: dict[int, str] = dict(event_id_to_summary or {})
+
+    out: list[dict[str, Any]] = []
+    for c in (candidates or []):
+        meta = dict(c.meta or {})
+        hs = _encode_hit_sources_for_selection(list(c.hit_sources or []))
+
+        # --- event ---
+        if str(c.type) == "event":
+            at = meta.get("about_time") if isinstance(meta.get("about_time"), dict) else {}
+            event_id = int(meta.get("event_id") or 0)
+            assistant_text_raw = str(meta.get("assistant_text") or "")
+            assistant_summary = str(summary_map.get(int(event_id)) or "")
+            assistant_for_selection = assistant_summary if assistant_summary else assistant_text_raw
+            out.append(
+                {
+                    "t": "e",
+                    "id": int(event_id),
+                    "ts": str(meta.get("created_at") or ""),
+                    "src": str(meta.get("source") or ""),
+                    "th": list(meta.get("thread_keys") or []),
+                    "u": _preview_text_for_selection(str(meta.get("user_text") or ""), limit_chars=event_user_limit),
+                    "a": _preview_text_for_selection(
+                        str(assistant_for_selection or ""), limit_chars=event_asst_limit
+                    ),
+                    "img": _preview_text_for_selection(
+                        str(meta.get("image_summaries_preview") or ""), limit_chars=240
+                    )
+                    or None,
+                    "at": {
+                        "y0": at.get("about_year_start"),
+                        "y1": at.get("about_year_end"),
+                        "ls": str(at.get("life_stage") or ""),
+                        "c": float(at.get("confidence") or 0.0),
+                    },
+                    "hs": hs,
+                }
+            )
+            continue
+
+        # --- state ---
+        if str(c.type) == "state":
+            out.append(
+                {
+                    "t": "s",
+                    "id": int(meta.get("state_id") or 0),
+                    "k": str(meta.get("kind") or ""),
+                    "ts": str(meta.get("last_confirmed_at") or ""),
+                    "b": _preview_text_for_selection(str(meta.get("body_text") or ""), limit_chars=state_body_limit),
+                    "p": _preview_text_for_selection(
+                        str(meta.get("payload_json") or ""), limit_chars=state_payload_limit
+                    ),
+                    "vf": meta.get("valid_from_ts"),
+                    "vt": meta.get("valid_to_ts"),
+                    "hs": hs,
+                }
+            )
+            continue
+
+        # --- event_affect ---
+        if str(c.type) == "event_affect":
+            vad = meta.get("vad") if isinstance(meta.get("vad"), dict) else {}
+            out.append(
+                {
+                    "t": "a",
+                    "id": int(meta.get("affect_id") or 0),
+                    "eid": int(meta.get("event_id") or 0),
+                    "ts": str(meta.get("created_at") or ""),
+                    "ets": str(meta.get("event_created_at") or ""),
+                    "m": _preview_text_for_selection(
+                        str(meta.get("moment_affect_text") or ""), limit_chars=affect_moment_limit
+                    ),
+                    "lab": list(meta.get("moment_affect_labels") or []),
+                    "vad": [float(vad.get("v") or 0.0), float(vad.get("a") or 0.0), float(vad.get("d") or 0.0)],
+                    "c": float(meta.get("confidence") or 0.0),
+                    "hs": hs,
+                }
+            )
+            continue
+
+    # --- 不正な候補は除外し、入力を安定させる ---
+    # NOTE: LLMに無意味な0 IDを渡すと「存在しないID」を返すリスクが上がるため、ここで落とす。
+    cleaned: list[dict[str, Any]] = []
+    for x in out:
+        t = str(x.get("t") or "")
+        i = int(x.get("id") or 0)
+        if t in ("e", "s", "a") and i > 0:
+            cleaned.append(x)
+    return cleaned
 
 
 class _UserVisibleReplySanitizer:
@@ -634,10 +969,11 @@ class _ChatMemoryMixin:
                 )
                 last_chat_created_at_ts = int(prev[1] or 0) if int(prev[1] or 0) > 0 else None
 
-        # --- 3) 先行: 埋め込み取得（input_text のみ。SearchPlan生成と重ねて待ちを削る） ---
+        # --- 3) 先行: 埋め込み取得（input_text のみ。SSE開始前の待ちを削る） ---
         # NOTE:
         # - 段階化（追加クエリの追い埋め込み）はしない（シンプル優先）。
-        # - 先行埋め込みは vector_all で使い、文字n-gram側は SearchPlan.queries を使える。
+        # - 先行埋め込みは vec検索（vector_recent/vector_global）で使う。
+        # - 文字n-gram（trigram）は plan_obj.queries を補助的に使える。
         vector_embedding_future: concurrent.futures.Future[list[Any]] | None = None
         pre_ex: concurrent.futures.ThreadPoolExecutor | None = None
         try:
@@ -655,26 +991,16 @@ class _ChatMemoryMixin:
             except Exception:  # noqa: BLE001
                 pass
 
-        # --- 4) SearchPlan（LLM） ---
-        plan_obj: dict[str, Any] = {
-            "mode": "associative_recent",
-            "queries": [augmented_query_text],
-            "time_hint": {"about_year_start": None, "about_year_end": None, "life_stage_hint": ""},
-            "diversify": {"by": ["life_stage", "about_year_bucket"], "per_bucket": 5},
-            "limits": {"max_candidates": 200, "max_selected": 12},
-        }
-        try:
-            resp = self.llm_client.generate_json_response(
-                system_prompt=prompt_builders.search_plan_system_prompt(),
-                input_text=augmented_query_text,
-                purpose=LlmRequestPurpose.SYNC_SEARCH_PLAN,
-                max_tokens=500,
-            )
-            obj = common_utils.parse_first_json_object_or_none(common_utils.first_choice_content(resp))
-            if obj is not None:
-                plan_obj = obj
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("SearchPlan generation failed; fallback to default", exc_info=exc)
+        # --- 4) RetrievalPlan（ルールベース。SearchPlan（LLM）は廃止） ---
+        # NOTE:
+        # - SearchPlan（LLM）を毎ターン呼ぶと、SSE開始前の同期待ちが増えるため廃止する。
+        # - 代わりに、ユーザー入力から年/学生区分などの「明示ヒント」だけを軽く抽出して plan を作る。
+        # - 上限（max_candidates）はTOML値を基準とし、実装側でも強制される。
+        toml_max_candidates = int(self.config_store.toml_config.retrieval_max_candidates)
+        plan_obj = _build_rule_based_retrieval_plan(
+            user_input=str(input_text or ""),
+            max_candidates=int(toml_max_candidates),
+        )
 
         # --- 5) 候補収集（取りこぼし防止優先・可能なものは並列） ---
         candidates: list[_CandidateItem] = self._collect_candidates(
@@ -689,14 +1015,29 @@ class _ChatMemoryMixin:
         # --- 6) 選別（LLM → SearchResultPack） ---
         search_result_pack: dict[str, Any] = {"selected": []}
         try:
+            # --- 選別入力は圧縮して渡す（体感速度優先） ---
+            event_id_to_summary = _load_event_assistant_summaries_for_selection(
+                embedding_preset_id=str(embedding_preset_id),
+                embedding_dimension=int(embedding_dimension),
+                candidates=candidates,
+            )
+            compact_candidates = _build_compact_candidates_for_selection(
+                candidates, event_id_to_summary=event_id_to_summary
+            )
             selection_input = common_utils.json_dumps(
                 {
                     "user_input": input_text,
                     "image_summaries": list(non_empty_summaries),
                     "plan": plan_obj,
-                    "candidates": [dict(c.meta) | {"hit_sources": c.hit_sources} for c in candidates],
+                    "candidates": compact_candidates,
                 }
             )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "SearchResultPack selection input prepared candidates=%d chars=%d",
+                    int(len(compact_candidates)),
+                    int(len(selection_input)),
+                )
             resp = self.llm_client.generate_json_response(
                 system_prompt=prompt_builders.selection_system_prompt(),
                 input_text=selection_input,
@@ -852,6 +1193,17 @@ class _ChatMemoryMixin:
         # --- 10) 非同期: 埋め込み更新ジョブを積む（次ターンで効く） ---
         background_tasks.add_task(
             self._enqueue_event_embedding_job,
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+        )
+
+        # --- 10.2) 非同期: アシスタント本文要約（選別入力の高速化） ---
+        # NOTE:
+        # - 返答本文（events.assistant_text）そのものは会話生成に使うので保持する。
+        # - 要約は「選別（SearchResultPack）入力の軽量化」専用の派生情報として worker で作る。
+        background_tasks.add_task(
+            self._enqueue_event_assistant_summary_job,
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),

@@ -50,7 +50,7 @@ class _MemorySessionEntry:
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
-_MEMORY_DB_USER_VERSION = 4
+_MEMORY_DB_USER_VERSION = 5
 _SETTINGS_DB_USER_VERSION = 2
 
 
@@ -279,6 +279,8 @@ def _create_memory_indexes(engine) -> None:
         "CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_events_client_created_at ON events(client_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_events_source_created_at ON events(source, created_at)",
+        # --- event_assistant_summaries ---
+        "CREATE INDEX IF NOT EXISTS idx_event_assistant_summaries_updated ON event_assistant_summaries(updated_at)",
         # --- state ---
         "CREATE INDEX IF NOT EXISTS idx_state_kind_last_confirmed ON state(kind, last_confirmed_at)",
         "CREATE INDEX IF NOT EXISTS idx_state_valid_range ON state(valid_from_ts, valid_to_ts)",
@@ -739,6 +741,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             archived=False,
             llm_api_key="",
             llm_model="openai/gpt-5-mini",
+            max_turns_window=10,
             image_model="openai/gpt-5-mini",
             image_timeout_seconds=60,
         )
