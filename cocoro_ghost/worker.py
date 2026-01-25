@@ -1416,10 +1416,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 )
                 changed_state_id = int(st.state_id)
 
-            # --- state entity索引（後で一括で付与） ---
-            if int(changed_state_id) > 0:
-                changed_state_ids.add(int(changed_state_id))
-
             # --- embedding job（long_mood_state も更新で育つので反映しておく） ---
             if int(changed_state_id) > 0:
                 db.add(
