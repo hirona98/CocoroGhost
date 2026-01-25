@@ -18,13 +18,13 @@ import math
 import time
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import func, text
 
 from cocoro_ghost import common_utils, vector_index
 from cocoro_ghost.db import memory_session_scope, search_similar_item_ids
 from cocoro_ghost.llm_client import LlmRequestPurpose
 from cocoro_ghost.memory._utils import now_utc_ts
-from cocoro_ghost.memory_models import Event, EventAffect, EventLink, EventThread, State
+from cocoro_ghost.memory_models import Event, EventAffect, EventEntity, EventLink, EventThread, State, StateEntity
 from cocoro_ghost.time_utils import format_iso8601_local
 
 
@@ -132,6 +132,8 @@ class _ChatSearchMixin:
                 "vector_global_only": int(tc.retrieval_explore_global_vector_percent),
                 "vector_only": int(tc.retrieval_quota_broad_vector_only_percent),
                 "context_only": int(tc.retrieval_quota_broad_context_only_percent),
+                # NOTE: entity_expand の単独hit。固有名詞寄りなので少量だけ確保する。
+                "entity_only": int(getattr(tc, "retrieval_quota_broad_entity_only_percent", 5)),
                 "trigram_only": int(tc.retrieval_quota_broad_trigram_only_percent),
             }
             category_order = [
@@ -141,6 +143,7 @@ class _ChatSearchMixin:
                 "vector_global_only",
                 "vector_only",
                 "context_only",
+                "entity_only",
                 "trigram_only",
             ]
         else:
@@ -154,6 +157,8 @@ class _ChatSearchMixin:
                 "vector_global_only": int(tc.retrieval_explore_global_vector_percent),
                 "vector_only": int(tc.retrieval_quota_assoc_vector_only_percent),
                 "context_only": int(tc.retrieval_quota_assoc_context_only_percent),
+                # NOTE: entity_expand の単独hit。固有名詞寄りなので少量だけ確保する。
+                "entity_only": int(getattr(tc, "retrieval_quota_assoc_entity_only_percent", 5)),
                 "trigram_only": int(tc.retrieval_quota_assoc_trigram_only_percent),
                 "recent_only": int(tc.retrieval_quota_assoc_recent_only_percent),
             }
@@ -163,6 +168,7 @@ class _ChatSearchMixin:
                 "vector_global_only",
                 "vector_only",
                 "context_only",
+                "entity_only",
                 "trigram_only",
                 "recent_only",
             ]
@@ -204,6 +210,8 @@ class _ChatSearchMixin:
                     return "trigram_only"
                 if src == "recent_events":
                     return "recent_only"
+                if src == "entity_expand":
+                    return "entity_only"
                 if src in ("reply_chain", "context_threads", "context_links"):
                     # NOTE:
                     # - reply_chain: 返信連鎖（直前文脈）
@@ -875,6 +883,173 @@ class _ChatSearchMixin:
                     if label == "vector":
                         vector_debug = {"error": f"vector task failed or timed out: {type(exc).__name__}: {exc}"}
                     continue
+
+        # --- entity_expand（seed → entity → 関連候補） ---
+        # NOTE:
+        # - AutoMemの expand_entities 相当の「多段想起」を、同期候補収集へ最小実装で入れる。
+        # - 既存の検索（recent/trigram/context/vector）で拾った候補を seed にして、
+        #   そこに付与された entity索引から関連イベント/状態を追加で引く。
+        tc = self.config_store.toml_config  # type: ignore[attr-defined]
+        if bool(getattr(tc, "retrieval_entity_expand_enabled", True)):
+            # --- 起動設定（上限と足切り） ---
+            seed_limit = max(0, int(getattr(tc, "retrieval_entity_expand_seed_limit", 12)))
+            max_entities = max(0, int(getattr(tc, "retrieval_entity_expand_max_entities", 12)))
+            per_entity_event_limit = max(0, int(getattr(tc, "retrieval_entity_expand_per_entity_event_limit", 10)))
+            per_entity_state_limit = max(0, int(getattr(tc, "retrieval_entity_expand_per_entity_state_limit", 6)))
+            min_conf = float(getattr(tc, "retrieval_entity_expand_min_confidence", 0.45))
+            min_conf = max(0.0, min(1.0, float(min_conf)))
+
+            # --- seed の選定（multi-hit優先 + 最近性っぽくID降順） ---
+            # NOTE:
+            # - ここは「候補の一部」を seed にするだけで、品質は後段のLLM選別に任せる。
+            seed_keys: list[tuple[str, int]] = []
+            for k, srcs in sources_by_key.items():
+                if not k or len(k) != 2:
+                    continue
+                t, i = k
+                if str(t) not in ("event", "state"):
+                    continue
+                if int(i) <= 0:
+                    continue
+                seed_keys.append((str(t), int(i)))
+
+            def seed_score(key: tuple[str, int]) -> tuple[int, int]:
+                # --- multi-hit優先（経路が多いほど強いseedとみなす） ---
+                hs = sources_by_key.get(key) or set()
+                return (int(len(hs)), int(key[1]))
+
+            seed_keys.sort(key=seed_score, reverse=True)
+            seed_keys = seed_keys[: max(0, int(seed_limit))]
+
+            # --- seed が無いなら何もしない ---
+            if seed_keys and max_entities > 0 and (per_entity_event_limit > 0 or per_entity_state_limit > 0):
+                with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                    seed_event_ids = [int(i) for (t, i) in seed_keys if t == "event"]
+                    seed_state_ids = [int(i) for (t, i) in seed_keys if t == "state"]
+
+                    # --- seed から entity を集約（出現回数 + 最大confidence） ---
+                    stats: dict[tuple[str, str], dict[str, Any]] = {}
+
+                    # events
+                    if seed_event_ids:
+                        rows = (
+                            db.query(
+                                EventEntity.entity_type_norm,
+                                EventEntity.entity_name_norm,
+                                func.max(EventEntity.confidence),
+                                func.count(EventEntity.id),
+                            )
+                            .filter(EventEntity.event_id.in_([int(x) for x in seed_event_ids]))
+                            .group_by(EventEntity.entity_type_norm, EventEntity.entity_name_norm)
+                            .all()
+                        )
+                        for r in rows:
+                            if not r:
+                                continue
+                            t_norm = str(r[0] or "").strip()
+                            name_norm = str(r[1] or "").strip()
+                            conf = float(r[2] or 0.0)
+                            cnt = int(r[3] or 0)
+                            if not t_norm or not name_norm:
+                                continue
+                            if conf < float(min_conf):
+                                continue
+                            k = (t_norm, name_norm)
+                            cur = stats.get(k)
+                            if cur is None:
+                                stats[k] = {"cnt": int(cnt), "conf": float(conf)}
+                            else:
+                                cur["cnt"] = int(cur.get("cnt") or 0) + int(cnt)
+                                cur["conf"] = max(float(cur.get("conf") or 0.0), float(conf))
+
+                    # states
+                    if seed_state_ids:
+                        rows = (
+                            db.query(
+                                StateEntity.entity_type_norm,
+                                StateEntity.entity_name_norm,
+                                func.max(StateEntity.confidence),
+                                func.count(StateEntity.id),
+                            )
+                            .filter(StateEntity.state_id.in_([int(x) for x in seed_state_ids]))
+                            .group_by(StateEntity.entity_type_norm, StateEntity.entity_name_norm)
+                            .all()
+                        )
+                        for r in rows:
+                            if not r:
+                                continue
+                            t_norm = str(r[0] or "").strip()
+                            name_norm = str(r[1] or "").strip()
+                            conf = float(r[2] or 0.0)
+                            cnt = int(r[3] or 0)
+                            if not t_norm or not name_norm:
+                                continue
+                            if conf < float(min_conf):
+                                continue
+                            k = (t_norm, name_norm)
+                            cur = stats.get(k)
+                            if cur is None:
+                                stats[k] = {"cnt": int(cnt), "conf": float(conf)}
+                            else:
+                                cur["cnt"] = int(cur.get("cnt") or 0) + int(cnt)
+                                cur["conf"] = max(float(cur.get("conf") or 0.0), float(conf))
+
+                    # --- entity を「型ごと」に分けて、ラウンドロビンで多様化 ---
+                    # NOTE: 1種に偏るとノイズが増えやすいので、シンプルな分散を入れる。
+                    type_order = ["person", "org", "place", "project", "tool"]
+                    by_type: dict[str, list[tuple[str, float]]] = {t: [] for t in type_order}
+                    for (t_norm, name_norm), v in stats.items():
+                        if t_norm not in by_type:
+                            continue
+                        score = float((int(v.get("cnt") or 0) * 2)) + float(v.get("conf") or 0.0)
+                        by_type[t_norm].append((name_norm, score))
+                    for t_norm in type_order:
+                        by_type[t_norm].sort(key=lambda x: float(x[1]), reverse=True)
+
+                    selected_entities: list[tuple[str, str]] = []
+                    while len(selected_entities) < int(max_entities):
+                        progressed = False
+                        for t_norm in type_order:
+                            pool = by_type.get(t_norm) or []
+                            if not pool:
+                                continue
+                            name_norm, _score = pool.pop(0)
+                            selected_entities.append((str(t_norm), str(name_norm)))
+                            progressed = True
+                            if len(selected_entities) >= int(max_entities):
+                                break
+                        if not progressed:
+                            break
+
+                    # --- entityごとに関連イベント/状態を追加 ---
+                    for (t_norm, name_norm) in selected_entities:
+                        # events
+                        if int(per_entity_event_limit) > 0:
+                            rows = (
+                                db.query(EventEntity.event_id)
+                                .join(Event, Event.event_id == EventEntity.event_id)
+                                .filter(Event.searchable == 1)
+                                .filter(EventEntity.entity_type_norm == str(t_norm))
+                                .filter(EventEntity.entity_name_norm == str(name_norm))
+                                .order_by(Event.event_id.desc())
+                                .limit(int(per_entity_event_limit))
+                                .all()
+                            )
+                            add_sources([("event", int(r[0])) for r in rows if r and r[0] is not None], label="entity_expand")
+
+                        # states
+                        if int(per_entity_state_limit) > 0:
+                            rows = (
+                                db.query(StateEntity.state_id)
+                                .join(State, State.state_id == StateEntity.state_id)
+                                .filter(State.searchable == 1)
+                                .filter(StateEntity.entity_type_norm == str(t_norm))
+                                .filter(StateEntity.entity_name_norm == str(name_norm))
+                                .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+                                .limit(int(per_entity_state_limit))
+                                .all()
+                            )
+                            add_sources([("state", int(r[0])) for r in rows if r and r[0] is not None], label="entity_expand")
 
         # --- レコードをまとめて引く（ORMのDetachedを避けるため、候補のdict化までセッション内で行う） ---
         keys_all = sorted([k for k in sources_by_key.keys() if not (k[0] == "event" and int(k[1]) == int(event_id))])
