@@ -314,7 +314,7 @@ class _ChatSearchMixin:
         input_text: str,
         plan_obj: dict[str, Any],
         vector_embedding_future: concurrent.futures.Future[list[Any]] | None = None,
-    ) -> list[_CandidateItem]:
+    ) -> tuple[list[_CandidateItem], dict[str, Any]]:
         """
         候補収集（取りこぼし防止優先・可能なものは並列）。
 
@@ -329,6 +329,12 @@ class _ChatSearchMixin:
                 - これが渡された場合、vec検索は原則この結果を使う（vec側は input_text を正とする）。
                 - 目的: SSE開始までの体感を上げ、vec候補の欠落を減らす。
         """
+
+        # --- 収集デバッグ（観測用。retrieval_runs に残す用途） ---
+        # NOTE:
+        # - ここは「ログ」だけでなく、retrieval_runs.candidates_json にも残して後から追えるようにする。
+        # - 値はJSON化される前提なので、シリアライズ可能な形に限定する。
+        collect_debug: dict[str, Any] = {}
 
         # --- 上限 ---
         limits = plan_obj.get("limits") if isinstance(plan_obj, dict) else None
@@ -890,7 +896,13 @@ class _ChatSearchMixin:
         # - 既存の検索（recent/trigram/context/vector）で拾った候補を seed にして、
         #   そこに付与された entity索引から関連イベント/状態を追加で引く。
         tc = self.config_store.toml_config  # type: ignore[attr-defined]
-        if bool(getattr(tc, "retrieval_entity_expand_enabled", True)):
+        entity_expand_debug: dict[str, Any] = {
+            "enabled": bool(getattr(tc, "retrieval_entity_expand_enabled", True)),
+            "seed_keys": [],
+            "selected_entities": [],
+            "added_keys": {"event": 0, "state": 0},
+        }
+        if bool(entity_expand_debug["enabled"]):
             # --- 起動設定（上限と足切り） ---
             seed_limit = max(0, int(getattr(tc, "retrieval_entity_expand_seed_limit", 12)))
             max_entities = max(0, int(getattr(tc, "retrieval_entity_expand_max_entities", 12)))
@@ -899,6 +911,14 @@ class _ChatSearchMixin:
             min_conf = float(getattr(tc, "retrieval_entity_expand_min_confidence", 0.45))
             min_conf = max(0.0, min(1.0, float(min_conf)))
             min_seed_occ = max(1, int(getattr(tc, "retrieval_entity_expand_min_seed_occurrences", 2)))
+            entity_expand_debug["limits"] = {
+                "seed_limit": int(seed_limit),
+                "max_entities": int(max_entities),
+                "per_entity_event_limit": int(per_entity_event_limit),
+                "per_entity_state_limit": int(per_entity_state_limit),
+                "min_confidence": float(min_conf),
+                "min_seed_occurrences": int(min_seed_occ),
+            }
 
             # --- seed の選定（multi-hit優先 + 最近性っぽくID降順） ---
             # NOTE:
@@ -921,6 +941,7 @@ class _ChatSearchMixin:
 
             seed_keys.sort(key=seed_score, reverse=True)
             seed_keys = seed_keys[: max(0, int(seed_limit))]
+            entity_expand_debug["seed_keys"] = [f"{t}:{int(i)}" for (t, i) in seed_keys]
 
             # --- seed が無いなら何もしない ---
             if seed_keys and max_entities > 0 and (per_entity_event_limit > 0 or per_entity_state_limit > 0):
@@ -1026,6 +1047,20 @@ class _ChatSearchMixin:
                         if not progressed:
                             break
 
+                    # --- デバッグ用: 選んだentity（seed内での出現/確信度） ---
+                    entity_expand_debug["selected_entities"] = [
+                        {
+                            "type": str(t_norm),
+                            "name_norm": str(name_norm),
+                            "seed_cnt": int((stats.get((str(t_norm), str(name_norm))) or {}).get("cnt") or 0),
+                            "seed_conf": float((stats.get((str(t_norm), str(name_norm))) or {}).get("conf") or 0.0),
+                        }
+                        for (t_norm, name_norm) in selected_entities
+                    ]
+
+                    # --- entity_expand で追加したキー（重複除外前のユニーク集合） ---
+                    entity_expand_added_keys: set[tuple[str, int]] = set()
+
                     # --- entityごとに関連イベント/状態を追加 ---
                     for (t_norm, name_norm) in selected_entities:
                         # events
@@ -1040,7 +1075,10 @@ class _ChatSearchMixin:
                                 .limit(int(per_entity_event_limit))
                                 .all()
                             )
-                            add_sources([("event", int(r[0])) for r in rows if r and r[0] is not None], label="entity_expand")
+                            keys = [("event", int(r[0])) for r in rows if r and r[0] is not None]
+                            for t_i, id_i in keys:
+                                entity_expand_added_keys.add((str(t_i), int(id_i)))
+                            add_sources(keys, label="entity_expand")
 
                         # states
                         if int(per_entity_state_limit) > 0:
@@ -1054,12 +1092,28 @@ class _ChatSearchMixin:
                                 .limit(int(per_entity_state_limit))
                                 .all()
                             )
-                            add_sources([("state", int(r[0])) for r in rows if r and r[0] is not None], label="entity_expand")
+                            keys = [("state", int(r[0])) for r in rows if r and r[0] is not None]
+                            for t_i, id_i in keys:
+                                entity_expand_added_keys.add((str(t_i), int(id_i)))
+                            add_sources(keys, label="entity_expand")
+
+                    # --- デバッグ用: 追加キー数（種別別） ---
+                    entity_expand_debug["added_keys"] = {
+                        "event": sum(1 for (t, _i) in entity_expand_added_keys if str(t) == "event"),
+                        "state": sum(1 for (t, _i) in entity_expand_added_keys if str(t) == "state"),
+                    }
+
+        collect_debug["entity_expand"] = entity_expand_debug
 
         # --- レコードをまとめて引く（ORMのDetachedを避けるため、候補のdict化までセッション内で行う） ---
         keys_all = sorted([k for k in sources_by_key.keys() if not (k[0] == "event" and int(k[1]) == int(event_id))])
         if not keys_all:
-            return []
+            # --- 候補ゼロでも原因が追えるように、デバッグを残す ---
+            self._log_retrieval_debug(  # type: ignore[attr-defined]
+                "（（候補収集デバッグ））",
+                collect_debug,
+            )
+            return [], collect_debug
 
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
             event_ids = [int(i) for (t, i) in keys_all if t == "event"]
@@ -1254,7 +1308,14 @@ class _ChatSearchMixin:
         # - ここでの間引きは「選別入力の安定化」が目的。取りこぼしを減らすため、余りは元の順位順で埋める。
         out = self._apply_source_quota(candidates=out, plan_obj=plan_obj, max_candidates=int(max_candidates))
 
-        return out[:max_candidates]
+        # --- 収集デバッグをログへ出す ---
+        # NOTE: LLMログ（DEBUG）が有効な場合のみ出る（通常運用では負荷になりにくい）。
+        self._log_retrieval_debug(  # type: ignore[attr-defined]
+            "（（候補収集デバッグ））",
+            collect_debug,
+        )
+
+        return out[:max_candidates], collect_debug
 
     def _apply_diversify_inplace(self, *, candidates: list[_CandidateItem], plan_obj: dict[str, Any]) -> list[_CandidateItem]:
         """
