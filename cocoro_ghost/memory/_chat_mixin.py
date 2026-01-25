@@ -1004,7 +1004,7 @@ class _ChatMemoryMixin:
         )
 
         # --- 5) 候補収集（取りこぼし防止優先・可能なものは並列） ---
-        candidates: list[_CandidateItem] = self._collect_candidates(
+        candidates, candidates_collect_debug = self._collect_candidates(
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),
@@ -1060,6 +1060,7 @@ class _ChatMemoryMixin:
                 "event_affect": sum(1 for c in candidates if c.type == "event_affect"),
             },
             "sources": {f"{c.type}:{c.id}": c.hit_sources for c in candidates},
+            "collect_debug": (candidates_collect_debug or {}),
         }
         if not isinstance(search_result_pack, dict) or not isinstance(search_result_pack.get("selected"), list):
             search_result_pack = {"selected": []}
