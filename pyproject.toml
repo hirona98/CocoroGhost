@@ -4,18 +4,21 @@ version = "0.1.0"
 description = "CocoroAI core (CocoroGhost)"
 requires-python = ">=3.10"
 dependencies = [
-  "fastapi",
-  "fastapi-utils",
-  "uvicorn[standard]",
-  "sqlalchemy",
-  "cryptography",
-  "litellm",
-  "pydantic",
-  "python-multipart",
-  "httpx",
-  "tomli",
+  # --- Web/API ---
+  "fastapi==0.128.0",
+  "uvicorn[standard]==0.38.0",
+  # --- DB/crypto ---
+  "sqlalchemy==2.0.46",
+  "cryptography==46.0.3",
   "sqlite-vec==0.1.6",
-  "typing_inspect",
+  # --- LLM ---
+  "litellm==1.81.1",
+  # --- Core utils ---
+  "pydantic==2.12.5",
+  "python-multipart==0.0.21",
+  "httpx==0.28.1",
+  "tomli==2.4.0",
+  "typing_inspect==0.9.0",
 ]
 
 [build-system]
