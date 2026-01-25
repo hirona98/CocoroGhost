@@ -47,6 +47,7 @@ class Config:
     retrieval_quota_assoc_multi_hit_percent: int  # 記憶検索: associative_recent の multi-hit 割合
     retrieval_quota_assoc_vector_only_percent: int  # 記憶検索: associative_recent の vector-only 割合
     retrieval_quota_assoc_context_only_percent: int  # 記憶検索: associative_recent の context-only 割合
+    retrieval_quota_assoc_entity_only_percent: int  # 記憶検索: associative_recent の entity-only 割合（entity_expand単独hit）
     retrieval_quota_assoc_trigram_only_percent: int  # 記憶検索: associative_recent の trigram-only 割合
     retrieval_quota_assoc_recent_only_percent: int  # 記憶検索: associative_recent の recent-only 割合
     retrieval_quota_broad_state_percent: int  # 記憶検索: targeted_broad/explicit_about_time の state 割合
@@ -54,7 +55,14 @@ class Config:
     retrieval_quota_broad_about_time_only_percent: int  # 記憶検索: targeted_broad/explicit_about_time の about_time-only 割合
     retrieval_quota_broad_vector_only_percent: int  # 記憶検索: targeted_broad/explicit_about_time の vector-only 割合
     retrieval_quota_broad_context_only_percent: int  # 記憶検索: targeted_broad/explicit_about_time の context-only 割合
+    retrieval_quota_broad_entity_only_percent: int  # 記憶検索: targeted_broad/explicit_about_time の entity-only 割合（entity_expand単独hit）
     retrieval_quota_broad_trigram_only_percent: int  # 記憶検索: targeted_broad/explicit_about_time の trigram-only 割合
+    retrieval_entity_expand_enabled: bool  # 記憶検索: entity展開（seed→entity→関連候補）を有効化
+    retrieval_entity_expand_seed_limit: int  # 記憶検索: entity展開のseed上限
+    retrieval_entity_expand_max_entities: int  # 記憶検索: 展開に使うentity上限
+    retrieval_entity_expand_per_entity_event_limit: int  # 記憶検索: entityごとの関連event上限
+    retrieval_entity_expand_per_entity_state_limit: int  # 記憶検索: entityごとの関連state上限
+    retrieval_entity_expand_min_confidence: float  # 記憶検索: entity展開のconfidence足切り（0.0..1.0）
     log_file_enabled: bool  # ファイルログ有効/無効
     log_file_path: str      # ファイルログの保存先パス
     log_file_max_bytes: int  # ファイルログのローテーションサイズ（bytes）
@@ -203,6 +211,7 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         "retrieval_quota_assoc_multi_hit_percent",
         "retrieval_quota_assoc_vector_only_percent",
         "retrieval_quota_assoc_context_only_percent",
+        "retrieval_quota_assoc_entity_only_percent",
         "retrieval_quota_assoc_trigram_only_percent",
         "retrieval_quota_assoc_recent_only_percent",
         "retrieval_quota_broad_state_percent",
@@ -210,7 +219,14 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         "retrieval_quota_broad_about_time_only_percent",
         "retrieval_quota_broad_vector_only_percent",
         "retrieval_quota_broad_context_only_percent",
+        "retrieval_quota_broad_entity_only_percent",
         "retrieval_quota_broad_trigram_only_percent",
+        "retrieval_entity_expand_enabled",
+        "retrieval_entity_expand_seed_limit",
+        "retrieval_entity_expand_max_entities",
+        "retrieval_entity_expand_per_entity_event_limit",
+        "retrieval_entity_expand_per_entity_state_limit",
+        "retrieval_entity_expand_min_confidence",
         "log_file_enabled",
         "log_file_path",
         "log_file_max_bytes",
@@ -283,14 +299,16 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
     # NOTE: vector_only は「最近寄り」の意味近傍。探索枠（全期間）とは別に扱う。
     retrieval_quota_assoc_vector_only_percent = require_percent("retrieval_quota_assoc_vector_only_percent", 15)
     retrieval_quota_assoc_context_only_percent = require_percent("retrieval_quota_assoc_context_only_percent", 10)
+    retrieval_quota_assoc_entity_only_percent = require_percent("retrieval_quota_assoc_entity_only_percent", 5)
     retrieval_quota_assoc_trigram_only_percent = require_percent("retrieval_quota_assoc_trigram_only_percent", 5)
-    retrieval_quota_assoc_recent_only_percent = require_percent("retrieval_quota_assoc_recent_only_percent", 5)
+    retrieval_quota_assoc_recent_only_percent = require_percent("retrieval_quota_assoc_recent_only_percent", 0)
     assoc_sum = (
         int(retrieval_quota_assoc_state_percent)
         + int(retrieval_quota_assoc_multi_hit_percent)
         + int(retrieval_explore_global_vector_percent)
         + int(retrieval_quota_assoc_vector_only_percent)
         + int(retrieval_quota_assoc_context_only_percent)
+        + int(retrieval_quota_assoc_entity_only_percent)
         + int(retrieval_quota_assoc_trigram_only_percent)
         + int(retrieval_quota_assoc_recent_only_percent)
     )
@@ -300,10 +318,11 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
     # targeted_broad / explicit_about_time
     retrieval_quota_broad_state_percent = require_percent("retrieval_quota_broad_state_percent", 20)
     retrieval_quota_broad_multi_hit_percent = require_percent("retrieval_quota_broad_multi_hit_percent", 30)
-    retrieval_quota_broad_about_time_only_percent = require_percent("retrieval_quota_broad_about_time_only_percent", 25)
+    retrieval_quota_broad_about_time_only_percent = require_percent("retrieval_quota_broad_about_time_only_percent", 20)
     # NOTE: vector_only は「最近寄り」の意味近傍。探索枠（全期間）とは別に扱う。
     retrieval_quota_broad_vector_only_percent = require_percent("retrieval_quota_broad_vector_only_percent", 10)
     retrieval_quota_broad_context_only_percent = require_percent("retrieval_quota_broad_context_only_percent", 5)
+    retrieval_quota_broad_entity_only_percent = require_percent("retrieval_quota_broad_entity_only_percent", 5)
     retrieval_quota_broad_trigram_only_percent = require_percent("retrieval_quota_broad_trigram_only_percent", 5)
     broad_sum = (
         int(retrieval_quota_broad_state_percent)
@@ -312,10 +331,26 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         + int(retrieval_explore_global_vector_percent)
         + int(retrieval_quota_broad_vector_only_percent)
         + int(retrieval_quota_broad_context_only_percent)
+        + int(retrieval_quota_broad_entity_only_percent)
         + int(retrieval_quota_broad_trigram_only_percent)
     )
     if broad_sum > 100:
         raise ValueError("retrieval_quota_broad_*_percent sum must be <= 100")
+
+    # --- 記憶検索: entity展開（seed→entity→関連候補） ---
+    # NOTE:
+    # - entity索引（event_entities/state_entities）を使って「多段想起」を安定化する。
+    # - 候補が肥大化しやすいので、上限/足切りをTOMLで固定する。
+    retrieval_entity_expand_enabled = bool(data.get("retrieval_entity_expand_enabled", True))
+    retrieval_entity_expand_seed_limit = int(data.get("retrieval_entity_expand_seed_limit", 12))
+    retrieval_entity_expand_max_entities = int(data.get("retrieval_entity_expand_max_entities", 12))
+    retrieval_entity_expand_per_entity_event_limit = int(data.get("retrieval_entity_expand_per_entity_event_limit", 10))
+    retrieval_entity_expand_per_entity_state_limit = int(data.get("retrieval_entity_expand_per_entity_state_limit", 6))
+    try:
+        retrieval_entity_expand_min_confidence = float(data.get("retrieval_entity_expand_min_confidence", 0.45))
+    except Exception:  # noqa: BLE001
+        retrieval_entity_expand_min_confidence = 0.45
+    retrieval_entity_expand_min_confidence = max(0.0, min(1.0, float(retrieval_entity_expand_min_confidence)))
 
     config = Config(
         # --- サーバー待受ポート（必須） ---
@@ -339,6 +374,7 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         retrieval_quota_assoc_multi_hit_percent=int(retrieval_quota_assoc_multi_hit_percent),
         retrieval_quota_assoc_vector_only_percent=int(retrieval_quota_assoc_vector_only_percent),
         retrieval_quota_assoc_context_only_percent=int(retrieval_quota_assoc_context_only_percent),
+        retrieval_quota_assoc_entity_only_percent=int(retrieval_quota_assoc_entity_only_percent),
         retrieval_quota_assoc_trigram_only_percent=int(retrieval_quota_assoc_trigram_only_percent),
         retrieval_quota_assoc_recent_only_percent=int(retrieval_quota_assoc_recent_only_percent),
         retrieval_quota_broad_state_percent=int(retrieval_quota_broad_state_percent),
@@ -346,7 +382,14 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         retrieval_quota_broad_about_time_only_percent=int(retrieval_quota_broad_about_time_only_percent),
         retrieval_quota_broad_vector_only_percent=int(retrieval_quota_broad_vector_only_percent),
         retrieval_quota_broad_context_only_percent=int(retrieval_quota_broad_context_only_percent),
+        retrieval_quota_broad_entity_only_percent=int(retrieval_quota_broad_entity_only_percent),
         retrieval_quota_broad_trigram_only_percent=int(retrieval_quota_broad_trigram_only_percent),
+        retrieval_entity_expand_enabled=bool(retrieval_entity_expand_enabled),
+        retrieval_entity_expand_seed_limit=int(retrieval_entity_expand_seed_limit),
+        retrieval_entity_expand_max_entities=int(retrieval_entity_expand_max_entities),
+        retrieval_entity_expand_per_entity_event_limit=int(retrieval_entity_expand_per_entity_event_limit),
+        retrieval_entity_expand_per_entity_state_limit=int(retrieval_entity_expand_per_entity_state_limit),
+        retrieval_entity_expand_min_confidence=float(retrieval_entity_expand_min_confidence),
         log_file_enabled=bool(data.get("log_file_enabled", False)),
         log_file_path=resolved_log_file_path,
         log_file_max_bytes=int(data.get("log_file_max_bytes", 200_000)),

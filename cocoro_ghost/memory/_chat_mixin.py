@@ -61,6 +61,7 @@ _HIT_SOURCE_TO_CODE: dict[str, str] = {
     "about_time": "at",
     "vector_recent": "vr",
     "vector_global": "vg",
+    "entity_expand": "ex",
 }
 
 

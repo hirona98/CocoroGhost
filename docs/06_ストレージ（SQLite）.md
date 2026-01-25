@@ -58,6 +58,32 @@
 - 文脈参照（文脈スレッド/返信関係）は、**イベント同士の関係を別テーブルとして構築**して、検索・更新で参照できるようにする
 - 同期で張る `reply_to` は「同じ `client_id` の直前チャットイベント」を指す（それ以外は非同期で補正する）
 
+### `event_entities` / `state_entities`（エンティティ索引）
+
+目的:
+
+- `events.entities_json` は監査/表示向けのスナップショットとして残す
+- 検索では entity を正規化キー（`entity_type_norm + entity_name_norm`）で引けるように、参照テーブルを別に持つ
+- これにより「seed → entity → 関連event/state」の多段想起（entity展開）が作れる
+
+方針:
+
+- WritePlan の `event_annotations.entities` を正規化し、`event_entities` を event_id 単位で作り直す（delete→insert）
+- 同じターンで更新した state に対しては、同じ entities を `state_entities` に付与する（delete→insert）
+- 運用前のためマイグレーションは扱わない（DB作り直し前提）
+
+主要カラム（概念）:
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| id | INTEGER | 主キー（自動採番） |
+| event_id / state_id | INTEGER | 紐づけ先（FK、CASCADE） |
+| entity_type_norm | TEXT | 種別（`person/org/place/project/tool`） |
+| entity_name_raw | TEXT | 元の表記（監査/表示用） |
+| entity_name_norm | TEXT | 正規化した表記（検索用キー） |
+| confidence | REAL | 確信度（0.0〜1.0） |
+| created_at | INTEGER | 付与時刻（UTC UNIX秒） |
+
 ### `event_assistant_summaries`（選別入力向けの派生要約）
 
 目的:

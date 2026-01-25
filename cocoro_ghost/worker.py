@@ -24,17 +24,20 @@ from sqlalchemy import func, text
 
 from cocoro_ghost import affect
 from cocoro_ghost import common_utils, prompt_builders, vector_index
+from cocoro_ghost import entity_utils
 from cocoro_ghost.db import memory_session_scope, upsert_vec_item
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.memory_models import (
     Event,
     EventAffect,
     EventAssistantSummary,
+    EventEntity,
     EventLink,
     EventThread,
     Job,
     Revision,
     State,
+    StateEntity,
 )
 from cocoro_ghost.time_utils import format_iso8601_local, parse_iso8601_to_utc_ts
 
@@ -807,8 +810,65 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             return
         base_ts = int(ev.created_at)
 
+        # --- entity索引 更新ヘルパ（events/state） ---
+        # NOTE:
+        # - `events.entities_json` は監査/表示向けのスナップショットとして残す。
+        # - 検索は `event_entities/state_entities` の正規化キー（type + name_norm）を正にする。
+        def replace_event_entities(*, event_id_in: int, entities_norm_in: list[dict[str, Any]]) -> None:
+            """event_entities を event_id 単位で作り直す（delete→insert）。"""
+
+            # --- 既存を削除 ---
+            db.query(EventEntity).filter(EventEntity.event_id == int(event_id_in)).delete(synchronize_session=False)
+
+            # --- 新規を追加 ---
+            for ent in entities_norm_in:
+                t_norm = str(ent.get("type") or "").strip()
+                name_raw = str(ent.get("name") or "").strip()
+                if not t_norm or not name_raw:
+                    continue
+                name_norm = entity_utils.normalize_entity_name(name_raw)
+                if not name_norm:
+                    continue
+                db.add(
+                    EventEntity(
+                        event_id=int(event_id_in),
+                        entity_type_norm=str(t_norm),
+                        entity_name_raw=str(name_raw),
+                        entity_name_norm=str(name_norm),
+                        confidence=float(entity_utils.clamp_01(ent.get("confidence"))),
+                        created_at=int(base_ts),
+                    )
+                )
+
+        def replace_state_entities(*, state_id_in: int, entities_norm_in: list[dict[str, Any]]) -> None:
+            """state_entities を state_id 単位で作り直す（delete→insert）。"""
+
+            # --- 既存を削除 ---
+            db.query(StateEntity).filter(StateEntity.state_id == int(state_id_in)).delete(synchronize_session=False)
+
+            # --- 新規を追加 ---
+            for ent in entities_norm_in:
+                t_norm = str(ent.get("type") or "").strip()
+                name_raw = str(ent.get("name") or "").strip()
+                if not t_norm or not name_raw:
+                    continue
+                name_norm = entity_utils.normalize_entity_name(name_raw)
+                if not name_norm:
+                    continue
+                db.add(
+                    StateEntity(
+                        state_id=int(state_id_in),
+                        entity_type_norm=str(t_norm),
+                        entity_name_raw=str(name_raw),
+                        entity_name_norm=str(name_norm),
+                        confidence=float(entity_utils.clamp_01(ent.get("confidence"))),
+                        created_at=int(base_ts),
+                    )
+                )
+
         # --- events 注釈更新（about_time/entities） ---
         ann = plan.get("event_annotations") if isinstance(plan, dict) else None
+        entities_norm: list[dict[str, Any]] = []
         if isinstance(ann, dict):
             # NOTE: LLMはISO文字列を返す可能性があるため、ここでUNIX秒へ正規化する。
             a0 = ann.get("about_start_ts")
@@ -825,10 +885,19 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             life_stage = ann.get("life_stage")
             ev.life_stage = (str(life_stage) if life_stage is not None else None)
             ev.about_time_confidence = float(ann.get("about_time_confidence") or 0.0)
-            entities = ann.get("entities") if isinstance(ann.get("entities"), list) else []
-            ev.entities_json = common_utils.json_dumps(entities)
+            # --- entities を正規化し、イベントへ保存 + 索引へ落とす ---
+            entities_raw = ann.get("entities") if isinstance(ann.get("entities"), list) else []
+            entities_norm = entity_utils.normalize_entities(entities_raw)
+            ev.entities_json = common_utils.json_dumps(entities_norm)
+            replace_event_entities(event_id_in=int(event_id), entities_norm_in=list(entities_norm))
         ev.updated_at = int(now_ts)
         db.add(ev)
+
+        # --- state の変更IDを集め、後で entity索引を付与する ---
+        # NOTE:
+        # - 現行は「イベントで抽出した entities を、そのイベントで更新した state に付与」する。
+        # - state本文からの再抽出などは、実装/品質の重さが上がるため後続に回す。
+        changed_state_ids: set[int] = set()
 
         # --- revisions を追加するヘルパ ---
         def add_revision(*, entity_type: str, entity_id: int, before: Any, after: Any, reason: str, evidence_event_ids: list[int]) -> None:
@@ -1162,6 +1231,10 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         )
                         changed_state_id = int(existing.state_id)
 
+                    # --- state entity索引（後で一括で付与） ---
+                    if int(changed_state_id) > 0:
+                        changed_state_ids.add(int(changed_state_id))
+
                     # --- state embedding job ---
                     db.add(
                         Job(
@@ -1195,6 +1268,8 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         reason=str(reason),
                         evidence_event_ids=evidence_ids,
                     )
+                    # --- state entity索引（後で一括で付与） ---
+                    changed_state_ids.add(int(st.state_id))
                     db.add(
                         Job(
                             kind="upsert_state_embedding",
@@ -1229,6 +1304,8 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         reason=str(reason),
                         evidence_event_ids=evidence_ids,
                     )
+                    # --- state entity索引（後で一括で付与） ---
+                    changed_state_ids.add(int(st.state_id))
                     db.add(
                         Job(
                             kind="upsert_state_embedding",
@@ -1339,6 +1416,10 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 )
                 changed_state_id = int(st.state_id)
 
+            # --- state entity索引（後で一括で付与） ---
+            if int(changed_state_id) > 0:
+                changed_state_ids.add(int(changed_state_id))
+
             # --- embedding job（long_mood_state も更新で育つので反映しておく） ---
             if int(changed_state_id) > 0:
                 db.add(
@@ -1353,6 +1434,13 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         updated_at=int(now_ts),
                     )
                 )
+
+        # --- state_entities を更新（イベント由来の entities を付与） ---
+        # NOTE:
+        # - entities が空の場合も「付与しない」ではなく「空に更新」する（索引を健全化）。
+        # - changed_state_ids が空なら何もしない。
+        for sid in sorted({int(x) for x in changed_state_ids if int(x) > 0}):
+            replace_state_entities(state_id_in=int(sid), entities_norm_in=list(entities_norm))
 
         # --- Nターンごとの整理ジョブ（chatターン回数ベース） ---
         # NOTE:
