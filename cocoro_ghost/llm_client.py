@@ -400,6 +400,7 @@ class LlmRequestPurpose:
     ASYNC_EVENT_AFFECT_EMBEDDING = "【WORKER】＜＜ 感情埋め込み（event_affect） ＞＞"
     ASYNC_WRITE_PLAN = "【WORKER】＜＜ 記憶更新計画作成（WritePlan） ＞＞"
     ASYNC_EVENT_ASSISTANT_SUMMARY = "【WORKER】＜＜ アシスタント本文要約（events） ＞＞"
+    ASYNC_STATE_LINKS = "【WORKER】＜＜ 状態リンク生成（state_links） ＞＞"
 
 
 def _normalize_purpose(purpose: str) -> str:

@@ -276,6 +276,39 @@ class State(MemoryBase):
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class StateLink(MemoryBase):
+    """状態間リンク（state↔state の関係）。
+
+    目的:
+        - state は「育つノート」なので、state同士の関連（派生/矛盾/補足など）を保存して辿れるようにする。
+        - 同期検索では `state_link_expand`（seed→リンク→関連state）として候補を増やせる。
+
+    注意:
+        - 関係は「向き付き」で保存する（from_state → to_state）。
+          検索では両方向を辿る前提（対称関係は2本張ってもよい）。
+    """
+
+    __tablename__ = "state_links"
+    __table_args__ = (
+        UniqueConstraint("from_state_id", "to_state_id", "label", name="uq_state_links_from_to_label"),
+    )
+
+    # --- 主キー ---
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # --- 紐づけ（CASCADE） ---
+    from_state_id: Mapped[int] = mapped_column(ForeignKey("state.state_id", ondelete="CASCADE"), nullable=False)
+    to_state_id: Mapped[int] = mapped_column(ForeignKey("state.state_id", ondelete="CASCADE"), nullable=False)
+
+    # --- 関係 ---
+    label: Mapped[str] = mapped_column(Text, nullable=False)  # relates_to/derived_from/contradicts/supports など
+
+    # --- 信頼度と根拠 ---
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    evidence_event_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class Revision(MemoryBase):
     """改訂履歴（状態/派生情報の更新理由を保存）。"""
 

@@ -25,7 +25,7 @@ from sqlalchemy import func, text
 from cocoro_ghost import affect
 from cocoro_ghost import common_utils, prompt_builders, vector_index
 from cocoro_ghost import entity_utils
-from cocoro_ghost.db import memory_session_scope, upsert_vec_item
+from cocoro_ghost.db import memory_session_scope, search_similar_item_ids, upsert_vec_item
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.memory_models import (
     Event,
@@ -38,6 +38,7 @@ from cocoro_ghost.memory_models import (
     Revision,
     State,
     StateEntity,
+    StateLink,
 )
 from cocoro_ghost.time_utils import format_iso8601_local, parse_iso8601_to_utc_ts
 
@@ -321,6 +322,19 @@ def _link_row_to_json(link: EventLink) -> dict[str, Any]:
     }
 
 
+def _state_link_row_to_json(link: StateLink) -> dict[str, Any]:
+    """StateLink行をJSON化する（Revision保存用）。"""
+    return {
+        "id": int(link.id),
+        "from_state_id": int(link.from_state_id),
+        "to_state_id": int(link.to_state_id),
+        "label": str(link.label),
+        "confidence": float(link.confidence),
+        "evidence_event_ids_json": str(link.evidence_event_ids_json),
+        "created_at": int(link.created_at),
+    }
+
+
 def _thread_row_to_json(th: EventThread) -> dict[str, Any]:
     """EventThread行をJSON化する（Revision保存用）。"""
     return {
@@ -506,6 +520,13 @@ def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_clie
             _handle_tidy_memory(
                 embedding_preset_id=embedding_preset_id,
                 embedding_dimension=embedding_dimension,
+                payload=payload,
+            )
+        elif kind == "build_state_links":
+            _handle_build_state_links(
+                embedding_preset_id=embedding_preset_id,
+                embedding_dimension=embedding_dimension,
+                llm_client=llm_client,
                 payload=payload,
             )
         else:
@@ -1097,6 +1118,10 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     )
 
         # --- state 更新 ---
+        # NOTE:
+        # - state_links（B-1）のリンク生成は非同期ジョブで行う。
+        # - ここでは「今回更新したstate_id」を集めて、後段で build_state_links を投入する。
+        updated_state_ids_for_links: set[int] = set()
         su = plan.get("state_updates") if isinstance(plan, dict) else None
         if isinstance(su, list):
             for u in su:
@@ -1238,6 +1263,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                             state_id_in=int(changed_state_id),
                             entities_norm_in=list(entities_norm_for_state),
                         )
+                        updated_state_ids_for_links.add(int(changed_state_id))
 
                     # --- state embedding job ---
                     db.add(
@@ -1278,6 +1304,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                             state_id_in=int(st.state_id),
                             entities_norm_in=list(entities_norm_for_state),
                         )
+                        updated_state_ids_for_links.add(int(st.state_id))
                     db.add(
                         Job(
                             kind="upsert_state_embedding",
@@ -1318,6 +1345,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                             state_id_in=int(st.state_id),
                             entities_norm_in=list(entities_norm_for_state),
                         )
+                        updated_state_ids_for_links.add(int(st.state_id))
                     db.add(
                         Job(
                             kind="upsert_state_embedding",
@@ -1447,6 +1475,49 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         # - state_entities は各 state_update の entities を正にして即時反映している。
         # - ここでは何もしない（ループ内で確定した state_id に対して更新済み）。
 
+        # --- state_links リンク生成ジョブ ---
+        # NOTE:
+        # - state↔state のリンク生成は「同期検索の前」には重すぎるため、非同期ジョブとして回す。
+        # - apply_write_plan は「記憶更新の本体」なので、リンク生成の失敗で全体を止めない（try/exceptで握る）。
+        # - long_mood_state は対象外（背景であり、リンクで増殖させない）。
+        try:
+            from cocoro_ghost.config import get_config_store
+
+            cfg = get_config_store().config
+            build_enabled = bool(getattr(cfg, "memory_state_links_build_enabled", True))
+            target_limit = int(getattr(cfg, "memory_state_links_build_target_state_limit", 3))
+            target_limit = max(0, int(target_limit))
+        except Exception:  # noqa: BLE001
+            build_enabled = True
+            target_limit = 3
+
+        if build_enabled and updated_state_ids_for_links:
+            # --- 対象stateを絞る（直近の更新ほど優先: state_id降順） ---
+            # NOTE: 1回のWritePlanで大量のstateが触られても、リンク生成は少数だけにしてコストとノイズを抑える。
+            target_state_ids = sorted({int(x) for x in updated_state_ids_for_links if int(x) > 0}, reverse=True)
+            if target_limit > 0:
+                target_state_ids = target_state_ids[: int(target_limit)]
+
+            if target_state_ids:
+                db.add(
+                    Job(
+                        kind="build_state_links",
+                        payload_json=common_utils.json_dumps(
+                            {
+                                "event_id": int(event_id),
+                                "state_ids": [int(x) for x in target_state_ids],
+                            }
+                        ),
+                        status=int(_JOB_PENDING),
+                        # NOTE: 直後は embedding 更新ジョブも積まれるので、軽く遅延して混雑を避ける。
+                        run_after=int(now_ts) + 3,
+                        tries=0,
+                        last_error=None,
+                        created_at=int(now_ts),
+                        updated_at=int(now_ts),
+                    )
+                )
+
         # --- Nターンごとの整理ジョブ（chatターン回数ベース） ---
         # NOTE:
         # - 併用はしない（定期/閾値は採用しない）
@@ -1558,6 +1629,339 @@ def _handle_upsert_event_assistant_summary(
                 "created_at": int(now_ts),
                 "updated_at": int(now_ts),
             },
+        )
+
+
+def _handle_build_state_links(
+    *,
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    llm_client: LlmClient,
+    payload: dict[str, Any],
+) -> None:
+    """
+    state↔state のリンク（state_links）を生成して保存する。
+
+    目的:
+        - state は「育つノート」なので、関連/派生/矛盾/補足のリンクを少数・高品質で残す。
+        - 同期検索では `state_link_expand` で辿って候補を増やし、取りこぼしを減らす。
+
+    方針:
+        - 候補収集: ベクトル近傍（state）で k 件だけ拾い、距離で足切りする。
+        - 判定: LLMで「リンクする/しない + label + confidence」を返させる。
+        - 保存: Unique(from,to,label) で upsert し、必ず revisions を残す。
+        - 失敗: このジョブだけが失敗する（WritePlan適用は止めない）。
+    """
+
+    # --- payload を読む ---
+    event_id = int(payload.get("event_id") or 0)
+    state_ids_raw = payload.get("state_ids")
+    if event_id <= 0:
+        raise RuntimeError("payload.event_id is required")
+    if not isinstance(state_ids_raw, list):
+        raise RuntimeError("payload.state_ids is required (list[int])")
+
+    state_ids = [int(x) for x in state_ids_raw if isinstance(x, (int, float)) and int(x) > 0]
+    state_ids = sorted({int(x) for x in state_ids if int(x) > 0}, reverse=True)
+    if not state_ids:
+        return
+
+    # --- 設定（TOML）を読む ---
+    # NOTE: 初期化順や例外の影響を避けるため、取れない場合は安全寄りの既定値へフォールバックする。
+    try:
+        from cocoro_ghost.config import get_config_store
+
+        cfg = get_config_store().config
+        enabled = bool(getattr(cfg, "memory_state_links_build_enabled", True))
+        candidate_k = int(getattr(cfg, "memory_state_links_build_candidate_k", 24))
+        max_links_per_state = int(getattr(cfg, "memory_state_links_build_max_links_per_state", 6))
+        min_conf = float(getattr(cfg, "memory_state_links_build_min_confidence", 0.65))
+        max_distance = float(getattr(cfg, "memory_state_links_build_max_distance", 0.35))
+    except Exception:  # noqa: BLE001
+        enabled = True
+        candidate_k = 24
+        max_links_per_state = 6
+        min_conf = 0.65
+        max_distance = 0.35
+
+    if not enabled:
+        return
+
+    candidate_k = max(1, min(200, int(candidate_k)))
+    max_links_per_state = max(0, min(20, int(max_links_per_state)))
+    min_conf = max(0.0, min(1.0, float(min_conf)))
+    max_distance = max(0.0, float(max_distance))
+
+    now_ts = _now_utc_ts()
+
+    # --- base_state ごとにリンク生成 ---
+    # NOTE:
+    # - ここは「少数・高品質」が目的なので、1stateあたり max_links_per_state を厳守する。
+    # - long_mood_state は背景であり、リンク対象から除外する。
+    #
+    # NOTE:
+    # - SQLAlchemy の ORM オブジェクトはセッション外に持ち出すと expired/detached になりやすい。
+    # - ここはジョブであり安定性を最優先し、DBから読むものは「スナップショット(dict)」に変換して扱う。
+    def _payload_preview(payload_json: str) -> str:
+        s = str(payload_json or "").strip()
+        if not s:
+            return ""
+        if len(s) > 600:
+            return s[:600] + "…"
+        return s
+
+    for base_state_id in state_ids:
+        if max_links_per_state <= 0:
+            continue
+
+        # --- base_state をロードしてスナップショット化（セッション外でORMを触らない） ---
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            base = db.query(State).filter(State.searchable == 1).filter(State.state_id == int(base_state_id)).one_or_none()
+            if base is None:
+                continue
+            if str(getattr(base, "kind", "")) == "long_mood_state":
+                continue
+
+            base_text_for_emb = _build_state_embedding_text(base)
+            if not base_text_for_emb:
+                continue
+
+            base_snapshot = {
+                "state_id": int(base.state_id),
+                "kind": str(base.kind),
+                "body_text": str(base.body_text),
+                "payload_preview": _payload_preview(str(base.payload_json)),
+                "valid_from_ts": (int(base.valid_from_ts) if base.valid_from_ts is not None else None),
+                "valid_to_ts": (int(base.valid_to_ts) if base.valid_to_ts is not None else None),
+                "last_confirmed_at": int(base.last_confirmed_at),
+            }
+
+        # --- 候補（candidate_states）をベクトル近傍から集める ---
+        # NOTE:
+        # - base_state 自体の vec_items が未更新でも検索できるよう、クエリ埋め込みは都度生成する。
+        # - active_only=True で「現役のstate」を優先し、ノイズを抑える。
+        q_emb = llm_client.generate_embedding([base_text_for_emb], purpose=LlmRequestPurpose.ASYNC_STATE_LINKS)[0]
+
+        # --- candidate_states をロードしてスナップショット化 ---
+        candidate_snapshots: list[dict[str, Any]] = []
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            rows = search_similar_item_ids(
+                db,
+                query_embedding=q_emb,
+                k=int(candidate_k),
+                kind=int(vector_index.VEC_KIND_STATE),
+                rank_day_range=None,
+                active_only=True,
+            )
+
+            # --- vec_items -> state_id へ変換し、距離で足切り ---
+            candidate_state_ids: list[int] = []
+            for r in rows:
+                if not r or r[0] is None:
+                    continue
+                item_id = int(r[0])
+                distance = float(r[1]) if len(r) > 1 and r[1] is not None else None
+                if distance is not None and float(distance) > float(max_distance):
+                    continue
+                st_id = int(vector_index.vec_entity_id(int(item_id)))
+                if st_id <= 0:
+                    continue
+                if st_id == int(base_snapshot["state_id"]):
+                    continue
+                if st_id not in candidate_state_ids:
+                    candidate_state_ids.append(int(st_id))
+
+            if not candidate_state_ids:
+                continue
+
+            # --- candidate_states をロード（検索対象のみ + long_mood_state除外） ---
+            cand_states2 = (
+                db.query(State)
+                .filter(State.searchable == 1)
+                .filter(State.state_id.in_([int(x) for x in candidate_state_ids]))
+                .filter(State.kind != "long_mood_state")
+                .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+                .all()
+            )
+            for s in cand_states2:
+                if int(s.state_id) == int(base_snapshot["state_id"]):
+                    continue
+                candidate_snapshots.append(
+                    {
+                        "state_id": int(s.state_id),
+                        "kind": str(s.kind),
+                        "body_text": str(s.body_text),
+                        "payload_preview": _payload_preview(str(s.payload_json)),
+                        "valid_from_ts": (int(s.valid_from_ts) if s.valid_from_ts is not None else None),
+                        "valid_to_ts": (int(s.valid_to_ts) if s.valid_to_ts is not None else None),
+                        "last_confirmed_at": int(s.last_confirmed_at),
+                    }
+                )
+
+        if not candidate_snapshots:
+            continue
+
+        # --- LLM入力を構築（JSON文字列） ---
+        # NOTE:
+        # - ここは Worker 内部用。プロンプトは system 側で固定し、入力は機械的なJSONにする。
+        input_obj = {"base_state": dict(base_snapshot), "candidate_states": list(candidate_snapshots)}
+        input_text = common_utils.json_dumps(input_obj)
+
+        # --- LLMでリンクを判定（JSONのみ） ---
+        resp = llm_client.generate_json_response(
+            system_prompt=prompt_builders.state_links_system_prompt(),
+            input_text=input_text,
+            purpose=LlmRequestPurpose.ASYNC_STATE_LINKS,
+            max_tokens=400,
+        )
+        obj = common_utils.parse_first_json_object_or_none(common_utils.first_choice_content(resp)) or {}
+        links_raw = obj.get("links")
+        if not isinstance(links_raw, list):
+            continue
+
+        # --- 出力を正規化（採用/足切り） ---
+        allowed_labels = {"relates_to", "derived_from", "supports", "contradicts"}
+        candidate_id_set = {int(s.get("state_id") or 0) for s in candidate_snapshots}
+
+        normalized: list[dict[str, Any]] = []
+        for x in links_raw:
+            if not isinstance(x, dict):
+                continue
+            to_state_id = int(x.get("to_state_id") or 0)
+            if to_state_id <= 0:
+                continue
+            if to_state_id == int(base_snapshot["state_id"]):
+                continue
+            if to_state_id not in candidate_id_set:
+                continue
+
+            label = str(x.get("label") or "").strip()
+            if label not in allowed_labels:
+                continue
+
+            conf = float(x.get("confidence") or 0.0)
+            if conf < float(min_conf):
+                continue
+
+            why = str(x.get("why") or "").strip()
+            if len(why) > 240:
+                why = why[:240].rstrip() + "…"
+
+            normalized.append(
+                {
+                    "to_state_id": int(to_state_id),
+                    "label": str(label),
+                    "confidence": float(conf),
+                    "why": str(why),
+                }
+            )
+
+        # --- 0件なら保存しない ---
+        if not normalized:
+            continue
+
+        # --- 上限をかける（max_links_per_state） ---
+        normalized.sort(key=lambda d: float(d.get("confidence") or 0.0), reverse=True)
+        normalized = normalized[: int(max_links_per_state)]
+
+        # --- DBへ upsert + revision ---
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            # --- revisions を追加するヘルパ（リンク生成でも説明責任を残す） ---
+            def add_revision(
+                *,
+                entity_type: str,
+                entity_id: int,
+                before: Any,
+                after: Any,
+                reason: str,
+                evidence_event_ids: list[int],
+            ) -> None:
+                db.add(
+                    Revision(
+                        entity_type=str(entity_type),
+                        entity_id=int(entity_id),
+                        before_json=(common_utils.json_dumps(before) if before is not None else None),
+                        after_json=(common_utils.json_dumps(after) if after is not None else None),
+                        reason=str(reason or "").strip() or "(no reason)",
+                        evidence_event_ids_json=common_utils.json_dumps([int(x) for x in evidence_event_ids if int(x) > 0]),
+                        created_at=int(now_ts),
+                    )
+                )
+
+            # --- evidence_event_ids を安定化 ---
+            evidence_ids = sorted({int(event_id)})
+
+            # --- 観測用の件数 ---
+            created_links = 0
+            updated_links = 0
+
+            for ln in normalized:
+                to_state_id = int(ln["to_state_id"])
+                label = str(ln["label"])
+                conf = float(ln["confidence"])
+                why = str(ln.get("why") or "").strip()
+
+                existing = (
+                    db.query(StateLink)
+                    .filter(StateLink.from_state_id == int(base_snapshot["state_id"]))
+                    .filter(StateLink.to_state_id == int(to_state_id))
+                    .filter(StateLink.label == str(label))
+                    .one_or_none()
+                )
+
+                if existing is None:
+                    link = StateLink(
+                        from_state_id=int(base_snapshot["state_id"]),
+                        to_state_id=int(to_state_id),
+                        label=str(label),
+                        confidence=float(conf),
+                        evidence_event_ids_json=common_utils.json_dumps(evidence_ids),
+                        created_at=int(now_ts),
+                    )
+                    db.add(link)
+                    db.flush()
+                    add_revision(
+                        entity_type="state_links",
+                        entity_id=int(link.id),
+                        before=None,
+                        after=_state_link_row_to_json(link),
+                        reason=f"state_links を追加した: {why}" if why else "state_links を追加した",
+                        evidence_event_ids=list(evidence_ids),
+                    )
+                    created_links += 1
+                else:
+                    before = _state_link_row_to_json(existing)
+
+                    # --- evidence_event_ids をマージ（重複なし） ---
+                    prev_obj = common_utils.json_loads_maybe(str(existing.evidence_event_ids_json or "[]"))
+                    prev_ids = (
+                        [int(x) for x in prev_obj if isinstance(prev_obj, list) and isinstance(x, (int, float))]
+                        if isinstance(prev_obj, list)
+                        else []
+                    )
+                    merged_ids = sorted({int(x) for x in (prev_ids + evidence_ids) if int(x) > 0})
+                    existing.confidence = float(conf)
+                    existing.evidence_event_ids_json = common_utils.json_dumps(merged_ids)
+                    db.add(existing)
+                    db.flush()
+                    add_revision(
+                        entity_type="state_links",
+                        entity_id=int(existing.id),
+                        before=before,
+                        after=_state_link_row_to_json(existing),
+                        reason=f"state_links を更新した: {why}" if why else "state_links を更新した",
+                        evidence_event_ids=list(merged_ids),
+                    )
+                    updated_links += 1
+
+        # --- 観測ログ（件数のみ） ---
+        logger.info(
+            "build_state_links done base_state_id=%s created=%s updated=%s candidates=%s",
+            int(base_snapshot["state_id"]),
+            int(created_links),
+            int(updated_links),
+            int(len(candidate_snapshots)),
+            extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
         )
 
 

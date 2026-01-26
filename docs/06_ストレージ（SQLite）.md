@@ -186,6 +186,31 @@
 - `confidence` / `salience`（検索順位に使える）
 - `searchable`（検索対象フラグ、誤想起の分離で0になる）
 
+### `state_links`（state↔stateリンク）
+
+目的:
+
+- state は「育つノート」なので、state同士の関係（関連/派生/補足/矛盾）を保存して辿れるようにする
+- 同期検索では `state_link_expand`（seed→state_links→関連state）で候補を増やせる
+
+方針:
+
+- 1本のリンクは「向き付き」（from_state_id → to_state_id）で保存する
+- 同期検索では両方向を辿る前提（対称関係は2本張ってもよい）
+- 運用前のためマイグレーションは扱わない（作り直し前提）
+
+主要カラム（概念）:
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| id | INTEGER | 主キー（自動採番） |
+| from_state_id | INTEGER | リンク元（FK、CASCADE） |
+| to_state_id | INTEGER | リンク先（FK、CASCADE） |
+| label | TEXT | 関係ラベル（relates_to/derived_from/supports/contradicts） |
+| confidence | REAL | 確信度（0.0〜1.0） |
+| evidence_event_ids_json | TEXT | 根拠イベントID（JSON配列） |
+| created_at | INTEGER | 作成時刻（UTC UNIX秒） |
+
 ### 改訂履歴（`revisions`）
 
 - 状態/派生情報（文脈グラフ/感情など）の更新が発生したときに追記
@@ -206,7 +231,7 @@
 
 対象範囲（正）:
 
-- **revisions対象**: `state`, `event_links`, `event_threads`, `event_affects`
+- **revisions対象**: `state`, `state_links`, `event_links`, `event_threads`, `event_affects`
 - **revisions対象外**: `events`（追記ログ）, `retrieval_runs`（観測ログ）
 
 注記:
