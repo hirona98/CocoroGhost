@@ -1895,27 +1895,41 @@ def _handle_build_state_links(
             created_links = 0
             updated_links = 0
 
-            for ln in normalized:
-                to_state_id = int(ln["to_state_id"])
-                label = str(ln["label"])
-                conf = float(ln["confidence"])
-                why = str(ln.get("why") or "").strip()
+            def upsert_one_link(
+                *,
+                from_state_id: int,
+                to_state_id: int,
+                label: str,
+                confidence: float,
+                why: str,
+                evidence_event_ids_in: list[int],
+                reverse: bool,
+            ) -> None:
+                """state_links を1本 upsert し、revision を残す。"""
+
+                nonlocal created_links, updated_links
 
                 existing = (
                     db.query(StateLink)
-                    .filter(StateLink.from_state_id == int(base_snapshot["state_id"]))
+                    .filter(StateLink.from_state_id == int(from_state_id))
                     .filter(StateLink.to_state_id == int(to_state_id))
                     .filter(StateLink.label == str(label))
                     .one_or_none()
                 )
 
+                # --- reason 文字列を整形 ---
+                rev_tag = "（逆向き）" if bool(reverse) else ""
+                why2 = str(why or "").strip()
+                reason_add = f"state_links を追加した{rev_tag}: {why2}" if why2 else f"state_links を追加した{rev_tag}"
+                reason_upd = f"state_links を更新した{rev_tag}: {why2}" if why2 else f"state_links を更新した{rev_tag}"
+
                 if existing is None:
                     link = StateLink(
-                        from_state_id=int(base_snapshot["state_id"]),
+                        from_state_id=int(from_state_id),
                         to_state_id=int(to_state_id),
                         label=str(label),
-                        confidence=float(conf),
-                        evidence_event_ids_json=common_utils.json_dumps(evidence_ids),
+                        confidence=float(confidence),
+                        evidence_event_ids_json=common_utils.json_dumps([int(x) for x in evidence_event_ids_in if int(x) > 0]),
                         created_at=int(now_ts),
                     )
                     db.add(link)
@@ -1925,34 +1939,71 @@ def _handle_build_state_links(
                         entity_id=int(link.id),
                         before=None,
                         after=_state_link_row_to_json(link),
-                        reason=f"state_links を追加した: {why}" if why else "state_links を追加した",
-                        evidence_event_ids=list(evidence_ids),
+                        reason=str(reason_add),
+                        evidence_event_ids=[int(x) for x in evidence_event_ids_in if int(x) > 0],
                     )
                     created_links += 1
-                else:
-                    before = _state_link_row_to_json(existing)
+                    return
 
-                    # --- evidence_event_ids をマージ（重複なし） ---
-                    prev_obj = common_utils.json_loads_maybe(str(existing.evidence_event_ids_json or "[]"))
-                    prev_ids = (
-                        [int(x) for x in prev_obj if isinstance(prev_obj, list) and isinstance(x, (int, float))]
-                        if isinstance(prev_obj, list)
-                        else []
+                before = _state_link_row_to_json(existing)
+
+                # --- evidence_event_ids をマージ（重複なし） ---
+                prev_obj = common_utils.json_loads_maybe(str(existing.evidence_event_ids_json or "[]"))
+                prev_ids = (
+                    [int(x) for x in prev_obj if isinstance(prev_obj, list) and isinstance(x, (int, float))]
+                    if isinstance(prev_obj, list)
+                    else []
+                )
+                merged_ids = sorted({int(x) for x in (prev_ids + list(evidence_event_ids_in)) if int(x) > 0})
+                existing.confidence = float(confidence)
+                existing.evidence_event_ids_json = common_utils.json_dumps(merged_ids)
+                db.add(existing)
+                db.flush()
+                add_revision(
+                    entity_type="state_links",
+                    entity_id=int(existing.id),
+                    before=before,
+                    after=_state_link_row_to_json(existing),
+                    reason=str(reason_upd),
+                    evidence_event_ids=list(merged_ids),
+                )
+                updated_links += 1
+
+            # --- 対称関係は「逆向き」も保存する ---
+            # NOTE:
+            # - 現状の label セットには逆関係（supported_by 等）が無い。
+            # - そのため、自動で逆向きを張って良いのは「対称」と見なせる関係だけに限定する。
+            # - relates_to / contradicts は対称として扱えるため、両方向に保存する。
+            symmetric_labels = {"relates_to", "contradicts"}
+
+            for ln in normalized:
+                to_state_id = int(ln["to_state_id"])
+                label = str(ln["label"])
+                conf = float(ln["confidence"])
+                why = str(ln.get("why") or "").strip()
+
+                # --- 正方向（base -> to） ---
+                upsert_one_link(
+                    from_state_id=int(base_snapshot["state_id"]),
+                    to_state_id=int(to_state_id),
+                    label=str(label),
+                    confidence=float(conf),
+                    why=str(why),
+                    evidence_event_ids_in=list(evidence_ids),
+                    reverse=False,
+                )
+
+                # --- 逆方向（to -> base、対称関係のみ） ---
+                if str(label) in symmetric_labels:
+                    upsert_one_link(
+                        from_state_id=int(to_state_id),
+                        to_state_id=int(base_snapshot["state_id"]),
+                        label=str(label),
+                        confidence=float(conf),
+                        why=str(why),
+                        evidence_event_ids_in=list(evidence_ids),
+                        reverse=True,
                     )
-                    merged_ids = sorted({int(x) for x in (prev_ids + evidence_ids) if int(x) > 0})
-                    existing.confidence = float(conf)
-                    existing.evidence_event_ids_json = common_utils.json_dumps(merged_ids)
-                    db.add(existing)
-                    db.flush()
-                    add_revision(
-                        entity_type="state_links",
-                        entity_id=int(existing.id),
-                        before=before,
-                        after=_state_link_row_to_json(existing),
-                        reason=f"state_links を更新した: {why}" if why else "state_links を更新した",
-                        evidence_event_ids=list(merged_ids),
-                    )
-                    updated_links += 1
 
         # --- 観測ログ（件数のみ） ---
         logger.info(
