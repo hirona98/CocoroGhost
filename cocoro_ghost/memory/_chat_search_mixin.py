@@ -24,7 +24,7 @@ from cocoro_ghost import common_utils, vector_index
 from cocoro_ghost.db import memory_session_scope, search_similar_item_ids
 from cocoro_ghost.llm_client import LlmRequestPurpose
 from cocoro_ghost.memory._utils import now_utc_ts
-from cocoro_ghost.memory_models import Event, EventAffect, EventEntity, EventLink, EventThread, State, StateEntity
+from cocoro_ghost.memory_models import Event, EventAffect, EventEntity, EventLink, EventThread, State, StateEntity, StateLink
 from cocoro_ghost.time_utils import format_iso8601_local
 
 
@@ -889,6 +889,99 @@ class _ChatSearchMixin:
                     if label == "vector":
                         vector_debug = {"error": f"vector task failed or timed out: {type(exc).__name__}: {exc}"}
                     continue
+
+        # --- state_link_expand（seed → state_links → 関連state） ---
+        # NOTE:
+        # - state は「育つノート」なので、state同士のリンク（state_links）を辿ると取りこぼしが減る。
+        # - 多段化（リンク→リンク→…）はノイズ/コストが増えるため、ここでは1-hopのみ。
+        tc = self.config_store.toml_config  # type: ignore[attr-defined]
+        state_link_expand_debug: dict[str, Any] = {
+            "enabled": bool(getattr(tc, "retrieval_state_link_expand_enabled", True)),
+            "seed_state_ids": [],
+            "added_state_count": 0,
+        }
+        if bool(state_link_expand_debug["enabled"]):
+            seed_limit = max(0, int(getattr(tc, "retrieval_state_link_expand_seed_limit", 8)))
+            per_seed_limit = max(0, int(getattr(tc, "retrieval_state_link_expand_per_seed_limit", 8)))
+            min_conf = float(getattr(tc, "retrieval_state_link_expand_min_confidence", 0.6))
+            min_conf = max(0.0, min(1.0, float(min_conf)))
+            state_link_expand_debug["limits"] = {
+                "seed_limit": int(seed_limit),
+                "per_seed_limit": int(per_seed_limit),
+                "min_confidence": float(min_conf),
+            }
+
+            # --- seed（state候補）を選ぶ（multi-hit優先 + 最近性っぽくID降順） ---
+            seed_state_ids: list[int] = []
+            for k, srcs in sources_by_key.items():
+                if not k or len(k) != 2:
+                    continue
+                t, i = k
+                if str(t) != "state":
+                    continue
+                if int(i) <= 0:
+                    continue
+                # NOTE: 既に展開で付いたseedは除外し、1-hopのままにする（多段化を避ける）
+                if "entity_expand" in (srcs or set()):
+                    continue
+                if "state_link_expand" in (srcs or set()):
+                    continue
+                seed_state_ids.append(int(i))
+
+            def seed_score(state_id: int) -> tuple[int, int]:
+                hs = sources_by_key.get(("state", int(state_id))) or set()
+                return (int(len(hs)), int(state_id))
+
+            seed_state_ids.sort(key=seed_score, reverse=True)
+            seed_state_ids = seed_state_ids[: max(0, int(seed_limit))]
+            state_link_expand_debug["seed_state_ids"] = [int(x) for x in seed_state_ids]
+
+            # --- seed が無い/上限ゼロなら何もしない ---
+            if seed_state_ids and int(per_seed_limit) > 0:
+                added_ids: set[int] = set()
+                with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+                    for seed_state_id in seed_state_ids:
+                        # --- seed -> to（順方向） ---
+                        rows_fwd = (
+                            db.query(StateLink.to_state_id)
+                            .join(State, State.state_id == StateLink.to_state_id)
+                            .filter(StateLink.from_state_id == int(seed_state_id))
+                            .filter(StateLink.confidence >= float(min_conf))
+                            .filter(State.searchable == 1)
+                            .filter(State.kind != "long_mood_state")
+                            .order_by(StateLink.confidence.desc(), StateLink.id.desc())
+                            .limit(int(per_seed_limit))
+                            .all()
+                        )
+                        keys_fwd = [("state", int(r[0])) for r in rows_fwd if r and r[0] is not None]
+                        for _t, sid in keys_fwd:
+                            if int(sid) == int(seed_state_id):
+                                continue
+                            added_ids.add(int(sid))
+                        add_sources(keys_fwd, label="state_link_expand")
+
+                        # --- seed <- from（逆方向。seedがto側のリンクも辿る） ---
+                        rows_rev = (
+                            db.query(StateLink.from_state_id)
+                            .join(State, State.state_id == StateLink.from_state_id)
+                            .filter(StateLink.to_state_id == int(seed_state_id))
+                            .filter(StateLink.confidence >= float(min_conf))
+                            .filter(State.searchable == 1)
+                            .filter(State.kind != "long_mood_state")
+                            .order_by(StateLink.confidence.desc(), StateLink.id.desc())
+                            .limit(int(per_seed_limit))
+                            .all()
+                        )
+                        keys_rev = [("state", int(r[0])) for r in rows_rev if r and r[0] is not None]
+                        for _t, sid in keys_rev:
+                            if int(sid) == int(seed_state_id):
+                                continue
+                            added_ids.add(int(sid))
+                        add_sources(keys_rev, label="state_link_expand")
+
+                state_link_expand_debug["added_state_count"] = int(len({int(x) for x in added_ids if int(x) > 0}))
+
+        collect_debug["state_link_expand"] = state_link_expand_debug
 
         # --- entity_expand（seed → entity → 関連候補） ---
         # NOTE:

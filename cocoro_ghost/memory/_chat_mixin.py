@@ -62,6 +62,7 @@ _HIT_SOURCE_TO_CODE: dict[str, str] = {
     "vector_recent": "vr",
     "vector_global": "vg",
     "entity_expand": "ex",
+    "state_link_expand": "sl",
 }
 
 
@@ -609,9 +610,11 @@ class _ChatMemoryMixin:
                 db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
                 return
 
-            # --- event_affect は行ごと削除する ---
+            # --- event_affect は「内部の派生情報」なので、想起対象から外すだけにする ---
+            # NOTE:
+            # - 削除はしない（ログ/監査/デバッグ用に行は残す）。
+            # - event_affect の候補収集は vec_items（ベクトル）由来なので、vec_items を消せば再想起されにくい。
             if t == "event_affect":
-                db.execute(text("DELETE FROM event_affects WHERE id=:id"), {"id": int(target_affect_id)})
                 item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_EVENT_AFFECT), int(target_affect_id))
                 db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
                 return

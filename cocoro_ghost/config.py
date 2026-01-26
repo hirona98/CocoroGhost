@@ -64,6 +64,16 @@ class Config:
     retrieval_entity_expand_per_entity_state_limit: int  # 記憶検索: entityごとの関連state上限
     retrieval_entity_expand_min_confidence: float  # 記憶検索: entity展開のconfidence足切り（0.0..1.0）
     retrieval_entity_expand_min_seed_occurrences: int  # 記憶検索: entity展開のseed内出現回数の足切り
+    retrieval_state_link_expand_enabled: bool  # 記憶検索: stateリンク展開（seed→state_links→関連state）を有効化
+    retrieval_state_link_expand_seed_limit: int  # 記憶検索: stateリンク展開のseed上限
+    retrieval_state_link_expand_per_seed_limit: int  # 記憶検索: seedごとの展開上限
+    retrieval_state_link_expand_min_confidence: float  # 記憶検索: stateリンク展開のconfidence足切り（0.0..1.0）
+    memory_state_links_build_enabled: bool  # 非同期: state_links を生成する
+    memory_state_links_build_target_state_limit: int  # 非同期: 1回のWritePlanで処理するstate上限
+    memory_state_links_build_candidate_k: int  # 非同期: ベクトル近傍の候補数（k）
+    memory_state_links_build_max_links_per_state: int  # 非同期: 1stateあたりのリンク上限
+    memory_state_links_build_min_confidence: float  # 非同期: リンク採用のconfidence足切り（0.0..1.0）
+    memory_state_links_build_max_distance: float  # 非同期: ベクトル距離の足切り（小さいほど近い）
     log_file_enabled: bool  # ファイルログ有効/無効
     log_file_path: str      # ファイルログの保存先パス
     log_file_max_bytes: int  # ファイルログのローテーションサイズ（bytes）
@@ -229,6 +239,16 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         "retrieval_entity_expand_per_entity_state_limit",
         "retrieval_entity_expand_min_confidence",
         "retrieval_entity_expand_min_seed_occurrences",
+        "retrieval_state_link_expand_enabled",
+        "retrieval_state_link_expand_seed_limit",
+        "retrieval_state_link_expand_per_seed_limit",
+        "retrieval_state_link_expand_min_confidence",
+        "memory_state_links_build_enabled",
+        "memory_state_links_build_target_state_limit",
+        "memory_state_links_build_candidate_k",
+        "memory_state_links_build_max_links_per_state",
+        "memory_state_links_build_min_confidence",
+        "memory_state_links_build_max_distance",
         "log_file_enabled",
         "log_file_path",
         "log_file_max_bytes",
@@ -356,6 +376,32 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
     retrieval_entity_expand_min_seed_occurrences = int(data.get("retrieval_entity_expand_min_seed_occurrences", 2))
     retrieval_entity_expand_min_seed_occurrences = max(1, int(retrieval_entity_expand_min_seed_occurrences))
 
+    # --- 記憶検索: stateリンク展開（seed→state_links→関連state） ---
+    retrieval_state_link_expand_enabled = bool(data.get("retrieval_state_link_expand_enabled", True))
+    retrieval_state_link_expand_seed_limit = max(0, int(data.get("retrieval_state_link_expand_seed_limit", 8)))
+    retrieval_state_link_expand_per_seed_limit = max(0, int(data.get("retrieval_state_link_expand_per_seed_limit", 8)))
+    try:
+        retrieval_state_link_expand_min_confidence = float(data.get("retrieval_state_link_expand_min_confidence", 0.6))
+    except Exception:  # noqa: BLE001
+        retrieval_state_link_expand_min_confidence = 0.6
+    retrieval_state_link_expand_min_confidence = max(0.0, min(1.0, float(retrieval_state_link_expand_min_confidence)))
+
+    # --- 非同期: state_links 生成（B-1） ---
+    memory_state_links_build_enabled = bool(data.get("memory_state_links_build_enabled", True))
+    memory_state_links_build_target_state_limit = max(0, int(data.get("memory_state_links_build_target_state_limit", 3)))
+    memory_state_links_build_candidate_k = max(1, int(data.get("memory_state_links_build_candidate_k", 24)))
+    memory_state_links_build_max_links_per_state = max(0, int(data.get("memory_state_links_build_max_links_per_state", 6)))
+    try:
+        memory_state_links_build_min_confidence = float(data.get("memory_state_links_build_min_confidence", 0.65))
+    except Exception:  # noqa: BLE001
+        memory_state_links_build_min_confidence = 0.65
+    memory_state_links_build_min_confidence = max(0.0, min(1.0, float(memory_state_links_build_min_confidence)))
+    try:
+        memory_state_links_build_max_distance = float(data.get("memory_state_links_build_max_distance", 0.35))
+    except Exception:  # noqa: BLE001
+        memory_state_links_build_max_distance = 0.35
+    memory_state_links_build_max_distance = max(0.0, float(memory_state_links_build_max_distance))
+
     config = Config(
         # --- サーバー待受ポート（必須） ---
         cocoro_ghost_port=int(_require(data, "cocoro_ghost_port")),
@@ -395,6 +441,16 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         retrieval_entity_expand_per_entity_state_limit=int(retrieval_entity_expand_per_entity_state_limit),
         retrieval_entity_expand_min_confidence=float(retrieval_entity_expand_min_confidence),
         retrieval_entity_expand_min_seed_occurrences=int(retrieval_entity_expand_min_seed_occurrences),
+        retrieval_state_link_expand_enabled=bool(retrieval_state_link_expand_enabled),
+        retrieval_state_link_expand_seed_limit=int(retrieval_state_link_expand_seed_limit),
+        retrieval_state_link_expand_per_seed_limit=int(retrieval_state_link_expand_per_seed_limit),
+        retrieval_state_link_expand_min_confidence=float(retrieval_state_link_expand_min_confidence),
+        memory_state_links_build_enabled=bool(memory_state_links_build_enabled),
+        memory_state_links_build_target_state_limit=int(memory_state_links_build_target_state_limit),
+        memory_state_links_build_candidate_k=int(memory_state_links_build_candidate_k),
+        memory_state_links_build_max_links_per_state=int(memory_state_links_build_max_links_per_state),
+        memory_state_links_build_min_confidence=float(memory_state_links_build_min_confidence),
+        memory_state_links_build_max_distance=float(memory_state_links_build_max_distance),
         log_file_enabled=bool(data.get("log_file_enabled", False)),
         log_file_path=resolved_log_file_path,
         log_file_max_bytes=int(data.get("log_file_max_bytes", 200_000)),

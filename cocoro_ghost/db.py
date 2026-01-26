@@ -50,7 +50,7 @@ class _MemorySessionEntry:
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
-_MEMORY_DB_USER_VERSION = 6
+_MEMORY_DB_USER_VERSION = 7
 _SETTINGS_DB_USER_VERSION = 2
 
 
@@ -303,6 +303,10 @@ def _create_memory_indexes(engine) -> None:
         "CREATE INDEX IF NOT EXISTS idx_event_entities_type_name ON event_entities(entity_type_norm, entity_name_norm)",
         "CREATE INDEX IF NOT EXISTS idx_state_entities_state ON state_entities(state_id)",
         "CREATE INDEX IF NOT EXISTS idx_state_entities_type_name ON state_entities(entity_type_norm, entity_name_norm)",
+        # --- state_links（state↔state リンク） ---
+        "CREATE INDEX IF NOT EXISTS idx_state_links_from ON state_links(from_state_id)",
+        "CREATE INDEX IF NOT EXISTS idx_state_links_to ON state_links(to_state_id)",
+        "CREATE INDEX IF NOT EXISTS idx_state_links_label ON state_links(label)",
         # --- jobs ---
         "CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after)",
     ]
