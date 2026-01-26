@@ -51,22 +51,49 @@ retrieval_event_affect_max_percent = 5
 # - vector_only: 意味近傍（最近寄り。語が一致しない関連の拾い上げ）
 # - context_only: 文脈維持（返信連鎖/スレッド/リンク）
 # - trigram_only: 固有名詞/型番の拾い上げ（ノイズも増えやすい）
-# - recent_only: 直近性の拾い上げ（弱い一致が増えやすい）
+# - recent_only: 直近性の拾い上げ（弱い一致が増えやすい/なくてもOK）
 retrieval_quota_assoc_state_percent = 20
 retrieval_quota_assoc_multi_hit_percent = 40
 retrieval_quota_assoc_vector_only_percent = 15
 retrieval_quota_assoc_context_only_percent = 10
+retrieval_quota_assoc_entity_only_percent = 5
 retrieval_quota_assoc_trigram_only_percent = 5
-retrieval_quota_assoc_recent_only_percent = 5
+retrieval_quota_assoc_recent_only_percent = 0
 
 # targeted_broad / explicit_about_time（昔話/期間指定）
 # - about_time_only: 年/ライフステージのヒント検索で当たった候補（全期間モードで厚めにする）
 retrieval_quota_broad_state_percent = 20
 retrieval_quota_broad_multi_hit_percent = 30
-retrieval_quota_broad_about_time_only_percent = 25
+retrieval_quota_broad_about_time_only_percent = 20
 retrieval_quota_broad_vector_only_percent = 10
 retrieval_quota_broad_context_only_percent = 5
+retrieval_quota_broad_entity_only_percent = 5
 retrieval_quota_broad_trigram_only_percent = 5
+
+# 記憶検索: entity展開（seed→entity→関連候補）
+# - 既存候補（seed）に付与されたentitiesから、関連イベント/状態を追加で拾う
+# - 候補が膨らみやすいので、上限/足切りを強めに固定する
+retrieval_entity_expand_enabled = true
+retrieval_entity_expand_seed_limit = 12
+retrieval_entity_expand_max_entities = 12
+retrieval_entity_expand_per_entity_event_limit = 10
+retrieval_entity_expand_per_entity_state_limit = 6
+retrieval_entity_expand_min_confidence = 0.45
+retrieval_entity_expand_min_seed_occurrences = 2
+
+# 記憶検索: stateリンク展開（seed→state_links→関連state）
+retrieval_state_link_expand_enabled = true
+retrieval_state_link_expand_seed_limit = 8
+retrieval_state_link_expand_per_seed_limit = 8
+retrieval_state_link_expand_min_confidence = 0.6
+
+# 非同期: state_links 生成（B-1）
+memory_state_links_build_enabled = true
+memory_state_links_build_target_state_limit = 3
+memory_state_links_build_candidate_k = 24
+memory_state_links_build_max_links_per_state = 6
+memory_state_links_build_min_confidence = 0.65
+memory_state_links_build_max_distance = 0.35
 
 # LLM送受信ログの最大文字数（ターミナル/ファイル）
 llm_log_console_max_chars = 1000
