@@ -61,6 +61,8 @@ _HIT_SOURCE_TO_CODE: dict[str, str] = {
     "about_time": "at",
     "vector_recent": "vr",
     "vector_global": "vg",
+    "entity_expand": "ex",
+    "state_link_expand": "sl",
 }
 
 
@@ -608,9 +610,11 @@ class _ChatMemoryMixin:
                 db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
                 return
 
-            # --- event_affect は行ごと削除する ---
+            # --- event_affect は「内部の派生情報」なので、想起対象から外すだけにする ---
+            # NOTE:
+            # - 削除はしない（ログ/監査/デバッグ用に行は残す）。
+            # - event_affect の候補収集は vec_items（ベクトル）由来なので、vec_items を消せば再想起されにくい。
             if t == "event_affect":
-                db.execute(text("DELETE FROM event_affects WHERE id=:id"), {"id": int(target_affect_id)})
                 item_id = vector_index.vec_item_id(int(vector_index.VEC_KIND_EVENT_AFFECT), int(target_affect_id))
                 db.execute(text("DELETE FROM vec_items WHERE item_id=:item_id"), {"item_id": int(item_id)})
                 return
@@ -1003,7 +1007,7 @@ class _ChatMemoryMixin:
         )
 
         # --- 5) 候補収集（取りこぼし防止優先・可能なものは並列） ---
-        candidates: list[_CandidateItem] = self._collect_candidates(
+        candidates, candidates_collect_debug = self._collect_candidates(
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),
@@ -1059,6 +1063,7 @@ class _ChatMemoryMixin:
                 "event_affect": sum(1 for c in candidates if c.type == "event_affect"),
             },
             "sources": {f"{c.type}:{c.id}": c.hit_sources for c in candidates},
+            "collect_debug": (candidates_collect_debug or {}),
         }
         if not isinstance(search_result_pack, dict) or not isinstance(search_result_pack.get("selected"), list):
             search_result_pack = {"selected": []}

@@ -49,6 +49,7 @@ def write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> 
             "- event.image_summaries / recent_events[*].image_summaries_preview は画像要約（内部用）。画像そのものは無いので、要約に無い細部は断定しない。",
             "- state_updates は必要なものだけ。雑談だけなら空でもよい（ノイズを増やさない）。",
             "- body_text は検索に使う短い本文（会話文の長文や箇条書きは避ける）。",
+            "- state_updates.entities は「その state に直接関係する entity」だけを入れる。不明なら空配列でよい。",
             "- 矛盾がある場合は上書きせず、並存/期間分割（valid_from_ts/valid_to_ts）や close を使う。",
             "",
             "視点・口調（重要）:",
@@ -88,7 +89,7 @@ def write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> 
             '    "about_year_end": null,',
             '    "life_stage": "elementary|middle|high|university|work|unknown",',
             '    "about_time_confidence": 0.0,',
-            '    "entities": [{"type":"PERSON|ORG|PLACE|THING|TOPIC","name":"string","confidence":0.0}]',
+            '    "entities": [{"type":"person|org|place|project|tool","name":"string","confidence":0.0}]',
             "  },",
             '  "state_updates": [',
             "    {",
@@ -96,6 +97,7 @@ def write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> 
             '      "state_id": null,',
             '      "kind": "fact|relation|task|summary|long_mood_state",',
             '      "body_text": "検索に使う短い本文",',
+            '      "entities": [{"type":"person|org|place|project|tool","name":"string","confidence":0.0}],',
             '      "payload": {},',
             '      "confidence": 0.0,',
             '      "salience": 0.0,',
@@ -172,6 +174,8 @@ def selection_system_prompt() -> str:
             "- at: about_time（期間ヒント）",
             "- vr: vector_recent（ベクトル類似: 直近寄り）",
             "- vg: vector_global（ベクトル類似: 全期間/ひらめき枠）",
+            "- ex: entity_expand（エンティティ展開: seed→entity→関連候補）",
+            "- sl: state_link_expand（stateリンク展開: seed→state_links→関連state）",
             "",
             "選び方（品質）:",
             "- まずは state（fact/relation/task/summary）を優先し、足りない分を event（具体エピソード）で補う。",
@@ -246,6 +250,50 @@ def event_assistant_summary_system_prompt() -> str:
             "出力スキーマ:",
             "{",
             '  "summary": "string"',
+            "}",
+        ]
+    ).strip()
+
+
+def state_links_system_prompt() -> str:
+    """
+    state_links（state↔state）のリンク生成用の system prompt を返す。
+
+    目的:
+        - state同士の関係（派生/矛盾/補足など）を「少数・高品質」に抽出する。
+        - 出力をJSONに固定し、Workerで安定して取り込めるようにする。
+    """
+
+    return "\n".join(
+        [
+            "あなたは state（育つノート）の関係（state_links）を作る。",
+            "出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
+            "",
+            "入力: base_state と candidate_states（候補）。",
+            "目的: base_state と関係が強いものだけを少数選び、リンクを提案する（ノイズは捨てる）。",
+            "",
+            "ルール（重要）:",
+            "- 入力に無い事実は作らない。",
+            "- 関係が弱い/不明なら links を空配列にする（無理に作らない）。",
+            "- links は最大8件まで。",
+            "- confidence は 0.0..1.0。",
+            "",
+            "label（固定）:",
+            "- relates_to: 関連（同じ話題/同じ対象/近い文脈）",
+            "- derived_from: 派生（AがBから導かれている/要約/一般化）",
+            "- supports: 補強（BがAを補足・裏付け）",
+            "- contradicts: 矛盾（内容が食い違う/同時に正とは言いにくい）",
+            "",
+            "出力スキーマ:",
+            "{",
+            '  "links": [',
+            "    {",
+            '      "to_state_id": 0,',
+            '      "label": "relates_to|derived_from|supports|contradicts",',
+            '      "confidence": 0.0,',
+            '      "why": "短い理由（根拠は入力の文面に基づく）"',
+            "    }",
+            "  ]",
             "}",
         ]
     ).strip()
