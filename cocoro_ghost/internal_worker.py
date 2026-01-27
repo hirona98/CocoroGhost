@@ -63,6 +63,8 @@ def start(*, embedding_preset_id: str, embedding_dimension: int) -> None:
                 "poll_interval_seconds": 1.0,
                 "max_jobs_per_tick": 10,
                 "periodic_interval_seconds": 30.0,
+                # ジョブ実行の並列数（LLM待ちを隠す目的。sqliteロック競合を増やし過ぎない範囲に固定）
+                "job_concurrency": 4,
                 "stop_event": stop_event,
             },
             name="cocoro_ghost_internal_worker",

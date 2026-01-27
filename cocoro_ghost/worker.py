@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import logging
 import time
@@ -371,85 +372,245 @@ def run_forever(
     poll_interval_seconds: float,
     max_jobs_per_tick: int,
     periodic_interval_seconds: float,
+    job_concurrency: int,
     stop_event,
 ) -> None:
-    """jobs を監視して実行し続ける（内蔵Worker用エントリポイント）。"""
+    """
+    jobs を監視して実行し続ける（内蔵Worker用エントリポイント）。
+
+    - due(pending & run_after<=now) を running にして実行キューへ投入する。
+    - 実行は ThreadPoolExecutor で並列化する（主に LLM 呼び出しの待ち時間を隠す目的）。
+    - apply_write_plan / tidy_memory は排他で実行する（DB更新が大きく衝突しやすいため）。
+    """
 
     _ = periodic_interval_seconds  # cron無し定期は採用しない（ターン回数ベースを正とする）
 
-    # --- ループ ---
-    while True:
-        if stop_event is not None and getattr(stop_event, "is_set", lambda: False)():
-            return
+    # --- 設定値の正規化 ---
+    job_concurrency_i = max(1, int(job_concurrency))
+    max_jobs_per_tick_i = max(1, int(max_jobs_per_tick))
+    poll_interval_s = max(0.05, float(poll_interval_seconds))
 
-        ran_any = False
-        try:
-            ran_any = _tick_once(
+    # --- 排他で実行したいジョブ種別 ---
+    # NOTE:
+    # - apply_write_plan は大量のDB更新 + 子ジョブenqueue を伴う。
+    # - tidy_memory は多量のclose/link整理が入る。
+    # - これらは並列に走らせると sqlite ロック競合が増えやすく、失敗/遅延の原因になり得る。
+    exclusive_kinds = {"apply_write_plan", "tidy_memory"}
+
+    # --- ワーカースレッドプール ---
+    # NOTE:
+    # - Worker自体は別スレッド（internal_worker）で動く。
+    # - ここでは「ジョブ実行」をさらに並列化し、LLM待ち時間を隠す。
+    with ThreadPoolExecutor(max_workers=int(job_concurrency_i), thread_name_prefix="cocoro_ghost_job") as executor:
+        in_flight: dict[Future[None], dict[str, Any]] = {}
+        stop_deadline_ts: float | None = None
+
+        # --- ループ ---
+        while True:
+            # --- 停止要求のチェック ---
+            if stop_event is not None and getattr(stop_event, "is_set", lambda: False)():
+                # --- 新規の投入は止め、一定時間だけ完了を待つ（running stuckを増やさない） ---
+                if stop_deadline_ts is None:
+                    stop_deadline_ts = float(time.time()) + 2.0
+
+            # --- 完了した future を回収 ---
+            # NOTE:
+            # - _run_one_job 自体はDBへ成功/失敗を書き戻す。
+            # - ここでは「スレッドが落ちた」などの予期せぬ例外だけ拾ってログする。
+            for fut, meta in list(in_flight.items()):
+                if not fut.done():
+                    continue
+                try:
+                    _ = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "job future crashed kind=%s job_id=%s",
+                        str(meta.get("kind") or ""),
+                        int(meta.get("job_id") or 0),
+                        exc_info=exc,
+                    )
+                del in_flight[fut]
+
+            # --- 停止要求中: in_flight が空なら終了 / 期限超過なら終了 ---
+            if stop_deadline_ts is not None:
+                if not in_flight:
+                    return
+                if float(time.time()) >= float(stop_deadline_ts):
+                    return
+                time.sleep(0.05)
+                continue
+
+            # --- 空き枠が無ければ待つ ---
+            free_slots = int(job_concurrency_i) - len(in_flight)
+            if free_slots <= 0:
+                time.sleep(0.05)
+                continue
+
+            # --- 排他ジョブが待っているなら「新規投入を止めて」枠を空ける ---
+            # NOTE:
+            # - apply_write_plan / tidy_memory が pending のまま先頭に居ると、並列ジョブが増えていつまでも実行できない。
+            # - そのため、排他ジョブが due の場合は、現在のin_flightを捌ききるまで新規投入を控える。
+            if in_flight and _has_due_pending_job_kinds(
                 embedding_preset_id=str(embedding_preset_id),
                 embedding_dimension=int(embedding_dimension),
-                llm_client=llm_client,
-                max_jobs=int(max_jobs_per_tick),
+                kinds=set(exclusive_kinds),
+            ):
+                time.sleep(0.05)
+                continue
+
+            # --- 排他ジョブは in_flight が空の時だけ先に拾う ---
+            if not in_flight:
+                claimed_exclusive = _claim_due_jobs(
+                    embedding_preset_id=str(embedding_preset_id),
+                    embedding_dimension=int(embedding_dimension),
+                    now_ts=_now_utc_ts(),
+                    limit=1,
+                    include_kinds=set(exclusive_kinds),
+                    exclude_kinds=None,
+                )
+                if claimed_exclusive:
+                    info = claimed_exclusive[0]
+                    fut = executor.submit(
+                        _run_one_job,
+                        embedding_preset_id=str(embedding_preset_id),
+                        embedding_dimension=int(embedding_dimension),
+                        llm_client=llm_client,
+                        job_id=int(info["job_id"]),
+                    )
+                    in_flight[fut] = dict(info)
+                    logger.info(
+                        "worker dispatched exclusive job kind=%s job_id=%s",
+                        str(info.get("kind") or ""),
+                        int(info.get("job_id") or 0),
+                    )
+                    continue
+
+            # --- 通常ジョブを空き枠分だけ拾う（排他ジョブは除外） ---
+            limit = min(int(max_jobs_per_tick_i), int(free_slots))
+            claimed = _claim_due_jobs(
+                embedding_preset_id=str(embedding_preset_id),
+                embedding_dimension=int(embedding_dimension),
+                now_ts=_now_utc_ts(),
+                limit=int(limit),
+                include_kinds=None,
+                exclude_kinds=set(exclusive_kinds),
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("worker tick failed", exc_info=exc)
+            if claimed:
+                for info in claimed:
+                    fut = executor.submit(
+                        _run_one_job,
+                        embedding_preset_id=str(embedding_preset_id),
+                        embedding_dimension=int(embedding_dimension),
+                        llm_client=llm_client,
+                        job_id=int(info["job_id"]),
+                    )
+                    in_flight[fut] = dict(info)
+                logger.info(
+                    "worker dispatched jobs=%s inflight=%s",
+                    len(claimed),
+                    len(in_flight),
+                    extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
+                )
+                continue
 
-        # --- ポーリング間隔（仕事があれば詰めて回す） ---
-        if not ran_any:
-            time.sleep(max(0.05, float(poll_interval_seconds)))
+            # --- 何も拾えない場合 ---
+            # NOTE:
+            # - in_flight があるなら、短く待って完了回収へ回る。
+            # - 無いなら、通常のポーリング間隔で待つ。
+            time.sleep(0.05 if in_flight else float(poll_interval_s))
 
 
-def _tick_once(*, embedding_preset_id: str, embedding_dimension: int, llm_client: LlmClient, max_jobs: int) -> bool:
-    """due な jobs を最大 max_jobs 件だけ実行する。"""
+def _has_due_pending_job_kinds(*, embedding_preset_id: str, embedding_dimension: int, kinds: set[str]) -> bool:
+    """
+    指定 kind の due(pending) ジョブが存在するかを返す。
+
+    用途:
+        - 排他ジョブ（apply_write_plan/tidy_memory）が待っている場合、
+          追加の並列投入を控えてin_flightを早く空ける。
+    """
+    if not kinds:
+        return False
 
     now_ts = _now_utc_ts()
-    max_jobs_i = max(1, int(max_jobs))
+    kinds_list = [str(k) for k in sorted({str(k).strip() for k in kinds if str(k).strip()})]
+    if not kinds_list:
+        return False
+
+    with memory_session_scope(str(embedding_preset_id), int(embedding_dimension)) as db:
+        n = (
+            db.query(func.count(Job.id))
+            .filter(Job.status == int(_JOB_PENDING))
+            .filter(Job.run_after <= int(now_ts))
+            .filter(Job.kind.in_(kinds_list))
+            .scalar()
+        )
+    return int(n or 0) > 0
+
+
+def _claim_due_jobs(
+    *,
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    now_ts: int,
+    limit: int,
+    include_kinds: set[str] | None,
+    exclude_kinds: set[str] | None,
+) -> list[dict[str, Any]]:
+    """
+    due(pending) jobs を running にして、実行対象のスナップショットを返す。
+
+    注意:
+        - ORMをセッション外に持ち出さないため、返すのは plain dict のみ。
+        - ここで running にしたものは「必ず」どこかで実行される前提。
+          そのため、スケジューリング判断（排他など）は呼び出し側で済ませる。
+    """
+    limit_i = max(1, int(limit))
+
+    # --- kind フィルタの正規化 ---
+    include_list: list[str] | None = None
+    if include_kinds:
+        tmp = [str(k).strip() for k in include_kinds if str(k).strip()]
+        include_list = sorted(set(tmp)) if tmp else None
+    exclude_list: list[str] | None = None
+    if exclude_kinds:
+        tmp = [str(k).strip() for k in exclude_kinds if str(k).strip()]
+        exclude_list = sorted(set(tmp)) if tmp else None
 
     # --- due jobs を取る ---
     # NOTE:
     # - memory_session_scope は正常終了時に commit する。
     # - SQLAlchemy は commit で ORM オブジェクトを expire し得るため、
     #   with を抜けた後に rows（Job ORM）へ触ると DetachedInstanceError になり得る。
-    # - そのため、外に持ち出すのは「job_id の整数」だけにする。
-    job_ids: list[int] = []
-    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-        rows = (
+    # - そのため、外に持ち出すのは「スナップショット(dict)」だけにする。
+    claimed: list[dict[str, Any]] = []
+    with memory_session_scope(str(embedding_preset_id), int(embedding_dimension)) as db:
+        q = (
             db.query(Job)
             .filter(Job.status == int(_JOB_PENDING))
             .filter(Job.run_after <= int(now_ts))
             .order_by(Job.run_after.asc(), Job.id.asc())
-            .limit(max_jobs_i)
-            .all()
         )
-        if not rows:
-            return False
 
-        # --- 仕事がある時だけ出す（無限ループでのログ氾濫を避ける） ---
-        logger.info(
-            "worker tick due_jobs=%s",
-            len(rows),
-            extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
-        )
+        # --- include_kinds があればその集合に絞る ---
+        if include_list is not None:
+            q = q.filter(Job.kind.in_(include_list))
+
+        # --- exclude_kinds があればその集合を除外する ---
+        if exclude_list is not None:
+            q = q.filter(~Job.kind.in_(exclude_list))
+
+        rows = q.limit(int(limit_i)).all()
+        if not rows:
+            return []
 
         # --- 実行対象を running にする（同時実行があっても二重処理を減らす） ---
         for j in rows:
             j.status = int(_JOB_RUNNING)
             j.updated_at = int(now_ts)
             db.add(j)
-            # --- with の外で使うのは id だけ ---
-            job_ids.append(int(j.id))
+            claimed.append({"job_id": int(j.id), "kind": str(j.kind or "").strip()})
 
-    # --- running にしたものを順番に処理する ---
-    ran_any = False
-    for job_id in job_ids:
-        ran_any = True
-        _run_one_job(
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            llm_client=llm_client,
-            job_id=int(job_id),
-        )
-
-    return ran_any
+    return claimed
 
 
 def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_client: LlmClient, job_id: int) -> None:
