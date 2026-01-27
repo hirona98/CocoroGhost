@@ -3,6 +3,7 @@
 
 提供する機能:
     - 現在の long_mood_state を、観測/デバッグ向けに取得する。
+    - 直近の event_affects（瞬間感情）を、観測/デバッグ向けに取得する。
 
 注意:
     - 運用前のため互換は付けない（仕様変更は許容）。
@@ -17,14 +18,21 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from cocoro_ghost import affect
+from cocoro_ghost import common_utils
 from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.deps import get_config_store_dep
-from cocoro_ghost.memory_models import State
+from cocoro_ghost.memory_models import Event, EventAffect, State
 from cocoro_ghost.time_utils import format_iso8601_local
 
 
 router = APIRouter(prefix="/mood", tags=["mood"])
+
+# --- デバッグ用: 直近event_affectの件数（固定） ---
+# NOTE:
+# - クエリパラメータで増減させると互換や運用が複雑になるため、サーバ側で固定する。
+# - まずは「直近の揺れ」を見る用途なので、少数（例: 8）で十分。
+_RECENT_EVENT_AFFECTS_LIMIT = 8
 
 
 @router.get("/debug")
@@ -37,9 +45,10 @@ def get_mood_debug(
     仕様:
         - 認証: Bearer のみ（ルータ登録側で強制）
         - embedding_preset_id: サーバのアクティブ設定を使用
-        - long_mood_state が無い場合: 200 + { "mood": null }
+        - long_mood_state が無い場合: 200 + { "mood": null, "recent_affects": [...], "limits": {...} }
         - memory_enabled=false の場合: 503
         - shock_vad: now 時点で時間減衰した値を返す（dt_seconds を併記）
+        - recent_affects: 直近の event_affects（全source）を返す（events.searchable=1 のみ）
     """
 
     # --- 記憶機能が無効なら 503 ---
@@ -59,6 +68,50 @@ def get_mood_debug(
 
     # --- 記憶DBを開く ---
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        # --- 直近の瞬間感情（event_affects）を取る ---
+        # NOTE:
+        # - ここは「デバッグ表示」なので、本文の可読性と追跡可能性を優先する。
+        # - events.searchable=0（誤想起の分離等）は混ぜない（ノイズを避ける）。
+        recent_affects: list[dict[str, Any]] = []
+        rows = (
+            db.query(
+                EventAffect.id,
+                EventAffect.event_id,
+                Event.source,
+                Event.created_at,
+                EventAffect.created_at,
+                EventAffect.moment_affect_text,
+                EventAffect.moment_affect_labels_json,
+                EventAffect.vad_v,
+                EventAffect.vad_a,
+                EventAffect.vad_d,
+                EventAffect.confidence,
+                EventAffect.inner_thought_text,
+            )
+            .join(Event, Event.event_id == EventAffect.event_id)
+            .filter(Event.searchable == 1)
+            .order_by(EventAffect.created_at.desc(), EventAffect.id.desc())
+            .limit(int(_RECENT_EVENT_AFFECTS_LIMIT))
+            .all()
+        )
+        for r in rows:
+            if not r:
+                continue
+            recent_affects.append(
+                {
+                    "affect_id": int(r[0] or 0),
+                    "event_id": int(r[1] or 0),
+                    "event_source": str(r[2] or "").strip(),
+                    "event_created_at": format_iso8601_local(int(r[3] or 0)),
+                    "affect_created_at": format_iso8601_local(int(r[4] or 0)),
+                    "moment_affect_text": str(r[5] or ""),
+                    "moment_affect_labels": common_utils.parse_json_str_list(str(r[6] or "")),
+                    "vad": affect.vad_dict(float(r[7] or 0.0), float(r[8] or 0.0), float(r[9] or 0.0)),
+                    "confidence": float(r[10] or 0.0),
+                    "inner_thought_text": (str(r[11]) if r[11] is not None else None),
+                }
+            )
+
         st = (
             db.query(State)
             .filter(State.kind == "long_mood_state")
@@ -69,7 +122,11 @@ def get_mood_debug(
 
         # --- 未作成なら null ---
         if st is None:
-            return {"mood": None}
+            return {
+                "mood": None,
+                "recent_affects": list(recent_affects),
+                "limits": {"recent_affects_limit": int(_RECENT_EVENT_AFFECTS_LIMIT)},
+            }
 
         # --- payload_json を dict として扱う（壊れていても落とさない） ---
         payload_obj: Any = affect.parse_long_mood_payload(str(st.payload_json or ""))
@@ -124,6 +181,7 @@ def get_mood_debug(
                 "now": format_iso8601_local(int(now_ts)),
                 "dt_seconds": int(dt_seconds),
                 "last_confirmed_at": format_iso8601_local(int(st.last_confirmed_at)),
-            }
+            },
+            "recent_affects": list(recent_affects),
+            "limits": {"recent_affects_limit": int(_RECENT_EVENT_AFFECTS_LIMIT)},
         }
-
