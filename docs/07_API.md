@@ -620,6 +620,7 @@ Ghostプロセス自体の制御コマンド。
 
 - 運用前のため互換は付けない
 - 感情（VAD + 本文 + payload）と「shock減衰込みの現在値」を、1回のAPIで確認できるようにする
+- 直近の瞬間感情（event_affects）を併せて返し、moodの揺れの原因追跡をしやすくする
 
 ### `GET /api/mood/debug`
 
@@ -630,9 +631,10 @@ Ghostプロセス自体の制御コマンド。
 動作:
 
 - `embedding_preset_id` は **サーバのアクティブ設定**を使用する（クライアントからは受け取らない）
-- `long_mood_state` が存在しない場合は `mood: null` を返す
+- `long_mood_state` が存在しない場合は `mood: null` を返す（recent_affects は返す）
 - `shock_vad` は **読み出し時点（now）で時間減衰**させた値を返す
   - `dt_seconds = now_ts - last_confirmed_at` を用いる
+- `recent_affects` は `event_affects` を直近から固定件数返す（全source、ただし `events.searchable=1` のみ）
 
 レスポンス（成功）:
 
@@ -650,6 +652,23 @@ Ghostプロセス自体の制御コマンド。
     "now": "2026-01-10T14:06:59+09:00",
     "dt_seconds": 1019,
     "last_confirmed_at": "2026-01-10T13:50:00+09:00"
+  },
+  "recent_affects": [
+    {
+      "affect_id": 1,
+      "event_id": 456,
+      "event_source": "chat",
+      "event_created_at": "2026-01-10T13:50:00+09:00",
+      "affect_created_at": "2026-01-10T13:50:00+09:00",
+      "moment_affect_text": "string",
+      "moment_affect_labels": ["string"],
+      "vad": {"v": 0.0, "a": 0.0, "d": 0.0},
+      "confidence": 0.0,
+      "inner_thought_text": null
+    }
+  ],
+  "limits": {
+    "recent_affects_limit": 8
   }
 }
 ```
@@ -657,7 +676,13 @@ Ghostプロセス自体の制御コマンド。
 レスポンス（long_mood_state 未作成）:
 
 ```json
-{ "mood": null }
+{
+  "mood": null,
+  "recent_affects": [],
+  "limits": {
+    "recent_affects_limit": 8
+  }
+}
 ```
 
 エラー:
