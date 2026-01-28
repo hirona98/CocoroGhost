@@ -395,7 +395,16 @@ def update_long_mood(
         baseline_day_key = local_day_key(int(ts))
     else:
         new_day_key = local_day_key(int(ts))
+        # --- 既定: 日付が変わったときだけ差し替える（短期揺れを抑える） ---
         if new_day_key != str(baseline_day_key or "") and candidate:
+            baseline_text = candidate[:600]
+            baseline_day_key = new_day_key
+        # --- 例外: 本文が短すぎる場合は、同日でも本文案で底上げする ---
+        # NOTE:
+        # - long_mood_state は返答生成へ毎ターン注入されるため、短すぎる本文はトーンへの寄与が弱くなりやすい。
+        # - 一方で、毎ターン差し替えると「背景」が短期イベントに引っ張られやすい。
+        # - ここでは「最低限の分量」を満たすための救済として、短い場合だけ同日更新を許可する。
+        elif candidate and len(str(baseline_text)) < 80:
             baseline_text = candidate[:600]
             baseline_day_key = new_day_key
 
