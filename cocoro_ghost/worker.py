@@ -229,12 +229,6 @@ def _build_event_affect_embedding_text(aff: EventAffect) -> str:
         parts.append("")
         parts.append(f"【ラベル】 {', '.join(labels[:6])}")
 
-    # --- inner_thought_text ---
-    it = common_utils.strip_face_tags(str(aff.inner_thought_text or "").strip())
-    if it:
-        parts.append("")
-        parts.append(f"【内心】 {it}")
-
     # --- VAD ---
     parts.append("")
     parts.append(f"(vad v={float(aff.vad_v):.3f} a={float(aff.vad_a):.3f} d={float(aff.vad_d):.3f})")
@@ -356,7 +350,6 @@ def _affect_row_to_json(aff: EventAffect) -> dict[str, Any]:
         "created_at": int(aff.created_at),
         "moment_affect_text": str(aff.moment_affect_text),
         "moment_affect_labels_json": str(aff.moment_affect_labels_json),
-        "inner_thought_text": (str(aff.inner_thought_text) if aff.inner_thought_text is not None else None),
         "vad_v": float(aff.vad_v),
         "vad_a": float(aff.vad_a),
         "vad_d": float(aff.vad_d),
@@ -1089,7 +1082,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 )
             )
 
-        # --- event_affect（瞬間的な感情/内心） ---
+        # --- event_affect（瞬間的な感情） ---
         ea = plan.get("event_affect") if isinstance(plan, dict) else None
         if isinstance(ea, dict):
             moment_text = common_utils.strip_face_tags(str(ea.get("moment_affect_text") or "").strip())
@@ -1097,11 +1090,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 score = ea.get("moment_affect_score_vad") if isinstance(ea.get("moment_affect_score_vad"), dict) else {}
                 conf = float(ea.get("moment_affect_confidence") or 0.0)
                 labels = affect.sanitize_moment_affect_labels(ea.get("moment_affect_labels"))
-                inner = ea.get("inner_thought_text")
-                inner_text_raw = str(inner).strip() if inner is not None and str(inner).strip() else None
-                inner_text = (
-                    common_utils.strip_face_tags(inner_text_raw) if inner_text_raw is not None else None
-                ) or None
 
                 # --- LongMoodState 更新用のメモ（保存の成否に依存しない入力） ---
                 moment_vad = affect.vad_dict(score.get("v"), score.get("a"), score.get("d"))
@@ -1121,7 +1109,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         created_at=int(base_ts),
                         moment_affect_text=str(moment_text),
                         moment_affect_labels_json=common_utils.json_dumps(labels),
-                        inner_thought_text=inner_text,
                         vad_v=affect.clamp_vad(score.get("v")),
                         vad_a=affect.clamp_vad(score.get("a")),
                         vad_d=affect.clamp_vad(score.get("d")),
@@ -1142,7 +1129,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     before = _affect_row_to_json(existing)
                     existing.moment_affect_text = str(moment_text)
                     existing.moment_affect_labels_json = common_utils.json_dumps(labels)
-                    existing.inner_thought_text = inner_text
                     existing.vad_v = affect.clamp_vad(score.get("v"))
                     existing.vad_a = affect.clamp_vad(score.get("a"))
                     existing.vad_d = affect.clamp_vad(score.get("d"))

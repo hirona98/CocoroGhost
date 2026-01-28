@@ -663,8 +663,7 @@ Ghostプロセス自体の制御コマンド。
       "moment_affect_text": "string",
       "moment_affect_labels": ["string"],
       "vad": {"v": 0.0, "a": 0.0, "d": 0.0},
-      "confidence": 0.0,
-      "inner_thought_text": null
+      "confidence": 0.0
     }
   ],
   "limits": {

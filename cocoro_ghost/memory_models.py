@@ -177,7 +177,7 @@ class EventThread(MemoryBase):
 
 
 class EventAffect(MemoryBase):
-    """瞬間的な感情/内心（イベントごと）。
+    """瞬間的な感情（イベントごと）。
 
     - VADは v/a/d 各軸 -1.0..+1.0 を前提に保存する
     - 推定/明示のどちらにも対応するため confidence を持つ
@@ -195,7 +195,6 @@ class EventAffect(MemoryBase):
     # --- 表現 ---
     moment_affect_text: Mapped[str] = mapped_column(Text, nullable=False)
     moment_affect_labels_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    inner_thought_text: Mapped[Optional[str]] = mapped_column(Text)
 
     # --- 数値（VAD） ---
     vad_v: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)

@@ -1358,11 +1358,6 @@ class _ChatSearchMixin:
                                 ),
                                 "moment_affect_text": common_utils.strip_face_tags(str(a.moment_affect_text or ""))[:600],
                                 "moment_affect_labels": common_utils.parse_json_str_list(getattr(a, "moment_affect_labels_json", None))[:6],
-                                "inner_thought_text": (
-                                    common_utils.strip_face_tags(str(a.inner_thought_text))[:600]
-                                    if a.inner_thought_text is not None
-                                    else None
-                                ),
                                 "vad": {"v": float(a.vad_v), "a": float(a.vad_a), "d": float(a.vad_d)},
                                 "confidence": float(a.confidence),
                             },

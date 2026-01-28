@@ -86,7 +86,6 @@ def get_mood_debug(
                 EventAffect.vad_a,
                 EventAffect.vad_d,
                 EventAffect.confidence,
-                EventAffect.inner_thought_text,
             )
             .join(Event, Event.event_id == EventAffect.event_id)
             .filter(Event.searchable == 1)
@@ -108,7 +107,6 @@ def get_mood_debug(
                     "moment_affect_labels": common_utils.parse_json_str_list(str(r[6] or "")),
                     "vad": affect.vad_dict(float(r[7] or 0.0), float(r[8] or 0.0), float(r[9] or 0.0)),
                     "confidence": float(r[10] or 0.0),
-                    "inner_thought_text": (str(r[11]) if r[11] is not None else None),
                 }
             )
 

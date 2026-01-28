@@ -277,7 +277,7 @@
 ### 感情
 
 - `long_mood_state`: 長期的な感情（`state` テーブルの `kind="long_mood_state"` として保存）
-- `event_affects`: 瞬間的な感情/内心（専用テーブル、イベントごと）
+- `event_affects`: 瞬間的な感情（専用テーブル、イベントごと）
 
 #### `event_affects` テーブル
 
@@ -288,7 +288,6 @@
 | created_at | INTEGER | 作成時刻（UTC UNIX秒） |
 | moment_affect_text | TEXT | 瞬間感情のテキスト表現 |
 | moment_affect_labels_json | TEXT | 感情ラベル（JSON配列。WritePlanの `moment_affect_labels` をJSON化して保存） |
-| inner_thought_text | TEXT | 内心メモ（NULL可） |
 | vad_v | REAL | 快・不快（-1.0〜+1.0） |
 | vad_a | REAL | 覚醒（-1.0〜+1.0） |
 | vad_d | REAL | 主導（-1.0〜+1.0） |
@@ -313,7 +312,7 @@
 |------|-----|------|------|
 | 1 | `_VEC_KIND_EVENT` | `events` | 出来事ログ本文 |
 | 2 | `_VEC_KIND_STATE` | `state` | 状態本文（fact/relation/task/summary/long_mood_state） |
-| 3 | `_VEC_KIND_EVENT_AFFECT` | `event_affects` | 瞬間感情/内心 |
+| 3 | `_VEC_KIND_EVENT_AFFECT` | `event_affects` | 瞬間感情 |
 
 `item_id` の計算: `kind * 10,000,000,000 + entity_id`
 
