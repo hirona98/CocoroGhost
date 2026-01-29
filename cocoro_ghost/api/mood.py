@@ -171,7 +171,6 @@ def get_mood_debug(
                 "state_id": int(st.state_id),
                 "body_text": str(st.body_text),
                 "confidence": float(st.confidence),
-                "salience": float(st.salience),
                 "payload": payload_obj,
                 "baseline_vad": baseline_vad,
                 "shock_vad": shock_decayed,

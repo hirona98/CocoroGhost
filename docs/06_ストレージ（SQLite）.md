@@ -183,7 +183,7 @@
 
 - `valid_from_ts` / `valid_to_ts`（並存のための有効期間）
 - `last_confirmed_at`（最近性）
-- `confidence` / `salience`（検索順位に使える）
+- `confidence`（確信度。将来的な足切り/優先度に使える）
 - `searchable`（検索対象フラグ、誤想起の分離で0になる）
 
 ### `state_links`（state↔stateリンク）

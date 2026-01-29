@@ -296,7 +296,6 @@ def _state_row_to_json(st: State) -> dict[str, Any]:
         "payload_json": str(st.payload_json),
         "last_confirmed_at": int(st.last_confirmed_at),
         "confidence": float(st.confidence),
-        "salience": float(st.salience),
         "valid_from_ts": (int(st.valid_from_ts) if st.valid_from_ts is not None else None),
         "valid_to_ts": (int(st.valid_to_ts) if st.valid_to_ts is not None else None),
         "created_at": int(st.created_at),
@@ -1311,7 +1310,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 )
 
                 confidence = float(u.get("confidence") or 0.0)
-                salience = float(u.get("salience") or 0.0)
                 body_text = str(u.get("body_text") or "").strip()
                 payload_obj = u.get("payload") if isinstance(u.get("payload"), dict) else {}
 
@@ -1362,7 +1360,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                             payload_json=common_utils.json_dumps(payload_obj),
                             last_confirmed_at=int(last_confirmed_at_i),
                             confidence=float(confidence),
-                            salience=float(salience),
                             valid_from_ts=v_from,
                             valid_to_ts=v_to,
                             created_at=int(base_ts),
@@ -1387,7 +1384,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         existing.payload_json = common_utils.json_dumps(payload_obj)
                         existing.last_confirmed_at = int(last_confirmed_at_i)
                         existing.confidence = float(confidence)
-                        existing.salience = float(salience)
                         existing.valid_from_ts = v_from
                         existing.valid_to_ts = v_to
                         existing.updated_at = int(now_ts)
@@ -1562,7 +1558,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     payload_json=payload_new_json,
                     last_confirmed_at=int(update_result.last_confirmed_at),
                     confidence=float(update_result.confidence),
-                    salience=float(0.7),
                     valid_from_ts=None,
                     valid_to_ts=None,
                     created_at=int(base_ts),
@@ -1586,8 +1581,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 st.payload_json = payload_new_json
                 st.last_confirmed_at = int(update_result.last_confirmed_at)
                 st.confidence = float(update_result.confidence)
-                # NOTE: salience は固定でよい（長期気分は背景。検索の強さではなく注入で使う）。
-                st.salience = float(0.7)
                 st.valid_from_ts = None
                 st.valid_to_ts = None
                 st.updated_at = int(now_ts)

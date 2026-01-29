@@ -644,7 +644,6 @@ Ghostプロセス自体の制御コマンド。
     "state_id": 123,
     "body_text": "string",
     "confidence": 0.0,
-    "salience": 0.7,
     "payload": {},
     "baseline_vad": {"v": 0.0, "a": 0.0, "d": 0.0},
     "shock_vad": {"v": 0.0, "a": 0.0, "d": 0.0},
