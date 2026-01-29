@@ -258,7 +258,6 @@ class State(MemoryBase):
     # --- 最近性/品質 ---
     last_confirmed_at: Mapped[int] = mapped_column(Integer, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    salience: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     # --- 検索対象フラグ ---
     # NOTE:

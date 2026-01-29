@@ -763,7 +763,6 @@ class _ChatMemoryMixin:
                 "baseline_vad": baseline_vad,
                 "shock_vad": shock_decayed,
                 "confidence": float(st.confidence),
-                "salience": float(st.salience),
                 "last_confirmed_at": format_iso8601_local(int(st.last_confirmed_at)),
                 "valid_from_ts": (
                     format_iso8601_local(int(st.valid_from_ts)) if st.valid_from_ts is not None else None

@@ -162,7 +162,6 @@ def list_state(
                     "payload_json": r.payload_json,
                     "last_confirmed_at": int(r.last_confirmed_at),
                     "confidence": float(r.confidence),
-                    "salience": float(r.salience),
                     "valid_from_ts": r.valid_from_ts,
                     "valid_to_ts": r.valid_to_ts,
                     "created_at": int(r.created_at),
@@ -204,7 +203,6 @@ def get_state(
             "payload_json": r.payload_json,
             "last_confirmed_at": int(r.last_confirmed_at),
             "confidence": float(r.confidence),
-            "salience": float(r.salience),
             "valid_from_ts": r.valid_from_ts,
             "valid_to_ts": r.valid_to_ts,
             "created_at": int(r.created_at),
@@ -253,4 +251,3 @@ def list_state_revisions(
                 for r in rows
             ]
         }
-
