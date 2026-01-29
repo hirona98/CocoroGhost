@@ -11,6 +11,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import re
+import threading
 import time
 from typing import Any, Generator
 
@@ -32,6 +33,17 @@ from cocoro_ghost.time_utils import format_iso8601_local
 
 logger = logging.getLogger(__name__)
 _warned_memory_disabled = False
+
+# --- /api/chat 同時実行ガード ---
+#
+# 背景:
+# - CocoroConsole（WPF）と CocoroGhost WebUI の両方から /api/chat が呼ばれ得る。
+# - /api/chat は SSE で逐次返信するため、同時に複数走ると会話文脈が崩れやすく、UI側も破綻しやすい。
+#
+# 方針:
+# - 1ユーザー前提の設計に合わせ、プロセス内で「同時に1本」だけ許可する。
+# - 既に処理中の場合は、最も簡単な方法として SSE の `event:error` を返して終了する。
+_chat_inflight_lock = threading.Lock()
 
 # NOTE:
 # - 検索ヘルパー（FTSクエリ生成/画像要約パース）は `_chat_search_mixin.py` に集約した。
@@ -852,7 +864,46 @@ class _ChatMemoryMixin:
         )
 
     def stream_chat(self, request: schemas.ChatRequest, background_tasks: BackgroundTasks) -> Generator[str, None, None]:
-        """チャットをSSEで返す（出来事ログ作成→検索→ストリーム→非同期更新）。"""
+        """
+        チャットをSSEで返す（出来事ログ作成→検索→ストリーム→非同期更新）。
+
+        注意:
+            - WebUI/Console など複数経路から同時に /api/chat が呼ばれ得るため、
+              プロセス内で「同時に1本」だけ許可する。
+            - 多重送信を受けた場合は、最も簡単な方法として SSE の `event:error` を返して終了する。
+        """
+
+        # --- 同時実行ガード（WebUI/Consoleの二重送信を抑止） ---
+        # NOTE:
+        # - acquire が成功した場合は、generator の終了/切断時に finally で必ず解放される。
+        # - 既に処理中の場合は待たずに SSE error を返す（最短で終わらせる）。
+        if not _chat_inflight_lock.acquire(blocking=False):
+            yield _sse(
+                "error",
+                {
+                    "message": "他のチャット処理中です。応答が完了してから再送してください。",
+                    "code": "chat_busy",
+                },
+            )
+            return
+
+        try:
+            # --- 本体処理 ---
+            yield from self._stream_chat_unlocked(request=request, background_tasks=background_tasks)
+        finally:
+            # --- 解放（クライアント切断時も含めて必ず実行される） ---
+            _chat_inflight_lock.release()
+
+    def _stream_chat_unlocked(
+        self, request: schemas.ChatRequest, background_tasks: BackgroundTasks
+    ) -> Generator[str, None, None]:
+        """
+        チャットをSSEで返す（出来事ログ作成→検索→ストリーム→非同期更新）。
+
+        注意:
+            - 同時実行ガード（ロック）は呼び出し側（`stream_chat`）で行う。
+            - このメソッドは「本体処理」だけを担当する。
+        """
 
         # --- 設定を取得 ---
         cfg = self.config_store.config
