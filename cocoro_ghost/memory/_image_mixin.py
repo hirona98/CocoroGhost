@@ -10,11 +10,14 @@ memory配下: 画像（data URI）処理（mixin）
 from __future__ import annotations
 
 import base64
+import logging
 
 from fastapi import HTTPException, status
 
 from cocoro_ghost import schemas
 
+
+logger = logging.getLogger(__name__)
 
 _CHAT_ALLOWED_IMAGE_MIME_TYPES = {
     "image/png",
@@ -52,6 +55,7 @@ class _ImageMemoryMixin:
         valid_images_mimes: list[str] = []
         valid_images_index: list[int] = []
         valid_images_data_uris: list[str] = []
+        invalid_reasons: list[str] = []
 
         total_image_bytes = 0
         for idx, data_uri in enumerate(images_in):
@@ -64,16 +68,51 @@ class _ImageMemoryMixin:
             # - 不正画像は「その画像だけ無視」して継続する（入力順の対応は維持）。
             # - ただしサイズ上限（1枚/合計）を超える場合は 400 を返す。
             try:
-                mime = schemas.data_uri_image_to_mime(data_uri)
-                b64 = schemas.data_uri_image_to_base64(data_uri)
-            except Exception:  # noqa: BLE001
+                mime, b64 = schemas.parse_data_uri_image(data_uri)
+            except ValueError as exc:
+                # --- data URI が壊れている場合は「その画像だけ無視」する ---
+                # NOTE: base64 本文は長く機微になり得るため、ログには出さない。
+                invalid_reasons.append("invalid_data_uri")
+                logger.warning(
+                    "invalid image data uri ignored purpose=%s index=%s len=%s error=%s",
+                    str(purpose),
+                    int(idx),
+                    len(str(data_uri or "")),
+                    str(exc),
+                )
+                continue
+            except Exception as exc:  # noqa: BLE001
+                # --- 予期しない例外も「その画像だけ無視」し、必ずログに残す ---
+                invalid_reasons.append("unexpected_parse_error")
+                logger.exception(
+                    "unexpected error while parsing image data uri ignored purpose=%s index=%s len=%s error=%s",
+                    str(purpose),
+                    int(idx),
+                    len(str(data_uri or "")),
+                    str(exc),
+                )
                 continue
 
             if mime not in _CHAT_ALLOWED_IMAGE_MIME_TYPES:
+                invalid_reasons.append("mime_not_allowed")
+                logger.warning(
+                    "image mime not allowed ignored purpose=%s index=%s mime=%s",
+                    str(purpose),
+                    int(idx),
+                    str(mime),
+                )
                 continue
             try:
                 image_bytes = base64.b64decode(b64)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                invalid_reasons.append("base64_decode_failed")
+                logger.warning(
+                    "image base64 decode failed ignored purpose=%s index=%s mime=%s error=%s",
+                    str(purpose),
+                    int(idx),
+                    str(mime),
+                    str(exc),
+                )
                 continue
 
             # --- サイズ上限（1枚） ---
@@ -99,6 +138,21 @@ class _ImageMemoryMixin:
             # NOTE: クライアント配信用に、空白除去済みbase64へ正規化したdata URIを採用する。
             valid_images_data_uris.append(f"data:{mime};base64,{b64}")
 
+        # --- 画像が渡されたのに、有効画像が0枚の場合は異常としてログする ---
+        # NOTE:
+        # - 仕様上は「不正画像はその画像だけ無視して継続」だが、
+        #   全滅はユーザー体験として異常なので観測できるようにする。
+        if images_in and not valid_images_bytes:
+            reason_stats: dict[str, int] = {}
+            for r in invalid_reasons:
+                reason_stats[r] = int(reason_stats.get(r, 0)) + 1
+            logger.warning(
+                "no valid images received purpose=%s images_count=%s reasons=%s",
+                str(purpose),
+                len(images_in),
+                reason_stats,
+            )
+
         # --- 画像要約（詳細）を作る（画像ごと、最大400文字） ---
         # NOTE:
         # - 画像そのものは保存しない（永続化しない）
@@ -116,6 +170,17 @@ class _ImageMemoryMixin:
                 )
                 for idx2, summary in zip(valid_images_index, summaries_valid, strict=False):
                     image_summaries[int(idx2)] = str(summary or "").strip()
+
+        # --- 有効画像があるのに要約が全て空なら、Vision側の失敗としてログする ---
+        # NOTE:
+        # - best_effort=True のため、Vision失敗は "" で埋まって処理が継続する。
+        # - ここで検出し、後から追えるようにする。
+        if valid_images_bytes and not any(str(s or "").strip() for s in (image_summaries or [])):
+            logger.warning(
+                "image summary generation produced empty summaries purpose=%s valid_images_count=%s",
+                str(purpose),
+                len(valid_images_bytes),
+            )
 
         has_valid = any(b is not None for b in images_bytes_by_index)
         return (image_summaries, bool(has_valid), list(valid_images_data_uris))
