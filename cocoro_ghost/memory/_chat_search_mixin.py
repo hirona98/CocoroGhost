@@ -177,7 +177,7 @@ class _ChatSearchMixin:
         # NOTE:
         # - event_affect は「トーン調整」の補助。候補を食い過ぎると本筋（state/event）の候補が減りやすい。
         # - ここは「最大割合」で縛るだけ（= 上限キャップ）。無理に最低件数を確保するとノイズが混ざりやすいので行わない。
-        #   - 例: retrieval_max_candidates=80, retrieval_event_affect_max_percent=5 の場合、event_affect は最大4件まで。
+        #   - 例: retrieval_max_candidates=60, retrieval_event_affect_max_percent=5 の場合、event_affect は最大3件まで。
         #   - 0% にすると、event_affect は候補に入らない（= トーン調整を候補で行わない）。
         affect_max_percent = max(0, min(100, int(tc.retrieval_event_affect_max_percent)))
         affect_cap = int(math.floor(float(cap) * (float(affect_max_percent) / 100.0)))
