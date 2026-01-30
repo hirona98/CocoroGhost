@@ -136,6 +136,17 @@
     chatScroll.scrollTop = chatScroll.scrollHeight;
   }
 
+  // --- Chat timestamp helpers ---
+  /**
+   * Date を "HH:MM"（ローカル時刻）に整形する。
+   */
+  function formatTimeHHmm(date) {
+    const d = date instanceof Date ? date : new Date();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+
   function createBubbleRow(kind) {
     // --- bubble row aligns left/right like the reference UI ---
     const row = document.createElement("div");
@@ -150,10 +161,28 @@
     return bubble;
   }
 
+  function createBubbleTimeLabel(tsMs) {
+    // --- LINE風に、吹き出しの隣へ小さく時刻を付ける ---
+    const label = document.createElement("span");
+    label.className = "bubble-time";
+    label.textContent = formatTimeHHmm(new Date(Number(tsMs || Date.now())));
+    return label;
+  }
+
   function appendBubble(kind, text) {
     const row = createBubbleRow(kind);
     const bubble = createBubble(kind, text);
-    row.appendChild(bubble);
+    const timeLabel = createBubbleTimeLabel(Date.now());
+
+    // --- user/ai で時刻の位置を入れ替える（LINEっぽい配置） ---
+    if (kind === "user") {
+      row.appendChild(timeLabel);
+      row.appendChild(bubble);
+    } else {
+      row.appendChild(bubble);
+      row.appendChild(timeLabel);
+    }
+
     chatScroll.appendChild(row);
     scrollToBottom();
     return bubble;
