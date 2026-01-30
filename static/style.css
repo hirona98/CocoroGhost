@@ -502,6 +502,42 @@ body {
   margin-top: 10px;
 }
 
+.camera-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.camera-zoom {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.camera-zoom-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.camera-zoom-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.camera-zoom-value {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.camera-zoom-slider {
+  width: 100%;
+  margin-top: 6px;
+}
+
 .camera-btn {
   height: 36px;
   padding: 0 14px;

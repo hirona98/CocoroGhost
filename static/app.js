@@ -54,6 +54,10 @@
   const cameraCancelButton = document.getElementById("btn-camera-cancel");
   const cameraShotButton = document.getElementById("btn-camera-shot");
   const cameraStatus = document.getElementById("camera-status");
+  const cameraFlipButton = document.getElementById("btn-camera-flip");
+  const cameraZoomWrap = document.getElementById("camera-zoom");
+  const cameraZoomSlider = document.getElementById("camera-zoom-slider");
+  const cameraZoomValue = document.getElementById("camera-zoom-value");
 
   // --- State ---
   /** @type {WebSocket|null} */
@@ -78,6 +82,14 @@
   let cameraStream = null;
   /** @type {boolean} */
   let cameraOpening = false;
+  /** @type {"environment"|"user"} */
+  let cameraFacingMode = "environment";
+  /** @type {MediaStreamTrack|null} */
+  let cameraVideoTrack = null;
+  /** @type {{min:number,max:number,step:number,default:number}|null} */
+  let cameraZoomCaps = null;
+  /** @type {number|null} */
+  let cameraZoomRafId = null;
 
   // --- Mobile viewport (keyboard) ---
   /**
@@ -315,6 +327,76 @@
   }
 
   /**
+   * ズームUIを初期化する（非対応なら隠す）。
+   */
+  function initCameraZoomUiFromTrack(track) {
+    cameraVideoTrack = track || null;
+    cameraZoomCaps = null;
+
+    if (!cameraZoomWrap || !cameraZoomSlider || !cameraZoomValue) return;
+
+    // --- 既定では隠す ---
+    cameraZoomWrap.classList.add("hidden");
+
+    // --- Capabilities 取得 ---
+    if (!track || typeof track.getCapabilities !== "function") return;
+    const caps = track.getCapabilities();
+    if (!caps || typeof caps !== "object" || !("zoom" in caps)) return;
+
+    const zoom = caps.zoom;
+    const min = Number(zoom && zoom.min != null ? zoom.min : 1);
+    const max = Number(zoom && zoom.max != null ? zoom.max : 1);
+    const step = Number(zoom && zoom.step != null ? zoom.step : 0.1);
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return;
+
+    // --- Settings の現在値（可能なら反映） ---
+    let current = 1;
+    if (typeof track.getSettings === "function") {
+      const settings = track.getSettings();
+      if (settings && settings.zoom != null && Number.isFinite(Number(settings.zoom))) {
+        current = Number(settings.zoom);
+      }
+    }
+    current = Math.min(max, Math.max(min, current));
+
+    cameraZoomCaps = { min, max, step: step > 0 ? step : 0.1, default: current };
+
+    cameraZoomSlider.min = String(min);
+    cameraZoomSlider.max = String(max);
+    cameraZoomSlider.step = String(cameraZoomCaps.step);
+    cameraZoomSlider.value = String(current);
+    cameraZoomValue.textContent = `${current.toFixed(1)}×`;
+
+    // --- 対応しているときだけ表示 ---
+    cameraZoomWrap.classList.remove("hidden");
+  }
+
+  /**
+   * 現在の video track にズームを適用する。
+   */
+  async function applyCameraZoom(zoomValue) {
+    const track = cameraVideoTrack;
+    if (!track) return;
+    if (!cameraZoomCaps) return;
+    if (typeof track.applyConstraints !== "function") return;
+
+    const z = Number(zoomValue);
+    if (!Number.isFinite(z)) return;
+    const next = Math.min(cameraZoomCaps.max, Math.max(cameraZoomCaps.min, z));
+
+    // --- 可能なら標準の constraints を適用 ---
+    try {
+      await track.applyConstraints({ advanced: [{ zoom: next }] });
+      return;
+    } catch (_) {}
+
+    // --- 実装差分の吸収（advanced が効かない環境向け） ---
+    try {
+      await track.applyConstraints({ zoom: next });
+    } catch (_) {}
+  }
+
+  /**
    * カメラモーダルを開く（getUserMedia を開始し、video にストリームを貼る）。
    *
    * NOTE:
@@ -333,7 +415,7 @@
     const constraints = {
       audio: false,
       video: {
-        facingMode: { ideal: "environment" },
+        facingMode: { ideal: cameraFacingMode },
         width: { ideal: 1280 },
         height: { ideal: 720 },
       },
@@ -347,6 +429,14 @@
       try {
         await cameraVideo.play();
       } catch (_) {}
+
+      // --- ズームUI（対応していれば表示） ---
+      try {
+        const track = cameraStream.getVideoTracks && cameraStream.getVideoTracks()[0];
+        initCameraZoomUiFromTrack(track || null);
+      } catch (_) {
+        initCameraZoomUiFromTrack(null);
+      }
 
       setCameraStatus("", false);
     } catch (error) {
@@ -362,6 +452,11 @@
    * カメラモーダルを閉じる（ストリームを停止してリソースを解放）。
    */
   function closeCameraModal() {
+    // --- ズーム関連の state をリセット ---
+    cameraVideoTrack = null;
+    cameraZoomCaps = null;
+    if (cameraZoomWrap) cameraZoomWrap.classList.add("hidden");
+
     if (cameraVideo) {
       try {
         cameraVideo.pause();
@@ -1125,6 +1220,44 @@
       } finally {
         cameraShotButton.disabled = false;
       }
+    });
+  }
+
+  // --- Camera controls (flip/zoom) ---
+  if (cameraFlipButton) {
+    cameraFlipButton.addEventListener("click", async () => {
+      if (!cameraModal || cameraModal.classList.contains("hidden")) return;
+      if (!canUseGetUserMedia()) return;
+      if (cameraOpening) return;
+
+      // --- イン/アウト切替（実際は facingMode を切り替えて再起動） ---
+      cameraFacingMode = cameraFacingMode === "environment" ? "user" : "environment";
+      setCameraStatus("カメラ切替中...", false);
+
+      try {
+        closeCameraModal();
+        await openCameraModalWithPreview();
+      } catch (_) {
+        // --- 失敗した場合は capture input にフォールバック ---
+        try {
+          cameraInput.click();
+        } catch (_) {}
+      }
+    });
+  }
+
+  if (cameraZoomSlider) {
+    cameraZoomSlider.addEventListener("input", () => {
+      if (!cameraZoomValue) return;
+      const v = Number(cameraZoomSlider.value);
+      if (Number.isFinite(v)) cameraZoomValue.textContent = `${v.toFixed(1)}×`;
+
+      // --- input 連打を軽く間引く ---
+      if (cameraZoomRafId != null) return;
+      cameraZoomRafId = requestAnimationFrame(async () => {
+        cameraZoomRafId = null;
+        await applyCameraZoom(Number(cameraZoomSlider.value));
+      });
     });
   }
 
