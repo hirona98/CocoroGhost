@@ -141,11 +141,21 @@
     </div>
 
     <!-- Camera modal -->
-    <div id="camera-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="カメラ">
+      <div id="camera-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="カメラ">
       <div class="modal-backdrop"></div>
       <div class="camera-sheet">
         <div class="camera-preview">
           <video id="camera-video" class="camera-video" playsinline autoplay muted></video>
+        </div>
+        <div class="camera-controls">
+          <button id="btn-camera-flip" class="camera-btn secondary" type="button">イン/アウト</button>
+          <div id="camera-zoom" class="camera-zoom hidden" aria-label="ズーム">
+            <div class="camera-zoom-row">
+              <span class="camera-zoom-label">ズーム</span>
+              <span id="camera-zoom-value" class="camera-zoom-value">1.0×</span>
+            </div>
+            <input id="camera-zoom-slider" class="camera-zoom-slider" type="range" min="1" max="1" step="0.1" value="1" />
+          </div>
         </div>
         <div class="camera-actions">
           <button id="btn-camera-cancel" class="camera-btn secondary" type="button">キャンセル</button>
