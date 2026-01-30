@@ -144,11 +144,17 @@
       <div id="camera-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="カメラ">
       <div class="modal-backdrop"></div>
       <div class="camera-sheet">
-        <div class="camera-preview">
+        <div id="camera-preview" class="camera-preview">
           <video id="camera-video" class="camera-video" playsinline autoplay muted></video>
         </div>
         <div class="camera-controls">
           <button id="btn-camera-flip" class="camera-btn secondary" type="button">イン/アウト</button>
+          <div class="camera-ratios" aria-label="比率">
+            <button class="ratio-btn" id="btn-ratio-3x4" type="button" data-ratio="3:4">3:4</button>
+            <button class="ratio-btn" id="btn-ratio-1x1" type="button" data-ratio="1:1">1:1</button>
+            <button class="ratio-btn" id="btn-ratio-4x3" type="button" data-ratio="4:3">4:3</button>
+            <button class="ratio-btn" id="btn-ratio-16x9" type="button" data-ratio="16:9">16:9</button>
+          </div>
           <div id="camera-zoom" class="camera-zoom hidden" aria-label="ズーム">
             <div class="camera-zoom-row">
               <span class="camera-zoom-label">ズーム</span>

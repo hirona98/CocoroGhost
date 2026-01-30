@@ -480,8 +480,6 @@ body {
 
 .camera-preview {
   width: 100%;
-  /* --- カメラの見た目は縦長寄り（スマホ撮影の直感に合わせる） --- */
-  aspect-ratio: 3 / 4;
   max-height: 62vh;
   border-radius: 12px;
   overflow: hidden;
@@ -491,7 +489,8 @@ body {
 .camera-video {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* --- トリミングしない（比率が合わない部分は余白になる） --- */
+  object-fit: contain;
   display: block;
 }
 
@@ -508,6 +507,32 @@ body {
   align-items: center;
   justify-content: space-between;
   margin-top: 10px;
+}
+
+.camera-ratios {
+  display: inline-flex;
+  gap: 6px;
+  flex: 1 1 auto;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.ratio-btn {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ratio-btn.selected {
+  border-color: var(--header);
+  color: var(--header);
+  background: #f6f8ff;
 }
 
 .camera-zoom {
@@ -573,9 +598,6 @@ body {
   /* --- デスクトップは中央寄せの方が自然 --- */
   .modal {
     align-items: center;
-  }
-  .camera-preview {
-    aspect-ratio: 4 / 3;
   }
 }
 
