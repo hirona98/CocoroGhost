@@ -59,6 +59,8 @@
   let wsReconnectEnabled = false;
   /** @type {number|null} */
   let wsReconnectTimerId = null;
+  /** @type {string[]} */
+  let attachmentPreviewObjectUrls = [];
 
   // --- Mobile viewport (keyboard) ---
   /**
@@ -187,8 +189,64 @@
    */
   function setBubbleTextFromRaw(bubble, rawText) {
     if (!bubble) return;
+    // --- 生テキストを保持 ---
     bubble.dataset.rawText = String(rawText || "");
-    bubble.textContent = sanitizeChatTextForDisplay(bubble.dataset.rawText);
+
+    // --- 子要素（テキスト領域）へ反映 ---
+    let textEl = bubble.querySelector(".bubble-text");
+    if (!textEl) {
+      textEl = document.createElement("div");
+      textEl.className = "bubble-text";
+      bubble.appendChild(textEl);
+    }
+    textEl.textContent = sanitizeChatTextForDisplay(bubble.dataset.rawText);
+
+    // --- テキストが空なら余白を減らす（画像だけのとき） ---
+    const hasText = !!String(textEl.textContent || "").trim();
+    textEl.classList.toggle("hidden", !hasText);
+  }
+
+  /**
+   * 吹き出しに画像プレビュー（data URI 等）を表示する。
+   *
+   * NOTE:
+   * - Web UI は履歴を永続化しない前提なので、data URI をそのままDOMに持たせてよい。
+   */
+  function setBubbleImages(bubble, imageSrcList) {
+    if (!bubble) return;
+
+    // --- 画像領域を確保 ---
+    let imagesEl = bubble.querySelector(".bubble-images");
+    if (!imagesEl) {
+      imagesEl = document.createElement("div");
+      imagesEl.className = "bubble-images";
+      bubble.appendChild(imagesEl);
+    }
+
+    // --- 一旦クリア ---
+    imagesEl.innerHTML = "";
+
+    const list = Array.from(imageSrcList || []).filter((x) => String(x || "").trim());
+    if (!list.length) {
+      imagesEl.classList.add("hidden");
+      return;
+    }
+
+    imagesEl.classList.remove("hidden");
+
+    // --- サムネイルを追加 ---
+    for (const src of list) {
+      const img = document.createElement("img");
+      img.className = "bubble-image";
+      img.alt = "image";
+      img.src = String(src);
+      img.loading = "lazy";
+
+      // NOTE:
+      // - data URI を新規ウィンドウで開こうとすると、環境によってポップアップブロックされやすい。
+      // - クリックで何も起きなくてよいので、リンクにはせず画像として表示する。
+      imagesEl.appendChild(img);
+    }
   }
 
   // --- UI helpers ---
@@ -282,7 +340,9 @@
   function appendBubble(kind, text, options) {
     // --- options ---
     // - timestampMs: 時刻（ms）。null の場合は未表示（後で更新する）
+    // - images: data URI 等の画像配列（バブル内にプレビュー表示）
     const timestampMs = options && Object.prototype.hasOwnProperty.call(options, "timestampMs") ? options.timestampMs : Date.now();
+    const images = options && Object.prototype.hasOwnProperty.call(options, "images") ? options.images : null;
 
     const row = createBubbleRow(kind);
     const bubble = createBubble(kind, text);
@@ -299,6 +359,12 @@
 
     chatScroll.appendChild(row);
     scrollToBottom();
+
+    // --- 画像（任意） ---
+    if (images && Array.isArray(images) && images.length) {
+      setBubbleImages(bubble, images);
+    }
+
     return bubble;
   }
 
@@ -454,19 +520,110 @@
   }
 
   // --- Attachments ---
+  /**
+   * file input の FileList を置き換える（個別削除のため）。
+   *
+   * NOTE:
+   * - ブラウザによっては `input.files` の代入を拒否するため、その場合は false を返す。
+   */
+  function trySetFileInputFiles(filesArray) {
+    try {
+      const dt = new DataTransfer();
+      for (const f of Array.from(filesArray || [])) {
+        dt.items.add(f);
+      }
+      fileInput.files = dt.files;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function removeAttachmentAtIndex(index) {
+    // --- 現在の選択ファイルを配列化 ---
+    const files = Array.from(fileInput.files || []);
+    const i = Number(index);
+    if (!Number.isFinite(i) || i < 0 || i >= files.length) return;
+
+    // --- 指定要素を除外 ---
+    const next = files.filter((_, idx) => idx !== i);
+
+    // --- 0件ならクリア ---
+    if (!next.length) {
+      fileInput.value = "";
+      renderAttachments([]);
+      refreshSendButtonEnabled();
+      return;
+    }
+
+    // --- 置き換え（不可なら全クリアにフォールバック） ---
+    if (!trySetFileInputFiles(next)) {
+      fileInput.value = "";
+      renderAttachments([]);
+      refreshSendButtonEnabled();
+      return;
+    }
+
+    // --- UI反映 ---
+    renderAttachments(fileInput.files);
+    refreshSendButtonEnabled();
+  }
+
+  function revokeAttachmentPreviewObjectUrls() {
+    // --- 以前の objectURL を解放する（選び直し時のリーク防止） ---
+    const urls = Array.from(attachmentPreviewObjectUrls || []);
+    attachmentPreviewObjectUrls = [];
+    for (const u of urls) {
+      try {
+        URL.revokeObjectURL(u);
+      } catch (_) {}
+    }
+  }
+
   function renderAttachments(selectedFiles) {
     // --- 画像が無いときは空にする（CSSの :empty で高さゼロになる） ---
     attachments.innerHTML = "";
+    revokeAttachmentPreviewObjectUrls();
 
     const files = Array.from(selectedFiles || []);
     if (!files.length) return;
 
-    // --- 画像名だけ簡易表示（UI上の識別用） ---
+    // --- 画像プレビュー（LINE風） ---
     for (const file of files) {
-      const chip = document.createElement("div");
-      chip.className = "chip";
-      chip.textContent = String(file && file.name ? file.name : "image");
-      attachments.appendChild(chip);
+      if (!file || !String(file.type || "").startsWith("image/")) {
+        continue;
+      }
+
+      const url = URL.createObjectURL(file);
+      attachmentPreviewObjectUrls.push(url);
+
+      const item = document.createElement("div");
+      item.className = "attachment";
+
+      const thumbWrap = document.createElement("div");
+      thumbWrap.className = "attachment-thumb-wrap";
+
+      const img = document.createElement("img");
+      img.className = "attachment-thumb";
+      img.alt = String(file && file.name ? file.name : "image");
+      img.src = url;
+      img.loading = "lazy";
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "attachment-remove";
+      removeBtn.setAttribute("aria-label", "添付を削除");
+      removeBtn.textContent = "×";
+      removeBtn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        removeAttachmentAtIndex(files.indexOf(file));
+      });
+
+      thumbWrap.appendChild(img);
+      item.appendChild(thumbWrap);
+      item.appendChild(removeBtn);
+      attachments.appendChild(item);
     }
   }
 
@@ -577,11 +734,13 @@
     if (chatAbortController) return;
 
     const messageText = String(textInput.value || "").trim();
-    const selectedFiles = fileInput.files;
+    // NOTE: fileInput.value を変更しても送信に影響しないよう、ここで配列化して保持する。
+    const selectedFileArray = Array.from(fileInput.files || []);
 
     // --- User bubble (text or [画像]) ---
-    const userLabel = messageText || (selectedFiles && selectedFiles.length ? "[画像]" : "");
-    if (userLabel) appendBubble("user", userLabel);
+    const hasFiles = selectedFileArray.length > 0;
+    const userBubbleText = messageText || "";
+    const userBubble = appendBubble("user", userBubbleText || (hasFiles ? "" : ""), { timestampMs: Date.now() });
 
     // --- 入力欄は送信時点でクリア（応答待ちの間に残さない） ---
     // NOTE:
@@ -593,10 +752,21 @@
     // --- Images to Data URIs ---
     let images = [];
     try {
-      images = await filesToDataUris(selectedFiles);
+      images = await filesToDataUris(selectedFileArray);
     } catch (error) {
       setStatusBar("状態: 送信失敗", String(error && error.message ? error.message : error));
       return;
+    }
+
+    // --- 送信が確定したら、入力欄側の添付は消す（プレビューも含む） ---
+    fileInput.value = "";
+    renderAttachments([]);
+    refreshSendButtonEnabled();
+
+    // --- 送信後もバブル内に画像プレビューを残す（data URI で保持） ---
+    if (userBubble && images && images.length) {
+      setBubbleImages(userBubble, images);
+      scrollToBottom();
     }
 
     // --- Prepare ---
@@ -687,14 +857,12 @@
       }
     } finally {
       // --- Clear inputs ---
-      textInput.value = "";
-      fileInput.value = "";
-      renderAttachments([]);
       autoResizeTextarea();
 
       // --- Reset state ---
       chatAbortController = null;
       inflightAssistantBubble = null;
+      revokeAttachmentPreviewObjectUrls();
       refreshSendButtonEnabled();
     }
   }
