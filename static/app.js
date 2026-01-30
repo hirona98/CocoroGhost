@@ -147,6 +147,25 @@
     return `${hh}:${mm}`;
   }
 
+  /**
+   * 吹き出しの時刻ラベルを更新する。
+   *
+   * 目的:
+   * - 送信直後のプレースホルダー（応答中…）には時刻を出さず、
+   *   実際に応答を受信した瞬間の時刻を表示する（LINE風）。
+   */
+  function setBubbleTimeFromTs(bubble, tsMs) {
+    if (!bubble) return;
+    const row = bubble.closest(".bubble-row");
+    if (!row) return;
+
+    const label = row.querySelector(".bubble-time");
+    if (!label) return;
+
+    label.textContent = formatTimeHHmm(new Date(Number(tsMs || Date.now())));
+    label.classList.remove("empty");
+  }
+
   function createBubbleRow(kind) {
     // --- bubble row aligns left/right like the reference UI ---
     const row = document.createElement("div");
@@ -165,14 +184,25 @@
     // --- LINE風に、吹き出しの隣へ小さく時刻を付ける ---
     const label = document.createElement("span");
     label.className = "bubble-time";
+    if (tsMs == null) {
+      // --- プレースホルダー等: 時刻未確定（受信時刻で上書きする） ---
+      label.textContent = "";
+      label.classList.add("empty");
+      return label;
+    }
+
     label.textContent = formatTimeHHmm(new Date(Number(tsMs || Date.now())));
     return label;
   }
 
-  function appendBubble(kind, text) {
+  function appendBubble(kind, text, options) {
+    // --- options ---
+    // - timestampMs: 時刻（ms）。null の場合は未表示（後で更新する）
+    const timestampMs = options && Object.prototype.hasOwnProperty.call(options, "timestampMs") ? options.timestampMs : Date.now();
+
     const row = createBubbleRow(kind);
     const bubble = createBubble(kind, text);
-    const timeLabel = createBubbleTimeLabel(Date.now());
+    const timeLabel = createBubbleTimeLabel(timestampMs);
 
     // --- user/ai で時刻の位置を入れ替える（LINEっぽい配置） ---
     if (kind === "user") {
@@ -469,6 +499,13 @@
     const userLabel = messageText || (selectedFiles && selectedFiles.length ? "[画像]" : "");
     if (userLabel) appendBubble("user", userLabel);
 
+    // --- 入力欄は送信時点でクリア（応答待ちの間に残さない） ---
+    // NOTE:
+    // - messageText は上で確保済み。
+    // - 画像（fileInput）は、送信失敗時に再送できるようここでは消さない（従来どおり finally でクリア）。
+    textInput.value = "";
+    autoResizeTextarea();
+
     // --- Images to Data URIs ---
     let images = [];
     try {
@@ -480,8 +517,11 @@
 
     // --- Prepare ---
     chatAbortController = new AbortController();
-    inflightAssistantBubble = appendBubble("ai", "");
-    setBubbleTextFromRaw(inflightAssistantBubble, "");
+    // --- 送信直後にプレースホルダーを出す（時刻は受信時に確定） ---
+    inflightAssistantBubble = appendBubble("ai", "応答中…", { timestampMs: null });
+    setBubbleTextFromRaw(inflightAssistantBubble, "応答中…");
+    // --- 応答本文の受信が始まったか（プレースホルダーを捨てるためのフラグ） ---
+    inflightAssistantBubble.dataset.hasRealContent = "0";
     setStatusBar("状態: 送信中...", "");
     refreshSendButtonEnabled();
 
@@ -503,9 +543,16 @@
       }
 
       await consumeSse(response.body, (eventName, data) => {
-        if (!inflightAssistantBubble) return;
-
         if (eventName === "token") {
+          if (!inflightAssistantBubble) return;
+
+          // --- 初回受信: プレースホルダーを本文に置き換え、時刻を確定する ---
+          if (String(inflightAssistantBubble.dataset.hasRealContent || "0") !== "1") {
+            inflightAssistantBubble.dataset.hasRealContent = "1";
+            setBubbleTextFromRaw(inflightAssistantBubble, "");
+            setBubbleTimeFromTs(inflightAssistantBubble, Date.now());
+          }
+
           // --- 生テキストへ追記して、表示はサニタイズして更新する ---
           const prevRaw = String(inflightAssistantBubble.dataset.rawText || "");
           const nextRaw = prevRaw + String(data.text || "");
@@ -516,6 +563,10 @@
 
         if (eventName === "error") {
           const msg = String(data.message || "error");
+          if (!inflightAssistantBubble) return;
+
+          // --- エラー受信時刻を確定する ---
+          setBubbleTimeFromTs(inflightAssistantBubble, Date.now());
           setBubbleTextFromRaw(inflightAssistantBubble, msg);
           inflightAssistantBubble = null;
           setStatusBar("状態: エラー", String(data.code || ""));
@@ -523,6 +574,22 @@
         }
 
         if (eventName === "done") {
+          if (!inflightAssistantBubble) return;
+
+          // --- token が来ないケースでも reply_text があるなら置き換える ---
+          const replyText = String(data.reply_text || "");
+          if (replyText) {
+            setBubbleTimeFromTs(inflightAssistantBubble, Date.now());
+            setBubbleTextFromRaw(inflightAssistantBubble, replyText);
+            inflightAssistantBubble = null;
+            setStatusBar("状態: 完了", "");
+            return;
+          }
+
+          // --- token で本文が入っているなら、時刻だけ確定して終了 ---
+          if (String(inflightAssistantBubble.dataset.hasRealContent || "0") === "1") {
+            setBubbleTimeFromTs(inflightAssistantBubble, Date.now());
+          }
           inflightAssistantBubble = null;
           setStatusBar("状態: 完了", "");
           return;

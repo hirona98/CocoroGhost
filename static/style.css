@@ -262,6 +262,11 @@ body {
   margin: 10px 0; /* bubble の margin と揃えて底を合わせる */
 }
 
+.bubble-time.empty {
+  /* --- プレースホルダー中は空文字で保持し、レイアウトは維持する（受信時に時刻が出る） --- */
+  visibility: hidden;
+}
+
 /* --- Input panel (CocoroUI.png 風) --- */
 /* --- Input panel (LINE/スマホアプリ風) --- */
 .composer {
