@@ -60,6 +60,90 @@
   /** @type {number|null} */
   let wsReconnectTimerId = null;
 
+  // --- Mobile viewport (keyboard) ---
+  /**
+   * モバイルのソフトキーボードで入力欄が隠れる問題に対処する。
+   *
+   * 背景:
+   * - iOS Safari では、キーボード表示中に layout viewport の高さが縮まず、
+   *   画面下部（composer/statusbar）がキーボードに隠れることがある。
+   *
+   * 方針:
+   * - VisualViewport API（あれば）で「見えている高さ」を取得し、CSS変数 --app-height に反映する。
+   * - app コンテナの height を --app-height に合わせることで、下部UIが可視領域に収まる。
+   */
+  function installMobileViewportHeightSync() {
+    const root = document.documentElement;
+    let rafId = null;
+
+    /**
+     * チャットが最下端付近にいるか（ユーザーが最下端で読んでいる状態か）を判定する。
+     *
+     * NOTE:
+     * - viewport の高さが変わると、最下端にいたのに少し上へ戻ることがある。
+     * - その場合だけ scrollToBottom() を当てて「最下端スティッキー」を実現する。
+     */
+    const isChatNearBottom = () => {
+      // --- チャット画面が表示されているときだけ対象 ---
+      if (panelChat.classList.contains("hidden")) return false;
+
+      // --- 末尾からの距離で判定（少しの誤差は許容） ---
+      const el = chatScroll;
+      const gap = Number(el.scrollHeight || 0) - Number(el.clientHeight || 0) - Number(el.scrollTop || 0);
+      return gap <= 12;
+    };
+
+    const updateNow = () => {
+      rafId = null;
+
+      // --- 変更前に「最下端だったか」を記録（変更で少し戻るのを防ぐ） ---
+      const shouldStickToBottom = isChatNearBottom();
+
+      const vv = window.visualViewport;
+      const height = vv && Number(vv.height) > 0 ? Number(vv.height) : Number(window.innerHeight || 0);
+      if (height > 0) {
+        root.style.setProperty("--app-height", `${Math.round(height)}px`);
+      }
+
+      // --- 最下端にいた場合は、レイアウト反映後に最下端へ戻す ---
+      if (shouldStickToBottom) {
+        requestAnimationFrame(() => {
+          scrollToBottom();
+        });
+      }
+    };
+
+    const scheduleUpdate = () => {
+      if (rafId != null) return;
+      rafId = requestAnimationFrame(updateNow);
+    };
+
+    // --- 初回 ---
+    scheduleUpdate();
+
+    // --- 画面回転/リサイズ ---
+    window.addEventListener("resize", scheduleUpdate, { passive: true });
+
+    // --- VisualViewport があれば、キーボード表示/スクロールも拾う ---
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", scheduleUpdate, { passive: true });
+      window.visualViewport.addEventListener("scroll", scheduleUpdate, { passive: true });
+    }
+
+    // --- フォーカス/ブラーでも追従（キーボード表示直後の遅延を吸収） ---
+    textInput.addEventListener("focus", () => {
+      scheduleUpdate();
+      setTimeout(() => {
+        scheduleUpdate();
+        scrollToBottom();
+      }, 50);
+    });
+    textInput.addEventListener("blur", () => {
+      scheduleUpdate();
+      setTimeout(scheduleUpdate, 50);
+    });
+  }
+
   // --- Text sanitizers ---
   /**
    * 会話装飾タグ（例: [face:Fun]）をUI表示向けに除去する。
@@ -688,6 +772,9 @@
 
   // --- Init ---
   (async () => {
+    // --- モバイルのキーボード対策（ログイン前でも必要） ---
+    installMobileViewportHeightSync();
+
     // --- まず自動ログインを試す（有効ならログイン画面を出さない） ---
     setLoginStatus("自動ログイン中...", false);
     const ok = await apiAutoLogin();
