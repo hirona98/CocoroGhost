@@ -54,7 +54,11 @@ body {
 
 /* --- App frame --- */
 .app {
-  height: 100%;
+  /* --- Mobile keyboard対応 ---
+     iOS Safari などでは、キーボード表示中に layout viewport が縮まず、
+     画面下部（入力欄）が隠れることがある。
+     JS 側で --app-height を visualViewport.height に追従させる。 */
+  height: var(--app-height, 100dvh);
   display: grid;
   grid-template-rows: auto 1fr auto auto;
 }
