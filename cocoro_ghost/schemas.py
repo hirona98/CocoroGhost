@@ -52,6 +52,30 @@ def data_uri_image_to_base64(data_uri: str) -> str:
     return b64
 
 
+def data_uri_image_to_mime(data_uri: str) -> str:
+    """
+    data URI（data:image/*;base64,...）からMIMEタイプ（例: image/png）だけを取り出して検証する。
+    無効な形式の場合はValueErrorを発生させる。
+    """
+    mime, _b64 = parse_data_uri_image(data_uri)
+    return mime
+
+
+def data_uri_image_to_bytes(data_uri: str) -> bytes:
+    """
+    data URI（data:image/*;base64,...）をbytesへデコードして返す。
+
+    Returns:
+        画像バイナリ（bytes）
+
+    無効な形式の場合はValueErrorを発生させる。
+    """
+    # --- 形式/base64の妥当性チェックは parse_data_uri_image で行う ---
+    _mime, b64 = parse_data_uri_image(data_uri)
+    # --- デコード本体（validate=True は上で済んでいる） ---
+    return base64.b64decode(b64)
+
+
 # --- チャット関連 ---
 
 
