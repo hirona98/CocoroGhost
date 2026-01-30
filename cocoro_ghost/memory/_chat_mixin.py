@@ -53,6 +53,54 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\n" + f"data: {common_utils.json_dumps(data)}\n\n"
 
 
+def _humanize_gap_seconds_jp(gap_seconds: int | None) -> str | None:
+    """
+    経過秒数を「会話向けの日本語ラベル」に整形する。
+
+    目的:
+        - 内部コンテキスト（TimeContext）に、人間が扱いやすい形（gap_text）を同梱する。
+        - 数値（秒）ではなく言語化された表現を渡し、本文の時間表現の整合性を上げる。
+
+    Args:
+        gap_seconds: 前回チャットからの経過秒数。
+
+    Returns:
+        例: "3分" / "1時間12分" / "20時間" / "1日3時間" など。
+        不明の場合は None。
+    """
+
+    # --- 不明なら None ---
+    if gap_seconds is None:
+        return None
+
+    # --- 0未満は 0 扱い（clock skew などの防御） ---
+    s = int(gap_seconds)
+    if s < 0:
+        s = 0
+
+    # --- 秒 ---
+    if s < 60:
+        return f"{s}秒"
+
+    # --- 分 ---
+    minutes = s // 60
+    if s < 60 * 60:
+        return f"{minutes}分"
+
+    # --- 時間（必要なら分も付ける） ---
+    hours = s // 3600
+    rem_minutes = (s % 3600) // 60
+    if s < 24 * 3600:
+        # NOTE: 0分は省略して簡潔にする。
+        return f"{hours}時間{rem_minutes}分" if rem_minutes else f"{hours}時間"
+
+    # --- 日（必要なら時間も付ける） ---
+    days = s // (24 * 3600)
+    rem_hours = (s % (24 * 3600)) // 3600
+    # NOTE: 0時間は省略して簡潔にする。
+    return f"{days}日{rem_hours}時間" if rem_hours else f"{days}日"
+
+
 # --- SearchResultPack 選別: 入力を圧縮して体感速度を上げる ---
 #
 # 背景:
@@ -1134,10 +1182,13 @@ class _ChatMemoryMixin:
             second_person_label=cfg.second_person_label,
         )
         gap_seconds: int | None = None
+        gap_text: str | None = None
         if last_chat_created_at_ts is not None and int(last_chat_created_at_ts) > 0:
             gap_seconds = int(now_ts) - int(last_chat_created_at_ts)
             if gap_seconds < 0:
                 gap_seconds = 0
+        # --- 経過時間を会話向けの短い日本語にする（LLMの誤認防止） ---
+        gap_text = _humanize_gap_seconds_jp(gap_seconds)
 
         internal_context = common_utils.json_dumps(
             {
@@ -1148,7 +1199,7 @@ class _ChatMemoryMixin:
                         if last_chat_created_at_ts is not None and int(last_chat_created_at_ts) > 0
                         else None
                     ),
-                    "gap_seconds": (int(gap_seconds) if gap_seconds is not None else None),
+                    "gap_text": gap_text,
                 },
                 "LongMoodState": self._load_long_mood_state_snapshot(
                     embedding_preset_id=embedding_preset_id,
