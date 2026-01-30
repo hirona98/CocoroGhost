@@ -29,19 +29,19 @@ llm_stream_timeout_seconds = 60
 
 # 記憶検索（SearchResultPack）の候補数上限
 # - 大きいほど取りこぼしが減るが、検索候補の選別が遅くなる
-# - 推奨: 60〜120（既定: 80）
-retrieval_max_candidates = 80
+# - 推奨: 40〜120（既定: 60）
+retrieval_max_candidates = 60
 
 # 記憶検索（SearchResultPack）: 候補の割合配分（retrieval_max_candidates のX%）
 # - 目的: trigram/context/vector など「増えやすい経路」が席を独占して体感が悪化するのを抑える
 # - 合計が100未満でもOK（余りは元の順位順で埋める）
 # - event_affect は候補を食い過ぎやすいので最大割合だけを設ける（最低件数は保証しない）
-#   - 例: retrieval_max_candidates=80, retrieval_event_affect_max_percent=5 → event_affect は最大4件まで
+#   - 例: retrieval_max_candidates=60, retrieval_event_affect_max_percent=5 → event_affect は最大3件まで
 #   - 0 にすると event_affect は候補に入らない
 #
 # 探索枠（ひらめき用）:
 # - ユーザーが期間指定しなくても、全期間ベクトル由来の候補を少量だけ毎ターン混ぜる
-# - 例: retrieval_max_candidates=80, retrieval_explore_global_vector_percent=5 → 探索枠は4件
+# - 例: retrieval_max_candidates=60, retrieval_explore_global_vector_percent=5 → 探索枠は3件
 retrieval_explore_global_vector_percent = 5
 retrieval_event_affect_max_percent = 5
 

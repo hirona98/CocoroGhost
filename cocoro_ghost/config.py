@@ -276,11 +276,11 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
     if llm_stream_timeout_seconds <= 0:
         raise ValueError("llm_stream_timeout_seconds must be a positive integer")
 
-    # --- 記憶検索: 候補数上限（既定: 80） ---
+    # --- 記憶検索: 候補数上限（既定: 60） ---
     # NOTE:
     # - SearchResultPack の「候補収集 → LLM選別」は SSE 開始前の同期経路なので、候補が膨らむと体感が悪化する。
     # - ここは品質を維持しつつ体感を改善するための「上限」で、実装側で必ず強制する。
-    retrieval_max_candidates = int(data.get("retrieval_max_candidates", 80))
+    retrieval_max_candidates = int(data.get("retrieval_max_candidates", 60))
     if retrieval_max_candidates <= 0:
         raise ValueError("retrieval_max_candidates must be a positive integer")
     retrieval_max_candidates = max(1, min(400, int(retrieval_max_candidates)))
