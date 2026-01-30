@@ -100,6 +100,26 @@
           </label>
           <input id="file-input" class="file-hidden" type="file" accept="image/*" multiple />
 
+          <!--
+            カメラ（撮影）
+            - 対応環境では getUserMedia でプレビュー撮影
+            - 非対応/許可不可の場合は capture input にフォールバック
+          -->
+          <button class="composer-icon" id="btn-camera" type="button" title="カメラ" aria-label="カメラ">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M4 8a2 2 0 0 1 2-2h3l1.6-1.6h2.8L15 6h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              ></path>
+              <circle cx="12" cy="12.5" r="3.2" fill="none" stroke="currentColor" stroke-width="2"></circle>
+            </svg>
+          </button>
+          <input id="camera-input" class="file-hidden" type="file" accept="image/*" capture="environment" />
+
           <div class="composer-field">
             <textarea
               id="text-input"
@@ -118,6 +138,21 @@
         <div id="status-left" class="statusbar-left">状態: CocoroGhost起動待ち</div>
         <div id="status-right" class="statusbar-right"></div>
       </footer>
+    </div>
+
+    <!-- Camera modal -->
+    <div id="camera-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="カメラ">
+      <div class="modal-backdrop"></div>
+      <div class="camera-sheet">
+        <div class="camera-preview">
+          <video id="camera-video" class="camera-video" playsinline autoplay muted></video>
+        </div>
+        <div class="camera-actions">
+          <button id="btn-camera-cancel" class="camera-btn secondary" type="button">キャンセル</button>
+          <button id="btn-camera-shot" class="camera-btn primary" type="button">撮影</button>
+        </div>
+        <div id="camera-status" class="camera-status"></div>
+      </div>
     </div>
 
     <script src="/static/app.js"></script>

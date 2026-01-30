@@ -40,11 +40,20 @@
   const chatScroll = document.getElementById("chat-scroll");
   const textInput = document.getElementById("text-input");
   const fileInput = document.getElementById("file-input");
+  const cameraButton = document.getElementById("btn-camera");
+  const cameraInput = document.getElementById("camera-input");
   const attachments = document.getElementById("attachments");
   const sendButton = document.getElementById("btn-send");
 
   const statusLeft = document.getElementById("status-left");
   const statusRight = document.getElementById("status-right");
+
+  // --- Camera modal DOM refs ---
+  const cameraModal = document.getElementById("camera-modal");
+  const cameraVideo = document.getElementById("camera-video");
+  const cameraCancelButton = document.getElementById("btn-camera-cancel");
+  const cameraShotButton = document.getElementById("btn-camera-shot");
+  const cameraStatus = document.getElementById("camera-status");
 
   // --- State ---
   /** @type {WebSocket|null} */
@@ -61,6 +70,14 @@
   let wsReconnectTimerId = null;
   /** @type {string[]} */
   let attachmentPreviewObjectUrls = [];
+  /** @type {File[]} */
+  let selectedImageFiles = [];
+
+  // --- Camera state ---
+  /** @type {MediaStream|null} */
+  let cameraStream = null;
+  /** @type {boolean} */
+  let cameraOpening = false;
 
   // --- Mobile viewport (keyboard) ---
   /**
@@ -261,6 +278,8 @@
   }
 
   function showLogin() {
+    // --- 念のため、開いているカメラがあれば閉じる ---
+    closeCameraModal();
     panelLogin.classList.remove("hidden");
     panelChat.classList.add("hidden");
     inputPanel.classList.add("hidden");
@@ -276,6 +295,138 @@
 
   function scrollToBottom() {
     chatScroll.scrollTop = chatScroll.scrollHeight;
+  }
+
+  // --- Camera helpers ---
+  /**
+   * カメラ（getUserMedia）が利用可能かを判定する。
+   */
+  function canUseGetUserMedia() {
+    return !!(navigator && navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function");
+  }
+
+  /**
+   * カメラモーダルのステータス表示を更新する。
+   */
+  function setCameraStatus(text, isError) {
+    if (!cameraStatus) return;
+    cameraStatus.textContent = String(text || "");
+    cameraStatus.classList.toggle("error", !!isError);
+  }
+
+  /**
+   * カメラモーダルを開く（getUserMedia を開始し、video にストリームを貼る）。
+   *
+   * NOTE:
+   * - 失敗した場合は例外を投げる（呼び元で capture input へフォールバックする）。
+   */
+  async function openCameraModalWithPreview() {
+    if (!cameraModal || !cameraVideo) throw new Error("camera modal not found");
+    if (!canUseGetUserMedia()) throw new Error("getUserMedia not supported");
+    if (cameraOpening) throw new Error("camera opening");
+
+    cameraOpening = true;
+    setCameraStatus("カメラを起動中...", false);
+    cameraModal.classList.remove("hidden");
+
+    // --- カメラ起動（背面カメラ優先） ---
+    const constraints = {
+      audio: false,
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+    };
+
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+      cameraVideo.srcObject = cameraStream;
+
+      // --- iOS などで play() が必要なことがある ---
+      try {
+        await cameraVideo.play();
+      } catch (_) {}
+
+      setCameraStatus("", false);
+    } catch (error) {
+      // --- 表示は閉じる（フォールバックを優先） ---
+      closeCameraModal();
+      throw error;
+    } finally {
+      cameraOpening = false;
+    }
+  }
+
+  /**
+   * カメラモーダルを閉じる（ストリームを停止してリソースを解放）。
+   */
+  function closeCameraModal() {
+    if (cameraVideo) {
+      try {
+        cameraVideo.pause();
+      } catch (_) {}
+      try {
+        cameraVideo.srcObject = null;
+      } catch (_) {}
+    }
+
+    if (cameraStream) {
+      try {
+        for (const track of cameraStream.getTracks()) {
+          try {
+            track.stop();
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+    cameraStream = null;
+
+    if (cameraModal) cameraModal.classList.add("hidden");
+    setCameraStatus("", false);
+  }
+
+  /**
+   * video フレームを JPEG にして File 化する（サイズ制限に収まるよう軽く圧縮）。
+   */
+  async function captureJpegFileFromVideo(videoEl) {
+    const video = videoEl;
+    if (!video) throw new Error("video not ready");
+
+    const vw = Number(video.videoWidth || 0);
+    const vh = Number(video.videoHeight || 0);
+    if (!vw || !vh) throw new Error("video size not ready");
+
+    // --- 5MB制限に近づきにくいように縮小（最大辺 1280px） ---
+    const maxSide = 1280;
+    const scale = Math.min(1, maxSide / Math.max(vw, vh));
+    const tw = Math.max(1, Math.round(vw * scale));
+    const th = Math.max(1, Math.round(vh * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = tw;
+    canvas.height = th;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("canvas ctx not available");
+    ctx.drawImage(video, 0, 0, tw, th);
+
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (b) => {
+          if (!b) {
+            reject(new Error("撮影に失敗しました"));
+            return;
+          }
+          resolve(b);
+        },
+        "image/jpeg",
+        0.86
+      );
+    });
+
+    const name = `camera-${Date.now()}.jpg`;
+    return new File([blob], name, { type: "image/jpeg" });
   }
 
   // --- Chat timestamp helpers ---
@@ -521,51 +672,39 @@
 
   // --- Attachments ---
   /**
-   * file input の FileList を置き換える（個別削除のため）。
-   *
-   * NOTE:
-   * - ブラウザによっては `input.files` の代入を拒否するため、その場合は false を返す。
+   * 選択中の添付を削除する（添付は File 配列で管理する）。
    */
-  function trySetFileInputFiles(filesArray) {
-    try {
-      const dt = new DataTransfer();
-      for (const f of Array.from(filesArray || [])) {
-        dt.items.add(f);
-      }
-      fileInput.files = dt.files;
-      return true;
-    } catch (_) {
-      return false;
-    }
+  function removeAttachmentAtIndex(index) {
+    const i = Number(index);
+    if (!Number.isFinite(i) || i < 0 || i >= selectedImageFiles.length) return;
+
+    // --- 指定を削除してUI更新 ---
+    selectedImageFiles.splice(i, 1);
+    renderAttachments(selectedImageFiles);
+    refreshSendButtonEnabled();
   }
 
-  function removeAttachmentAtIndex(index) {
-    // --- 現在の選択ファイルを配列化 ---
-    const files = Array.from(fileInput.files || []);
-    const i = Number(index);
-    if (!Number.isFinite(i) || i < 0 || i >= files.length) return;
+  /**
+   * 添付に File を追加する（上限: 5枚）。
+   */
+  function addAttachmentsFromFiles(files) {
+    const list = Array.from(files || []).filter((f) => f && String(f.type || "").startsWith("image/"));
+    if (!list.length) return;
 
-    // --- 指定要素を除外 ---
-    const next = files.filter((_, idx) => idx !== i);
-
-    // --- 0件ならクリア ---
-    if (!next.length) {
-      fileInput.value = "";
-      renderAttachments([]);
-      refreshSendButtonEnabled();
+    const maxFiles = 5;
+    if (selectedImageFiles.length >= maxFiles) {
+      alert("画像は最大5枚までです。");
       return;
     }
 
-    // --- 置き換え（不可なら全クリアにフォールバック） ---
-    if (!trySetFileInputFiles(next)) {
-      fileInput.value = "";
-      renderAttachments([]);
-      refreshSendButtonEnabled();
-      return;
+    const room = maxFiles - selectedImageFiles.length;
+    const toAdd = list.slice(0, room);
+    if (list.length > toAdd.length) {
+      alert("画像は最大5枚までです。");
     }
 
-    // --- UI反映 ---
-    renderAttachments(fileInput.files);
+    selectedImageFiles = selectedImageFiles.concat(toAdd);
+    renderAttachments(selectedImageFiles);
     refreshSendButtonEnabled();
   }
 
@@ -670,7 +809,7 @@
 
   function refreshSendButtonEnabled() {
     const text = String(textInput.value || "").trim();
-    const hasFiles = fileInput.files && fileInput.files.length > 0;
+    const hasFiles = Array.isArray(selectedImageFiles) && selectedImageFiles.length > 0;
     sendButton.disabled = !(text || hasFiles) || !!chatAbortController;
   }
 
@@ -734,8 +873,8 @@
     if (chatAbortController) return;
 
     const messageText = String(textInput.value || "").trim();
-    // NOTE: fileInput.value を変更しても送信に影響しないよう、ここで配列化して保持する。
-    const selectedFileArray = Array.from(fileInput.files || []);
+    // NOTE: 送信中に選択状態が変わっても影響しないよう、ここでスナップショットを取る。
+    const selectedFileArray = Array.from(selectedImageFiles || []);
 
     // --- User bubble (text or [画像]) ---
     const hasFiles = selectedFileArray.length > 0;
@@ -759,7 +898,7 @@
     }
 
     // --- 送信が確定したら、入力欄側の添付は消す（プレビューも含む） ---
-    fileInput.value = "";
+    selectedImageFiles = [];
     renderAttachments([]);
     refreshSendButtonEnabled();
 
@@ -862,7 +1001,6 @@
       // --- Reset state ---
       chatAbortController = null;
       inflightAssistantBubble = null;
-      revokeAttachmentPreviewObjectUrls();
       refreshSendButtonEnabled();
     }
   }
@@ -911,6 +1049,7 @@
     const ok = confirm("ログアウトしますか？");
     if (!ok) return;
 
+    closeCameraModal();
     stopEventsSocket();
     await apiLogout();
     showLogin();
@@ -925,9 +1064,69 @@
     refreshSendButtonEnabled();
   });
   fileInput.addEventListener("change", () => {
-    renderAttachments(fileInput.files);
-    refreshSendButtonEnabled();
+    // --- 追加選択（選択が置き換えになっても、state に append するため問題ない） ---
+    addAttachmentsFromFiles(fileInput.files);
+
+    // --- 同じ画像を連続で選べるようにクリア ---
+    fileInput.value = "";
   });
+
+  cameraInput.addEventListener("change", () => {
+    // --- capture input で撮影/選択した画像を添付へ追加 ---
+    addAttachmentsFromFiles(cameraInput.files);
+    cameraInput.value = "";
+  });
+
+  cameraButton.addEventListener("click", async () => {
+    // --- 対応環境: プレビュー撮影（getUserMedia） ---
+    if (canUseGetUserMedia()) {
+      try {
+        await openCameraModalWithPreview();
+        return;
+      } catch (_) {
+        // --- フォールバックへ ---
+      }
+    }
+
+    // --- 非対応/許可不可: capture input へフォールバック ---
+    try {
+      cameraInput.click();
+    } catch (_) {}
+  });
+
+  // --- Camera modal events ---
+  if (cameraModal) {
+    // --- 背景クリックで閉じる ---
+    const backdrop = cameraModal.querySelector(".modal-backdrop");
+    if (backdrop) {
+      backdrop.addEventListener("click", () => {
+        closeCameraModal();
+      });
+    }
+  }
+
+  if (cameraCancelButton) {
+    cameraCancelButton.addEventListener("click", () => {
+      closeCameraModal();
+    });
+  }
+
+  if (cameraShotButton) {
+    cameraShotButton.addEventListener("click", async () => {
+      if (!cameraVideo) return;
+      cameraShotButton.disabled = true;
+      setCameraStatus("撮影中...", false);
+      try {
+        const file = await captureJpegFileFromVideo(cameraVideo);
+        addAttachmentsFromFiles([file]);
+        closeCameraModal();
+      } catch (error) {
+        setCameraStatus(String(error && error.message ? error.message : "撮影に失敗しました"), true);
+      } finally {
+        cameraShotButton.disabled = false;
+      }
+    });
+  }
 
   textInput.addEventListener("keydown", (event) => {
     // --- Enter 送信（Shift+Enter は改行） ---
