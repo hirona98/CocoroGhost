@@ -60,6 +60,53 @@
   /** @type {number|null} */
   let wsReconnectTimerId = null;
 
+  // --- Text sanitizers ---
+  /**
+   * 会話装飾タグ（例: [face:Fun]）をUI表示向けに除去する。
+   *
+   * 目的:
+   * - CocoroShell 等が利用する装飾タグを、Web UI ではそのまま見せない。
+   * - SSE のストリーミング中にタグが「途中まで」表示されてチラつくのも抑える。
+   *
+   * NOTE:
+   * - [face:*] は本文の先頭に付くことが多いが、念のため本文中の出現も除去する。
+   * - ストリーミング中に tag が未完（"]" がまだ来ていない）な場合は、tag開始以降を一時的に隠す。
+   */
+  function sanitizeChatTextForDisplay(text) {
+    // --- 入力を文字列へ正規化 ---
+    let s = String(text || "");
+
+    // --- 末尾に未完の [face:... が残っている場合は一旦隠す（ストリーム中のチラつき防止） ---
+    const lastIdx = s.lastIndexOf("[face:");
+    if (lastIdx !== -1) {
+      const closeIdx = s.indexOf("]", lastIdx);
+      if (closeIdx === -1) {
+        s = s.slice(0, lastIdx);
+      }
+    }
+
+    // --- 完了した [face:...] を除去 ---
+    s = s.replace(/\[face:[^\]]+\]/g, "");
+
+    // --- タグ除去で増えがちな空行を軽く整形（見た目だけ） ---
+    s = s.replace(/^\s+/, "");
+    s = s.replace(/\n{3,}/g, "\n\n");
+    return s;
+  }
+
+  /**
+   * 吹き出しへ「生テキスト」を保存して、表示はサニタイズした文字列にする。
+   *
+   * NOTE:
+   * - ストリーミング中は raw を保持し続け、毎回サニタイズ結果で描画する。
+   * - これにより、途中で [face:*] が入っても UI で表示されない。
+   */
+  function setBubbleTextFromRaw(bubble, rawText) {
+    if (!bubble) return;
+    bubble.dataset.rawText = String(rawText || "");
+    bubble.textContent = sanitizeChatTextForDisplay(bubble.dataset.rawText);
+  }
+
   // --- UI helpers ---
   function setLoginStatus(text, isError) {
     loginStatus.textContent = text || "";
@@ -99,7 +146,7 @@
   function createBubble(kind, text) {
     const bubble = document.createElement("div");
     bubble.className = `bubble ${kind}`;
-    bubble.textContent = text || "";
+    setBubbleTextFromRaw(bubble, text || "");
     return bubble;
   }
 
@@ -405,6 +452,7 @@
     // --- Prepare ---
     chatAbortController = new AbortController();
     inflightAssistantBubble = appendBubble("ai", "");
+    setBubbleTextFromRaw(inflightAssistantBubble, "");
     setStatusBar("状態: 送信中...", "");
     refreshSendButtonEnabled();
 
@@ -429,14 +477,17 @@
         if (!inflightAssistantBubble) return;
 
         if (eventName === "token") {
-          inflightAssistantBubble.textContent += String(data.text || "");
+          // --- 生テキストへ追記して、表示はサニタイズして更新する ---
+          const prevRaw = String(inflightAssistantBubble.dataset.rawText || "");
+          const nextRaw = prevRaw + String(data.text || "");
+          setBubbleTextFromRaw(inflightAssistantBubble, nextRaw);
           scrollToBottom();
           return;
         }
 
         if (eventName === "error") {
           const msg = String(data.message || "error");
-          inflightAssistantBubble.textContent = msg;
+          setBubbleTextFromRaw(inflightAssistantBubble, msg);
           inflightAssistantBubble = null;
           setStatusBar("状態: エラー", String(data.code || ""));
           return;
