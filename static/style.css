@@ -479,6 +479,7 @@ body {
 }
 
 .camera-preview {
+  position: relative;
   width: 100%;
   max-height: 62vh;
   border-radius: 12px;
@@ -489,9 +490,30 @@ body {
 .camera-video {
   width: 100%;
   height: 100%;
-  /* --- トリミングしない（比率が合わない部分は余白になる） --- */
+  /* --- 既定はトリミングしない（比率が合わない部分は余白になる） --- */
   object-fit: contain;
   display: block;
+}
+
+.camera-preview.is-crop .camera-video {
+  /* --- 選択比率に合わない端末では、クロップで合わせる（標準カメラ寄せ） --- */
+  object-fit: cover;
+}
+
+.camera-mode-label {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(11, 18, 32, 0.72);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  user-select: none;
+  pointer-events: none;
 }
 
 .camera-actions {
@@ -571,6 +593,24 @@ body {
   background: #ffffff;
   color: var(--text);
   font-weight: 700;
+}
+
+.camera-btn.icon-only {
+  width: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.camera-icon {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .camera-btn.primary {
