@@ -111,8 +111,7 @@ class _ChatSearchMixin:
         # --- 入力の正規化 ---
         if not candidates:
             return []
-        cap = max(1, int(max_candidates))
-        cap = max(1, min(400, int(cap)))
+        cap = int(max_candidates)
 
         # --- mode に応じた割合設定を取得する ---
         # NOTE:
@@ -179,9 +178,8 @@ class _ChatSearchMixin:
         # - ここは「最大割合」で縛るだけ（= 上限キャップ）。無理に最低件数を確保するとノイズが混ざりやすいので行わない。
         #   - 例: retrieval_max_candidates=60, retrieval_event_affect_max_percent=5 の場合、event_affect は最大3件まで。
         #   - 0% にすると、event_affect は候補に入らない（= トーン調整を候補で行わない）。
-        affect_max_percent = max(0, min(100, int(tc.retrieval_event_affect_max_percent)))
+        affect_max_percent = int(tc.retrieval_event_affect_max_percent)
         affect_cap = int(math.floor(float(cap) * (float(affect_max_percent) / 100.0)))
-        affect_cap = max(0, min(int(cap), int(affect_cap)))
 
         # --- カテゴリ判定 ---
         # NOTE:
@@ -354,15 +352,9 @@ class _ChatSearchMixin:
         max_candidates = 200
         if isinstance(limits, dict) and isinstance(limits.get("max_candidates"), (int, float)):
             max_candidates = int(limits.get("max_candidates") or 200)
-        max_candidates = max(1, min(400, max_candidates))
+        max_candidates = int(max_candidates)
 
-        # --- 起動設定（TOML）の上限を強制する ---
-        # NOTE:
-        # - plan_obj は同一プロセス内のルール生成だが、運用時の安全弁としてTOML上限を最終適用する。
-        # - 体感速度（選別入力の膨張）を守るため、ここは常に強制する。
-        toml_max_candidates = int(self.config_store.toml_config.retrieval_max_candidates)  # type: ignore[attr-defined]
-        toml_max_candidates = max(1, min(400, int(toml_max_candidates)))
-        max_candidates = int(min(int(max_candidates), int(toml_max_candidates)))
+        # --- 起動設定（TOML）の上限は強制しない ---
 
         # --- 並列候補収集（タイムアウトで全体が破綻しない） ---
         # NOTE:
@@ -632,25 +624,25 @@ class _ChatSearchMixin:
             # - state / event_affect は従来の比率（60:40:20）を踏襲し、events を基準に派生させる。
             cfg = self.config_store.config  # type: ignore[attr-defined]
             tc = self.config_store.toml_config  # type: ignore[attr-defined]
-            total_event_k = max(1, min(200, int(cfg.similar_episodes_limit)))
-            qn = max(1, len(vector_query_texts))
+            total_event_k = int(cfg.similar_episodes_limit)
+            qn = int(len(vector_query_texts))
 
             per_query_event_k = int(math.ceil(float(total_event_k) / float(qn)))
             total_state_k = int(math.ceil(float(total_event_k) * (2.0 / 3.0)))
             total_affect_k = int(math.ceil(float(total_event_k) * (1.0 / 3.0)))
-            per_query_state_k = max(1, int(math.ceil(float(total_state_k) / float(qn))))
-            per_query_affect_k = max(1, int(math.ceil(float(total_affect_k) / float(qn))))
+            per_query_state_k = int(math.ceil(float(total_state_k) / float(qn)))
+            per_query_affect_k = int(math.ceil(float(total_affect_k) / float(qn)))
 
             # --- 「ひらめき枠」用の global vec(event) を少数だけ拾う ---
             # NOTE:
             # - 目的は「毎ターン、少数だけ全期間から混ぜる」ことで、会話の着想を得やすくすること。
             # - 最終的な混入割合は quota（TOML）で制御するため、ここでは「候補プール」を適度に確保するだけ。
             # - 0% にした場合は探索を完全に止め、無駄な検索を行わない（速度/安定性優先）。
-            explore_percent = max(0, min(100, int(tc.retrieval_explore_global_vector_percent)))
+            explore_percent = int(tc.retrieval_explore_global_vector_percent)
             explore_cap = int(math.floor(float(max_candidates) * (float(explore_percent) / 100.0)))
-            global_event_k_total = int(min(80, max(0, int(explore_cap) * 6)))
+            global_event_k_total = int(int(explore_cap) * 6)
             per_query_global_event_k = (
-                max(1, int(math.ceil(float(global_event_k_total) / float(qn)))) if global_event_k_total > 0 else 0
+                int(math.ceil(float(global_event_k_total) / float(qn))) if global_event_k_total > 0 else 0
             )
 
             # --- embedding を用意する（重いので、可能なら先行開始した結果を使う） ---
@@ -917,10 +909,9 @@ class _ChatSearchMixin:
             "added_state_count": 0,
         }
         if bool(state_link_expand_debug["enabled"]):
-            seed_limit = max(0, int(getattr(tc, "retrieval_state_link_expand_seed_limit", 8)))
-            per_seed_limit = max(0, int(getattr(tc, "retrieval_state_link_expand_per_seed_limit", 8)))
+            seed_limit = int(getattr(tc, "retrieval_state_link_expand_seed_limit", 8))
+            per_seed_limit = int(getattr(tc, "retrieval_state_link_expand_per_seed_limit", 8))
             min_conf = float(getattr(tc, "retrieval_state_link_expand_min_confidence", 0.6))
-            min_conf = max(0.0, min(1.0, float(min_conf)))
             state_link_expand_debug["limits"] = {
                 "seed_limit": int(seed_limit),
                 "per_seed_limit": int(per_seed_limit),
@@ -949,7 +940,7 @@ class _ChatSearchMixin:
                 return (int(len(hs)), int(state_id))
 
             seed_state_ids.sort(key=seed_score, reverse=True)
-            seed_state_ids = seed_state_ids[: max(0, int(seed_limit))]
+            seed_state_ids = seed_state_ids[: int(seed_limit)]
             state_link_expand_debug["seed_state_ids"] = [int(x) for x in seed_state_ids]
 
             # --- seed が無い/上限ゼロなら何もしない ---
@@ -1013,13 +1004,12 @@ class _ChatSearchMixin:
         }
         if bool(entity_expand_debug["enabled"]):
             # --- 起動設定（上限と足切り） ---
-            seed_limit = max(0, int(getattr(tc, "retrieval_entity_expand_seed_limit", 12)))
-            max_entities = max(0, int(getattr(tc, "retrieval_entity_expand_max_entities", 12)))
-            per_entity_event_limit = max(0, int(getattr(tc, "retrieval_entity_expand_per_entity_event_limit", 10)))
-            per_entity_state_limit = max(0, int(getattr(tc, "retrieval_entity_expand_per_entity_state_limit", 6)))
+            seed_limit = int(getattr(tc, "retrieval_entity_expand_seed_limit", 12))
+            max_entities = int(getattr(tc, "retrieval_entity_expand_max_entities", 12))
+            per_entity_event_limit = int(getattr(tc, "retrieval_entity_expand_per_entity_event_limit", 10))
+            per_entity_state_limit = int(getattr(tc, "retrieval_entity_expand_per_entity_state_limit", 6))
             min_conf = float(getattr(tc, "retrieval_entity_expand_min_confidence", 0.45))
-            min_conf = max(0.0, min(1.0, float(min_conf)))
-            min_seed_occ = max(1, int(getattr(tc, "retrieval_entity_expand_min_seed_occurrences", 2)))
+            min_seed_occ = int(getattr(tc, "retrieval_entity_expand_min_seed_occurrences", 2))
             entity_expand_debug["limits"] = {
                 "seed_limit": int(seed_limit),
                 "max_entities": int(max_entities),
@@ -1049,7 +1039,7 @@ class _ChatSearchMixin:
                 return (int(len(hs)), int(key[1]))
 
             seed_keys.sort(key=seed_score, reverse=True)
-            seed_keys = seed_keys[: max(0, int(seed_limit))]
+            seed_keys = seed_keys[: int(seed_limit)]
             entity_expand_debug["seed_keys"] = [f"{t}:{int(i)}" for (t, i) in seed_keys]
 
             # --- seed が無いなら何もしない ---
@@ -1472,7 +1462,7 @@ class _ChatSearchMixin:
 
         per_bucket_raw = diversify.get("per_bucket")
         per_bucket = int(per_bucket_raw) if isinstance(per_bucket_raw, (int, float)) else 5
-        per_bucket = max(1, min(20, int(per_bucket)))
+        per_bucket = int(per_bucket)
 
         # --- event候補を抽出（元の順序） ---
         events_only: list[_CandidateItem] = [c for c in candidates if str(c.type) == "event"]

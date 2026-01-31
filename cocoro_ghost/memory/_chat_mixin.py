@@ -320,7 +320,7 @@ def _build_rule_based_retrieval_plan(
         "queries": ([str(text_in)] if str(text_in) else []),
         "time_hint": {"about_year_start": y0, "about_year_end": y1, "life_stage_hint": str(life_stage_hint)},
         "diversify": {"by": ["life_stage", "about_year_bucket"], "per_bucket": 5},
-        "limits": {"max_candidates": int(max(1, min(400, int(max_candidates)))), "max_selected": 12},
+        "limits": {"max_candidates": int(max_candidates), "max_selected": 12},
     }
     return plan_obj
 
