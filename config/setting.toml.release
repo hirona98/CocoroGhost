@@ -92,14 +92,6 @@ retrieval_state_link_expand_seed_limit = 8
 retrieval_state_link_expand_per_seed_limit = 8
 retrieval_state_link_expand_min_confidence = 0.6
 
-# 非同期: state_links 生成（B-1）
-memory_state_links_build_enabled = true
-memory_state_links_build_target_state_limit = 3
-memory_state_links_build_candidate_k = 24
-memory_state_links_build_max_links_per_state = 6
-memory_state_links_build_min_confidence = 0.65
-memory_state_links_build_max_distance = 0.35
-
 # LLM送受信ログの最大文字数（ターミナル/ファイル）
 llm_log_console_max_chars = 1000
 llm_log_file_max_chars = 20000

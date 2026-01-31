@@ -285,8 +285,6 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
     image_summary_max_chars = int(_require(data, "image_summary_max_chars"))
     if image_summary_max_chars <= 0:
         raise ValueError("image_summary_max_chars must be a positive integer")
-    # NOTE: 画像枚数が増えたときの入力膨張を防ぐため、常識的な上限でキャップする。
-    image_summary_max_chars = max(1, min(3000, int(image_summary_max_chars)))
 
     # --- 記憶検索: 候補数上限（既定: 60） ---
     # NOTE:
@@ -295,7 +293,6 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
     retrieval_max_candidates = int(data.get("retrieval_max_candidates", 60))
     if retrieval_max_candidates <= 0:
         raise ValueError("retrieval_max_candidates must be a positive integer")
-    retrieval_max_candidates = max(1, min(400, int(retrieval_max_candidates)))
 
     # --- 記憶検索: 割合配分（既定は品質優先の推奨値） ---
     # NOTE:
@@ -384,35 +381,30 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         retrieval_entity_expand_min_confidence = float(data.get("retrieval_entity_expand_min_confidence", 0.45))
     except Exception:  # noqa: BLE001
         retrieval_entity_expand_min_confidence = 0.45
-    retrieval_entity_expand_min_confidence = max(0.0, min(1.0, float(retrieval_entity_expand_min_confidence)))
     retrieval_entity_expand_min_seed_occurrences = int(data.get("retrieval_entity_expand_min_seed_occurrences", 2))
-    retrieval_entity_expand_min_seed_occurrences = max(1, int(retrieval_entity_expand_min_seed_occurrences))
 
     # --- 記憶検索: stateリンク展開（seed→state_links→関連state） ---
     retrieval_state_link_expand_enabled = bool(data.get("retrieval_state_link_expand_enabled", True))
-    retrieval_state_link_expand_seed_limit = max(0, int(data.get("retrieval_state_link_expand_seed_limit", 8)))
-    retrieval_state_link_expand_per_seed_limit = max(0, int(data.get("retrieval_state_link_expand_per_seed_limit", 8)))
+    retrieval_state_link_expand_seed_limit = int(data.get("retrieval_state_link_expand_seed_limit", 8))
+    retrieval_state_link_expand_per_seed_limit = int(data.get("retrieval_state_link_expand_per_seed_limit", 8))
     try:
         retrieval_state_link_expand_min_confidence = float(data.get("retrieval_state_link_expand_min_confidence", 0.6))
     except Exception:  # noqa: BLE001
         retrieval_state_link_expand_min_confidence = 0.6
-    retrieval_state_link_expand_min_confidence = max(0.0, min(1.0, float(retrieval_state_link_expand_min_confidence)))
 
     # --- 非同期: state_links 生成（B-1） ---
     memory_state_links_build_enabled = bool(data.get("memory_state_links_build_enabled", True))
-    memory_state_links_build_target_state_limit = max(0, int(data.get("memory_state_links_build_target_state_limit", 3)))
-    memory_state_links_build_candidate_k = max(1, int(data.get("memory_state_links_build_candidate_k", 24)))
-    memory_state_links_build_max_links_per_state = max(0, int(data.get("memory_state_links_build_max_links_per_state", 6)))
+    memory_state_links_build_target_state_limit = int(data.get("memory_state_links_build_target_state_limit", 3))
+    memory_state_links_build_candidate_k = int(data.get("memory_state_links_build_candidate_k", 24))
+    memory_state_links_build_max_links_per_state = int(data.get("memory_state_links_build_max_links_per_state", 6))
     try:
         memory_state_links_build_min_confidence = float(data.get("memory_state_links_build_min_confidence", 0.65))
     except Exception:  # noqa: BLE001
         memory_state_links_build_min_confidence = 0.65
-    memory_state_links_build_min_confidence = max(0.0, min(1.0, float(memory_state_links_build_min_confidence)))
     try:
         memory_state_links_build_max_distance = float(data.get("memory_state_links_build_max_distance", 0.35))
     except Exception:  # noqa: BLE001
         memory_state_links_build_max_distance = 0.35
-    memory_state_links_build_max_distance = max(0.0, float(memory_state_links_build_max_distance))
 
     config = Config(
         # --- サーバー待受ポート（必須） ---

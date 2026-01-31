@@ -1275,9 +1275,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     continue
 
                 # --- state_entities 用の entities（state単位） ---
-                # NOTE:
-                # - 以前は event_annotations.entities を stateへ流用していたが、精度が粗くなりやすい。
-                # - 本来は「stateごとに関係するentity」を付与するのが自然なので、WritePlanで分けて出す。
                 entities_norm_for_state = entity_utils.normalize_entities(u.get("entities"))
 
                 op = str(u.get("op") or "").strip()
@@ -1827,10 +1824,10 @@ def _handle_build_state_links(
     if not enabled:
         return
 
-    candidate_k = max(1, min(200, int(candidate_k)))
-    max_links_per_state = max(0, min(20, int(max_links_per_state)))
-    min_conf = max(0.0, min(1.0, float(min_conf)))
-    max_distance = max(0.0, float(max_distance))
+    candidate_k = int(candidate_k)
+    max_links_per_state = int(max_links_per_state)
+    min_conf = float(min_conf)
+    max_distance = float(max_distance)
 
     now_ts = _now_utc_ts()
 
@@ -2161,7 +2158,7 @@ def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, p
 
     now_ts = _now_utc_ts()
     max_close = int(payload.get("max_close_per_run") or _TIDY_MAX_CLOSE_PER_RUN)
-    max_close = max(1, min(int(max_close), 5000))
+    max_close = int(max_close)
 
     # --- 変更件数（観測用） ---
     closed_state_ids: list[int] = []
