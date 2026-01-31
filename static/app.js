@@ -33,7 +33,6 @@
   const loginButton = document.getElementById("btn-login");
 
   const micButton = document.getElementById("btn-mic");
-  const soundButton = document.getElementById("btn-sound");
   const gearButton = document.getElementById("btn-gear");
 
   const chatScroll = document.getElementById("chat-scroll");
@@ -1798,8 +1797,6 @@
     }
     await startVoiceInputAndAutoSend();
   });
-  soundButton.addEventListener("click", () => {});
-
   gearButton.addEventListener("click", async () => {
     const ok = confirm("ログアウトしますか？");
     if (!ok) return;
