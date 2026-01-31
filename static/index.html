@@ -146,13 +146,28 @@
       <div class="camera-sheet">
         <div id="camera-preview" class="camera-preview">
           <video id="camera-video" class="camera-video" playsinline autoplay muted></video>
+          <div id="camera-mode-label" class="camera-mode-label" aria-live="polite"></div>
         </div>
         <div class="camera-controls">
-          <button id="btn-camera-flip" class="camera-btn secondary" type="button">イン/アウト</button>
+          <!-- NOTE: イン/アウト切替はアイコン表示（アクセシビリティ用に aria-label は残す） -->
+          <button
+            id="btn-camera-flip"
+            class="camera-btn secondary icon-only"
+            type="button"
+            title="イン/アウト切替"
+            aria-label="イン/アウト切替"
+          >
+            <svg class="camera-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <!-- NOTE: 前後カメラ切替のニュアンス（回転/入替）に寄せる -->
+              <path d="M3 12a9 9 0 0 1 15-6" />
+              <path d="M18 3v3h3" />
+              <path d="M21 12a9 9 0 0 1-15 6" />
+              <path d="M6 21v-3H3" />
+            </svg>
+          </button>
           <div class="camera-ratios" aria-label="比率">
             <button class="ratio-btn" id="btn-ratio-3x4" type="button" data-ratio="3:4">3:4</button>
             <button class="ratio-btn" id="btn-ratio-1x1" type="button" data-ratio="1:1">1:1</button>
-            <button class="ratio-btn" id="btn-ratio-4x3" type="button" data-ratio="4:3">4:3</button>
             <button class="ratio-btn" id="btn-ratio-16x9" type="button" data-ratio="16:9">16:9</button>
           </div>
           <div id="camera-zoom" class="camera-zoom hidden" aria-label="ズーム">

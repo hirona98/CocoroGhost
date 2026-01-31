@@ -52,6 +52,7 @@
   const cameraModal = document.getElementById("camera-modal");
   const cameraPreview = document.getElementById("camera-preview");
   const cameraVideo = document.getElementById("camera-video");
+  const cameraModeLabel = document.getElementById("camera-mode-label");
   const cameraCancelButton = document.getElementById("btn-camera-cancel");
   const cameraShotButton = document.getElementById("btn-camera-shot");
   const cameraStatus = document.getElementById("camera-status");
@@ -92,22 +93,22 @@
   let cameraZoomCaps = null;
   /** @type {number|null} */
   let cameraZoomRafId = null;
-  /** @type {"3:4"|"1:1"|"4:3"|"16:9"} */
+  /** @type {"3:4"|"1:1"|"16:9"} */
   let cameraAspectKey = "3:4";
 
-  // --- Camera: preview aspect sync ---
+  // --- Camera: preview crop fallback ---
   // NOTE:
-  // - getUserMedia の実際の出力（videoWidth/videoHeight）は端末差が大きい。
-  // - 特に 16:9 指定でも 9:16（縦長）で返るケースがあるため、メタデータ確定後に枠を再同期する。
+  // - 端末によっては aspectRatio の要求が通らず、選択比率と実映像比率がズレることがある。
+  // - その場合、プレビューは「選択比率でクロップ表示」に切り替えて、見た目と撮影結果を一致させる。
   if (cameraVideo) {
     // --- 初回に実寸が確定したタイミング ---
     cameraVideo.addEventListener("loadedmetadata", () => {
-      syncCameraPreviewAspectRatio();
+      syncCameraPreviewCropMode();
     });
 
     // --- 端末回転などで実寸が変わるタイミング（対応ブラウザのみ） ---
     cameraVideo.addEventListener("resize", () => {
-      syncCameraPreviewAspectRatio();
+      syncCameraPreviewCropMode();
     });
   }
 
@@ -338,67 +339,28 @@
   }
 
   /**
-   * 現在の比率キーと、実際の video の縦横（取得できる場合）から
-   * 「プレビュー枠に設定すべき CSS aspect-ratio」を返す。
-   *
-   * 目的:
-   * - 端末によっては 16:9 指定でも 9:16（縦長）で返ってくることがある。
-   * - その場合、プレビュー枠が横長（16/9）だと中身が極端に小さく見えてしまうため、
-   *   実際の映像比率（縦長なら 9/16）に追従させる。
-   *
-   * NOTE:
-   * - 4:3 と 3:4 は UI に両方あるので「縦横を自動反転」しない（ユーザー選択を優先）。
-   * - 16:9 だけは縦長バリアント（9:16）の UI が無いので、自動反映する。
-   */
-  function getCameraPreviewAspectRatioCss() {
-    // --- 比率キーから既定の枠比率を作る ---
-    let css = "3 / 4";
-    if (cameraAspectKey === "1:1") css = "1 / 1";
-    if (cameraAspectKey === "3:4") css = "3 / 4";
-    if (cameraAspectKey === "4:3") css = "4 / 3";
-    if (cameraAspectKey === "16:9") css = "16 / 9";
-
-    // --- 16:9 は「実際の映像が縦長」なら 9/16 に追従 ---
-    if (cameraAspectKey !== "16:9") return css;
-    if (!cameraVideo) return css;
-
-    const vw = Number(cameraVideo.videoWidth || 0);
-    const vh = Number(cameraVideo.videoHeight || 0);
-    if (!vw || !vh) return css;
-
-    // --- video が縦長（9:16 相当）なら枠も縦長にする ---
-    if (vh > vw) return "9 / 16";
-    return "16 / 9";
-  }
-
-  /**
-   * プレビュー枠の aspect-ratio を「現在の設定 + 実映像」に合わせて更新する。
-   */
-  function syncCameraPreviewAspectRatio() {
-    if (!cameraPreview) return;
-    cameraPreview.style.aspectRatio = getCameraPreviewAspectRatioCss();
-  }
-
-  /**
    * 現在の設定（イン/アウト・比率）から getUserMedia の video constraints を作る。
    *
    * NOTE:
    * - 端末/ブラウザによっては aspectRatio/width/height の要求が無視されることがある。
-   * - まずは要求を出して「カメラ自体の出力比率」を変えられるか試し、ダメならUI/撮影側で整合させる。
+   * - `ideal` は「希望」で、満たせない環境もある。
+   * - UI は「比率キー」を常に保ち、実出力が合わない場合はクロップ表示でフォールバックする。
    */
-  function buildCameraVideoConstraints() {
+  function buildCameraVideoConstraints(options) {
+    // --- options ---
+    // - aspectMode: "ideal" | "exact"
+    const aspectMode = options && options.aspectMode ? String(options.aspectMode) : "ideal";
+
     // --- 比率 ---
     const ar = getCameraAspectRatio();
     const targetAspect = Number(ar.w) / Number(ar.h);
+    const aspectRatio = aspectMode === "exact" ? { exact: targetAspect } : { ideal: targetAspect };
 
     // --- 比率ごとの「出やすい」解像度（ideal） ---
     // NOTE: ここは強制ではなく、端末が選びやすい候補を出すだけ。
     let idealWidth = 1280;
     let idealHeight = 720;
-    if (cameraAspectKey === "4:3") {
-      idealWidth = 1024;
-      idealHeight = 768;
-    } else if (cameraAspectKey === "3:4") {
+    if (cameraAspectKey === "3:4") {
       idealWidth = 720;
       idealHeight = 960;
     } else if (cameraAspectKey === "1:1") {
@@ -411,7 +373,7 @@
 
     return {
       facingMode: { ideal: cameraFacingMode },
-      aspectRatio: { ideal: targetAspect },
+      aspectRatio,
       width: { ideal: idealWidth },
       height: { ideal: idealHeight },
     };
@@ -430,12 +392,13 @@
    * プレビュー/撮影で使う比率を UI と DOM に反映する。
    *
    * NOTE:
-   * - プレビューは `object-fit: contain` で、トリミングしない（余白で比率を合わせる）。
-   * - 撮影時も同じ比率のキャンバスに「余白（黒）」で合わせて、見た目と実体を一致させる。
+   * - まずはカメラ側に比率変更（constraints）を要求する。
+   * - 端末都合で実出力が合わない場合は、プレビューはクロップ表示に切り替え、
+   *   撮影も同じ比率で切り抜いて「見た目と実体」を一致させる。
    */
   function setCameraAspectRatioKey(nextKey) {
     const key = String(nextKey || "").trim();
-    if (key !== "3:4" && key !== "1:1" && key !== "4:3" && key !== "16:9") return;
+    if (key !== "3:4" && key !== "1:1" && key !== "16:9") return;
     cameraAspectKey = key;
 
     // --- UI: 選択状態 ---
@@ -445,7 +408,128 @@
     }
 
     // --- DOM: プレビュー枠の aspect-ratio を更新 ---
-    syncCameraPreviewAspectRatio();
+    if (!cameraPreview) return;
+    if (cameraAspectKey === "1:1") cameraPreview.style.aspectRatio = "1 / 1";
+    if (cameraAspectKey === "3:4") cameraPreview.style.aspectRatio = "3 / 4";
+    if (cameraAspectKey === "16:9") cameraPreview.style.aspectRatio = "16 / 9";
+
+    // --- 既定は表示なし（切り抜きにフォールバックしたときだけ表示する） ---
+    setCameraPreviewModeLabel("");
+  }
+
+  /**
+   * プレビュー枠の左下に「現在どの方式で比率を合わせているか」を表示する。
+   *
+   * 表示例:
+   * - "3:4"
+   * - "16:9（切り抜き）"
+   */
+  function setCameraPreviewModeLabel(modeText) {
+    if (!cameraModeLabel) return;
+    if (modeText == null) {
+      cameraModeLabel.textContent = "";
+      return;
+    }
+
+    const mode = String(modeText || "").trim();
+    cameraModeLabel.textContent = mode ? `${cameraAspectKey}（${mode}）` : `${cameraAspectKey}`;
+  }
+
+  /**
+   * 実際の映像比率が選択比率と合わない場合、プレビューをクロップ表示に切り替える。
+   *
+   * 目的:
+   * - カメラ出力比率は端末依存で変えられないことがある。
+   * - その場合でも、プレビュー/撮影結果が「選択比率」で統一されるようにする（スマホ標準カメラ寄せ）。
+   */
+  function syncCameraPreviewCropMode() {
+    if (!cameraPreview || !cameraVideo) return;
+
+    // --- video の実寸（メタデータ確定後に入る） ---
+    const vw = Number(cameraVideo.videoWidth || 0);
+    const vh = Number(cameraVideo.videoHeight || 0);
+    if (!vw || !vh) {
+      setCameraPreviewModeLabel("");
+      return;
+    }
+
+    // --- 目標比率 ---
+    const ar = getCameraAspectRatio();
+    const targetAspect = Number(ar.w) / Number(ar.h);
+
+    // --- 実比率と比較 ---
+    const actualAspect = vw / vh;
+
+    // --- 小さな誤差は許容（端末側の丸めで僅かにズレることがある） ---
+    const tolerance = 0.03;
+    const shouldCrop = Math.abs(actualAspect - targetAspect) > tolerance;
+    cameraPreview.classList.toggle("is-crop", shouldCrop);
+
+    // --- ラベル（どっちを使っているか） ---
+    setCameraPreviewModeLabel(shouldCrop ? "切り抜き" : "");
+  }
+
+  /**
+   * 現在のストリームを維持したまま、getUserMedia で新しいストリームを取り直して差し替える。
+   *
+   * NOTE:
+   * - 取り直しに失敗したときも、既存ストリームを残す（真っ黒を避ける）。
+   */
+  async function restartCameraStreamWithPreview(options) {
+    if (!cameraVideo) throw new Error("camera video not found");
+    if (!canUseGetUserMedia()) throw new Error("getUserMedia not supported");
+    if (cameraOpening) throw new Error("camera opening");
+
+    cameraOpening = true;
+
+    const constraints = {
+      audio: false,
+      video: {
+        ...buildCameraVideoConstraints(options || null),
+      },
+    };
+
+    let nextStream = null;
+    try {
+      nextStream = await navigator.mediaDevices.getUserMedia(constraints);
+    } finally {
+      cameraOpening = false;
+    }
+
+    const prevStream = cameraStream;
+    cameraStream = nextStream;
+
+    // --- video 差し替え ---
+    cameraVideo.srcObject = cameraStream;
+    try {
+      await cameraVideo.play();
+    } catch (_) {}
+
+    // --- track/zoom UI 更新 ---
+    try {
+      const track = cameraStream.getVideoTracks && cameraStream.getVideoTracks()[0];
+      initCameraZoomUiFromTrack(track || null);
+    } catch (_) {
+      initCameraZoomUiFromTrack(null);
+    }
+
+    // --- メタデータ確定後にクロップモード判定 ---
+    // NOTE: ここでは即時も当てる（イベントは遅れることがある）。
+    syncCameraPreviewCropMode();
+    try {
+      requestAnimationFrame(() => syncCameraPreviewCropMode());
+    } catch (_) {}
+
+    // --- 前のストリームを停止 ---
+    if (prevStream) {
+      try {
+        for (const t of prevStream.getTracks()) {
+          try {
+            t.stop();
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
   }
 
   /**
@@ -453,7 +537,6 @@
    */
   function getCameraAspectRatio() {
     if (cameraAspectKey === "1:1") return { w: 1, h: 1 };
-    if (cameraAspectKey === "4:3") return { w: 4, h: 3 };
     if (cameraAspectKey === "16:9") return { w: 16, h: 9 };
     return { w: 3, h: 4 };
   }
@@ -589,7 +672,7 @@
     const constraints = {
       audio: false,
       video: {
-        ...buildCameraVideoConstraints(),
+        ...buildCameraVideoConstraints({ aspectMode: "ideal" }),
       },
     };
 
@@ -602,14 +685,23 @@
         await cameraVideo.play();
       } catch (_) {}
 
-      // --- 実際の映像比率が取れたらプレビュー枠を追従させる ---
+      // --- 実際の映像比率が取れたらクロップ表示へフォールバック（必要な場合のみ） ---
       // NOTE: loadedmetadata 前だと videoWidth/Height が 0 のことがあるため、イベント側でも再同期する。
-      syncCameraPreviewAspectRatio();
+      syncCameraPreviewCropMode();
 
       // --- ズームUI（対応していれば表示） ---
       try {
         const track = cameraStream.getVideoTracks && cameraStream.getVideoTracks()[0];
         initCameraZoomUiFromTrack(track || null);
+
+        // --- 可能なら `exact` で比率を寄せる（ダメならクロップで吸収） ---
+        // NOTE: getUserMedia の ideal が無視される環境向けに、追加で try する。
+        if (track && typeof track.applyConstraints === "function") {
+          try {
+            const vcExact = buildCameraVideoConstraints({ aspectMode: "exact" });
+            await track.applyConstraints({ aspectRatio: vcExact.aspectRatio, width: vcExact.width, height: vcExact.height });
+          } catch (_) {}
+        }
       } catch (_) {
         initCameraZoomUiFromTrack(null);
       }
@@ -633,6 +725,7 @@
 
     if (cameraModal) cameraModal.classList.add("hidden");
     setCameraStatus("", false);
+    setCameraPreviewModeLabel(null);
   }
 
   /**
@@ -646,36 +739,44 @@
     const vh = Number(video.videoHeight || 0);
     if (!vw || !vh) throw new Error("video size not ready");
 
-    // --- プレビュー枠と同じ比率のキャンバスを用意（トリミングはしない） ---
-    // NOTE:
-    // - 16:9 は「縦長（9:16）で返る」端末があるため、実映像が縦長なら 9/16 として扱う。
-    // - それ以外は比率キー通り。
-    let targetAspect = 0;
-    if (cameraAspectKey === "16:9") {
-      targetAspect = vh > vw ? 9 / 16 : 16 / 9;
-    } else {
-      const ar = getCameraAspectRatio();
-      targetAspect = Number(ar.w) / Number(ar.h);
-    }
+    // --- プレビュー枠と同じ比率で切り抜く（スマホ標準カメラ寄せ） ---
+    const ar = getCameraAspectRatio();
+    const targetAspect = Number(ar.w) / Number(ar.h);
     const sourceAspect = vw / vh;
 
-    let baseCanvasW = vw;
-    let baseCanvasH = vh;
-    if (sourceAspect > targetAspect) {
-      // --- ソースが横長: 縦方向に余白を足して比率を合わせる ---
-      baseCanvasW = vw;
-      baseCanvasH = Math.max(vh, Math.round(vw / targetAspect));
+    // --- 切り抜き領域（中心） ---
+    let sx = 0;
+    let sy = 0;
+    let sw = vw;
+    let sh = vh;
+    // --- 小さな誤差は許容（端末側の丸めで僅かにズレることがある） ---
+    const tolerance = 0.03;
+
+    if (Math.abs(sourceAspect - targetAspect) <= tolerance) {
+      // --- ほぼ一致: 切り抜かない（プレビューの contain と揃える） ---
+      sx = 0;
+      sy = 0;
+      sw = vw;
+      sh = vh;
+    } else if (sourceAspect > targetAspect) {
+      // --- ソースが横長: 左右を切る ---
+      sh = vh;
+      sw = Math.max(1, Math.round(vh * targetAspect));
+      sx = Math.round((vw - sw) / 2);
+      sy = 0;
     } else if (sourceAspect < targetAspect) {
-      // --- ソースが縦長: 横方向に余白を足して比率を合わせる ---
-      baseCanvasH = vh;
-      baseCanvasW = Math.max(vw, Math.round(vh * targetAspect));
+      // --- ソースが縦長: 上下を切る ---
+      sw = vw;
+      sh = Math.max(1, Math.round(vw / targetAspect));
+      sx = 0;
+      sy = Math.round((vh - sh) / 2);
     }
 
     // --- 5MB制限に近づきにくいように縮小（最大辺 1280px） ---
     const maxSide = 1280;
-    const scale = Math.min(1, maxSide / Math.max(baseCanvasW, baseCanvasH));
-    const tw = Math.max(1, Math.round(baseCanvasW * scale));
-    const th = Math.max(1, Math.round(baseCanvasH * scale));
+    const scale = Math.min(1, maxSide / Math.max(sw, sh));
+    const tw = Math.max(1, Math.round(sw * scale));
+    const th = Math.max(1, Math.round(sh * scale));
 
     const canvas = document.createElement("canvas");
     canvas.width = tw;
@@ -684,16 +785,7 @@
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("canvas ctx not available");
 
-    // --- 背景（余白）を塗る ---
-    ctx.fillStyle = "#0b1220";
-    ctx.fillRect(0, 0, tw, th);
-
-    // --- トリミングしないで、中央に収める（contain） ---
-    const drawW = Math.max(1, Math.round(vw * scale));
-    const drawH = Math.max(1, Math.round(vh * scale));
-    const dx = Math.round((tw - drawW) / 2);
-    const dy = Math.round((th - drawH) / 2);
-    ctx.drawImage(video, 0, 0, vw, vh, dx, dy, drawW, drawH);
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, tw, th);
 
     const blob = await new Promise((resolve, reject) => {
       canvas.toBlob(
@@ -1458,51 +1550,58 @@
       const k = String(btn && btn.dataset ? btn.dataset.ratio : "");
       setCameraAspectRatioKey(k);
 
+      // --- プレビューのクロップモードを即時反映（メタデータがあれば） ---
+      syncCameraPreviewCropMode();
+
       // --- 可能ならカメラ側へ「比率変更」を要求する ---
       // NOTE:
-      // - 端末が対応していれば applyConstraints で比率/解像度が変わる。
-      // - 非対応なら再起動で試す。それもダメなら現状維持（UI/撮影側は選択比率で整合）。
+      // - まずは `exact` を要求し、通れば「実映像そのもの」が選択比率になる。
+      // - 通らない端末では、プレビュー/撮影を「クロップ」で選択比率に合わせてフォールバックする。
       if (!cameraModal || cameraModal.classList.contains("hidden")) return;
       if (!canUseGetUserMedia()) return;
       if (cameraOpening) return;
 
+      setCameraStatus("比率を変更中...", false);
+
       const track = cameraVideoTrack;
       if (track && typeof track.applyConstraints === "function") {
-        const vc = buildCameraVideoConstraints();
-        const ar = vc && vc.aspectRatio && vc.aspectRatio.ideal != null ? Number(vc.aspectRatio.ideal) : null;
+        const vcExact = buildCameraVideoConstraints({ aspectMode: "exact" });
 
-        // --- まずは単純な constraints ---
+        // --- まずは `exact`（できない場合は例外になる） ---
         try {
           await track.applyConstraints({
-            aspectRatio: ar != null ? ar : undefined,
-            width: vc.width,
-            height: vc.height,
+            aspectRatio: vcExact.aspectRatio,
+            width: vcExact.width,
+            height: vcExact.height,
           });
+          syncCameraPreviewCropMode();
           setCameraStatus("", false);
           return;
         } catch (_) {}
 
-        // --- advanced で試す ---
+        // --- advanced でも試す（実装差分の吸収） ---
         try {
           await track.applyConstraints({
-            width: vc.width,
-            height: vc.height,
-            advanced: [{ aspectRatio: ar != null ? ar : undefined }],
+            width: vcExact.width,
+            height: vcExact.height,
+            advanced: [{ aspectRatio: vcExact.aspectRatio && vcExact.aspectRatio.exact != null ? vcExact.aspectRatio.exact : undefined }],
           });
+          syncCameraPreviewCropMode();
           setCameraStatus("", false);
           return;
         } catch (_) {}
       }
 
-      // --- applyConstraints が効かない場合は、ストリーム再起動で試す ---
-      setCameraStatus("比率を変更中...", false);
+      // --- applyConstraints が効かない場合は、ストリーム取り直しで試す ---
       try {
-        stopCameraStreamOnly();
-        await openCameraModalWithPreview();
+        await restartCameraStreamWithPreview({ aspectMode: "exact" });
+        syncCameraPreviewCropMode();
         setCameraStatus("", false);
       } catch (_) {
         // --- 変更できない端末もあるので、ここではエラー扱いにせず続行 ---
-        setCameraStatus("※この端末ではカメラ出力比率の変更ができない可能性があります", false);
+        // NOTE: 以降はクロップ表示/クロップ撮影で「選択比率」に合わせる。
+        syncCameraPreviewCropMode();
+        setCameraStatus("※この端末ではカメラ出力比率の変更ができない可能性があります（プレビュー/撮影は切り抜きで合わせます）", false);
       }
     });
   }
