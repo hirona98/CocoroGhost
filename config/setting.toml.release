@@ -27,6 +27,11 @@ llm_log_level = "DEBUG"
 llm_timeout_seconds = 30
 llm_stream_timeout_seconds = 60
 
+# 画像要約（chat/notification/meta-request）: 1枚あたりの最大文字数
+# - 大きいほど「画像の材料」が増えるが、後段のプロンプトが膨らみ体感と安定性が悪化しやすい
+# - 推奨: 200〜600（既定: 400）
+image_summary_max_chars = 400
+
 # 記憶検索（SearchResultPack）の候補数上限
 # - 大きいほど取りこぼしが減るが、検索候補の選別が遅くなる
 # - 推奨: 40〜120（既定: 60）

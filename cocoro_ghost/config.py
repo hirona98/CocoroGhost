@@ -40,6 +40,7 @@ class Config:
     llm_log_level: str   # LLM送受信ログレベル（DEBUG, INFO, OFF）
     llm_timeout_seconds: int  # LLM API（非ストリーム）のタイムアウト秒数
     llm_stream_timeout_seconds: int  # LLM API（ストリーム開始）のタイムアウト秒数
+    image_summary_max_chars: int  # 画像要約（chat/notification/meta-request）: 1枚あたりの最大文字数
     retrieval_max_candidates: int  # 記憶検索: 候補収集の最大件数（SearchResultPack選別入力の上限）
     retrieval_explore_global_vector_percent: int  # 記憶検索: 探索枠（全期間ベクトル候補）の割合（retrieval_max_candidatesのX%）
     retrieval_event_affect_max_percent: int  # 記憶検索: event_affect 候補の最大割合（候補を食い過ぎない上限）
@@ -215,6 +216,7 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         "llm_log_level",
         "llm_timeout_seconds",
         "llm_stream_timeout_seconds",
+        "image_summary_max_chars",
         "retrieval_max_candidates",
         "retrieval_explore_global_vector_percent",
         "retrieval_event_affect_max_percent",
@@ -275,6 +277,16 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         raise ValueError("llm_timeout_seconds must be a positive integer")
     if llm_stream_timeout_seconds <= 0:
         raise ValueError("llm_stream_timeout_seconds must be a positive integer")
+
+    # --- 画像要約: 1枚あたり最大文字数（必須・正の整数） ---
+    # NOTE:
+    # - chat/notification/meta-request の data URI 画像から要約を作るときに使う。
+    # - 長すぎる要約は後段のプロンプトを膨らませ、体感と品質を悪化させやすい。
+    image_summary_max_chars = int(_require(data, "image_summary_max_chars"))
+    if image_summary_max_chars <= 0:
+        raise ValueError("image_summary_max_chars must be a positive integer")
+    # NOTE: 画像枚数が増えたときの入力膨張を防ぐため、常識的な上限でキャップする。
+    image_summary_max_chars = max(1, min(3000, int(image_summary_max_chars)))
 
     # --- 記憶検索: 候補数上限（既定: 60） ---
     # NOTE:
@@ -416,6 +428,8 @@ def load_config(path: str | pathlib.Path | None = None) -> Config:
         # - stream は「開始まで」の待ちを制限する目的（本文生成はストリームで継続受信する）。
         llm_timeout_seconds=int(llm_timeout_seconds),
         llm_stream_timeout_seconds=int(llm_stream_timeout_seconds),
+        # --- 画像要約: 1枚あたり最大文字数（必須） ---
+        image_summary_max_chars=int(image_summary_max_chars),
         # --- 記憶検索（候補上限） ---
         retrieval_max_candidates=int(retrieval_max_candidates),
         retrieval_explore_global_vector_percent=int(retrieval_explore_global_vector_percent),

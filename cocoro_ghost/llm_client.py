@@ -1008,18 +1008,75 @@ class LlmClient:
         """
         llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
         purpose_label = _normalize_purpose(purpose)
-        max_workers = 4
 
         # --- MIMEリストを正規化する ---
         # NOTE:
         # - image_url の data URI では MIME が重要になり得るため、入力に合わせる。
-        # - 呼び出し側で不明なら image/png とする（従来互換）。
+        # - 呼び出し側で不明なら image/png とする。
         if mime_types is None:
             mime_list = ["image/png" for _ in images]
         else:
             if len(mime_types) != len(images):
                 raise ValueError("mime_types length must match images length")
             mime_list = [str(x or "").strip().lower() or "image/png" for x in mime_types]
+
+        def _build_vision_task_text(*, is_desktop_watch_summary: bool) -> tuple[str, str]:
+            """
+            Visionタスクの system と「タスク定義（語彙）」を返す。
+
+            NOTE:
+                - visionモデルに「画像」と言うと、戻り文が「この画像は〜」に寄りやすい。
+                - デスクトップウォッチは「画面（スクリーンショット）」として扱いたいので、
+                  purpose に応じて語彙だけを差し替える。
+            """
+            # --- desktop_watch は「画面」語彙に寄せる ---
+            if bool(is_desktop_watch_summary):
+                system_text = "あなたは日本語で説明します。"
+                instruction_head = "これはデスクトップ画面（スクリーンショット）です。"
+                instruction_body = "画面の内容を詳細に説明してください。"
+                return system_text, " ".join([instruction_head, instruction_body]).strip()
+
+            # --- 通常（画像） ---
+            system_text = "あなたは日本語で画像を説明します。"
+            instruction_body = "この画像を詳細に説明してください。"
+            return system_text, str(instruction_body)
+
+        def _parse_summaries_json(*, content: str, expected_len: int) -> list[str]:
+            """
+            VisionのJSON出力（summaries配列）をパースする。
+
+            期待フォーマット:
+                {"summaries": ["...","..."]}
+            """
+            # --- まずは素直に JSON として読む ---
+            raw = str(content or "").strip()
+            obj: Any | None = None
+            try:
+                obj = json.loads(raw)
+            except Exception:  # noqa: BLE001
+                obj = None
+
+            # --- JSONが前後に混ざった場合は、最初の {...} を雑に抽出して読む ---
+            if obj is None:
+                try:
+                    i0 = raw.find("{")
+                    i1 = raw.rfind("}")
+                    if i0 >= 0 and i1 > i0:
+                        obj = json.loads(raw[i0 : i1 + 1])
+                except Exception:  # noqa: BLE001
+                    obj = None
+
+            if not isinstance(obj, dict):
+                raise ValueError("vision JSON output is not an object")
+
+            summaries = obj.get("summaries")
+            if not isinstance(summaries, list):
+                raise ValueError("vision JSON output missing 'summaries' array")
+
+            out = [str(x or "").strip() for x in summaries]
+            if int(len(out)) != int(expected_len):
+                raise ValueError(f"vision summaries length mismatch expected={expected_len} got={len(out)}")
+            return out
 
         def _process_one(image_bytes: bytes, mime: str) -> str:
             start = time.perf_counter()
@@ -1033,25 +1090,11 @@ class LlmClient:
             b64 = base64.b64encode(image_bytes).decode("ascii")
             # --- 指示文（必要なら最大文字数を明示） ---
             # NOTE: 受信側の暴走対策として、後段でも念のため切り詰める。
-            #
-            # NOTE:
-            # - visionモデルに「画像」と言ってしまうと、戻り文が「この画像は〜」になりやすい。
-            # - デスクトップウォッチは「画面（スクリーンショット）」として扱うのが意図なので、
-            #   purpose に応じてタスク定義の語彙だけを差し替える。
             is_desktop_watch_summary = str(purpose or "").strip() == LlmRequestPurpose.SYNC_IMAGE_SUMMARY_DESKTOP_WATCH
-            if is_desktop_watch_summary:
-                system_text = "あなたは日本語で説明します。"
-                instruction_head = "これはデスクトップ画面（スクリーンショット）です。"
-                instruction_body = "画面の内容を詳細に説明してください。"
-            else:
-                system_text = "あなたは日本語で画像を説明します。"
-                instruction_head = ""
-                instruction_body = "この画像を詳細に説明してください。"
+            system_text, task_text = _build_vision_task_text(is_desktop_watch_summary=bool(is_desktop_watch_summary))
 
             instructions: list[str] = []
-            if instruction_head:
-                instructions.append(instruction_head)
-            instructions.append(instruction_body)
+            instructions.append(str(task_text))
             if max_chars is not None and int(max_chars) > 0:
                 instructions.append(f"必須: {int(max_chars)}文字以内。")
             instruction_text = " ".join(instructions).strip()
@@ -1123,6 +1166,126 @@ class LlmClient:
                 out = out[: int(max_chars)]
             return out
 
+        def _process_many(images_bytes: list[bytes], mimes: list[str]) -> list[str]:
+            """
+            複数画像を「1回のVisionリクエスト」で要約する。
+
+            目的:
+                - 画像枚数が増えるほど、1枚ずつのLLM呼び出しは遅くなりやすい。
+                - まとめて渡しつつ、返答は images の順番に対応した summaries 配列で返させる。
+            """
+            start = time.perf_counter()
+            is_desktop_watch_summary = str(purpose or "").strip() == LlmRequestPurpose.SYNC_IMAGE_SUMMARY_DESKTOP_WATCH
+            system_text, task_text = _build_vision_task_text(is_desktop_watch_summary=bool(is_desktop_watch_summary))
+
+            # --- 画像をbase64エンコードして data URI 化する ---
+            # NOTE:
+            # - 画像は入力順（valid_images_bytes の順）で並べる。
+            # - モデルには「この順番に対応する配列で返せ」と強く要求する。
+            data_urls: list[str] = []
+            total_image_bytes = 0
+            for b, m in zip(images_bytes, mimes, strict=False):
+                total_image_bytes += int(len(b))
+                b64 = base64.b64encode(b).decode("ascii")
+                data_urls.append(f"data:{m};base64,{b64}")
+
+            # --- 指示文（JSON固定 + 配列長固定） ---
+            # NOTE:
+            # - response_format はプロバイダ差があるため、指示文でJSON固定を主にする。
+            # - 出力は「画像ごとの説明」を配列に分離し、混ざらないようにする。
+            expected_len = int(len(data_urls))
+            instruction_lines: list[str] = [
+                str(task_text),
+                "",
+                "重要: 出力はJSONオブジェクトのみ（前後に説明文やコードフェンスは禁止）。",
+                "次のスキーマで出力する:",
+                "{",
+                '  "summaries": ["string", "..."]',
+                "}",
+                f"ルール: summaries の要素数は必ず {expected_len} 件で、入力画像の順番に対応させる。",
+                "ルール: summaries[i] は画像(i+1)だけを説明し、他の画像の内容を混ぜない。",
+            ]
+            if max_chars is not None and int(max_chars) > 0:
+                instruction_lines.append(f"ルール: 各 summaries[i] は必ず {int(max_chars)} 文字以内。")
+            instruction_text = "\n".join([x for x in instruction_lines if str(x).strip()]).strip()
+
+            # --- messages を組み立てる（画像ごとにラベルを入れて混線を防ぐ） ---
+            user_content: list[dict[str, Any]] = [{"type": "text", "text": instruction_text}]
+            for idx, url in enumerate(data_urls):
+                user_content.append({"type": "text", "text": f"画像{int(idx) + 1}:"})
+                user_content.append({"type": "image_url", "image_url": {"url": str(url)}})
+            messages = [
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_content},
+            ]
+
+            if llm_log_level != "OFF":
+                self._log_llm_info(
+                    "LLM request 送信 %s kind=vision images=%s image_bytes_total=%s",
+                    purpose_label,
+                    expected_len,
+                    total_image_bytes,
+                )
+
+            kwargs = self._build_completion_kwargs(
+                model=self.image_model,
+                messages=messages,
+                api_key=self.image_model_api_key,
+                base_url=self.image_llm_base_url,
+                max_tokens=self.max_tokens_vision,
+                timeout=self.image_timeout_seconds,
+            )
+            self._log_llm_payload("LLM request (vision)", _sanitize_for_llm_log(kwargs), llm_log_level=llm_log_level)
+
+            try:
+                resp = litellm.completion(**kwargs)
+            except Exception as exc:  # noqa: BLE001
+                if llm_log_level != "OFF":
+                    elapsed_ms = int((time.perf_counter() - start) * 1000)
+                    if self._is_context_window_exceeded(exc):
+                        self._log_context_window_exceeded_error(
+                            purpose_label=purpose_label,
+                            kind="vision",
+                            elapsed_ms=elapsed_ms,
+                            approx_chars=_estimate_text_chars(messages),
+                            messages_count=len(messages),
+                            stream=False,
+                            exc=exc,
+                        )
+                    else:
+                        self._log_llm_error(
+                            "LLM request failed %s kind=vision images=%s ms=%s error=%s",
+                            purpose_label,
+                            expected_len,
+                            elapsed_ms,
+                            str(exc),
+                            exc_info=exc,
+                        )
+                raise
+
+            content = _first_choice_content(resp)
+            if llm_log_level != "OFF":
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+                self._log_llm_info(
+                    "LLM response 受信 %s kind=vision images=%s chars=%s ms=%s",
+                    purpose_label,
+                    expected_len,
+                    len(content or ""),
+                    elapsed_ms,
+                )
+            self._log_llm_payload(
+                "LLM response (vision)",
+                _sanitize_for_llm_log({"content": content, "finish_reason": _finish_reason(resp)}),
+                llm_log_level=llm_log_level,
+            )
+
+            summaries = _parse_summaries_json(content=str(content or ""), expected_len=int(expected_len))
+            # --- 文字数制限の最終防御 ---
+            if max_chars is not None and int(max_chars) > 0:
+                limit = int(max_chars)
+                summaries = [str(s or "")[:limit].strip() for s in summaries]
+            return summaries
+
         # --- 画像が1枚以下ならシンプルに処理する ---
         if len(images) <= 1:
             if not images:
@@ -1134,28 +1297,31 @@ class LlmClient:
                     return [""]
                 raise
 
-        # --- 2枚以上は並列に処理する ---
-        worker_count = min(max_workers, len(images))
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        # --- 2枚以上は、原則「1回のVisionリクエスト」にまとめる ---
+        # NOTE:
+        # - 画像枚数が増えるほど、リクエスト往復回数（=レイテンシ）が効くため。
+        # - 失敗時は best_effort の方針に合わせてフォールバックする。
+        try:
+            return _process_many([bytes(b) for b in images], [str(m) for m in mime_list])
+        except Exception:  # noqa: BLE001
             if not best_effort:
-                return list(executor.map(_process_one, images, mime_list))
+                raise
 
-            # --- best_effort: 失敗した画像だけ "" にして続行する ---
-            futures = [executor.submit(_process_one, b, m) for b, m in zip(images, mime_list)]
-            out: list[str] = []
-            for idx, fut in enumerate(futures):
+            # --- best_effort: 失敗した場合でも、可能な範囲で埋める（1枚ずつにフォールバック） ---
+            out2: list[str] = []
+            for idx, (b, m) in enumerate(zip(images, mime_list, strict=False)):
                 try:
-                    out.append(str(fut.result() or "").strip())
+                    out2.append(_process_one(b, m))
                 except Exception as exc:  # noqa: BLE001
                     if llm_log_level != "OFF":
                         self._log_llm_error(
-                            "LLM request failed (best_effort) %s kind=vision index=%s error=%s",
+                            "LLM request failed (best_effort fallback) %s kind=vision index=%s error=%s",
                             purpose_label,
                             idx,
                             str(exc),
                         )
-                    out.append("")
-            return out
+                    out2.append("")
+            return out2
 
     def response_to_dict(self, resp: Any) -> Dict[str, Any]:
         """Responseオブジェクトをログ/デバッグ用のdictに変換する。"""

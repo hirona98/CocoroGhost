@@ -26,7 +26,6 @@ _CHAT_ALLOWED_IMAGE_MIME_TYPES = {
 }
 _CHAT_IMAGE_MAX_BYTES_PER_IMAGE = 5 * 1024 * 1024
 _CHAT_IMAGE_MAX_BYTES_TOTAL = 20 * 1024 * 1024
-_CHAT_IMAGE_SUMMARY_MAX_CHARS = 400
 _CHAT_DEFAULT_INPUT_TEXT_WHEN_IMAGES_ONLY = "これをみて"
 
 
@@ -161,11 +160,16 @@ class _ImageMemoryMixin:
         if images_in:
             image_summaries = ["" for _ in images_in]
             if valid_images_bytes:
+                # --- 画像要約の最大文字数（TOML設定） ---
+                # NOTE:
+                # - 画像要約は後段プロンプトへ混ざるため、長すぎると体感と品質が悪化しやすい。
+                # - ここは「起動設定」で固定し、運用側で調整できるようにする。
+                max_chars = int(self.config_store.toml_config.image_summary_max_chars)  # type: ignore[attr-defined]
                 summaries_valid = self.llm_client.generate_image_summary(  # type: ignore[attr-defined]
                     valid_images_bytes,
                     purpose=str(purpose),
                     mime_types=list(valid_images_mimes),
-                    max_chars=int(_CHAT_IMAGE_SUMMARY_MAX_CHARS),
+                    max_chars=int(max_chars),
                     best_effort=True,
                 )
                 for idx2, summary in zip(valid_images_index, summaries_valid, strict=False):
