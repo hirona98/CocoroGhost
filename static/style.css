@@ -99,8 +99,24 @@ body {
   border-radius: 6px;
 }
 
-.icon-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
+@media (hover: hover) and (pointer: fine) {
+  .icon-btn:hover {
+    background: rgba(255, 255, 255, 0.14);
+  }
+}
+
+.icon-btn.listening {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .icon-btn.listening:hover {
+    background: rgba(255, 255, 255, 0.22);
+  }
+}
+
+.icon-btn.listening .mic-slash {
+  display: none;
 }
 
 .icon-btn svg {

@@ -95,6 +95,28 @@
   /** @type {"3:4"|"1:1"|"16:9"} */
   let cameraAspectKey = "3:4";
 
+  // --- Voice input (Web Speech API) state ---
+  /** @type {SpeechRecognition|null} */
+  let speechRecognition = null;
+  /** @type {boolean} */
+  let speechListening = false;
+  /** @type {boolean} */
+  let speechWantedOn = false;
+  /** @type {boolean} */
+  let speechHadError = false;
+  /** @type {number|null} */
+  let speechSilenceTimerId = null;
+  /** @type {string} */
+  let speechBaseText = "";
+  /** @type {string} */
+  let speechFinalText = "";
+  /** @type {string} */
+  let speechInterimText = "";
+  /** @type {string} */
+  let speechSavedStatusRight = "";
+  /** @type {string[]} */
+  let speechSendQueue = [];
+
   // --- Camera: preview crop fallback ---
   // NOTE:
   // - 端末によっては aspectRatio の要求が通らず、選択比率と実映像比率がズレることがある。
@@ -327,6 +349,355 @@
 
   function scrollToBottom() {
     chatScroll.scrollTop = chatScroll.scrollHeight;
+  }
+
+  // --- Voice helpers ---
+  /**
+   * Web Speech API（SpeechRecognition）が利用可能かを判定する。
+   *
+   * NOTE:
+   * - 実装状況はブラウザ依存（Chrome 系は webkitSpeechRecognition のことがある）。
+   * - ここでは「利用できるなら使う」だけで、品質や言語は環境任せ。
+   */
+  function canUseSpeechRecognition() {
+    const w = window;
+    return !!(w && (w.SpeechRecognition || w.webkitSpeechRecognition));
+  }
+
+  /**
+   * SpeechRecognition のコンストラクタを取得する。
+   */
+  function getSpeechRecognitionCtor() {
+    const w = window;
+    return w.SpeechRecognition || w.webkitSpeechRecognition || null;
+  }
+
+  /**
+   * 音声入力のUI状態を更新する。
+   */
+  function syncVoiceUiState() {
+    // --- ON/OFF は「ユーザーがトグルした状態」を優先して表示する ---
+    if (micButton) micButton.classList.toggle("listening", !!speechWantedOn);
+
+    // --- 音声入力ONの間は入力欄を固定（途中編集で意図しない送信になりやすいため） ---
+    if (textInput) textInput.disabled = !!speechWantedOn;
+    if (sendButton) sendButton.disabled = !!speechWantedOn || !!chatAbortController;
+
+    // --- 右側ステータスは音声入力の表示に使う（左側の接続状態などを壊さない） ---
+    if (statusRight) {
+      statusRight.textContent = speechWantedOn ? "音声入力ON" : String(speechSavedStatusRight || "");
+    }
+  }
+
+  /**
+   * 音声認識の途中結果を input に反映する（ユーザーが見えるフィードバック用）。
+   */
+  function renderSpeechTextToInput() {
+    const finalText = String(speechFinalText || "").trim();
+    const interimText = String(speechInterimText || "").trim();
+    const combined = `${finalText}${interimText ? (finalText ? " " : "") + interimText : ""}`.trim();
+
+    if (!textInput) return;
+
+    // --- 音声入力の可視化用に、現在の発話だけを表示する（既存の入力は speechBaseText に退避） ---
+    textInput.value = combined;
+    autoResizeTextarea();
+    refreshSendButtonEnabled();
+  }
+
+  /**
+   * 無音（結果の更新が止まった）とみなして、現在の発話を「自動送信」するタイマーをセットする。
+   *
+   * NOTE:
+   * - SpeechRecognition の発話区切りは環境差が大きい。
+   * - ここでは「最後の onresult から一定時間更新が無ければ送信」として安定動作を狙う。
+   */
+  function scheduleSpeechSilenceFlush() {
+    if (speechSilenceTimerId != null) {
+      try {
+        clearTimeout(speechSilenceTimerId);
+      } catch (_) {}
+      speechSilenceTimerId = null;
+    }
+    if (!speechWantedOn) return;
+
+    // --- 体感: 0.9〜1.3秒くらいが「話し終わり」として自然 ---
+    const ms = 1100;
+    speechSilenceTimerId = setTimeout(() => {
+      // --- 発話の区切りとして、認識セッションを一度止める ---
+      // NOTE:
+      // - continuous=true で流しっぱなしにすると、環境によって結果が累積して重複しやすい。
+      // - ここでは「無音で stop() → onend で送信 → wantedOn なら再起動」で安定させる。
+      if (!speechWantedOn) return;
+
+      if (speechRecognition) {
+        try {
+          speechRecognition.stop();
+          return;
+        } catch (_) {}
+      }
+
+      // --- stop() できない/セッションが無い場合は、今ある結果だけ送って再起動する ---
+      flushSpeechUtteranceToQueue(null);
+      if (speechWantedOn && !speechHadError) {
+        try {
+          setTimeout(() => startSpeechRecognitionSession(), 250);
+        } catch (_) {}
+      }
+    }, ms);
+  }
+
+  /**
+   * キューに溜まっている音声メッセージを、送信可能なタイミングで順次送る。
+   */
+  function drainSpeechSendQueue() {
+    // --- 送信中なら終わってから ---
+    if (chatAbortController) return;
+    const next = Array.isArray(speechSendQueue) && speechSendQueue.length ? speechSendQueue.shift() : "";
+    const text = String(next || "").trim();
+    if (!text) {
+      return;
+    }
+    if (!textInput) return;
+
+    // --- sendChat は textInput を読むので、ここで入れて呼ぶ ---
+    textInput.value = text;
+    autoResizeTextarea();
+    refreshSendButtonEnabled();
+
+    // --- 実際の送信 ---
+    try {
+      sendChat();
+    } catch (_) {}
+  }
+
+  /**
+   * 現在の発話（final/interim）をキューに積んで、送信処理を回す。
+   */
+  function flushSpeechUtteranceToQueue(options) {
+    // --- options ---
+    // - force: boolean（OFFに切り替えるタイミングでも残りを送る）
+    const force = !!(options && options.force);
+    if (!speechWantedOn && !force) return;
+
+    const finalText = String(speechFinalText || "").trim();
+    const interimText = String(speechInterimText || "").trim();
+
+    // --- final があるときは final を優先（final+interim を連結すると重複しやすい） ---
+    const combined = (finalText || interimText).trim();
+    if (!combined) return;
+
+    // --- キューへ積む ---
+    speechSendQueue.push(combined);
+
+    // --- 現在の発話をリセット ---
+    speechFinalText = "";
+    speechInterimText = "";
+    renderSpeechTextToInput();
+
+    // --- 送れるなら送る ---
+    drainSpeechSendQueue();
+  }
+
+  /**
+   * SpeechRecognition のセッションを開始する（ON の間は必要に応じて自動再起動する）。
+   */
+  function startSpeechRecognitionSession() {
+    if (!speechWantedOn) return;
+    if (!canUseSpeechRecognition()) return;
+
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) return;
+
+    // --- インスタンスは都度作る（環境差で再利用が不安定なことがある） ---
+    /** @type {SpeechRecognition} */
+    const rec = new Ctor();
+    speechRecognition = rec;
+    speechHadError = false;
+
+    // --- 設定 ---
+    // NOTE:
+    // - continuous=false: 無音検出で stop() → onend → 再起動、のループで安定させる
+    // - interimResults=true: 入力欄に途中結果を出してフィードバック
+    try {
+      rec.lang = "ja-JP";
+    } catch (_) {}
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+
+    rec.onstart = () => {
+      speechListening = true;
+      syncVoiceUiState();
+      renderSpeechTextToInput();
+    };
+
+    rec.onresult = (event) => {
+      // --- 途中/確定の結果を取り出す ---
+      // NOTE:
+      // - resultIndex を信頼して「追記」すると、環境によって同じ断片が再送され重複しやすい。
+      // - ここでは毎回 event.results 全体から再構築する（1セッション=1発話なので十分速い）。
+      const finals = [];
+      const interims = [];
+      try {
+        for (let i = 0; i < event.results.length; i += 1) {
+          const res = event.results[i];
+          const alt = res && res[0] ? res[0] : null;
+          const t = String(alt && alt.transcript != null ? alt.transcript : "").trim();
+          if (!t) continue;
+          if (res.isFinal) finals.push(t);
+          else interims.push(t);
+        }
+      } catch (_) {}
+
+      speechFinalText = finals.join(" ").trim();
+      speechInterimText = interims.join(" ").trim();
+
+      // --- 入力欄へ反映 ---
+      renderSpeechTextToInput();
+
+      // --- 無音タイマー更新（無音になったら自動送信） ---
+      scheduleSpeechSilenceFlush();
+    };
+
+    rec.onerror = (event) => {
+      speechHadError = true;
+      const err = event && event.error ? String(event.error) : "unknown";
+      setStatusBar(String(statusLeft ? statusLeft.textContent || "" : "状態:"), `音声入力エラー: ${err}`);
+
+      // --- エラー時はONを解除（無限再起動を避ける） ---
+      speechWantedOn = false;
+      syncVoiceUiState();
+
+      try {
+        rec.stop();
+      } catch (_) {}
+    };
+
+    rec.onend = () => {
+      speechListening = false;
+      speechRecognition = null;
+
+      // --- タイマー停止 ---
+      if (speechSilenceTimerId != null) {
+        try {
+          clearTimeout(speechSilenceTimerId);
+        } catch (_) {}
+        speechSilenceTimerId = null;
+      }
+
+      // --- 終了時に、残っている発話があれば送信 ---
+      flushSpeechUtteranceToQueue(null);
+
+      // --- ON のままなら自動で再起動（環境によっては onend が頻繁に来る） ---
+      if (speechWantedOn && !speechHadError) {
+        try {
+          setTimeout(() => startSpeechRecognitionSession(), 250);
+        } catch (_) {}
+      }
+
+      // --- OFF の場合は下書きを復元（送信が無く、入力欄が空のときだけ） ---
+      if (!speechWantedOn) {
+        const hasQueued = Array.isArray(speechSendQueue) && speechSendQueue.length > 0;
+        const hasInput = !!(textInput && String(textInput.value || "").trim());
+        if (!hasQueued && !hasInput && textInput) {
+          textInput.value = speechBaseText;
+          autoResizeTextarea();
+          refreshSendButtonEnabled();
+        }
+      }
+
+      syncVoiceUiState();
+    };
+
+    try {
+      rec.start();
+    } catch (_) {
+      // --- start に失敗したらON解除 ---
+      speechRecognition = null;
+      speechWantedOn = false;
+      syncVoiceUiState();
+    }
+  }
+
+  /**
+   * 音声入力を開始する（無音検出で自動送信、再度押すまでON）。
+   */
+  async function startVoiceInputAndAutoSend() {
+    // --- チャット画面以外では送らない ---
+    if (!panelChat || panelChat.classList.contains("hidden")) {
+      alert("音声入力はログイン後に利用できます。");
+      return;
+    }
+    if (!canUseSpeechRecognition()) {
+      alert("このブラウザでは音声認識（Web Speech API）が利用できません。");
+      return;
+    }
+    if (chatAbortController) {
+      alert("送信中のため、音声入力を開始できません。");
+      return;
+    }
+    if (speechWantedOn) return;
+
+    // --- state リセット ---
+    speechHadError = false;
+    // NOTE: 既存の入力は「下書き」として退避し、音声入力中は上書き表示する。
+    speechBaseText = String(textInput ? textInput.value || "" : "");
+    speechFinalText = "";
+    speechInterimText = "";
+    speechSavedStatusRight = String(statusRight ? statusRight.textContent || "" : "");
+    speechSendQueue = [];
+
+    // --- ON に切り替え ---
+    speechWantedOn = true;
+    speechListening = false;
+    syncVoiceUiState();
+
+    // --- 入力欄は音声入力用にクリア ---
+    if (textInput) {
+      textInput.value = "";
+      autoResizeTextarea();
+      refreshSendButtonEnabled();
+    }
+
+    // --- セッション開始 ---
+    startSpeechRecognitionSession();
+  }
+
+  /**
+   * 音声入力を停止する（停止時に残っている発話があれば送信し、入力欄は下書きを復元する）。
+   */
+  function stopVoiceInput() {
+    if (speechSilenceTimerId != null) {
+      try {
+        clearTimeout(speechSilenceTimerId);
+      } catch (_) {}
+      speechSilenceTimerId = null;
+    }
+
+    // --- OFF に切り替え ---
+    speechWantedOn = false;
+    syncVoiceUiState();
+    try {
+      if (micButton) micButton.blur();
+    } catch (_) {}
+
+    // --- 残っている発話があれば送信（OFFでも送信自体は続ける） ---
+    flushSpeechUtteranceToQueue({ force: true });
+    drainSpeechSendQueue();
+
+    if (!speechRecognition) {
+      // --- 下書き復元（送信キューが空で、発話も空のときだけ） ---
+      if (textInput && !String(textInput.value || "").trim()) {
+        textInput.value = speechBaseText;
+        autoResizeTextarea();
+        refreshSendButtonEnabled();
+      }
+      return;
+    }
+    try {
+      speechRecognition.stop();
+    } catch (_) {}
   }
 
   // --- Camera helpers ---
@@ -1377,6 +1748,9 @@
       chatAbortController = null;
       inflightAssistantBubble = null;
       refreshSendButtonEnabled();
+
+      // --- 音声入力キューがあれば続けて送る ---
+      drainSpeechSendQueue();
     }
   }
 
@@ -1416,7 +1790,14 @@
   });
 
   // --- Icons: no-op except gear (logout) ---
-  micButton.addEventListener("click", () => {});
+  micButton.addEventListener("click", async () => {
+    // --- トグル（再度押すまでON） ---
+    if (speechWantedOn) {
+      stopVoiceInput();
+      return;
+    }
+    await startVoiceInputAndAutoSend();
+  });
   soundButton.addEventListener("click", () => {});
 
   gearButton.addEventListener("click", async () => {
