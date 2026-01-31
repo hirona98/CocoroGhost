@@ -687,24 +687,31 @@ class _ChatMemoryMixin:
         client_id: str,
         exclude_event_id: int,
         max_turn_events: int,
-    ) -> list[dict[str, str]]:
+    ) -> tuple[list[dict[str, str]], list[int]]:
         """
         直近のチャット会話（短期コンテキスト）を messages 形式で返す。
 
         注意:
             - クライアントは単純I/Oなので、サーバ側で直近会話を付与して会話の安定性を上げる。
             - ここは「会話の流れ」を補助する目的。検索（記憶）は別経路（SearchResultPack）。
+            - 直近ターンを SearchResultPack 側にも入れるとトークンが二重化しやすいので、
+              ここで取得した event_id 群を「記憶検索から除外」する用途にも使う。
             - with を抜けても安全なように、ORMを返さず dict だけ返す。
+
+        Returns:
+            (messages, event_ids):
+                - messages: OpenAI互換 messages（role/content）。
+                - event_ids: messages に含まれた events.event_id の配列（古い順）。
         """
         cid = str(client_id or "").strip()
         if not cid:
-            return []
+            return [], []
 
         # --- 直近ターン数（短期コンテキスト） ---
         # NOTE: max_turns_window は常に設定される前提（欠損フォールバックはしない）。
         n = int(max_turn_events)
         if n <= 0:
-            return []
+            return [], []
         n = max(1, n)
 
         # --- 1イベント=1ターン（user_text + assistant_text）を想定 ---
@@ -731,6 +738,12 @@ class _ChatMemoryMixin:
         # --- 新しい順で取っているので、会話としては古い順に並べ直す ---
         rows.reverse()
 
+        # --- event_id は「直近ターン」を特定するために返す ---
+        # NOTE:
+        # - SearchResultPack（記憶）側に、直近ターンが再注入されるとトークンが二重化しやすい。
+        # - ここで返す event_ids を、候補収集（記憶検索）から除外する用途に使う。
+        event_ids = [int(eid) for (eid, _, _) in rows if int(eid) > 0]
+
         out: list[dict[str, str]] = []
         # NOTE: メッセージは切り詰めず、そのまま送る。
         for _, ut, at in rows:
@@ -738,7 +751,7 @@ class _ChatMemoryMixin:
                 out.append({"role": "user", "content": str(ut)})
             if str(at or "").strip():
                 out.append({"role": "assistant", "content": str(at)})
-        return out
+        return out, event_ids
 
     def _load_long_mood_state_snapshot(
         self, *, embedding_preset_id: str, embedding_dimension: int, now_ts: int
@@ -1071,6 +1084,21 @@ class _ChatMemoryMixin:
                 )
                 last_chat_created_at_ts = int(prev[1] or 0) if int(prev[1] or 0) > 0 else None
 
+        # --- 2.5) 直近会話（短期コンテキスト）を先にロードする ---
+        # NOTE:
+        # - 直近会話は「会話の流れ（指示・口調・直前の合意）」のために常に少量入れる。
+        # - 一方で、同じ直近会話が SearchResultPack（記憶）側にも入るとトークンが二重化しやすい。
+        # - そのため、ここで取得した event_id 群は「記憶検索から除外」して重複を避ける。
+        recent_dialog, recent_dialog_event_ids = self._load_recent_chat_dialog_messages(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            client_id=client_id,
+            exclude_event_id=int(event_id),
+            max_turn_events=int(cfg.max_turns_window),
+        )
+        exclude_recent_event_ids_for_memory = {int(x) for x in (recent_dialog_event_ids or []) if int(x) > 0}
+        exclude_recent_event_ids_for_memory.add(int(event_id))
+
         # --- 3) 先行: 埋め込み取得（input_text のみ。SSE開始前の待ちを削る） ---
         # NOTE:
         # - 段階化（追加クエリの追い埋め込み）はしない（シンプル優先）。
@@ -1112,6 +1140,7 @@ class _ChatMemoryMixin:
             input_text=augmented_query_text,
             plan_obj=plan_obj,
             vector_embedding_future=vector_embedding_future,
+            exclude_event_ids=exclude_recent_event_ids_for_memory,
         )
 
         # --- 6) 選別（LLM → SearchResultPack） ---
@@ -1219,14 +1248,7 @@ class _ChatMemoryMixin:
         # NOTE:
         # - 記憶（長期）は SearchResultPack で注入する。
         # - 直近会話は「文脈の流れ（指示・口調・直前の合意）」のために常に少量入れる。
-        # - max_turns_window は LLM プリセット（設定UI）側の値を使う（常に存在する前提）。
-        recent_dialog = self._load_recent_chat_dialog_messages(
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            client_id=client_id,
-            exclude_event_id=int(event_id),
-            max_turn_events=int(cfg.max_turns_window),
-        )
+        # - recent_dialog は 2.5) でロード済み（DB二重読みを避ける）。
         # --- 暗黙的キャッシュ（プロンプトキャッシュ）を効かせやすくする ---
         # NOTE:
         # - 「先頭側が同じほどキャッシュが効きやすい」前提で、system直後に固定ヘッダを置く。

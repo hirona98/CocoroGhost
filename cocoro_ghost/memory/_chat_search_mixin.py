@@ -314,6 +314,7 @@ class _ChatSearchMixin:
         input_text: str,
         plan_obj: dict[str, Any],
         vector_embedding_future: concurrent.futures.Future[list[Any]] | None = None,
+        exclude_event_ids: set[int] | None = None,
     ) -> tuple[list[_CandidateItem], dict[str, Any]]:
         """
         候補収集（取りこぼし防止優先・可能なものは並列）。
@@ -328,6 +329,9 @@ class _ChatSearchMixin:
                 先行して開始した「input_text のみ」の埋め込み取得結果。
                 - これが渡された場合、vec検索は原則この結果を使う（vec側は input_text を正とする）。
                 - 目的: SSE開始までの体感を上げ、vec候補の欠落を減らす。
+            exclude_event_ids:
+                直近ターンなど「短期コンテキストで既に messages に入っている event_id」の除外リスト。
+                目的はトークン二重化の抑制（SearchResultPack 側に直近会話を再注入しない）。
         """
 
         # --- 収集デバッグ（観測用。retrieval_runs に残す用途） ---
@@ -335,6 +339,15 @@ class _ChatSearchMixin:
         # - ここは「ログ」だけでなく、retrieval_runs.candidates_json にも残して後から追えるようにする。
         # - 値はJSON化される前提なので、シリアライズ可能な形に限定する。
         collect_debug: dict[str, Any] = {}
+
+        # --- 直近ターン除外（トークン二重化対策） ---
+        # NOTE:
+        # - 短期コンテキスト（messages）に入っている会話は、SearchResultPack にも入ると二重化する。
+        # - そのため、候補収集の段階で event_id を除外して「同じ本文が二重に入る」確率を下げる。
+        excluded_event_id_set = {int(x) for x in (exclude_event_ids or set()) if int(x) > 0}
+        # NOTE: 念のため、現在ターンは必ず除外する（呼び出し側でも除外している想定）。
+        excluded_event_id_set.add(int(event_id))
+        collect_debug["excluded_event_ids_count"] = int(len(excluded_event_id_set))
 
         # --- 上限 ---
         limits = plan_obj.get("limits") if isinstance(plan_obj, dict) else None
@@ -379,6 +392,9 @@ class _ChatSearchMixin:
         def add_sources(keys: list[tuple[str, int]], label: str) -> None:
             for t, i in keys:
                 if not t or int(i) <= 0:
+                    continue
+                # --- 直近ターン（短期コンテキスト）に含まれる event は、記憶候補へ入れない ---
+                if str(t) == "event" and int(i) in excluded_event_id_set:
                     continue
                 k = (str(t), int(i))
                 s = sources_by_key.get(k)
@@ -1199,7 +1215,13 @@ class _ChatSearchMixin:
         collect_debug["entity_expand"] = entity_expand_debug
 
         # --- レコードをまとめて引く（ORMのDetachedを避けるため、候補のdict化までセッション内で行う） ---
-        keys_all = sorted([k for k in sources_by_key.keys() if not (k[0] == "event" and int(k[1]) == int(event_id))])
+        keys_all = sorted(
+            [
+                k
+                for k in sources_by_key.keys()
+                if not (k[0] == "event" and int(k[1]) in excluded_event_id_set)
+            ]
+        )
         if not keys_all:
             # --- 候補ゼロでも原因が追えるように、デバッグを残す ---
             self._log_retrieval_debug(  # type: ignore[attr-defined]
@@ -1214,7 +1236,11 @@ class _ChatSearchMixin:
             affect_ids = [int(i) for (t, i) in keys_all if t == "event_affect"]
 
             events = (
-                db.query(Event).filter(Event.searchable == 1).filter(Event.event_id.in_(event_ids)).all()
+                db.query(Event)
+                .filter(Event.searchable == 1)
+                .filter(Event.event_id.in_(event_ids))
+                .filter(~Event.event_id.in_([int(x) for x in excluded_event_id_set]))
+                .all()
                 if event_ids
                 else []
             )
@@ -1228,6 +1254,8 @@ class _ChatSearchMixin:
                 .join(Event, Event.event_id == EventAffect.event_id)
                 .filter(Event.searchable == 1)
                 .filter(EventAffect.id.in_(affect_ids))
+                # --- 直近ターンの派生（event_affect）は重複しやすいので除外する ---
+                .filter(~EventAffect.event_id.in_([int(x) for x in excluded_event_id_set]))
                 .all()
                 if affect_ids
                 else []
