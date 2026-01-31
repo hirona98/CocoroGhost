@@ -460,7 +460,7 @@ class LlmClient:
             embedding_base_url: 埋め込みAPIベースURL（ローカルLLM等のOpenAI互換向け）
             image_llm_base_url: 画像モデルAPIベースURL（ローカルLLM等のOpenAI互換向け）
             image_model_api_key: 画像モデルAPIキー
-            reasoning_effort: 推論詳細度設定（o1系用）
+            reasoning_effort: 推論詳細度設定（推論モデル用）
             max_tokens: 通常時の最大トークン数
             max_tokens_vision: 画像認識時の最大トークン数
             image_timeout_seconds: 画像処理タイムアウト秒数
@@ -674,9 +674,113 @@ class LlmClient:
         if timeout:
             kwargs["timeout"] = timeout
 
-        # reasoning_effort対応（OpenAI o1系など）
-        if self.reasoning_effort:
-            kwargs["extra_body"] = {"reasoning_effort": self.reasoning_effort}
+        # --- 推論（reasoning/thinking）パラメータ ---
+        # NOTE:
+        # - OpenAIは推論系モデル向けに effort を制御するパラメータを持つ（モデル/エンドポイントで形が異なる）。
+        #   このプロジェクトでは LiteLLM の `reasoning_effort` を使って統一する。
+        # - OpenRouter は `reasoning.effort` を統一パラメータとして提供し、各プロバイダへマップする。
+        # - `extra_body` は OpenAI互換APIへ「非標準パラメータ」を渡すための逃げ道。
+        #   OpenRouter のドキュメントでも extra_body.reasoning の例が示されている。
+        def _normalize_reasoning_effort(value: Optional[str]) -> Optional[str]:
+            """reasoning_effort を正規化する（空なら None）。"""
+            cleaned = str(value or "").strip()
+            return cleaned or None
+
+        def _openai_model_id_from_litellm_model(litellm_model: str) -> str:
+            """LiteLLMの model 文字列から OpenAI側の model id を取り出す。"""
+            cleaned = str(litellm_model or "").strip().lower()
+
+            # --- LiteLLMの経路プレフィックスを除去する ---
+            if cleaned.startswith("openai/"):
+                cleaned = cleaned.removeprefix("openai/")
+
+            # --- OpenRouter embeddings 等で現れる二重 openai/ を吸収する ---
+            if cleaned.startswith("openai/"):
+                cleaned = cleaned.removeprefix("openai/")
+
+            # --- Responses API 経由指定（openai/responses/<model>）を吸収する ---
+            if cleaned.startswith("responses/"):
+                cleaned = cleaned.removeprefix("responses/")
+
+            return cleaned
+
+        def _default_reasoning_effort_for_openai_model_id(openai_model_id: str) -> Optional[str]:
+            """OpenAIの model id から、最小の reasoning_effort を返す。"""
+            model_id = str(openai_model_id or "").strip().lower()
+            if not model_id:
+                return None
+
+            # --- GPT-5.2 Pro: supported values = medium/high/xhigh ---
+            if model_id.startswith("gpt-5.2-pro"):
+                return "medium"
+
+            # --- GPT-5 Pro: supported values = high ---
+            if model_id.startswith("gpt-5-pro"):
+                return "high"
+
+            # --- GPT-5.2: supported values = none/low/medium/high/xhigh ---
+            if model_id.startswith("gpt-5.2"):
+                return "none"
+
+            # --- GPT-5.1: supported values = none/low/medium/high ---
+            if model_id.startswith("gpt-5.1"):
+                return "none"
+
+            # --- GPT-5: supported values = minimal/low/medium/high ---
+            if model_id.startswith("gpt-5"):
+                return "minimal"
+
+            # --- o-series: supported values はモデルごとに差があるため、保守的に low を使う ---
+            if re.match(r"^o\d", model_id):
+                return "low"
+
+            return None
+
+        def _default_reasoning_effort_for_model(litellm_model: str) -> Optional[str]:
+            """reasoning_effort 未指定時の既定値（最低レベル）を返す。"""
+            model_cleaned = str(litellm_model or "").strip().lower()
+            if not model_cleaned:
+                return None
+
+            # --- OpenRouter: openrouter/ は経路で、実体のモデル名でサポート値が変わる ---
+            if model_cleaned.startswith("openrouter/"):
+                underlying = model_cleaned.removeprefix("openrouter/")
+                if underlying.startswith("openai/"):
+                    openai_default = _default_reasoning_effort_for_openai_model_id(underlying.removeprefix("openai/"))
+                    # NOTE: OpenRouter経由では "minimal" が弾かれるモデルがあるため、保守的に "low" へ寄せる。
+                    if openai_default == "minimal":
+                        return "low"
+                    return openai_default
+                return None
+
+            # --- OpenAI: 推論モデルにだけ既定値を入れる（非推論モデルに投げて落とさない） ---
+            if model_cleaned.startswith("openai/"):
+                model_id = _openai_model_id_from_litellm_model(model_cleaned)
+                return _default_reasoning_effort_for_openai_model_id(model_id)
+
+            return None
+
+        model_name = str(model or "").strip()
+        model_name_lower = model_name.lower()
+        reasoning_effort = _normalize_reasoning_effort(self.reasoning_effort)
+        default_effort = _default_reasoning_effort_for_model(model_name)
+        effort_to_send = reasoning_effort or default_effort
+
+        extra_body: Dict[str, Any] = {}
+
+        # --- OpenRouter: unified reasoning param ---
+        if model_name_lower.startswith("openrouter/") and effort_to_send:
+            extra_body["reasoning"] = {"effort": str(effort_to_send)}
+
+        # --- OpenAI: Chat Completions reasoning_effort param ---
+        # NOTE: OpenAI以外へ不用意に投げると unknown parameter で落ちる可能性があるため、
+        #       "openai/" prefix の場合だけ付与する。
+        if model_name_lower.startswith("openai/") and effort_to_send:
+            if _default_reasoning_effort_for_model(model_name_lower) is not None or reasoning_effort is not None:
+                kwargs["reasoning_effort"] = str(effort_to_send)
+
+        if extra_body:
+            kwargs["extra_body"] = extra_body
 
         return kwargs
 
