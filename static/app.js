@@ -34,7 +34,6 @@
 
   const micButton = document.getElementById("btn-mic");
   const soundButton = document.getElementById("btn-sound");
-  const screenButton = document.getElementById("btn-screen");
   const gearButton = document.getElementById("btn-gear");
 
   const chatScroll = document.getElementById("chat-scroll");
@@ -1419,7 +1418,6 @@
   // --- Icons: no-op except gear (logout) ---
   micButton.addEventListener("click", () => {});
   soundButton.addEventListener("click", () => {});
-  screenButton.addEventListener("click", () => {});
 
   gearButton.addEventListener("click", async () => {
     const ok = confirm("ログアウトしますか？");
