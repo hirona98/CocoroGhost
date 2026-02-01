@@ -23,7 +23,7 @@ from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.deps import get_config_store_dep
 from cocoro_ghost.memory_models import Event, EventAffect, State
-from cocoro_ghost.time_utils import format_iso8601_local
+from cocoro_ghost.time_utils import format_iso8601_local_with_tz
 
 
 router = APIRouter(prefix="/mood", tags=["mood"])
@@ -101,8 +101,8 @@ def get_mood_debug(
                     "affect_id": int(r[0] or 0),
                     "event_id": int(r[1] or 0),
                     "event_source": str(r[2] or "").strip(),
-                    "event_created_at": format_iso8601_local(int(r[3] or 0)),
-                    "affect_created_at": format_iso8601_local(int(r[4] or 0)),
+                    "event_created_at": format_iso8601_local_with_tz(int(r[3] or 0)),
+                    "affect_created_at": format_iso8601_local_with_tz(int(r[4] or 0)),
                     "moment_affect_text": str(r[5] or ""),
                     "moment_affect_labels": common_utils.parse_json_str_list(str(r[6] or "")),
                     "vad": affect.vad_dict(float(r[7] or 0.0), float(r[8] or 0.0), float(r[9] or 0.0)),
@@ -175,9 +175,9 @@ def get_mood_debug(
                 "baseline_vad": baseline_vad,
                 "shock_vad": shock_decayed,
                 "vad": combined_vad,
-                "now": format_iso8601_local(int(now_ts)),
+                "now": format_iso8601_local_with_tz(int(now_ts)),
                 "dt_seconds": int(dt_seconds),
-                "last_confirmed_at": format_iso8601_local(int(st.last_confirmed_at)),
+                "last_confirmed_at": format_iso8601_local_with_tz(int(st.last_confirmed_at)),
             },
             "recent_affects": list(recent_affects),
             "limits": {"recent_affects_limit": int(_RECENT_EVENT_AFFECTS_LIMIT)},

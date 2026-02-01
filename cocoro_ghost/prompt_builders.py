@@ -78,7 +78,7 @@ def write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> 
             "- reason は短く具体的に（なぜそう判断したか）",
             "- state_id はDB主キー（整数）か null（文字列IDを作らない）",
             "- op=close/mark_done は state_id 必須（recent_states にあるIDのみ）。op=upsert は state_id=null で新規、state_id>0 で既存更新。",
-            "- 日時は ISO 8601（タイムゾーン付き）文字列で出す（例: 2026-01-10T13:24:00+09:00）",
+            "- 日時は ISO 8601（ローカル時刻、タイムゾーン表記なし）文字列で出す（例: 2026-01-10T13:24:00）",
             "",
             "出力スキーマ（キーは識別子なので英語のまま）:",
             "{",
