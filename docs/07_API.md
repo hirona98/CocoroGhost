@@ -87,6 +87,7 @@ data: {"message":"...","code":"..."}
 補足:
 
 - `event_id` は「このターンの出来事ログ（`events`）」を指すID（整数、`INTEGER`）とする
+- `event: error` は入力不正だけでなく「送信中の二重送信」などでも返り得る（例: `code="chat_busy"`）
 - 画像付きチャットの詳細は `docs/12_画像付きチャット.md` を参照
 
 ## `/api/auth/login`
