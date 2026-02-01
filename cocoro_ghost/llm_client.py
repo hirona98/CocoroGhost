@@ -683,8 +683,22 @@ class LlmClient:
         #   OpenRouter のドキュメントでも extra_body.reasoning の例が示されている。
         def _normalize_reasoning_effort(value: Optional[str]) -> Optional[str]:
             """reasoning_effort を正規化する（空なら None）。"""
-            cleaned = str(value or "").strip()
+            cleaned = str(value or "").strip().lower()
             return cleaned or None
+
+        def _normalize_openrouter_reasoning_effort(value: str) -> str:
+            """
+            OpenRouter の reasoning.effort に合わせて値を正規化する。
+
+            OpenRouter は low/medium/high/xhigh を受け付けるため、それ以外は
+            なるべく最小の low に寄せる（落ちにくさ優先）。
+            """
+            v = str(value or "").strip().lower()
+            if v in {"low", "medium", "high", "xhigh"}:
+                return v
+            if v in {"minimal", "none"}:
+                return "low"
+            return v
 
         def _openai_model_id_from_litellm_model(litellm_model: str) -> str:
             """LiteLLMの model 文字列から OpenAI側の model id を取り出す。"""
@@ -742,21 +756,21 @@ class LlmClient:
             if not model_cleaned:
                 return None
 
-            # --- OpenRouter: openrouter/ は経路で、実体のモデル名でサポート値が変わる ---
+            # --- OpenRouter: reasoning.effort の最小は low（モデル側が未対応でも丸められる） ---
             if model_cleaned.startswith("openrouter/"):
-                underlying = model_cleaned.removeprefix("openrouter/")
-                if underlying.startswith("openai/"):
-                    openai_default = _default_reasoning_effort_for_openai_model_id(underlying.removeprefix("openai/"))
-                    # NOTE: OpenRouter経由では "minimal" が弾かれるモデルがあるため、保守的に "low" へ寄せる。
-                    if openai_default == "minimal":
-                        return "low"
-                    return openai_default
-                return None
+                return "low"
 
             # --- OpenAI: 推論モデルにだけ既定値を入れる（非推論モデルに投げて落とさない） ---
             if model_cleaned.startswith("openai/"):
                 model_id = _openai_model_id_from_litellm_model(model_cleaned)
                 return _default_reasoning_effort_for_openai_model_id(model_id)
+
+            # --- Gemini: LiteLLM の reasoning_effort は thinkingConfig にマップされる ---
+            if model_cleaned.startswith(("google/", "gemini/")):
+                _, _, model_id = model_cleaned.partition("/")
+                if model_id.startswith("gemini-"):
+                    return "minimal"
+                return None
 
             return None
 
@@ -770,12 +784,20 @@ class LlmClient:
 
         # --- OpenRouter: unified reasoning param ---
         if model_name_lower.startswith("openrouter/") and effort_to_send:
-            extra_body["reasoning"] = {"effort": str(effort_to_send)}
+            extra_body["reasoning"] = {"effort": str(_normalize_openrouter_reasoning_effort(effort_to_send))}
 
         # --- OpenAI: Chat Completions reasoning_effort param ---
         # NOTE: OpenAI以外へ不用意に投げると unknown parameter で落ちる可能性があるため、
         #       "openai/" prefix の場合だけ付与する。
         if model_name_lower.startswith("openai/") and effort_to_send:
+            if _default_reasoning_effort_for_model(model_name_lower) is not None or reasoning_effort is not None:
+                kwargs["reasoning_effort"] = str(effort_to_send)
+
+        # --- Gemini: LiteLLM 統一パラメータ（reasoning_effort） ---
+        # NOTE:
+        # - Gemini は内部で thinkingConfig にマップされる。
+        # - OpenRouter 経由は extra_body.reasoning を使うため、ここは直呼び（google/・gemini/）のみ。
+        if model_name_lower.startswith(("google/", "gemini/")) and effort_to_send:
             if _default_reasoning_effort_for_model(model_name_lower) is not None or reasoning_effort is not None:
                 kwargs["reasoning_effort"] = str(effort_to_send)
 
