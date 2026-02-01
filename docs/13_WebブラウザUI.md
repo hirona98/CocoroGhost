@@ -1,5 +1,8 @@
 # WebブラウザUI（LAN / HTTPS / セッション）
 
+このドキュメントは、Web UI の概要（利用者向け）と実装メモ（開発者向け）を統合したもの。
+以前分割されていた実装設計は、本ファイルへ統合済み。
+
 目的:
 
 - CocoroGhost を **LAN 内の別端末（スマホ/別PC）** からブラウザで使えるようにする
@@ -16,7 +19,7 @@
 - CocoroGhost（FastAPI + uvicorn）が、同一ポートで以下を提供する
   - Web UI（静的ファイル）
   - 既存 API（`/api/*`）
-- 待ち受けは `0.0.0.0:55601`（LAN 公開）
+- 待ち受けは `0.0.0.0:<cocoro_ghost_port>`（LAN 公開、既定: 55601）
 - Web UI は同一オリジンで API を呼ぶ（CORS 不要）
 
 ## HTTPS（自己署名）
@@ -32,6 +35,7 @@
 
 - 「警告を完全に消す」には端末側で証明書を信頼させる必要がある（本設計では必須にしない）
 - 公開範囲は Windows ファイアウォールで LAN 内に制限すること（推奨）
+- 将来の音声入力（`getUserMedia`）も見据え、HTTPS 前提に寄せる
 
 ## 認証（ブラウザは Cookie セッション）
 
@@ -51,6 +55,16 @@
 - Cookie 名: `cocoro_session`
 - セッション寿命: 24 時間（スライディング更新）
 - セッション保存先: メモリ（プロセス再起動でログアウト扱い）
+
+実装メモ（最小）:
+
+- `POST /api/auth/login` は JSON `{ "token": "..." }` を受け取り、成功時に Cookie セッションを発行する
+- `POST /api/auth/logout` はセッションを破棄し、Cookie を削除する
+
+注記（Web UI に公開しない API）:
+
+- `GET /api/settings` は API キー等の秘密情報を含むため Web UI からは扱わない
+  - Web UI に追加で必要な最小情報が出てきた場合は `GET /api/web/bootstrap` のような専用 API を追加する（`/api/settings` は公開しない）
 
 ## 端末を跨いだ会話継続（会話IDと端末IDを分ける）
 
@@ -91,6 +105,15 @@
   - `event: error` は吹き出し内で短く表示
 - `/api/chat` は `embedding_preset_id` を要求しない（サーバ側のアクティブ設定を使用する）
 
+SSE パース実装（推奨）:
+
+- `fetch` の `response.body`（ReadableStream）を `TextDecoder` でデコードし、バッファへ追加する
+- SSE イベントは `\n\n` 区切りで取り出す（チャンク境界で分割される前提）
+- 1イベントの中で次を処理する
+  - `event:` 行
+  - `data:` 行（複数行を許容し、`\n` で結合して JSON として扱う）
+- 中断は `AbortController` を使い、UI側で「送信中」状態を確実に解除する
+
 画像付きチャット:
 
 - `<input type="file" multiple>` で画像を選択し、Data URI（`data:image/*;base64,...`）にして `images` に詰める
@@ -106,15 +129,20 @@
   - `hello.client_id` は `ws_client_id`（端末固有ID）
   - `ws_client_id` は Web UI なら `localStorage` に保存して再利用する（UIに表示しない）
 
-## 追加/変更するエンドポイント（概要）
+WebSocket 再接続（推奨）:
 
-- `GET /`（Web UI）
-- `GET /static/*`（Web UI 静的ファイル）
-- `POST /api/auth/login`（トークン入力 → セッション Cookie 発行）
-- `POST /api/auth/auto_login`（自動ログイン → セッション Cookie 発行、設定で有効なときのみ）
-- `POST /api/auth/logout`（セッション破棄）
+- WebSocket は切断し得るため、自動再接続（バックオフ）を入れる
 
-注記:
+スクロール制御（最小）:
 
-- `GET /api/settings` は秘密情報（API キー等）を含むため Web UI からは扱わない
-- Web UI に追加で必要な最小情報が出てきた場合は `GET /api/web/bootstrap` のような専用 API を追加する（`/api/settings` は公開しない）
+- 通常は最下部へ追従する
+- ユーザーが上にスクロールしたら追従を止め、「最新へ」ボタンを出す
+
+## 静的ファイルの同梱（単一 exe 配布）
+
+方針:
+
+- FastAPI で静的配信する
+  - `GET /` は `index.html` を返す
+  - `GET /static/*` は静的ファイルを返す（FastAPI `StaticFiles`）
+- 配布（PyInstaller onedir）に含めるため、`static/` をデータとしてバンドルする

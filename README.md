@@ -56,11 +56,11 @@ setup.bat
 
    `config/setting.toml` を編集して、最小限の起動設定を記述：
 
-   - `token`: API認証トークン
+   - `token`: API認証トークン（初回起動時に `settings.db` に保存され、以後は `settings.db` 側が正になる）
    - `web_auto_login_enabled`: Web UI 自動ログインの有効/無効
    - `log_level`: ログレベル
 
-   ※ DBファイルは（実行場所の）`data/settings.db` と `data/memory_<embedding_preset_id>.db` に自動作成されます
+   ※ DBファイル（`settings.db` / `reminders.db` / `memory_<embedding_preset_id>.db`）は自動作成されます（保存先は「DB/パス」を参照）
 
 ## 起動方法
 
@@ -119,21 +119,34 @@ start.bat
 copy config\setting.toml.release config\setting.toml
 ```
 
+## DB/パス
+
+保存先の方針は `cocoro_ghost/paths.py` に準拠する。
+
+- 通常実行（非frozen）:
+  - `config/` / `logs/` / `data/` は `app_root` 直下
+  - `app_root` は基本 CWD（例: `start.bat` の実行場所）
+  - `COCORO_GHOST_HOME` があれば最優先で `app_root` になる
+- Windows配布（PyInstaller frozen）:
+  - `config/` / `logs/` は exe の隣（`<exe_dir>/config` / `<exe_dir>/logs`）
+  - DBは exe の 1つ上の `UserData/Ghost/` に保存する（`<exe_dir>/../UserData/Ghost`）
+
 ## Windows配布（PyInstaller）
 
 配布方針:
 
-- PyInstaller は `onedir` 前提（**設定/DB/ログを exe の隣に置く**ため）
-- 実行時に `config/` `data/` `logs/` が exe と同じフォルダに作成/利用されます
+- PyInstaller は `onedir` 前提（配布をシンプルにする）
+- 設定とログは exe の隣に置く（`<exe_dir>/config` / `<exe_dir>/logs`）
+- DBはユーザーデータとして exe と分離し、`<exe_dir>/../UserData/Ghost` に保存する
 
 ### フォルダ構成（配布後）
 
 - `CocoroGhost.exe`
 - `config/setting.toml`（ユーザーが作成。テンプレ: `config/setting.toml.release`）
-- `data/settings.db`（自動作成）
-- `data/memory_<embedding_preset_id>.db`（自動作成）
-- `data/reminders.db`（自動作成）
 - `logs/`（ファイルログ有効時に作成）
+- `../UserData/Ghost/settings.db`（自動作成）
+- `../UserData/Ghost/memory_<embedding_preset_id>.db`（自動作成）
+- `../UserData/Ghost/reminders.db`（自動作成）
 
 ### ビルド手順
 

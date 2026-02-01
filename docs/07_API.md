@@ -7,7 +7,8 @@
 ## 通信方式（HTTPSのみ / 自己署名）
 
 - CocoroGhost は起動時に TLS（自己署名）を必ず有効化するため、`http://` では接続できない
-- 例: `https://127.0.0.1:55601/api/...`
+- ポートは `config/setting.toml` の `cocoro_ghost_port` で設定する（既定: 55601）
+- 例: `https://127.0.0.1:55601/api/...`（既定ポートの場合）
 - 自己署名証明書のため、クライアント側で証明書検証を回避するか、端末側で証明書を信頼させる必要がある
   - `curl.exe` を使う場合は `-k`（insecure）を付ける
 - WebSocket は `wss://<host>/api/events/stream` を使う

@@ -2,11 +2,11 @@
 
 ## DB境界
 
-- `data/settings.db`
+- `settings.db`
   - トークン / 各種プリセット / 有効フラグ
-- `data/reminders.db`
+- `reminders.db`
   - リマインダー状態
-- `data/memory_<embedding_preset_id>.db`
+- `memory_<embedding_preset_id>.db`
   - 出来事ログ（`events`）
   - 出来事ログのアシスタント本文要約（`event_assistant_summaries`、選別入力の高速化用）
   - 状態（`state`、`kind` で種別を持つ）
@@ -14,6 +14,16 @@
   - 検索インデックス（ベクトル/文字n-gram）
   - 観測ログ（`retrieval_runs`）
   - 感情（`long_mood_state` / `event_affects`）
+
+## 保存先（ファイルパス）
+
+保存先の方針は `cocoro_ghost/paths.py` に準拠する。
+
+- 通常実行（非frozen）: `app_root/data/`
+  - `app_root` は基本 CWD（例: `start.bat` の実行場所）
+  - `COCORO_GHOST_HOME` があれば最優先で `app_root` になる
+- Windows配布（PyInstaller frozen）: `<exe_dir>/../UserData/Ghost/`
+  - DBは配布物と分離し、ユーザーデータとして 1つ上のディレクトリへ退避する
 
 ## 方針
 
@@ -143,7 +153,7 @@
 
 #### 保持方法
 
-文脈グラフは派生情報だが、検索の再現性と速度のために `data/memory_<embedding_preset_id>.db` に保存する。
+文脈グラフは派生情報だが、検索の再現性と速度のために `memory_<embedding_preset_id>.db` に保存する。
 
 最低限の保存イメージ:
 
