@@ -52,6 +52,7 @@ def write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> 
             "- 例外: kind=long_mood_state の body_text は背景として使うため、短すぎない1〜3文にする（目安: 80〜240文字）。",
             "- state_updates.entities は「その state に直接関係する entity」だけを入れる。不明なら空配列でよい。",
             "- 矛盾がある場合は上書きせず、並存/期間分割（valid_from_ts/valid_to_ts）や close を使う。",
+            "- long_mood_state は長期的な内容を書く。（「これからコーヒーを淹れる」など短期的に変わる内容を書かない）。",
             "",
             "視点・口調（重要）:",
             "- あなたは人格本人。本文は主観（一人称）で書く",
