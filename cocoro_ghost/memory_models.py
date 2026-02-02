@@ -274,6 +274,55 @@ class State(MemoryBase):
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class UserPreference(MemoryBase):
+    """
+    ユーザーの「好き/苦手」（確認済み/候補）を保存する。
+
+    目的:
+        - 会話で「好き/苦手」を話題にしやすくしつつ、誤断定（架空の好み）を減らす。
+        - 「断定して良い好み」を confirmed のみに限定し、発話の根拠を明確にする。
+
+    方針:
+        - domain は food/topic/style の3種に固定する（運用前で拡張を急がない）。
+        - polarity は like/dislike に固定する。
+        - subject_norm は NFKC/空白整形/小文字化で比較キーを安定化する（実体は entity_utils.normalize_entity_name に準拠）。
+        - status は現在状態（candidate/confirmed/revoked）を表し、履歴は revisions に残す。
+        - 1ユーザー前提のため client_id で分けない。
+    """
+
+    __tablename__ = "user_preferences"
+    __table_args__ = (
+        UniqueConstraint("domain", "subject_norm", "polarity", name="uq_user_preferences_domain_subject_polarity"),
+    )
+
+    # --- 主キー ---
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # --- 分類 ---
+    domain: Mapped[str] = mapped_column(Text, nullable=False)  # food/topic/style
+    polarity: Mapped[str] = mapped_column(Text, nullable=False)  # like/dislike
+
+    # --- 対象 ---
+    subject_raw: Mapped[str] = mapped_column(Text, nullable=False)
+    subject_norm: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # --- 状態 ---
+    status: Mapped[str] = mapped_column(Text, nullable=False)  # candidate/confirmed/revoked
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    evidence_event_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+    # --- 観測時刻（好みの更新/再確認の材料） ---
+    first_seen_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_seen_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    confirmed_at: Mapped[Optional[int]] = mapped_column(Integer)
+    revoked_at: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class StateLink(MemoryBase):
     """状態間リンク（state↔state の関係）。
 

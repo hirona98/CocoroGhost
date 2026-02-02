@@ -10,6 +10,7 @@
   - 出来事ログ（`events`）
   - 出来事ログのアシスタント本文要約（`event_assistant_summaries`、選別入力の高速化用）
   - 状態（`state`、`kind` で種別を持つ）
+  - 確定プロフィール（好み/苦手: `user_preferences`）
   - 改訂履歴（`revisions`）
   - 検索インデックス（ベクトル/文字n-gram）
   - 観測ログ（`retrieval_runs`）
@@ -196,6 +197,44 @@
 - `confidence`（確信度。将来的な足切り/優先度に使える）
 - `searchable`（検索対象フラグ、誤想起の分離で0になる）
 
+### `user_preferences`（確定プロフィール: 好み/苦手）
+
+目的:
+
+- 会話で「好き/苦手」を断定してよい根拠を `confirmed` に限定し、誤断定を減らす
+- `food/topic/style` の3ドメインに分けて扱い、話題として言及しやすくする
+
+方針:
+
+- 対象は **好み/苦手**のみ（性格/習慣（例: 「いつも」「丁寧な人」）は扱わない）
+- `domain`: `food|topic|style`
+- `polarity`: `like|dislike`
+- `status`: `candidate|confirmed|revoked`
+  - `confirmed` のみが「断定して良い根拠」
+  - `candidate` は候補（断定の根拠にしない）
+- 矛盾（同一subjectで like と dislike が confirmed）を見つけた場合は、`confirm` を正として反対極性を自動で `revoked` にする
+- 履歴は `revisions(entity_type="user_preferences")` で追えるようにする
+
+主要カラム（概念）:
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| id | INTEGER | 主キー（自動採番） |
+| domain | TEXT | food/topic/style |
+| polarity | TEXT | like/dislike |
+| subject_raw | TEXT | 表示用の元表記 |
+| subject_norm | TEXT | 正規化キー（比較用） |
+| status | TEXT | candidate/confirmed/revoked |
+| confidence | REAL | 確信度（0.0〜1.0） |
+| note | TEXT | 任意の短い補足（NULL可） |
+| evidence_event_ids_json | TEXT | 根拠イベントID（JSON配列） |
+| first_seen_at | INTEGER | 初回観測（UTC UNIX秒） |
+| last_seen_at | INTEGER | 最終観測（UTC UNIX秒） |
+| confirmed_at | INTEGER | confirmed にした時刻（NULL可） |
+| revoked_at | INTEGER | revoked にした時刻（NULL可） |
+| created_at | INTEGER | 作成時刻（UTC UNIX秒） |
+| updated_at | INTEGER | 更新時刻（UTC UNIX秒） |
+
 ### `state_links`（state↔stateリンク）
 
 目的:
@@ -242,7 +281,7 @@
 
 対象範囲（正）:
 
-- **revisions対象**: `state`, `state_links`, `event_links`, `event_threads`, `event_affects`
+- **revisions対象**: `state`, `state_links`, `event_links`, `event_threads`, `event_affects`, `user_preferences`
 - **revisions対象外**: `events`（追記ログ）, `retrieval_runs`（観測ログ）
 
 注記:

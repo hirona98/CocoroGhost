@@ -40,6 +40,7 @@ from cocoro_ghost.memory_models import (
     State,
     StateEntity,
     StateLink,
+    UserPreference,
 )
 from cocoro_ghost.time_utils import format_iso8601_local, parse_iso8601_to_utc_ts
 
@@ -1080,6 +1081,278 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     created_at=int(now_ts),
                 )
             )
+
+        # --- user_preferences（好み/苦手: confirmed/candidate） ---
+        # NOTE:
+        # - ここは「ユーザーの性格/習慣」ではなく、「好き/苦手」を保存する用途に限定する。
+        # - 断定してよい根拠は status=confirmed のみとし、会話生成側で参照する。
+        pref_updates = plan.get("preference_updates") if isinstance(plan, dict) else None
+        pref_updates = pref_updates if isinstance(pref_updates, list) else []
+
+        def _normalize_pref_domain(domain_in: Any) -> str | None:
+            """domain を food/topic/style のいずれかへ正規化する。"""
+            s = str(domain_in or "").strip().lower()
+            if s in ("food", "topic", "style"):
+                return s
+            return None
+
+        def _normalize_pref_polarity(polarity_in: Any) -> str | None:
+            """polarity を like/dislike のいずれかへ正規化する。"""
+            s = str(polarity_in or "").strip().lower()
+            if s in ("like", "dislike"):
+                return s
+            return None
+
+        def _normalize_pref_status_op(op_in: Any) -> str | None:
+            """op を upsert_candidate/confirm/revoke のいずれかへ正規化する。"""
+            s = str(op_in or "").strip().lower()
+            if s in ("upsert_candidate", "confirm", "revoke"):
+                return s
+            return None
+
+        def _merge_evidence_event_ids(*, prev_json: str, add_ids: list[int]) -> str:
+            """evidence_event_ids_json を「重複除去＋上限」で安定化して返す。"""
+            # --- 既存を読む（壊れていても落とさない） ---
+            prev = common_utils.json_loads_maybe(str(prev_json or ""))
+            prev_ids = prev if isinstance(prev, list) else []
+            merged: list[int] = []
+            seen: set[int] = set()
+
+            # --- 既存→追加の順で安定化（新しい根拠を後ろに足す） ---
+            for x in list(prev_ids) + list(add_ids or []):
+                try:
+                    i = int(x or 0)
+                except Exception:  # noqa: BLE001
+                    continue
+                if i <= 0:
+                    continue
+                if i in seen:
+                    continue
+                seen.add(i)
+                merged.append(i)
+
+            # --- 上限（肥大化防止。監査性は revisions で担保する） ---
+            if len(merged) > 20:
+                merged = merged[-20:]
+            return common_utils.json_dumps(merged)
+
+        def _user_preference_row_to_json(row: UserPreference) -> dict[str, Any]:
+            """UserPreference を監査用 JSON へ変換する。"""
+            return {
+                "id": int(row.id),
+                "domain": str(row.domain),
+                "polarity": str(row.polarity),
+                "subject_raw": str(row.subject_raw),
+                "subject_norm": str(row.subject_norm),
+                "status": str(row.status),
+                "confidence": float(row.confidence),
+                "note": (str(row.note) if row.note is not None else None),
+                "evidence_event_ids_json": str(row.evidence_event_ids_json or "[]"),
+                "first_seen_at": int(row.first_seen_at),
+                "last_seen_at": int(row.last_seen_at),
+                "confirmed_at": (int(row.confirmed_at) if row.confirmed_at is not None else None),
+                "revoked_at": (int(row.revoked_at) if row.revoked_at is not None else None),
+                "created_at": int(row.created_at),
+                "updated_at": int(row.updated_at),
+            }
+
+        for u in pref_updates:
+            if not isinstance(u, dict):
+                continue
+
+            # --- op/domain/polarity/subject を正規化 ---
+            op = _normalize_pref_status_op(u.get("op"))
+            domain = _normalize_pref_domain(u.get("domain"))
+            polarity = _normalize_pref_polarity(u.get("polarity"))
+            subject_raw = str(u.get("subject") or "").strip()
+            reason = str(u.get("reason") or "").strip() or "preference を更新した"
+
+            if op is None or domain is None or polarity is None or not subject_raw:
+                continue
+
+            # --- subject_norm は比較キー。表記ゆれを吸収する ---
+            subject_norm = entity_utils.normalize_entity_name(subject_raw, max_len=80)
+            if not subject_norm:
+                continue
+
+            # --- confidence/note/evidence ---
+            confidence = float(entity_utils.clamp_01(u.get("confidence")))
+            note = str(u.get("note") or "").strip()
+            if note:
+                note = note[:240]
+            else:
+                note = ""
+
+            evidence_ids = u.get("evidence_event_ids") if isinstance(u.get("evidence_event_ids"), list) else []
+            evidence_ids_norm = [int(x) for x in evidence_ids if isinstance(x, (int, float)) and int(x) > 0]
+            # NOTE: どの更新も現在の event_id を含める前提。欠けていてもここで補正する。
+            if int(event_id) not in set(evidence_ids_norm):
+                evidence_ids_norm.append(int(event_id))
+
+            # --- 対象行を取得（1行=現在状態。履歴は revisions） ---
+            row = (
+                db.query(UserPreference)
+                .filter(UserPreference.domain == str(domain))
+                .filter(UserPreference.subject_norm == str(subject_norm))
+                .filter(UserPreference.polarity == str(polarity))
+                .one_or_none()
+            )
+
+            # --- 変更前スナップショット ---
+            before = _user_preference_row_to_json(row) if row is not None else None
+
+            # --- opごとの適用 ---
+            if op == "upsert_candidate":
+                if row is None:
+                    row = UserPreference(
+                        domain=str(domain),
+                        polarity=str(polarity),
+                        subject_raw=str(subject_raw)[:120],
+                        subject_norm=str(subject_norm),
+                        status="candidate",
+                        confidence=float(confidence),
+                        note=(note if note else None),
+                        evidence_event_ids_json=common_utils.json_dumps([int(x) for x in evidence_ids_norm if int(x) > 0]),
+                        first_seen_at=int(base_ts),
+                        last_seen_at=int(base_ts),
+                        confirmed_at=None,
+                        revoked_at=None,
+                        created_at=int(now_ts),
+                        updated_at=int(now_ts),
+                    )
+                    db.add(row)
+                    db.flush()
+                else:
+                    # NOTE:
+                    # - confirmed は「断定して良い」ため、candidate で上書きしない。
+                    # - revoked/candidate は、候補として再浮上させることがあるため candidate へ戻してよい。
+                    if str(row.status) != "confirmed":
+                        row.status = "candidate"
+                        row.revoked_at = None
+                        row.confirmed_at = None
+                    row.subject_raw = str(subject_raw)[:120]
+                    row.last_seen_at = int(base_ts)
+                    row.confidence = float(confidence)
+                    row.note = (note if note else None)
+                    row.evidence_event_ids_json = _merge_evidence_event_ids(
+                        prev_json=str(row.evidence_event_ids_json or "[]"),
+                        add_ids=list(evidence_ids_norm),
+                    )
+                    row.updated_at = int(now_ts)
+                    db.add(row)
+                    db.flush()
+
+                add_revision(
+                    entity_type="user_preferences",
+                    entity_id=int(row.id),
+                    before=before,
+                    after=_user_preference_row_to_json(row),
+                    reason=str(reason),
+                    evidence_event_ids=list(evidence_ids_norm),
+                )
+                continue
+
+            if op == "confirm":
+                if row is None:
+                    row = UserPreference(
+                        domain=str(domain),
+                        polarity=str(polarity),
+                        subject_raw=str(subject_raw)[:120],
+                        subject_norm=str(subject_norm),
+                        status="confirmed",
+                        confidence=float(confidence),
+                        note=(note if note else None),
+                        evidence_event_ids_json=common_utils.json_dumps([int(x) for x in evidence_ids_norm if int(x) > 0]),
+                        first_seen_at=int(base_ts),
+                        last_seen_at=int(base_ts),
+                        confirmed_at=int(base_ts),
+                        revoked_at=None,
+                        created_at=int(now_ts),
+                        updated_at=int(now_ts),
+                    )
+                    db.add(row)
+                    db.flush()
+                else:
+                    row.status = "confirmed"
+                    row.subject_raw = str(subject_raw)[:120]
+                    row.last_seen_at = int(base_ts)
+                    row.confidence = float(confidence)
+                    row.note = (note if note else None)
+                    row.evidence_event_ids_json = _merge_evidence_event_ids(
+                        prev_json=str(row.evidence_event_ids_json or "[]"),
+                        add_ids=list(evidence_ids_norm),
+                    )
+                    row.confirmed_at = int(base_ts)
+                    row.revoked_at = None
+                    row.updated_at = int(now_ts)
+                    db.add(row)
+                    db.flush()
+
+                add_revision(
+                    entity_type="user_preferences",
+                    entity_id=int(row.id),
+                    before=before,
+                    after=_user_preference_row_to_json(row),
+                    reason=str(reason),
+                    evidence_event_ids=list(evidence_ids_norm),
+                )
+
+                # --- 矛盾の自動revoke（同一 subject の反対極性 confirmed を無効化する） ---
+                opposite = "dislike" if str(polarity) == "like" else "like"
+                opp = (
+                    db.query(UserPreference)
+                    .filter(UserPreference.domain == str(domain))
+                    .filter(UserPreference.subject_norm == str(subject_norm))
+                    .filter(UserPreference.polarity == str(opposite))
+                    .one_or_none()
+                )
+                if opp is not None and str(opp.status) == "confirmed":
+                    opp_before = _user_preference_row_to_json(opp)
+                    opp.status = "revoked"
+                    opp.revoked_at = int(base_ts)
+                    opp.last_seen_at = int(base_ts)
+                    opp.updated_at = int(now_ts)
+                    opp.evidence_event_ids_json = _merge_evidence_event_ids(
+                        prev_json=str(opp.evidence_event_ids_json or "[]"),
+                        add_ids=list(evidence_ids_norm),
+                    )
+                    db.add(opp)
+                    db.flush()
+                    add_revision(
+                        entity_type="user_preferences",
+                        entity_id=int(opp.id),
+                        before=opp_before,
+                        after=_user_preference_row_to_json(opp),
+                        reason="矛盾する好みを自動revokeした",
+                        evidence_event_ids=list(evidence_ids_norm),
+                    )
+                continue
+
+            if op == "revoke":
+                if row is None:
+                    continue
+                if str(row.status) == "revoked":
+                    continue
+                row_before = _user_preference_row_to_json(row)
+                row.status = "revoked"
+                row.revoked_at = int(base_ts)
+                row.last_seen_at = int(base_ts)
+                row.updated_at = int(now_ts)
+                row.evidence_event_ids_json = _merge_evidence_event_ids(
+                    prev_json=str(row.evidence_event_ids_json or "[]"),
+                    add_ids=list(evidence_ids_norm),
+                )
+                db.add(row)
+                db.flush()
+                add_revision(
+                    entity_type="user_preferences",
+                    entity_id=int(row.id),
+                    before=row_before,
+                    after=_user_preference_row_to_json(row),
+                    reason=str(reason),
+                    evidence_event_ids=list(evidence_ids_norm),
+                )
+                continue
 
         # --- event_affect（瞬間的な感情） ---
         ea = plan.get("event_affect") if isinstance(plan, dict) else None

@@ -12,6 +12,7 @@
 - API（HTTPS必須/認証/主要エンドポイント）: `docs/07_API.md`
 - 記憶処理の入口（mixin構成）: `cocoro_ghost/memory/manager.py`
 - 非同期ジョブ（WritePlan/索引/整理など）: `cocoro_ghost/worker.py` と `cocoro_ghost/internal_worker.py`
+- 確定プロフィール（好み/苦手: ConfirmedPreferences）: `cocoro_ghost/memory/_chat_mixin.py` と `cocoro_ghost/worker.py`
 - 保存先/パス（frozen/非frozen）: `cocoro_ghost/paths.py`
 - TOMLキー/検証（未知キーで起動失敗）: `cocoro_ghost/config.py` の `load_config()`
 
@@ -32,6 +33,7 @@
 - 同期フローの本体: `rg -n "def stream_chat\\b|_chat_inflight_lock|SearchResultPack" cocoro_ghost/memory`
 - 非同期ジョブ/キュー: `rg -n "\\bJob\\b|enqueue|run_forever|tidy_memory" cocoro_ghost`
 - DBテーブル/モデル: `rg -n "class (Event|State|Job)\\b|retrieval_runs|event_links|state_links" cocoro_ghost`
+- 好み/苦手（confirmed）: `rg -n "UserPreference|user_preferences|ConfirmedPreferences|preference_updates" cocoro_ghost docs`
 - 設定の正（token/プリセット/active）: `rg -n "GlobalSettings|active_.*_preset_id|ensure_initial_settings" cocoro_ghost`
 
 <!-- Block: Invariants -->

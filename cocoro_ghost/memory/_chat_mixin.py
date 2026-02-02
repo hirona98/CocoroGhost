@@ -26,7 +26,7 @@ from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 from cocoro_ghost.llm_client import LlmRequestPurpose
 from cocoro_ghost.memory._chat_search_mixin import _CandidateItem
 from cocoro_ghost.memory._image_mixin import default_input_text_when_images_only
-from cocoro_ghost.memory_models import Event, EventAssistantSummary, EventLink, RetrievalRun, State
+from cocoro_ghost.memory_models import Event, EventAssistantSummary, EventLink, RetrievalRun, State, UserPreference
 from cocoro_ghost.memory._utils import now_utc_ts
 from cocoro_ghost.time_utils import format_iso8601_local
 
@@ -831,6 +831,75 @@ class _ChatMemoryMixin:
                 "valid_to_ts": format_iso8601_local(int(st.valid_to_ts)) if st.valid_to_ts is not None else None,
             }
 
+    def _load_confirmed_preferences_snapshot(
+        self, *, embedding_preset_id: str, embedding_dimension: int
+    ) -> dict[str, Any]:
+        """
+        確定した好み/苦手（user_preferences.status="confirmed"）のスナップショットを返す。
+
+        目的:
+            - 返答生成で「好き/苦手」を断定してよい根拠を、confirmed のみに限定する。
+            - SearchResultPack（候補記憶）とは独立に注入し、好みの話題量を増やしやすくする。
+
+        注意:
+            - 1ユーザー前提のため client_id で分けない。
+            - スナップショットは小さくし、SSE開始前の負荷と誤一般化を抑える（各カテゴリ上限あり）。
+        """
+
+        # --- 返却形（常に固定） ---
+        out: dict[str, Any] = {
+            "food": {"like": [], "dislike": []},
+            "topic": {"like": [], "dislike": []},
+            "style": {"like": [], "dislike": []},
+        }
+
+        # --- 上限（各domain×polarity） ---
+        cap_per_bucket = 8
+
+        # NOTE:
+        # - session_scope は commit で ORM が expire され得るため、ORMインスタンスは外へ持ち出さない。
+        # - 必要列だけをタプルで取り出し、セッション外でも安全に扱える形にする。
+        rows: list[tuple[str, str, str, str | None, int | None, int, int]] = []
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            q = (
+                db.query(
+                    UserPreference.domain,
+                    UserPreference.polarity,
+                    UserPreference.subject_raw,
+                    UserPreference.note,
+                    UserPreference.confirmed_at,
+                    UserPreference.last_seen_at,
+                    UserPreference.id,
+                )
+                .filter(UserPreference.status == "confirmed")
+                .order_by(UserPreference.confirmed_at.desc(), UserPreference.last_seen_at.desc(), UserPreference.id.desc())
+            )
+            rows = list(q.all())
+
+        # --- domain/polarity で振り分け（Python側で上限を適用） ---
+        counts: dict[tuple[str, str], int] = {}
+        for r in rows:
+            domain = str(r[0] or "").strip()
+            polarity = str(r[1] or "").strip()
+            if domain not in ("food", "topic", "style"):
+                continue
+            if polarity not in ("like", "dislike"):
+                continue
+
+            k = (domain, polarity)
+            cur = int(counts.get(k, 0))
+            if cur >= int(cap_per_bucket):
+                continue
+
+            subject = str(r[2] or "").strip()
+            if not subject:
+                continue
+            note_s = str(r[3] or "").strip()
+            out[domain][polarity].append({"subject": subject, "note": (note_s if note_s else None)})
+            counts[k] = int(cur) + 1
+
+        return out
+
     def _llm_io_loggers(self) -> tuple[logging.Logger, logging.Logger]:
         """LLM I/O ログの出力先ロガー（console/file）を返す。"""
         return (logging.getLogger("cocoro_ghost.llm_io.console"), logging.getLogger("cocoro_ghost.llm_io.file"))
@@ -1234,6 +1303,10 @@ class _ChatMemoryMixin:
                     embedding_preset_id=embedding_preset_id,
                     embedding_dimension=embedding_dimension,
                     now_ts=int(now_ts),
+                ),
+                "ConfirmedPreferences": self._load_confirmed_preferences_snapshot(
+                    embedding_preset_id=embedding_preset_id,
+                    embedding_dimension=embedding_dimension,
                 ),
                 "SearchResultPack": self._inflate_search_result_pack(
                     embedding_preset_id=embedding_preset_id,

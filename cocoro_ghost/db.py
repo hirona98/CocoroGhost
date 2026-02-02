@@ -50,7 +50,7 @@ class _MemorySessionEntry:
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
-_MEMORY_DB_USER_VERSION = 7
+_MEMORY_DB_USER_VERSION = 8
 _SETTINGS_DB_USER_VERSION = 2
 
 
@@ -307,6 +307,11 @@ def _create_memory_indexes(engine) -> None:
         "CREATE INDEX IF NOT EXISTS idx_state_links_from ON state_links(from_state_id)",
         "CREATE INDEX IF NOT EXISTS idx_state_links_to ON state_links(to_state_id)",
         "CREATE INDEX IF NOT EXISTS idx_state_links_label ON state_links(label)",
+        # --- user_preferences（確定プロフィール: 好み/苦手） ---
+        "CREATE INDEX IF NOT EXISTS idx_user_preferences_status_domain ON user_preferences(status, domain)",
+        "CREATE INDEX IF NOT EXISTS idx_user_preferences_domain_subject ON user_preferences(domain, subject_norm)",
+        "CREATE INDEX IF NOT EXISTS idx_user_preferences_domain_polarity_status ON user_preferences(domain, polarity, status)",
+        "CREATE INDEX IF NOT EXISTS idx_user_preferences_updated_at ON user_preferences(updated_at)",
         # --- jobs ---
         "CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after)",
     ]
