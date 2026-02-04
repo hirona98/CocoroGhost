@@ -104,4 +104,4 @@ llm_log_file_value_max_chars = 6000
 log_file_enabled = false
 log_file_path = "logs/cocoro_ghost.log"
 # ログファイルのローテーションサイズ（bytes）。例: 200KB = 200000
-log_file_max_bytes = 500000
+log_file_max_bytes = 2000000
