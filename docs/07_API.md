@@ -465,6 +465,7 @@ UI向けの「全設定」取得/更新。
 
 - URL: `ws(s)://<host>/api/logs/stream`
 - 認証: `Authorization: Bearer <TOKEN>`
+- 認証失敗時: 接続受理後に close code `1008`（policy violation）で切断
 
 接続直後に直近最大500件のバッファを送信し、その後も新規ログを随時送信する。
 
@@ -482,6 +483,7 @@ UI向けの「全設定」取得/更新。
 
 - URL: `ws(s)://<host>/api/events/stream`
 - 認証: `Authorization: Bearer <TOKEN>` または Cookie セッション（`cocoro_session`）
+- 認証失敗時: 接続受理後に close code `1008`（policy violation）で切断
 - 目的:
   - `POST /api/v2/notification` / `POST /api/v2/meta-request` を受信したとき、接続中クライアントへイベントを配信する
   - リマインダーが発火したとき、`reminder` をブロードキャスト配信する

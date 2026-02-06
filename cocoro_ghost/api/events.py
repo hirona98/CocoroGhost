@@ -13,6 +13,7 @@ Planned:
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -21,7 +22,21 @@ from cocoro_ghost.api.ws_auth import authenticate_ws_bearer_or_cookie_session
 
 
 router = APIRouter(prefix="/events", tags=["events"])
-logger = __import__("logging").getLogger(__name__)
+logger = logging.getLogger(__name__)
+
+
+async def _close_policy_violation(websocket: WebSocket) -> None:
+    """
+    認証失敗などのポリシー違反でWebSocketを閉じる。
+
+    close時例外は通知経路ではなく制御経路のため、debugで記録して握りつぶす。
+    """
+
+    # --- policy violation で close する ---
+    try:
+        await websocket.close(code=1008)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("events websocket close failed: %s", str(exc))
 
 
 @router.websocket("/stream")
@@ -41,24 +56,26 @@ async def stream_events(websocket: WebSocket) -> None:
 
     # --- 認証を検証 ---
     if not await authenticate_ws_bearer_or_cookie_session(websocket):
-        try:
-            await websocket.close(code=1008)
-        except Exception:  # noqa: BLE001
-            pass
+        await _close_policy_violation(websocket)
         logger.info("events websocket rejected (auth failed)")
         return
 
-    await event_stream.add_client(websocket)
-    logger.info("events websocket connected")
-
+    client_added = False
     try:
+        # --- 購読クライアントとして登録する ---
+        await event_stream.add_client(websocket)
+        client_added = True
+        logger.info("events websocket connected")
+
+        # --- クライアントメッセージ受信ループ ---
         while True:
             text = await websocket.receive_text()
             # --- Client -> Ghost メッセージ（任意） ---
             # 現状は hello のみを受け付ける（将来拡張）。
             try:
                 payload = json.loads(text or "")
-            except Exception:  # noqa: BLE001
+            except json.JSONDecodeError:
+                logger.debug("events websocket ignored invalid json payload")
                 continue
             if not isinstance(payload, dict):
                 continue
@@ -74,7 +91,10 @@ async def stream_events(websocket: WebSocket) -> None:
                 event_stream.register_client_identity(websocket, client_id=client_id, caps=caps_list)
                 logger.info("events websocket hello received client_id=%s caps=%s", client_id, caps_list)
     except WebSocketDisconnect:
-        pass
+        logger.info("events websocket disconnected by client")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("events websocket terminated by error: %s", str(exc))
     finally:
-        await event_stream.remove_client(websocket)
+        if client_added:
+            await event_stream.remove_client(websocket)
         logger.info("events websocket disconnected")
