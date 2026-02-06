@@ -35,27 +35,19 @@ from cocoro_ghost.memory_models import (
     UserPreference,
 )
 from cocoro_ghost.time_utils import format_iso8601_local, parse_iso8601_to_utc_ts
+from cocoro_ghost.worker_constants import (
+    JOB_DONE as _JOB_DONE,
+    JOB_FAILED as _JOB_FAILED,
+    JOB_PENDING as _JOB_PENDING,
+    JOB_RUNNING as _JOB_RUNNING,
+    TIDY_ACTIVE_STATE_FETCH_LIMIT as _TIDY_ACTIVE_STATE_FETCH_LIMIT,
+    TIDY_CHAT_TURNS_INTERVAL as _TIDY_CHAT_TURNS_INTERVAL,
+    TIDY_CHAT_TURNS_INTERVAL_FIRST as _TIDY_CHAT_TURNS_INTERVAL_FIRST,
+    TIDY_MAX_CLOSE_PER_RUN as _TIDY_MAX_CLOSE_PER_RUN,
+)
 
 
 logger = logging.getLogger(__name__)
-
-
-# --- ジョブステータス定数 ---
-# NOTE:
-# - memory_models.Job.status の値と対応させる。
-_JOB_PENDING = 0
-_JOB_RUNNING = 1
-_JOB_DONE = 2
-_JOB_FAILED = 3
-
-
-# --- 記憶整理ジョブの投入条件 ---
-# NOTE:
-# - Nターンごとの整理投入で使う。
-_TIDY_CHAT_TURNS_INTERVAL = 200
-_TIDY_CHAT_TURNS_INTERVAL_FIRST = 10
-_TIDY_MAX_CLOSE_PER_RUN = 200
-_TIDY_ACTIVE_STATE_FETCH_LIMIT = 5000
 
 
 def _now_utc_ts() -> int:

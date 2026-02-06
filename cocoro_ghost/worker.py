@@ -25,27 +25,22 @@ from sqlalchemy import func
 from cocoro_ghost import common_utils
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost.worker_constants import (
+    JOB_DONE as _JOB_DONE,
+    JOB_FAILED as _JOB_FAILED,
+    JOB_MAX_RETRIES as _JOB_MAX_RETRIES,
+    JOB_PENDING as _JOB_PENDING,
+    JOB_RETRY_BASE_SECONDS as _JOB_RETRY_BASE_SECONDS,
+    JOB_RETRY_MAX_SECONDS as _JOB_RETRY_MAX_SECONDS,
+    JOB_RUNNING as _JOB_RUNNING,
+    JOB_RUNNING_STALE_SECONDS as _JOB_RUNNING_STALE_SECONDS,
+    JOB_STALE_SWEEP_INTERVAL_SECONDS as _JOB_STALE_SWEEP_INTERVAL_SECONDS,
+)
 from cocoro_ghost.memory_models import Job
 from cocoro_ghost.worker_handlers import run_job_kind
 
 
 logger = logging.getLogger(__name__)
-
-
-_JOB_PENDING = 0
-_JOB_RUNNING = 1
-_JOB_DONE = 2
-_JOB_FAILED = 3
-
-# --- ジョブ実行の耐障害性パラメータ ---
-# NOTE:
-# - 失敗時は即 failed にせず、指数バックオフで再試行する。
-# - 再試行上限を超えたものだけ dead-letter（status=failed）に送る。
-_JOB_MAX_RETRIES = 5
-_JOB_RETRY_BASE_SECONDS = 5
-_JOB_RETRY_MAX_SECONDS = 300
-_JOB_RUNNING_STALE_SECONDS = 120
-_JOB_STALE_SWEEP_INTERVAL_SECONDS = 10
 
 
 def _now_utc_ts() -> int:
