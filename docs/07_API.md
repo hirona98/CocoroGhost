@@ -609,6 +609,49 @@ UI向けの「全設定」取得/更新。
 
 Ghostプロセス自体の制御コマンド。
 
+### `GET /api/control/stream-stats`
+
+WebSocketストリームの運用統計を返す。
+
+用途:
+
+- queue詰まり（`queue_size`）の監視
+- ドロップ発生（`dropped_queue_full_total`）の検知
+- 送信失敗（`send_error_total`）の増加監視
+
+レスポンス（例）:
+
+```json
+{
+  "events": {
+    "connected_clients": 1,
+    "queue_size": 0,
+    "queue_maxsize": 1000,
+    "dispatcher_running": true,
+    "enqueued_total": 120,
+    "dropped_queue_full_total": 0,
+    "send_ok_total": 119,
+    "send_error_total": 1,
+    "target_not_connected_total": 3,
+    "publish_rejected_total": 0
+  },
+  "logs": {
+    "connected_clients": 1,
+    "queue_size": 0,
+    "queue_maxsize": 1000,
+    "buffer_size": 87,
+    "buffer_max": 500,
+    "dispatcher_running": true,
+    "enqueued_total": 980,
+    "dropped_queue_full_total": 0,
+    "send_ok_total": 970,
+    "send_error_total": 10,
+    "emit_skipped_loop_closed_total": 0,
+    "emit_error_total": 0
+  }
+}
+```
+
 ### `POST /api/control`
 
 ```json

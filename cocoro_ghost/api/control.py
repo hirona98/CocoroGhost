@@ -14,7 +14,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Response, status
 
-from cocoro_ghost import schemas
+from cocoro_ghost import event_stream, log_stream, schemas
 
 logger = __import__("logging").getLogger(__name__)
 
@@ -54,3 +54,22 @@ def control(
     background_tasks.add_task(_request_process_shutdown, reason=request.reason)
     # --- BackgroundTasks を紐づける（これが無いと shutdown が実行されない） ---
     return Response(status_code=status.HTTP_204_NO_CONTENT, background=background_tasks)
+
+
+@router.get("/control/stream-stats", response_model=schemas.StreamRuntimeStatsResponse)
+def stream_stats() -> schemas.StreamRuntimeStatsResponse:
+    """
+    ストリームのランタイム統計を返す。
+
+    運用時に queue逼迫/ドロップ/送信失敗を確認するために使う。
+    """
+
+    # --- 各ストリームから統計スナップショットを取得する ---
+    event_stats = event_stream.get_runtime_stats()
+    log_stats = log_stream.get_runtime_stats()
+
+    # --- スキーマへ詰め替えて返す ---
+    return schemas.StreamRuntimeStatsResponse(
+        events=schemas.EventStreamRuntimeStats(**event_stats),
+        logs=schemas.LogStreamRuntimeStats(**log_stats),
+    )

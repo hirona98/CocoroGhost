@@ -264,6 +264,57 @@ class ControlRequest(BaseModel):
         return s
 
 
+class EventStreamRuntimeStats(BaseModel):
+    """
+    イベントストリームのランタイム統計。
+
+    queue逼迫、ドロップ、送信失敗の観測に使う。
+    """
+
+    connected_clients: int
+    queue_size: int
+    queue_maxsize: int
+    dispatcher_running: bool
+    enqueued_total: int
+    dropped_queue_full_total: int
+    send_ok_total: int
+    send_error_total: int
+    target_not_connected_total: int
+    publish_rejected_total: int
+
+
+class LogStreamRuntimeStats(BaseModel):
+    """
+    ログストリームのランタイム統計。
+
+    queue逼迫、ドロップ、送信失敗、emit系の失敗観測に使う。
+    """
+
+    connected_clients: int
+    queue_size: int
+    queue_maxsize: int
+    buffer_size: int
+    buffer_max: int
+    dispatcher_running: bool
+    enqueued_total: int
+    dropped_queue_full_total: int
+    send_ok_total: int
+    send_error_total: int
+    emit_skipped_loop_closed_total: int
+    emit_error_total: int
+
+
+class StreamRuntimeStatsResponse(BaseModel):
+    """
+    ストリーム全体のランタイム統計レスポンス。
+
+    events と logs の統計を1回で取得する。
+    """
+
+    events: EventStreamRuntimeStats
+    logs: LogStreamRuntimeStats
+
+
 # --- 設定関連 ---
 
 
