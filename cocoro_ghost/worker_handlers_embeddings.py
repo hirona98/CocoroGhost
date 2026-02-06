@@ -15,7 +15,7 @@ from sqlalchemy import text
 from cocoro_ghost import common_utils, prompt_builders, vector_index
 from cocoro_ghost.db import memory_session_scope, upsert_vec_item
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
-from cocoro_ghost.memory_models import Event, EventAffect, EventAssistantSummary
+from cocoro_ghost.memory_models import Event, EventAffect, EventAssistantSummary, State
 from cocoro_ghost.worker_handlers_common import (
     _build_event_affect_embedding_text,
     _build_event_assistant_summary_input,
@@ -241,5 +241,4 @@ def _handle_upsert_event_affect_embedding(
             rank_at=int(rank_at),
             active=1,
         )
-
 
