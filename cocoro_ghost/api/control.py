@@ -14,7 +14,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Response, status
 
-from cocoro_ghost import event_stream, log_stream, schemas
+from cocoro_ghost import event_stream, log_stream, schemas, worker
 
 logger = __import__("logging").getLogger(__name__)
 
@@ -73,3 +73,26 @@ def stream_stats() -> schemas.StreamRuntimeStatsResponse:
         events=schemas.EventStreamRuntimeStats(**event_stats),
         logs=schemas.LogStreamRuntimeStats(**log_stats),
     )
+
+
+@router.get("/control/worker-stats", response_model=schemas.WorkerRuntimeStatsResponse)
+def worker_stats() -> schemas.WorkerRuntimeStatsResponse:
+    """
+    Workerのジョブキュー統計を返す。
+
+    pending/running/stale の詰まり具合を運用時に確認するために使う。
+    """
+
+    # --- アクティブな embedding 設定を取得する ---
+    from cocoro_ghost.config import get_config_store
+
+    cfg = get_config_store().config
+
+    # --- jobs テーブル統計を取得する ---
+    stats = worker.get_job_queue_stats(
+        embedding_preset_id=str(cfg.embedding_preset_id),
+        embedding_dimension=int(cfg.embedding_dimension),
+    )
+
+    # --- スキーマへ詰め替えて返す ---
+    return schemas.WorkerRuntimeStatsResponse(**stats)

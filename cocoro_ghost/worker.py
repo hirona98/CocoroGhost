@@ -75,6 +75,69 @@ def _now_utc_ts() -> int:
     return int(time.time())
 
 
+def get_job_queue_stats(*, embedding_preset_id: str, embedding_dimension: int) -> dict[str, int]:
+    """
+    jobs テーブルのランタイム統計を返す。
+
+    目的:
+        - queue滞留（pending/due）と実行詰まり（running/stale）をAPIから観測できるようにする。
+    """
+
+    # --- 判定時刻を固定する ---
+    now_ts = _now_utc_ts()
+    stale_before_ts = int(now_ts) - int(_JOB_RUNNING_STALE_SECONDS)
+
+    with memory_session_scope(str(embedding_preset_id), int(embedding_dimension)) as db:
+        # --- ステータス別の件数 ---
+        pending_count = (
+            db.query(func.count(Job.id))
+            .filter(Job.status == int(_JOB_PENDING))
+            .scalar()
+        )
+        running_count = (
+            db.query(func.count(Job.id))
+            .filter(Job.status == int(_JOB_RUNNING))
+            .scalar()
+        )
+        done_count = (
+            db.query(func.count(Job.id))
+            .filter(Job.status == int(_JOB_DONE))
+            .scalar()
+        )
+        failed_count = (
+            db.query(func.count(Job.id))
+            .filter(Job.status == int(_JOB_FAILED))
+            .scalar()
+        )
+
+        # --- 即時実行可能な pending（due） ---
+        due_pending_count = (
+            db.query(func.count(Job.id))
+            .filter(Job.status == int(_JOB_PENDING))
+            .filter(Job.run_after <= int(now_ts))
+            .scalar()
+        )
+
+        # --- stale running（回収対象） ---
+        stale_running_count = (
+            db.query(func.count(Job.id))
+            .filter(Job.status == int(_JOB_RUNNING))
+            .filter(Job.updated_at <= int(stale_before_ts))
+            .scalar()
+        )
+
+    # --- API応答向けに整形する ---
+    return {
+        "pending_count": int(pending_count or 0),
+        "due_pending_count": int(due_pending_count or 0),
+        "running_count": int(running_count or 0),
+        "stale_running_count": int(stale_running_count or 0),
+        "done_count": int(done_count or 0),
+        "failed_count": int(failed_count or 0),
+        "stale_seconds": int(_JOB_RUNNING_STALE_SECONDS),
+    }
+
+
 def _compute_retry_delay_seconds(*, failed_tries: int) -> int:
     """失敗回数に応じた再試行遅延（指数バックオフ）を返す。"""
 

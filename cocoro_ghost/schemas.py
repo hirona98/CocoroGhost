@@ -315,6 +315,22 @@ class StreamRuntimeStatsResponse(BaseModel):
     logs: LogStreamRuntimeStats
 
 
+class WorkerRuntimeStatsResponse(BaseModel):
+    """
+    Workerのジョブキュー統計レスポンス。
+
+    jobs テーブルの滞留状態（pending/running/stale）観測に使う。
+    """
+
+    pending_count: int
+    due_pending_count: int
+    running_count: int
+    stale_running_count: int
+    done_count: int
+    failed_count: int
+    stale_seconds: int
+
+
 # --- 設定関連 ---
 
 

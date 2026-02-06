@@ -652,6 +652,29 @@ WebSocketストリームの運用統計を返す。
 }
 ```
 
+### `GET /api/control/worker-stats`
+
+Workerのジョブキュー統計を返す。
+
+用途:
+
+- `pending_count` / `due_pending_count` で滞留の有無を確認する
+- `running_count` / `stale_running_count` で実行詰まりを検知する
+
+レスポンス（例）:
+
+```json
+{
+  "pending_count": 2,
+  "due_pending_count": 1,
+  "running_count": 1,
+  "stale_running_count": 0,
+  "done_count": 240,
+  "failed_count": 3,
+  "stale_seconds": 120
+}
+```
+
 ### `POST /api/control`
 
 ```json
