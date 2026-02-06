@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -56,6 +57,79 @@ _attached_logger_names: tuple[str, ...] = (
     "cocoro_ghost.llm_io.console",
 )
 logger = logging.getLogger(__name__)
+
+# --- ランタイム統計 ---
+# NOTE:
+# - API から drop/送信失敗を観測できるように軽量カウンタを保持する。
+# - emit は複数スレッドから呼ばれ得るため lock で保護する。
+_stats_lock = threading.Lock()
+_stats: dict[str, int] = {
+    "enqueued_total": 0,
+    "dropped_queue_full_total": 0,
+    "send_ok_total": 0,
+    "send_error_total": 0,
+    "emit_skipped_loop_closed_total": 0,
+    "emit_error_total": 0,
+}
+
+
+def _reset_runtime_stats() -> None:
+    """ログストリーム統計を初期化する。"""
+
+    # --- すべての統計値を0に戻す ---
+    with _stats_lock:
+        for key in list(_stats.keys()):
+            _stats[key] = 0
+
+
+def _increment_stat(key: str, delta: int = 1) -> None:
+    """指定した統計カウンタを加算する。"""
+
+    # --- 未知キーは作らず無視する（呼び出し側バグ時の二次障害を防ぐ） ---
+    with _stats_lock:
+        if key in _stats:
+            _stats[key] = int(_stats[key]) + int(delta)
+
+
+def _snapshot_stats() -> dict[str, int]:
+    """統計カウンタのスナップショットを返す。"""
+
+    with _stats_lock:
+        return {k: int(v) for k, v in _stats.items()}
+
+
+def get_runtime_stats() -> dict[str, int | bool]:
+    """
+    ログストリームのランタイム統計を返す。
+
+    運用時の観測（queue逼迫/ドロップ/送信失敗）に利用する。
+    """
+
+    # --- queue/buffer の現在値を取得する ---
+    queue = _log_queue
+    queue_size = int(queue.qsize()) if queue is not None else 0
+    queue_maxsize = int(getattr(queue, "maxsize", 0) or 0) if queue is not None else int(_LOG_QUEUE_MAXSIZE)
+    buffer_size = int(len(_buffer))
+    buffer_max = int(getattr(_buffer, "maxlen", MAX_BUFFER) or MAX_BUFFER)
+
+    # --- 統計カウンタをコピーする ---
+    counters = _snapshot_stats()
+
+    # --- API応答向けに整形する ---
+    return {
+        "connected_clients": int(len(_clients)),
+        "queue_size": int(queue_size),
+        "queue_maxsize": int(queue_maxsize),
+        "buffer_size": int(buffer_size),
+        "buffer_max": int(buffer_max),
+        "dispatcher_running": bool(_dispatch_task is not None and not _dispatch_task.done()),
+        "enqueued_total": int(counters.get("enqueued_total", 0)),
+        "dropped_queue_full_total": int(counters.get("dropped_queue_full_total", 0)),
+        "send_ok_total": int(counters.get("send_ok_total", 0)),
+        "send_error_total": int(counters.get("send_error_total", 0)),
+        "emit_skipped_loop_closed_total": int(counters.get("emit_skipped_loop_closed_total", 0)),
+        "emit_error_total": int(counters.get("emit_error_total", 0)),
+    }
 
 
 def _serialize_event(event: LogEvent) -> str:
@@ -105,6 +179,7 @@ class _QueueHandler(logging.Handler):
             # サーバ停止時にイベントループが先に閉じられると call_soon_threadsafe が例外になる。
             # ここで logger.exception すると同じハンドラを経由して再帰するので、黙ってドロップする。
             if self.loop.is_closed():
+                _increment_stat("emit_skipped_loop_closed_total", 1)
                 return
 
             # /api/logs/stream に関するアクセスログは配信しない
@@ -115,6 +190,7 @@ class _QueueHandler(logging.Handler):
             self.loop.call_soon_threadsafe(_enqueue_log_nonblocking, self.queue, event)
         except Exception:  # pragma: no cover - logging safety net
             # ここで例外ログを出すと、同じハンドラ経由で再帰する可能性があるため抑止する。
+            _increment_stat("emit_error_total", 1)
             return
 
 
@@ -131,7 +207,9 @@ def _enqueue_log_nonblocking(queue: asyncio.Queue[LogEvent], event: LogEvent) ->
     # - ログ配信はベストエフォートとし、アプリ本体の処理を優先する。
     try:
         queue.put_nowait(event)
+        _increment_stat("enqueued_total", 1)
     except asyncio.QueueFull:
+        _increment_stat("dropped_queue_full_total", 1)
         return
 
 
@@ -148,6 +226,7 @@ def install_log_handler(loop: asyncio.AbstractEventLoop) -> None:
         return
 
     _log_queue = asyncio.Queue(maxsize=int(_LOG_QUEUE_MAXSIZE))
+    _reset_runtime_stats()
     handler = _QueueHandler(_log_queue, loop)
     handler.setLevel(logging.getLogger().level)
     root_logger = logging.getLogger()
@@ -249,7 +328,12 @@ async def send_buffer(ws: "WebSocket") -> None:
     新規接続時にキャッチアップとして直近500件のログを送信する。
     """
     for event in get_buffer_snapshot():
-        await asyncio.wait_for(ws.send_text(_serialize_event(event)), timeout=float(_SEND_TIMEOUT_SECONDS))
+        try:
+            await asyncio.wait_for(ws.send_text(_serialize_event(event)), timeout=float(_SEND_TIMEOUT_SECONDS))
+            _increment_stat("send_ok_total", 1)
+        except Exception:
+            _increment_stat("send_error_total", 1)
+            raise
 
 
 async def _dispatch_loop() -> None:
@@ -265,7 +349,9 @@ async def _dispatch_loop() -> None:
         for ws in list(_clients):
             try:
                 await asyncio.wait_for(ws.send_text(payload), timeout=float(_SEND_TIMEOUT_SECONDS))
+                _increment_stat("send_ok_total", 1)
             except Exception:
+                _increment_stat("send_error_total", 1)
                 dead_clients.append(ws)
 
         for ws in dead_clients:

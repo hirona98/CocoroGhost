@@ -14,7 +14,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Response, status
 
-from cocoro_ghost import schemas
+from cocoro_ghost import event_stream, log_stream, schemas, worker
 
 logger = __import__("logging").getLogger(__name__)
 
@@ -54,3 +54,45 @@ def control(
     background_tasks.add_task(_request_process_shutdown, reason=request.reason)
     # --- BackgroundTasks を紐づける（これが無いと shutdown が実行されない） ---
     return Response(status_code=status.HTTP_204_NO_CONTENT, background=background_tasks)
+
+
+@router.get("/control/stream-stats", response_model=schemas.StreamRuntimeStatsResponse)
+def stream_stats() -> schemas.StreamRuntimeStatsResponse:
+    """
+    ストリームのランタイム統計を返す。
+
+    運用時に queue逼迫/ドロップ/送信失敗を確認するために使う。
+    """
+
+    # --- 各ストリームから統計スナップショットを取得する ---
+    event_stats = event_stream.get_runtime_stats()
+    log_stats = log_stream.get_runtime_stats()
+
+    # --- スキーマへ詰め替えて返す ---
+    return schemas.StreamRuntimeStatsResponse(
+        events=schemas.EventStreamRuntimeStats(**event_stats),
+        logs=schemas.LogStreamRuntimeStats(**log_stats),
+    )
+
+
+@router.get("/control/worker-stats", response_model=schemas.WorkerRuntimeStatsResponse)
+def worker_stats() -> schemas.WorkerRuntimeStatsResponse:
+    """
+    Workerのジョブキュー統計を返す。
+
+    pending/running/stale の詰まり具合を運用時に確認するために使う。
+    """
+
+    # --- アクティブな embedding 設定を取得する ---
+    from cocoro_ghost.config import get_config_store
+
+    cfg = get_config_store().config
+
+    # --- jobs テーブル統計を取得する ---
+    stats = worker.get_job_queue_stats(
+        embedding_preset_id=str(cfg.embedding_preset_id),
+        embedding_dimension=int(cfg.embedding_dimension),
+    )
+
+    # --- スキーマへ詰め替えて返す ---
+    return schemas.WorkerRuntimeStatsResponse(**stats)

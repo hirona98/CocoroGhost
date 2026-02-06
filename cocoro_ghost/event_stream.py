@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
@@ -53,6 +54,75 @@ logger = logging.getLogger(__name__)
 _EVENT_QUEUE_MAXSIZE = 1000
 _SEND_TIMEOUT_SECONDS = 2.0
 
+# --- ランタイム統計 ---
+# NOTE:
+# - API から drop/送信失敗などを観測するため、軽量カウンタを保持する。
+# - publish は他スレッドから呼ばれるため、統計更新は lock で保護する。
+_stats_lock = threading.Lock()
+_stats: dict[str, int] = {
+    "enqueued_total": 0,
+    "dropped_queue_full_total": 0,
+    "send_ok_total": 0,
+    "send_error_total": 0,
+    "target_not_connected_total": 0,
+    "publish_rejected_total": 0,
+}
+
+
+def _reset_runtime_stats() -> None:
+    """イベントストリーム統計を初期化する。"""
+
+    # --- すべての統計値を0に戻す ---
+    with _stats_lock:
+        for key in list(_stats.keys()):
+            _stats[key] = 0
+
+
+def _increment_stat(key: str, delta: int = 1) -> None:
+    """指定した統計カウンタを加算する。"""
+
+    # --- 未知キーは作らず無視する（呼び出し側バグ時の二次障害を防ぐ） ---
+    with _stats_lock:
+        if key in _stats:
+            _stats[key] = int(_stats[key]) + int(delta)
+
+
+def _snapshot_stats() -> dict[str, int]:
+    """統計カウンタのスナップショットを返す。"""
+
+    with _stats_lock:
+        return {k: int(v) for k, v in _stats.items()}
+
+
+def get_runtime_stats() -> dict[str, Any]:
+    """
+    イベントストリームのランタイム統計を返す。
+
+    運用時の観測（queue逼迫/ドロップ/送信失敗）に利用する。
+    """
+
+    # --- queueの現在値を取得する ---
+    queue = _event_queue
+    queue_size = int(queue.qsize()) if queue is not None else 0
+    queue_maxsize = int(getattr(queue, "maxsize", 0) or 0) if queue is not None else int(_EVENT_QUEUE_MAXSIZE)
+
+    # --- 統計カウンタをコピーする ---
+    counters = _snapshot_stats()
+
+    # --- API応答向けに整形する ---
+    return {
+        "connected_clients": int(len(_clients)),
+        "queue_size": int(queue_size),
+        "queue_maxsize": int(queue_maxsize),
+        "dispatcher_running": bool(_dispatch_task is not None and not _dispatch_task.done()),
+        "enqueued_total": int(counters.get("enqueued_total", 0)),
+        "dropped_queue_full_total": int(counters.get("dropped_queue_full_total", 0)),
+        "send_ok_total": int(counters.get("send_ok_total", 0)),
+        "send_error_total": int(counters.get("send_error_total", 0)),
+        "target_not_connected_total": int(counters.get("target_not_connected_total", 0)),
+        "publish_rejected_total": int(counters.get("publish_rejected_total", 0)),
+    }
+
 
 def _serialize_event(event: AppEvent) -> str:
     """
@@ -83,6 +153,7 @@ def install(loop: asyncio.AbstractEventLoop) -> None:
         return
     _loop = loop
     _event_queue = asyncio.Queue(maxsize=int(_EVENT_QUEUE_MAXSIZE))
+    _reset_runtime_stats()
     _handler_installed = True
     logger.info("event stream installed")
 
@@ -127,7 +198,9 @@ def _enqueue_event_nonblocking(event: AppEvent) -> None:
         return
     try:
         _event_queue.put_nowait(event)
+        _increment_stat("enqueued_total", 1)
     except asyncio.QueueFull:
+        _increment_stat("dropped_queue_full_total", 1)
         logger.warning(
             "event stream queue full; dropped type=%s event_id=%s",
             str(event.type or ""),
@@ -149,6 +222,7 @@ def publish(
     target_client_id を指定した場合は、そのクライアントにのみ送る。
     """
     if _event_queue is None or _loop is None:
+        _increment_stat("publish_rejected_total", 1)
         return
     event = AppEvent(
         type=type,
@@ -160,6 +234,7 @@ def publish(
         _loop.call_soon_threadsafe(_enqueue_event_nonblocking, event)
     except RuntimeError:
         # --- shutdown レース（loop close 後）は捨てる ---
+        _increment_stat("publish_rejected_total", 1)
         return
 
 
@@ -278,10 +353,13 @@ async def _dispatch_loop() -> None:
                     int(event.event_id),
                     target_id,
                 )
+                _increment_stat("target_not_connected_total", 1)
             if ws is not None and ws in _clients:
                 try:
                     await asyncio.wait_for(ws.send_text(payload), timeout=float(_SEND_TIMEOUT_SECONDS))
+                    _increment_stat("send_ok_total", 1)
                 except Exception:
+                    _increment_stat("send_error_total", 1)
                     dead_clients.append(ws)
         else:
             # --- 送信ログ（ブロードキャスト） ---
@@ -295,7 +373,9 @@ async def _dispatch_loop() -> None:
             for ws in list(_clients):
                 try:
                     await asyncio.wait_for(ws.send_text(payload), timeout=float(_SEND_TIMEOUT_SECONDS))
+                    _increment_stat("send_ok_total", 1)
                 except Exception:
+                    _increment_stat("send_error_total", 1)
                     dead_clients.append(ws)
 
         for ws in dead_clients:
