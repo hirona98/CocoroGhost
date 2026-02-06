@@ -11,8 +11,8 @@
 - 同期/非同期の境界（SSE開始前に検索確定）: `docs/10_実行フロー.md`
 - API（HTTPS必須/認証/主要エンドポイント）: `docs/07_API.md`
 - 記憶処理の入口（mixin構成）: `cocoro_ghost/memory/manager.py`
-- 非同期ジョブ（WritePlan/索引/整理など）: `cocoro_ghost/worker.py`（スケジューラ）/ `cocoro_ghost/worker_handlers.py`（実処理）/ `cocoro_ghost/worker_constants.py`（共通定数）/ `cocoro_ghost/internal_worker.py`
-- 確定プロフィール（好み/苦手: ConfirmedPreferences）: `cocoro_ghost/memory/_chat_mixin.py` と `cocoro_ghost/worker_handlers.py`
+- 非同期ジョブ（WritePlan/索引/整理など）: `cocoro_ghost/worker.py`（スケジューラ）/ `cocoro_ghost/worker_handlers.py`（ディスパッチ）/ `cocoro_ghost/worker_handlers_*.py`（実処理）/ `cocoro_ghost/worker_handlers_common.py`（共通ヘルパ）/ `cocoro_ghost/worker_constants.py`（共通定数）/ `cocoro_ghost/internal_worker.py`
+- 確定プロフィール（好み/苦手: ConfirmedPreferences）: `cocoro_ghost/memory/_chat_mixin.py` と `cocoro_ghost/worker_handlers_write_plan.py`
 - 保存先/パス（frozen/非frozen）: `cocoro_ghost/paths.py`
 - TOMLキー/検証（未知キーで起動失敗）: `cocoro_ghost/config.py` の `load_config()`
 
@@ -22,7 +22,7 @@
 - API 追加/変更: `cocoro_ghost/api/` と `docs/07_API.md`
 - チャット（SSE）: `cocoro_ghost/api/chat.py` と `cocoro_ghost/memory/_chat_mixin.py`
 - 検索（思い出す）: `docs/04_検索（思い出す）.md` と `cocoro_ghost/memory/_chat_search_mixin.py`
-- 記憶更新（育てる）: `docs/05_記憶更新（育てる）.md` と `cocoro_ghost/worker.py` / `cocoro_ghost/worker_handlers.py`
+- 記憶更新（育てる）: `docs/05_記憶更新（育てる）.md` と `cocoro_ghost/worker.py` / `cocoro_ghost/worker_handlers.py` / `cocoro_ghost/worker_handlers_*.py`
 - DB/ストレージ（SQLite）: `docs/06_ストレージ（SQLite）.md` と `cocoro_ghost/db.py`
 - Web UI: `docs/13_WebブラウザUI.md` と `static/` と `cocoro_ghost/main.py`（static mount）
 
