@@ -20,6 +20,12 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 MAX_BUFFER = 500
+# --- 配信バックプレッシャー設定 ---
+# NOTE:
+# - キューは有界にして、遅延時のメモリ膨張を防ぐ。
+# - 送信はタイムアウトを設け、遅いクライアントを切り離す。
+_LOG_QUEUE_MAXSIZE = 1000
+_SEND_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass
@@ -106,10 +112,27 @@ class _QueueHandler(logging.Handler):
             if "logs/stream" in msg:
                 return
             event = _record_to_event(record)
-            self.loop.call_soon_threadsafe(self.queue.put_nowait, event)
+            self.loop.call_soon_threadsafe(_enqueue_log_nonblocking, self.queue, event)
         except Exception:  # pragma: no cover - logging safety net
             # ここで例外ログを出すと、同じハンドラ経由で再帰する可能性があるため抑止する。
             return
+
+
+def _enqueue_log_nonblocking(queue: asyncio.Queue[LogEvent], event: LogEvent) -> None:
+    """
+    ログイベントをnon-blockingでキュー投入する。
+
+    queue満杯時はドロップする。ここでログ出力すると再帰するため出力しない。
+    """
+
+    # --- queue満杯時は黙ってドロップする ---
+    # NOTE:
+    # - ここで logger.warning を出すと同じhandlerを経由して再帰する。
+    # - ログ配信はベストエフォートとし、アプリ本体の処理を優先する。
+    try:
+        queue.put_nowait(event)
+    except asyncio.QueueFull:
+        return
 
 
 def install_log_handler(loop: asyncio.AbstractEventLoop) -> None:
@@ -124,7 +147,7 @@ def install_log_handler(loop: asyncio.AbstractEventLoop) -> None:
     if _handler_installed:
         return
 
-    _log_queue = asyncio.Queue()
+    _log_queue = asyncio.Queue(maxsize=int(_LOG_QUEUE_MAXSIZE))
     handler = _QueueHandler(_log_queue, loop)
     handler.setLevel(logging.getLogger().level)
     root_logger = logging.getLogger()
@@ -226,11 +249,14 @@ async def send_buffer(ws: "WebSocket") -> None:
     新規接続時にキャッチアップとして直近500件のログを送信する。
     """
     for event in get_buffer_snapshot():
-        await ws.send_text(_serialize_event(event))
+        await asyncio.wait_for(ws.send_text(_serialize_event(event)), timeout=float(_SEND_TIMEOUT_SECONDS))
 
 
 async def _dispatch_loop() -> None:
     while True:
+        if _log_queue is None:  # pragma: no cover
+            await asyncio.sleep(0.1)
+            continue
         event = await _log_queue.get()
         _buffer.append(event)
         dead_clients: List["WebSocket"] = []
@@ -238,7 +264,7 @@ async def _dispatch_loop() -> None:
 
         for ws in list(_clients):
             try:
-                await ws.send_text(payload)
+                await asyncio.wait_for(ws.send_text(payload), timeout=float(_SEND_TIMEOUT_SECONDS))
             except Exception:
                 dead_clients.append(ws)
 

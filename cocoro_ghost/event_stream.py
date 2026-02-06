@@ -46,6 +46,13 @@ _handler_installed = False
 _loop: Optional[asyncio.AbstractEventLoop] = None
 logger = logging.getLogger(__name__)
 
+# --- 配信バックプレッシャー設定 ---
+# NOTE:
+# - キューは有界にして、遅延時のメモリ膨張を防ぐ。
+# - 送信はタイムアウトを設け、遅いクライアントを切り離す。
+_EVENT_QUEUE_MAXSIZE = 1000
+_SEND_TIMEOUT_SECONDS = 2.0
+
 
 def _serialize_event(event: AppEvent) -> str:
     """
@@ -75,7 +82,7 @@ def install(loop: asyncio.AbstractEventLoop) -> None:
     if _handler_installed:
         return
     _loop = loop
-    _event_queue = asyncio.Queue()
+    _event_queue = asyncio.Queue(maxsize=int(_EVENT_QUEUE_MAXSIZE))
     _handler_installed = True
     logger.info("event stream installed")
 
@@ -113,6 +120,21 @@ async def stop_dispatcher() -> None:
     _dispatch_task = None
 
 
+def _enqueue_event_nonblocking(event: AppEvent) -> None:
+    """イベントを non-blocking でキュー投入する（満杯時はドロップ）。"""
+
+    if _event_queue is None:
+        return
+    try:
+        _event_queue.put_nowait(event)
+    except asyncio.QueueFull:
+        logger.warning(
+            "event stream queue full; dropped type=%s event_id=%s",
+            str(event.type or ""),
+            int(event.event_id),
+        )
+
+
 def publish(
     *,
     type: str,
@@ -134,7 +156,11 @@ def publish(
         data=data or {},
         target_client_id=(str(target_client_id).strip() if target_client_id else None),
     )
-    _loop.call_soon_threadsafe(_event_queue.put_nowait, event)
+    try:
+        _loop.call_soon_threadsafe(_enqueue_event_nonblocking, event)
+    except RuntimeError:
+        # --- shutdown レース（loop close 後）は捨てる ---
+        return
 
 
 async def add_client(ws: "WebSocket") -> None:
@@ -254,7 +280,7 @@ async def _dispatch_loop() -> None:
                 )
             if ws is not None and ws in _clients:
                 try:
-                    await ws.send_text(payload)
+                    await asyncio.wait_for(ws.send_text(payload), timeout=float(_SEND_TIMEOUT_SECONDS))
                 except Exception:
                     dead_clients.append(ws)
         else:
@@ -268,7 +294,7 @@ async def _dispatch_loop() -> None:
             )
             for ws in list(_clients):
                 try:
-                    await ws.send_text(payload)
+                    await asyncio.wait_for(ws.send_text(payload), timeout=float(_SEND_TIMEOUT_SECONDS))
                 except Exception:
                     dead_clients.append(ws)
 
