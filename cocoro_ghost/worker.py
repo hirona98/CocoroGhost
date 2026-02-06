@@ -53,6 +53,16 @@ _JOB_RUNNING = 1
 _JOB_DONE = 2
 _JOB_FAILED = 3
 
+# --- ジョブ実行の耐障害性パラメータ ---
+# NOTE:
+# - 失敗時は即 failed にせず、指数バックオフで再試行する。
+# - 再試行上限を超えたものだけ dead-letter（status=failed）に送る。
+_JOB_MAX_RETRIES = 5
+_JOB_RETRY_BASE_SECONDS = 5
+_JOB_RETRY_MAX_SECONDS = 300
+_JOB_RUNNING_STALE_SECONDS = 120
+_JOB_STALE_SWEEP_INTERVAL_SECONDS = 10
+
 
 _TIDY_CHAT_TURNS_INTERVAL = 200
 _TIDY_CHAT_TURNS_INTERVAL_FIRST = 10
@@ -63,6 +73,15 @@ _TIDY_ACTIVE_STATE_FETCH_LIMIT = 5000
 def _now_utc_ts() -> int:
     """現在時刻（UTC）をUNIX秒で返す。"""
     return int(time.time())
+
+
+def _compute_retry_delay_seconds(*, failed_tries: int) -> int:
+    """失敗回数に応じた再試行遅延（指数バックオフ）を返す。"""
+
+    # --- 1回目失敗: base秒、以降は2倍 ---
+    tries_i = max(1, int(failed_tries))
+    delay = int(_JOB_RETRY_BASE_SECONDS) * (2 ** int(tries_i - 1))
+    return int(min(int(delay), int(_JOB_RETRY_MAX_SECONDS)))
 
 
 def _normalize_text_for_dedupe(text_in: str) -> str:
@@ -374,6 +393,7 @@ def run_forever(
     - due(pending & run_after<=now) を running にして実行キューへ投入する。
     - 実行は ThreadPoolExecutor で並列化する（主に LLM 呼び出しの待ち時間を隠す目的）。
     - apply_write_plan / tidy_memory は排他で実行する（DB更新が大きく衝突しやすいため）。
+    - stale running は一定間隔で回収し、指数バックオフ再試行する。
     """
 
     _ = periodic_interval_seconds  # cron無し定期は採用しない（ターン回数ベースを正とする）
@@ -397,6 +417,7 @@ def run_forever(
     with ThreadPoolExecutor(max_workers=int(job_concurrency_i), thread_name_prefix="cocoro_ghost_job") as executor:
         in_flight: dict[Future[None], dict[str, Any]] = {}
         stop_deadline_ts: float | None = None
+        next_stale_sweep_ts = 0.0
 
         # --- ループ ---
         while True:
@@ -423,6 +444,30 @@ def run_forever(
                         exc_info=exc,
                     )
                 del in_flight[fut]
+
+            # --- stale running 回収（プロセス再起動後の取り残しを復帰） ---
+            now_float = float(time.time())
+            if now_float >= float(next_stale_sweep_ts):
+                in_flight_job_ids = {
+                    int(meta.get("job_id") or 0)
+                    for meta in in_flight.values()
+                    if int(meta.get("job_id") or 0) > 0
+                }
+                requeued, dead_lettered = _recover_stale_running_jobs(
+                    embedding_preset_id=str(embedding_preset_id),
+                    embedding_dimension=int(embedding_dimension),
+                    now_ts=_now_utc_ts(),
+                    stale_seconds=int(_JOB_RUNNING_STALE_SECONDS),
+                    ignore_job_ids=set(in_flight_job_ids),
+                )
+                if int(requeued) > 0 or int(dead_lettered) > 0:
+                    logger.warning(
+                        "worker recovered stale running jobs requeued=%s dead_lettered=%s stale_seconds=%s",
+                        int(requeued),
+                        int(dead_lettered),
+                        int(_JOB_RUNNING_STALE_SECONDS),
+                    )
+                next_stale_sweep_ts = float(now_float) + float(_JOB_STALE_SWEEP_INTERVAL_SECONDS)
 
             # --- 停止要求中: in_flight が空なら終了 / 期限超過なら終了 ---
             if stop_deadline_ts is not None:
@@ -606,6 +651,74 @@ def _claim_due_jobs(
     return claimed
 
 
+def _recover_stale_running_jobs(
+    *,
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    now_ts: int,
+    stale_seconds: int,
+    ignore_job_ids: set[int],
+) -> tuple[int, int]:
+    """
+    stale な running ジョブを回収する。
+
+    方針:
+        - in_flight（現在このプロセスで実行中）の job_id は対象外にする。
+        - stale と判定したものは tries を進め、再試行上限超過時は dead-letter に送る。
+
+    Returns:
+        (requeued_count, dead_lettered_count)
+    """
+
+    # --- stale 判定閾値 ---
+    stale_before_ts = int(now_ts) - max(1, int(stale_seconds))
+    ignore_ids = sorted({int(x) for x in (ignore_job_ids or set()) if int(x) > 0})
+
+    requeued = 0
+    dead_lettered = 0
+    with memory_session_scope(str(embedding_preset_id), int(embedding_dimension)) as db:
+        q = (
+            db.query(Job)
+            .filter(Job.status == int(_JOB_RUNNING))
+            .filter(Job.updated_at <= int(stale_before_ts))
+        )
+        if ignore_ids:
+            q = q.filter(~Job.id.in_(ignore_ids))
+        rows = q.order_by(Job.updated_at.asc(), Job.id.asc()).all()
+        if not rows:
+            return (0, 0)
+
+        # --- stale running を pending へ戻す（上限超過は dead-letter） ---
+        for job in rows:
+            old_tries = int(job.tries or 0)
+            next_tries = int(old_tries) + 1
+            if int(next_tries) >= int(_JOB_MAX_RETRIES):
+                job.status = int(_JOB_FAILED)
+                job.tries = int(next_tries)
+                job.updated_at = int(now_ts)
+                job.last_error = (
+                    f"dead-letter: stale running timeout exceeded retry limit "
+                    f"tries={next_tries}/{int(_JOB_MAX_RETRIES)}"
+                )
+                db.add(job)
+                dead_lettered += 1
+                continue
+
+            delay_seconds = _compute_retry_delay_seconds(failed_tries=int(next_tries))
+            job.status = int(_JOB_PENDING)
+            job.tries = int(next_tries)
+            job.run_after = int(now_ts) + int(delay_seconds)
+            job.updated_at = int(now_ts)
+            job.last_error = (
+                f"stale running recovered; retry in {int(delay_seconds)}s "
+                f"tries={next_tries}/{int(_JOB_MAX_RETRIES)}"
+            )
+            db.add(job)
+            requeued += 1
+
+    return (int(requeued), int(dead_lettered))
+
+
 def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_client: LlmClient, job_id: int) -> None:
     """jobs.id を指定して1件実行する（成功/失敗をDBへ反映）。"""
 
@@ -704,17 +817,35 @@ def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_clie
             extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
         )
     except Exception as exc:  # noqa: BLE001
-        # --- 失敗を書き戻す ---
+        # --- 失敗時は指数バックオフで再試行（上限超過のみ dead-letter） ---
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
             job2 = db.query(Job).filter(Job.id == int(job_id)).one_or_none()
             if job2 is None:
                 return
-            job2.status = int(_JOB_FAILED)
             job2.updated_at = int(now_ts)
-            job2.tries = int(job2.tries or 0) + 1
-            job2.last_error = str(exc)
+            next_tries = int(job2.tries or 0) + 1
+            job2.tries = int(next_tries)
+            if int(next_tries) >= int(_JOB_MAX_RETRIES):
+                job2.status = int(_JOB_FAILED)
+                job2.last_error = (
+                    f"dead-letter: retries exhausted tries={next_tries}/{int(_JOB_MAX_RETRIES)} error={str(exc)}"
+                )
+            else:
+                delay_seconds = _compute_retry_delay_seconds(failed_tries=int(next_tries))
+                job2.status = int(_JOB_PENDING)
+                job2.run_after = int(now_ts) + int(delay_seconds)
+                job2.last_error = (
+                    f"retry in {int(delay_seconds)}s tries={next_tries}/{int(_JOB_MAX_RETRIES)} error={str(exc)}"
+                )
             db.add(job2)
-        logger.warning("job failed kind=%s job_id=%s error=%s", kind, int(job_id), str(exc))
+        logger.warning(
+            "job failed kind=%s job_id=%s tries=%s/%s error=%s",
+            kind,
+            int(job_id),
+            int(next_tries),
+            int(_JOB_MAX_RETRIES),
+            str(exc),
+        )
 
 
 def _handle_upsert_event_embedding(
