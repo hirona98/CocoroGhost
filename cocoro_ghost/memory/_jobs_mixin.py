@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from cocoro_ghost import common_utils
 from cocoro_ghost.db import memory_session_scope
-from cocoro_ghost.memory._utils import now_utc_ts
+from cocoro_ghost.memory._utils import now_system_utc_ts
 from cocoro_ghost.memory_models import Job
 
 
@@ -28,7 +28,7 @@ class _JobsMemoryMixin:
             return
 
         # --- jobs に投入 ---
-        now_ts = now_utc_ts()
+        now_ts = now_system_utc_ts()
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
             db.add(
                 Job(
@@ -51,7 +51,7 @@ class _JobsMemoryMixin:
             return
 
         # --- jobs に投入 ---
-        now_ts = now_utc_ts()
+        now_ts = now_system_utc_ts()
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
             db.add(
                 Job(
@@ -76,7 +76,7 @@ class _JobsMemoryMixin:
             return
 
         # --- jobs に投入 ---
-        now_ts = now_utc_ts()
+        now_ts = now_system_utc_ts()
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
             db.add(
                 Job(

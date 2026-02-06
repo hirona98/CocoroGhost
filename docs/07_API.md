@@ -609,6 +609,14 @@ UI向けの「全設定」取得/更新。
 
 Ghostプロセス自体の制御コマンド。
 
+時刻に関する前提:
+
+- CocoroGhost は時刻を2系統で扱う
+  - `system`（実時間）: OS時刻
+  - `domain`（論理時間）: 会話/記憶/感情/リマインダー評価用の時刻
+- `POST /api/control/time/advance` は `domain` のみ進める（`system` は変えない）
+- これにより、実時間待ちなしで mood減衰やリマインダー発火の検証ができる
+
 ### `GET /api/control/stream-stats`
 
 WebSocketストリームの運用統計を返す。
@@ -674,6 +682,46 @@ Workerのジョブキュー統計を返す。
   "stale_seconds": 120
 }
 ```
+
+### `GET /api/control/time`
+
+現在の `system` / `domain` 時刻を返す。
+
+レスポンス（例）:
+
+```json
+{
+  "system_now_utc_ts": 1769650824,
+  "system_now_iso": "2026-01-29T09:20:24+09:00",
+  "domain_now_utc_ts": 1769654424,
+  "domain_now_iso": "2026-01-29T10:20:24+09:00",
+  "domain_offset_seconds": 3600
+}
+```
+
+### `POST /api/control/time/advance`
+
+`domain` 時刻を指定秒だけ前進させる。
+
+リクエスト:
+
+```json
+{
+  "seconds": 3600
+}
+```
+
+レスポンス:
+
+- `GET /api/control/time` と同じ形式（更新後の値）
+
+### `POST /api/control/time/reset`
+
+`domain_offset_seconds` を `0` に戻す。
+
+レスポンス:
+
+- `GET /api/control/time` と同じ形式（リセット後の値）
 
 ### `POST /api/control`
 

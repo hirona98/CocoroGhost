@@ -12,6 +12,7 @@ from typing import Iterator
 
 from sqlalchemy.orm import Session
 
+from cocoro_ghost.clock import ClockService, get_clock_service
 from cocoro_ghost.config import ConfigStore, get_config_store
 from cocoro_ghost.db import get_memory_session, get_settings_db, init_memory_db
 from cocoro_ghost.llm_client import LlmClient
@@ -82,6 +83,15 @@ def get_config_store_dep() -> ConfigStore:
     Depends(get_config_store_dep)として使用し、エンドポイントで設定にアクセスする。
     """
     return get_config_store()
+
+
+def get_clock_service_dep() -> ClockService:
+    """
+    ClockServiceをFastAPI依存性注入で取得する。
+
+    Depends(get_clock_service_dep) として使用し、domain/system時刻へアクセスする。
+    """
+    return get_clock_service()
 
 
 def get_settings_db_dep() -> Iterator[Session]:

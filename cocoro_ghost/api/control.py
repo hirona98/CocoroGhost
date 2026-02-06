@@ -12,9 +12,12 @@ import signal
 import time
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
 
+from cocoro_ghost.clock import ClockService
 from cocoro_ghost import event_stream, log_stream, schemas, worker
+from cocoro_ghost.deps import get_clock_service_dep
+from cocoro_ghost.time_utils import format_iso8601_local_with_tz
 
 logger = __import__("logging").getLogger(__name__)
 
@@ -37,6 +40,22 @@ def _request_process_shutdown(*, reason: Optional[str]) -> None:
 
     # --- uvicorn に停止シグナルを送る（shutdown イベントが走る） ---
     os.kill(os.getpid(), signal.SIGTERM)
+
+
+def _build_time_snapshot_response(clock_service: ClockService) -> schemas.ControlTimeSnapshotResponse:
+    """現在のsystem/domain時刻をAPIレスポンスへ整形する。"""
+
+    # --- スナップショットを取得 ---
+    snap = clock_service.snapshot()
+
+    # --- ISO表示（ローカルTZ付き）を付ける ---
+    return schemas.ControlTimeSnapshotResponse(
+        system_now_utc_ts=int(snap.system_now_utc_ts),
+        system_now_iso=format_iso8601_local_with_tz(int(snap.system_now_utc_ts)),
+        domain_now_utc_ts=int(snap.domain_now_utc_ts),
+        domain_now_iso=format_iso8601_local_with_tz(int(snap.domain_now_utc_ts)),
+        domain_offset_seconds=int(snap.domain_offset_seconds),
+    )
 
 
 @router.post("/control", status_code=status.HTTP_204_NO_CONTENT)
@@ -96,3 +115,58 @@ def worker_stats() -> schemas.WorkerRuntimeStatsResponse:
 
     # --- スキーマへ詰め替えて返す ---
     return schemas.WorkerRuntimeStatsResponse(**stats)
+
+
+@router.get("/control/time", response_model=schemas.ControlTimeSnapshotResponse)
+def control_time_snapshot(
+    clock_service: ClockService = Depends(get_clock_service_dep),
+) -> schemas.ControlTimeSnapshotResponse:
+    """
+    時刻スナップショットを返す。
+
+    - system: OS実時間
+    - domain: 会話/記憶/感情の評価に使う論理時刻
+    """
+
+    # --- 現在値を返す ---
+    return _build_time_snapshot_response(clock_service)
+
+
+@router.post("/control/time/advance", response_model=schemas.ControlTimeSnapshotResponse)
+def control_time_advance(
+    request: schemas.ControlTimeAdvanceRequest,
+    clock_service: ClockService = Depends(get_clock_service_dep),
+) -> schemas.ControlTimeSnapshotResponse:
+    """
+    domain時刻を前進させる。
+
+    注意:
+        - system時刻は変更しない。
+        - seconds は1以上のみ許可する。
+    """
+
+    # --- 入力秒を反映 ---
+    try:
+        clock_service.advance_domain_seconds(seconds=int(request.seconds))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # --- 変更後スナップショット ---
+    return _build_time_snapshot_response(clock_service)
+
+
+@router.post("/control/time/reset", response_model=schemas.ControlTimeSnapshotResponse)
+def control_time_reset(
+    clock_service: ClockService = Depends(get_clock_service_dep),
+) -> schemas.ControlTimeSnapshotResponse:
+    """
+    domain時刻オフセットをリセットする。
+
+    system時刻には影響しない。
+    """
+
+    # --- offsetを0へ戻す ---
+    clock_service.reset_domain_offset()
+
+    # --- 変更後スナップショット ---
+    return _build_time_snapshot_response(clock_service)

@@ -12,16 +12,16 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from cocoro_ghost import affect
+from cocoro_ghost.clock import ClockService
 from cocoro_ghost import common_utils
 from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope
-from cocoro_ghost.deps import get_config_store_dep
+from cocoro_ghost.deps import get_clock_service_dep, get_config_store_dep
 from cocoro_ghost.memory_models import Event, EventAffect, State
 from cocoro_ghost.time_utils import format_iso8601_local_with_tz
 
@@ -38,6 +38,7 @@ _RECENT_EVENT_AFFECTS_LIMIT = 8
 @router.get("/debug")
 def get_mood_debug(
     config_store: ConfigStore = Depends(get_config_store_dep),
+    clock_service: ClockService = Depends(get_clock_service_dep),
 ) -> dict[str, Any]:
     """
     現在の「背景の気分（LongMoodState）」を、デバッグ観測向けに返す。
@@ -59,7 +60,7 @@ def get_mood_debug(
         )
 
     # --- 現在時刻（UTCのUNIX秒） ---
-    now_ts = int(time.time())
+    now_ts = int(clock_service.now_domain_utc_ts())
 
     # --- 設定（アクティブDB） ---
     cfg = config_store.config

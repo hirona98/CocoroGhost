@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 
+from cocoro_ghost.clock import get_clock_service
 from cocoro_ghost import event_stream
 from cocoro_ghost.deps import get_memory_manager
 from cocoro_ghost.reminders_logic import (
@@ -37,7 +37,8 @@ logger = logging.getLogger(__name__)
 def _now_utc_ts() -> int:
     """現在時刻（UTC epoch seconds）を返す。"""
 
-    return int(time.time())
+    # --- リマインダー判定はdomain時刻を使う（時間前進検証を可能にする） ---
+    return int(get_clock_service().now_domain_utc_ts())
 
 
 class ReminderService:

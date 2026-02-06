@@ -264,6 +264,32 @@ class ControlRequest(BaseModel):
         return s
 
 
+class ControlTimeAdvanceRequest(BaseModel):
+    """
+    /control/time/advance 用リクエスト。
+
+    domain時刻を指定秒だけ前進させる。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    seconds: int = Field(ge=1, le=31_536_000)
+
+
+class ControlTimeSnapshotResponse(BaseModel):
+    """
+    /control/time 系APIの共通レスポンス。
+
+    system時刻（実時間）とdomain時刻（テスト時刻）の両方を返す。
+    """
+
+    system_now_utc_ts: int
+    system_now_iso: Optional[str] = None
+    domain_now_utc_ts: int
+    domain_now_iso: Optional[str] = None
+    domain_offset_seconds: int
+
+
 class EventStreamRuntimeStats(BaseModel):
     """
     イベントストリームのランタイム統計。

@@ -8,13 +8,12 @@
 
 from __future__ import annotations
 
-import time
-
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from cocoro_ghost import schemas
-from cocoro_ghost.deps import get_reminders_db_dep
+from cocoro_ghost.clock import ClockService
+from cocoro_ghost.deps import get_clock_service_dep, get_reminders_db_dep
 from cocoro_ghost.reminders_logic import (
     DEFAULT_REMINDER_TIME_ZONE,
     NextFireInput,
@@ -270,10 +269,11 @@ def list_reminders(db: Session = Depends(get_reminders_db_dep)) -> schemas.Remin
 def create_reminder(
     request: schemas.ReminderCreateRequest,
     db: Session = Depends(get_reminders_db_dep),
+    clock_service: ClockService = Depends(get_clock_service_dep),
 ) -> schemas.ReminderItem:
     """リマインダーを作成する。"""
 
-    now_utc_ts = int(time.time())
+    now_utc_ts = int(clock_service.now_domain_utc_ts())
 
     # --- 作成 ---
     reminder = _apply_create_request_to_model(now_utc_ts=now_utc_ts, request=request)
@@ -289,10 +289,11 @@ def update_reminder(
     reminder_id: str,
     request: schemas.ReminderUpdateRequest,
     db: Session = Depends(get_reminders_db_dep),
+    clock_service: ClockService = Depends(get_clock_service_dep),
 ) -> schemas.ReminderItem:
     """リマインダーを更新する（部分更新）。"""
 
-    now_utc_ts = int(time.time())
+    now_utc_ts = int(clock_service.now_domain_utc_ts())
 
     # --- 対象取得 ---
     reminder = db.query(Reminder).filter_by(id=str(reminder_id)).first()
