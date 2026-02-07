@@ -97,7 +97,7 @@ start.bat
 - **fastapi** - Web フレームワーク
 - **uvicorn[standard]** - ASGI サーバー
 - **sqlalchemy** - ORM
-- **litellm** - LLM クライアント
+- **litellm==1.81.6** - LLM クライアント
 - **pydantic** - データバリデーション
 - **python-multipart** - マルチパートフォームデータ処理
 - **httpx** - HTTP クライアント
