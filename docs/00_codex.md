@@ -26,6 +26,7 @@
 - 記憶更新（育てる）: `docs/05_記憶更新（育てる）.md` と `cocoro_ghost/worker.py` / `cocoro_ghost/worker_handlers.py` / `cocoro_ghost/worker_handlers_*.py`
 - DB/ストレージ（SQLite）: `docs/06_ストレージ（SQLite）.md` と `cocoro_ghost/db.py`
 - Web UI: `docs/13_WebブラウザUI.md` と `static/` と `cocoro_ghost/main.py`（static mount）
+- 長期評価（会話/感情/時間前進）: `docs/15_長期会話評価計画.md` と `docs/16_長期会話シナリオ台帳.md`
 
 <!-- Block: Search Cheatsheet -->
 ## 迷ったら `rg`（入口に当てる）
