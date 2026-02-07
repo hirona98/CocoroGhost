@@ -236,7 +236,7 @@ def _handle_build_state_links(
             system_prompt=prompt_builders.state_links_system_prompt(),
             input_text=input_text,
             purpose=LlmRequestPurpose.ASYNC_STATE_LINKS,
-            max_tokens=400,
+            max_tokens=600,
         )
         content = common_utils.first_choice_content(resp)
         obj = common_utils.parse_first_json_object_or_none(content) or {}
@@ -248,7 +248,7 @@ def _handle_build_state_links(
                 logger.error(
                     (
                         "build_state_links JSON parse failed by truncation "
-                        "(finish_reason=length, base_state_id=%s, max_tokens=400, chars=%s). "
+                        "(finish_reason=length, base_state_id=%s, max_tokens=600, chars=%s). "
                         "Increase max_tokens for ASYNC_STATE_LINKS."
                     ),
                     int(base_snapshot["state_id"]),
