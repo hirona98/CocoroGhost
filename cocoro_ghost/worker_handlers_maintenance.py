@@ -32,6 +32,30 @@ from cocoro_ghost.worker_handlers_common import (
 logger = logging.getLogger(__name__)
 
 
+def _response_finish_reason(resp: Any) -> str:
+    """
+    LLMレスポンスから finish_reason を取り出す。
+
+    dict形式とオブジェクト形式の両方を受け取れるようにして、
+    worker側で追加ログに使う。
+    """
+
+    # --- オブジェクト形式を優先して読む ---
+    try:
+        choice = resp.choices[0]
+        value = getattr(choice, "finish_reason", None) or choice.get("finish_reason")
+        return str(value or "")
+    except Exception:  # noqa: BLE001
+        pass
+
+    # --- dict形式でも読む ---
+    try:
+        value = resp["choices"][0].get("finish_reason")
+        return str(value or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _handle_build_state_links(
     *,
     embedding_preset_id: str,
@@ -214,9 +238,23 @@ def _handle_build_state_links(
             purpose=LlmRequestPurpose.ASYNC_STATE_LINKS,
             max_tokens=400,
         )
-        obj = common_utils.parse_first_json_object_or_none(common_utils.first_choice_content(resp)) or {}
+        content = common_utils.first_choice_content(resp)
+        obj = common_utils.parse_first_json_object_or_none(content) or {}
         links_raw = obj.get("links")
         if not isinstance(links_raw, list):
+            # --- 末尾切れのときだけ、運用者向けに max_tokens 調整を促す ---
+            finish_reason = _response_finish_reason(resp)
+            if str(finish_reason) == "length":
+                logger.error(
+                    (
+                        "build_state_links JSON parse failed by truncation "
+                        "(finish_reason=length, base_state_id=%s, max_tokens=400, chars=%s). "
+                        "Increase max_tokens for ASYNC_STATE_LINKS."
+                    ),
+                    int(base_snapshot["state_id"]),
+                    int(len(content or "")),
+                    extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
+                )
             continue
 
         # --- 出力を正規化（採用/足切り） ---
