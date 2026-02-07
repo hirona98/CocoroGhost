@@ -8,26 +8,28 @@ Workerジョブハンドラ（整理・リンク系）
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from sqlalchemy import text
-
-from cocoro_ghost import common_utils, prompt_builders
+from cocoro_ghost import common_utils, prompt_builders, vector_index
 from cocoro_ghost.db import memory_session_scope, search_similar_item_ids
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.memory_models import Event, Job, Revision, State, StateLink
-from cocoro_ghost.time_utils import format_iso8601_local
 from cocoro_ghost.worker_constants import (
     JOB_PENDING as _JOB_PENDING,
     TIDY_ACTIVE_STATE_FETCH_LIMIT as _TIDY_ACTIVE_STATE_FETCH_LIMIT,
+    TIDY_MAX_CLOSE_PER_RUN as _TIDY_MAX_CLOSE_PER_RUN,
 )
 from cocoro_ghost.worker_handlers_common import (
+    _build_state_embedding_text,
     _canonicalize_json_for_dedupe,
     _normalize_text_for_dedupe,
     _now_utc_ts,
     _state_link_row_to_json,
     _state_row_to_json,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _handle_build_state_links(
@@ -508,5 +510,3 @@ def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, p
         int(len(closed_state_ids)),
         extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
     )
-
-
