@@ -368,6 +368,9 @@ UI向けの「全設定」取得/更新。
 - サーバ側は `*_preset_id`（UUID）で `upsert` する
 - リクエストに含まれない既存プリセットは削除せず `archived=true` にする
 - `GET /api/settings` は `archived=false` のもののみ返す
+- 会話応答作成（`/api/chat` の最終生成）では、Web検索（インターネット）を常時ONで使う
+- `llm_model` は `openrouter/*` / `xai/*` / `openai/*` / `google/*` / `gemini/*` のいずれかを使用する
+- OpenRouter を OpenAI互換 `base_url` で使う場合（例: `https://openrouter.ai/api/v1`）も、最終生成時は OpenRouter のWeb検索 plugin を有効化する
 
 #### リクエスト（例）
 
