@@ -319,6 +319,7 @@ UI向けの「全設定」取得/更新。
       "llm_api_key": "string",
       "llm_model": "string",
       "reasoning_effort": "optional",
+      "reply_web_search_enabled": true,
       "llm_base_url": "optional",
       "max_turns_window": 10,
       "max_tokens": 2048,
@@ -368,9 +369,9 @@ UI向けの「全設定」取得/更新。
 - サーバ側は `*_preset_id`（UUID）で `upsert` する
 - リクエストに含まれない既存プリセットは削除せず `archived=true` にする
 - `GET /api/settings` は `archived=false` のもののみ返す
-- 会話応答作成（`/api/chat` の最終生成）では、Web検索（インターネット）を常時ONで使う
+- 会話応答作成（`/api/chat` の最終生成）でのWeb検索（インターネット）は、`llm_preset.reply_web_search_enabled` でON/OFFする
 - `llm_model` は `openrouter/*` / `xai/*` / `openai/*` / `google/*` / `gemini/*` のいずれかを使用する
-- OpenRouter を OpenAI互換 `base_url` で使う場合（例: `https://openrouter.ai/api/v1`）も、最終生成時は OpenRouter のWeb検索 plugin を有効化する
+- OpenRouter を OpenAI互換 `base_url` で使う場合（例: `https://openrouter.ai/api/v1`）も、設定がONなら最終生成時に OpenRouter のWeb検索 plugin を有効化する
 
 #### リクエスト（例）
 

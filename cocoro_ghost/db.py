@@ -51,7 +51,7 @@ _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
 _MEMORY_DB_USER_VERSION = 8
-_SETTINGS_DB_USER_VERSION = 2
+_SETTINGS_DB_USER_VERSION = 3
 
 
 def get_db_dir() -> Path:
@@ -755,6 +755,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             archived=False,
             llm_api_key="",
             llm_model="openai/gpt-5-mini",
+            reply_web_search_enabled=True,
             max_turns_window=50,
             image_model="openai/gpt-5-mini",
             image_timeout_seconds=60,

@@ -451,6 +451,7 @@ class LlmClient:
         image_llm_base_url: Optional[str] = None,
         image_model_api_key: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        reply_web_search_enabled: bool = True,
         max_tokens: int = 4096,
         max_tokens_vision: int = 4096,
         image_timeout_seconds: int = 60,
@@ -471,6 +472,7 @@ class LlmClient:
             image_llm_base_url: 画像モデルAPIベースURL（ローカルLLM等のOpenAI互換向け）
             image_model_api_key: 画像モデルAPIキー
             reasoning_effort: 推論詳細度設定（推論モデル用）
+            reply_web_search_enabled: 最終応答（SYNC_CONVERSATION）でWeb検索を有効化するか
             max_tokens: 通常時の最大トークン数
             max_tokens_vision: 画像認識時の最大トークン数
             image_timeout_seconds: 画像処理タイムアウト秒数
@@ -491,6 +493,7 @@ class LlmClient:
         self.image_llm_base_url = image_llm_base_url
         self.image_model_api_key = image_model_api_key or api_key
         self.reasoning_effort = reasoning_effort
+        self.reply_web_search_enabled = bool(reply_web_search_enabled)
         self.max_tokens = max_tokens
         self.max_tokens_vision = max_tokens_vision
         self.image_timeout_seconds = image_timeout_seconds
@@ -857,6 +860,10 @@ class LlmClient:
             - 「検索は3でのみON」の方針に合わせ、SYNC_CONVERSATION以外ではNoneを返す。
             - 対象外プロバイダは無言で落とさず、例外で明示する。
         """
+        # --- 設定OFF時は最終応答でもWeb検索を使わない ---
+        if not bool(self.reply_web_search_enabled):
+            return None
+
         # --- 3以外（選別/埋め込み/外部応答）ではWeb検索を使わない ---
         if str(purpose or "").strip() != LlmRequestPurpose.SYNC_CONVERSATION:
             return None

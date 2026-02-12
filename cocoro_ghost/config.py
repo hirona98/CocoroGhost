@@ -112,6 +112,7 @@ class RuntimeConfig:
     llm_model: str                # 使用するLLMモデル
     llm_base_url: Optional[str]   # カスタムAPIエンドポイント
     reasoning_effort: Optional[str]  # 推論の詳細度設定
+    reply_web_search_enabled: bool  # 最終応答（SYNC_CONVERSATION）でWeb検索を有効化するか
     max_turns_window: int         # 会話履歴の最大ターン数
     max_tokens_vision: int        # 画像認識時の最大トークン数
     max_tokens: int               # 通常時の最大トークン数
@@ -512,6 +513,7 @@ def build_runtime_config(
         llm_model=llm_preset.llm_model,
         llm_base_url=llm_preset.llm_base_url,
         reasoning_effort=llm_preset.reasoning_effort,
+        reply_web_search_enabled=bool(llm_preset.reply_web_search_enabled),
         max_turns_window=llm_preset.max_turns_window,
         max_tokens_vision=llm_preset.max_tokens_vision,
         max_tokens=llm_preset.max_tokens,
