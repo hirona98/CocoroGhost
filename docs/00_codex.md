@@ -45,6 +45,7 @@
 - `/api/chat` は **SSE開始前に**「必要な記憶」を確定する: `docs/10_実行フロー.md`
 - Web検索（インターネット）は `/api/chat` の最終応答生成（L3）でのみ有効化可能（`llm_preset.reply_web_search_enabled`）: `docs/10_実行フロー.md` / `cocoro_ghost/llm_client.py`
 - token の正は `settings.db`（TOMLは初回の入口）: `docs/07_API.md`
+- `settings.db` は起動時に既知のスキーマ移行を行う（現行は `user_version=2 -> 3`）: `cocoro_ghost/db.py`
 - `/api/chat` は単一ユーザー前提で **同時に1本**へ制限する: `cocoro_ghost/memory/_chat_mixin.py`
 - `config/setting.toml` は **未知キーを許可しない**（起動時に弾く）: `cocoro_ghost/config.py`
 
