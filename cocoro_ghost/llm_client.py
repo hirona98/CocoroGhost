@@ -377,6 +377,16 @@ class StreamDelta:
     finish_reason: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class ReplyWebSearchConfig:
+    """最終応答（SYNC_CONVERSATION）で使うWeb検索パラメータ。"""
+
+    mode: str
+    web_search_options: Optional[Dict[str, Any]] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    extra_body: Optional[Dict[str, Any]] = None
+
+
 class LlmRequestPurpose:
     """LLM呼び出しの処理目的（ログ用途のラベル）。"""
 
@@ -441,6 +451,7 @@ class LlmClient:
         image_llm_base_url: Optional[str] = None,
         image_model_api_key: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        reply_web_search_enabled: bool = True,
         max_tokens: int = 4096,
         max_tokens_vision: int = 4096,
         image_timeout_seconds: int = 60,
@@ -461,6 +472,7 @@ class LlmClient:
             image_llm_base_url: 画像モデルAPIベースURL（ローカルLLM等のOpenAI互換向け）
             image_model_api_key: 画像モデルAPIキー
             reasoning_effort: 推論詳細度設定（推論モデル用）
+            reply_web_search_enabled: 最終応答（SYNC_CONVERSATION）でWeb検索を有効化するか
             max_tokens: 通常時の最大トークン数
             max_tokens_vision: 画像認識時の最大トークン数
             image_timeout_seconds: 画像処理タイムアウト秒数
@@ -481,6 +493,7 @@ class LlmClient:
         self.image_llm_base_url = image_llm_base_url
         self.image_model_api_key = image_model_api_key or api_key
         self.reasoning_effort = reasoning_effort
+        self.reply_web_search_enabled = bool(reply_web_search_enabled)
         self.max_tokens = max_tokens
         self.max_tokens_vision = max_tokens_vision
         self.image_timeout_seconds = image_timeout_seconds
@@ -651,6 +664,9 @@ class LlmClient:
         response_format: Optional[Dict] = None,
         timeout: Optional[int] = None,
         stream: bool = False,
+        web_search_options: Optional[Dict[str, Any]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        extra_body: Optional[Dict[str, Any]] = None,
     ) -> Dict:
         """
         completion API呼び出し用のkwargsを構築する。
@@ -673,6 +689,10 @@ class LlmClient:
             kwargs["response_format"] = response_format
         if timeout:
             kwargs["timeout"] = timeout
+        if web_search_options:
+            kwargs["web_search_options"] = web_search_options
+        if tools:
+            kwargs["tools"] = tools
 
         # --- 推論（reasoning/thinking）パラメータ ---
         # NOTE:
@@ -780,11 +800,11 @@ class LlmClient:
         default_effort = _default_reasoning_effort_for_model(model_name)
         effort_to_send = reasoning_effort or default_effort
 
-        extra_body: Dict[str, Any] = {}
+        provider_extra_body: Dict[str, Any] = {}
 
         # --- OpenRouter: unified reasoning param ---
         if model_name_lower.startswith("openrouter/") and effort_to_send:
-            extra_body["reasoning"] = {"effort": str(_normalize_openrouter_reasoning_effort(effort_to_send))}
+            provider_extra_body["reasoning"] = {"effort": str(_normalize_openrouter_reasoning_effort(effort_to_send))}
 
         # --- OpenAI: Chat Completions reasoning_effort param ---
         # NOTE: OpenAI以外へ不用意に投げると unknown parameter で落ちる可能性があるため、
@@ -801,10 +821,90 @@ class LlmClient:
             if _default_reasoning_effort_for_model(model_name_lower) is not None or reasoning_effort is not None:
                 kwargs["reasoning_effort"] = str(effort_to_send)
 
+        # --- プロバイダ指定のextra_bodyと、呼び出し側指定のextra_bodyを統合する ---
+        merged_extra_body: Dict[str, Any] = {}
+        if provider_extra_body:
+            merged_extra_body.update(provider_extra_body)
         if extra_body:
-            kwargs["extra_body"] = extra_body
+            merged_extra_body.update(extra_body)
+        if merged_extra_body:
+            kwargs["extra_body"] = merged_extra_body
 
         return kwargs
+
+    def _is_openrouter_route(self, *, model_name: str, base_url: Optional[str]) -> bool:
+        """
+        このリクエストが OpenRouter 経由かを判定する。
+
+        判定条件:
+            - model が `openrouter/` で始まる
+            - または base_url に `openrouter.ai` を含む
+        """
+        model_lower = str(model_name or "").strip().lower()
+        if model_lower.startswith("openrouter/"):
+            return True
+        base = str(base_url or "").strip().lower()
+        return "openrouter.ai" in base
+
+    def _resolve_reply_web_search_config(
+        self,
+        *,
+        purpose: str,
+        model: str,
+        base_url: Optional[str],
+    ) -> Optional[ReplyWebSearchConfig]:
+        """
+        最終応答（SYNC_CONVERSATION）で使うWeb検索設定を返す。
+
+        注意:
+            - 「検索は3でのみON」の方針に合わせ、SYNC_CONVERSATION以外ではNoneを返す。
+            - 対象外プロバイダは無言で落とさず、例外で明示する。
+        """
+        # --- 設定OFF時は最終応答でもWeb検索を使わない ---
+        if not bool(self.reply_web_search_enabled):
+            return None
+
+        # --- 3以外（選別/埋め込み/外部応答）ではWeb検索を使わない ---
+        if str(purpose or "").strip() != LlmRequestPurpose.SYNC_CONVERSATION:
+            return None
+
+        # --- モデル文字列を正規化して判定する ---
+        model_name = str(model or "").strip()
+        model_name_lower = model_name.lower()
+
+        # --- OpenRouter経由: plugin web を有効化し、検索コンテキストを最大化する ---
+        if self._is_openrouter_route(model_name=model_name, base_url=base_url):
+            return ReplyWebSearchConfig(
+                mode="openrouter-plugin-web",
+                web_search_options={"search_context_size": "high"},
+                extra_body={"plugins": [{"id": "web"}]},
+            )
+
+        # --- xAI直呼び: web_search ツールを使う ---
+        if model_name_lower.startswith("xai/"):
+            return ReplyWebSearchConfig(
+                mode="xai-web-search-tool",
+                tools=[{"type": "web_search"}],
+            )
+
+        # --- OpenAI直呼び: web_search_options を使う ---
+        if model_name_lower.startswith("openai/"):
+            return ReplyWebSearchConfig(
+                mode="openai-web-search-options",
+                web_search_options={"search_context_size": "high"},
+            )
+
+        # --- Gemini直呼び: web_search_options（LiteLLMがGoogle Searchへ変換）を使う ---
+        if model_name_lower.startswith(("google/", "gemini/")):
+            return ReplyWebSearchConfig(
+                mode="gemini-google-search",
+                web_search_options={"search_context_size": "high"},
+            )
+
+        # --- 方針上、対象外は明示的にエラーにする（無言で検索OFFにしない） ---
+        raise ValueError(
+            "Web検索付き最終応答は openrouter/*, xai/*, openai/*, google/*, gemini/* のみ対応です"
+        )
 
     def generate_reply_response(
         self,
@@ -826,6 +926,11 @@ class LlmClient:
         llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
         purpose_label = _normalize_purpose(purpose)
         start = time.perf_counter()
+        web_search_cfg = self._resolve_reply_web_search_config(
+            purpose=purpose,
+            model=self.model,
+            base_url=self.llm_base_url,
+        )
 
         kwargs = self._build_completion_kwargs(
             model=self.model,
@@ -834,6 +939,9 @@ class LlmClient:
             base_url=self.llm_base_url,
             max_tokens=self.max_tokens,
             stream=stream,
+            web_search_options=(web_search_cfg.web_search_options if web_search_cfg else None),
+            tools=(web_search_cfg.tools if web_search_cfg else None),
+            extra_body=(web_search_cfg.extra_body if web_search_cfg else None),
             # NOTE:
             # - stream=False は「レスポンス全体」が返るまで待つため、短めの上限を設ける。
             # - stream=True は開始が返らない（=無限待ち）を防ぐ目的で、開始までの上限を設ける。
@@ -850,6 +958,13 @@ class LlmClient:
                 msg_count,
                 approx_chars,
             )
+            # --- 最終応答では、どの方式でWeb検索を有効化したかを明示ログに残す ---
+            if web_search_cfg is not None:
+                self._log_llm_info(
+                    "LLM web search 有効化 %s mode=%s",
+                    purpose_label,
+                    str(web_search_cfg.mode),
+                )
         self._log_llm_payload("LLM request (chat)", _sanitize_for_llm_log(kwargs), llm_log_level=llm_log_level)
 
         try:

@@ -43,6 +43,7 @@ def get_llm_client() -> LlmClient:
         image_llm_base_url=cfg.image_llm_base_url,
         image_model_api_key=cfg.image_model_api_key,
         reasoning_effort=cfg.reasoning_effort,
+        reply_web_search_enabled=cfg.reply_web_search_enabled,
         max_tokens=cfg.max_tokens,
         max_tokens_vision=cfg.max_tokens_vision,
         image_timeout_seconds=cfg.image_timeout_seconds,

@@ -28,7 +28,8 @@
 
 ## 方針
 
-- 運用前のため、マイグレーションは扱わない（互換を切って作り直す）
+- `settings.db` は起動時に既知のスキーマ移行を適用する（現行は `user_version=2 -> 3` のみ）
+- `reminders.db` / `memory_<embedding_preset_id>.db` は運用前方針のためマイグレーションを扱わない（作り直し前提）
 - 埋め込み次元が変わる場合は、`embedding_preset_id` を変えて別DBにする
 
 ## テーブル概要（概念）

@@ -51,7 +51,7 @@ _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
 _MEMORY_DB_USER_VERSION = 8
-_SETTINGS_DB_USER_VERSION = 2
+_SETTINGS_DB_USER_VERSION = 3
 
 
 def get_db_dir() -> Path:
@@ -377,32 +377,89 @@ def _set_memory_db_user_version(engine) -> None:
 
 # --- 設定DB ---
 
+
+def _get_settings_db_user_version(conn) -> int:
+    """設定DBの user_version を整数で取得する。"""
+    uv = conn.execute(text("PRAGMA user_version")).fetchone()
+    return int(uv[0]) if uv and uv[0] is not None else 0
+
+
+def _list_settings_core_tables(conn) -> list[str]:
+    """設定DBの主要テーブル一覧（存在するもののみ）を返す。"""
+    rows = conn.execute(
+        text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ("
+            "'global_settings','llm_presets','embedding_presets','persona_presets','addon_presets'"
+            ")"
+        )
+    ).fetchall()
+    return sorted({str(r[0]) for r in rows})
+
+
+def _get_table_columns(conn, table_name: str) -> set[str]:
+    """指定テーブルのカラム名セットを返す。"""
+    rows = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+    return {str(r[1]) for r in rows}
+
+
+def _migrate_settings_db_v2_to_v3(engine) -> None:
+    """設定DBを v2 から v3 へ移行する。"""
+    with engine.connect() as conn:
+        # --- v2 では llm_presets が存在する前提 ---
+        llm_table_exists = (
+            conn.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_presets'")
+            ).fetchone()
+            is not None
+        )
+        if not llm_table_exists:
+            raise RuntimeError(
+                "settings DB migration failed: llm_presets table missing in user_version=2 database."
+            )
+
+        # --- 最終応答Web検索フラグ列を追加（既存行は既定値1） ---
+        columns = _get_table_columns(conn, "llm_presets")
+        if "reply_web_search_enabled" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE llm_presets "
+                    "ADD COLUMN reply_web_search_enabled INTEGER NOT NULL DEFAULT 1"
+                )
+            )
+
+        # --- スキーマバージョンを更新 ---
+        conn.execute(text(f"PRAGMA user_version={_SETTINGS_DB_USER_VERSION}"))
+        conn.commit()
+
+    logger.info("settings DB migrated: user_version 2 -> 3")
+
+
+def _migrate_settings_db_if_needed(engine) -> None:
+    """設定DBに必要なマイグレーションを適用する。"""
+    with engine.connect() as conn:
+        current = _get_settings_db_user_version(conn)
+
+    # --- 現在のスキーマ版に応じて移行を実行 ---
+    if current == 2 and _SETTINGS_DB_USER_VERSION == 3:
+        _migrate_settings_db_v2_to_v3(engine)
+
+
 def _verify_settings_db_user_version(engine) -> None:
     """
     設定DBの user_version を検証する。
 
     方針:
-    - マイグレーションは扱わない（互換を切って作り直す）。
-    - 旧DB（user_version=0 かつテーブルが存在する等）はエラーにする。
+    - user_version=0 は「真っさらDB」のみ許容する。
+    - 既知の移行後スキーマ（_SETTINGS_DB_USER_VERSION）を正とする。
+    - それ以外は起動時エラーにする。
     """
     with engine.connect() as conn:
-        uv = conn.execute(text("PRAGMA user_version")).fetchone()
-        current = int(uv[0]) if uv and uv[0] is not None else 0
+        current = _get_settings_db_user_version(conn)
 
         # --- 未設定（0）の場合は「真っさら」だけ許容する ---
         if current == 0:
-            # NOTE:
-            # - 旧実装は user_version を設定していなかったため、既存DBでも 0 の可能性がある。
-            # - その場合は後方互換を付けず、DBを削除して作り直してもらう。
-            rows = conn.execute(
-                text(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ("
-                    "'global_settings','llm_presets','embedding_presets','persona_presets','addon_presets'"
-                    ")"
-                )
-            ).fetchall()
-            if rows:
-                found = sorted({str(r[0]) for r in rows})
+            found = _list_settings_core_tables(conn)
+            if found:
                 raise RuntimeError(
                     f"settings DB user_version mismatch: db={current}, expected={_SETTINGS_DB_USER_VERSION}. "
                     f"settings.db を削除して作り直してください。found_tables={found}"
@@ -414,6 +471,21 @@ def _verify_settings_db_user_version(engine) -> None:
                 f"settings DB user_version mismatch: db={current}, expected={_SETTINGS_DB_USER_VERSION}. "
                 "settings.db を削除して作り直してください。"
             )
+
+        # --- 現行スキーマの必須列を検証する ---
+        llm_table_exists = (
+            conn.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_presets'")
+            ).fetchone()
+            is not None
+        )
+        if llm_table_exists:
+            columns = _get_table_columns(conn, "llm_presets")
+            if "reply_web_search_enabled" not in columns:
+                raise RuntimeError(
+                    "settings DB schema mismatch: llm_presets.reply_web_search_enabled is missing. "
+                    "settings.db を削除して作り直してください。"
+                )
 
 
 def _set_settings_db_user_version(engine) -> None:
@@ -436,7 +508,10 @@ def init_settings_db() -> None:
     engine = create_engine(db_url, future=True, connect_args=connect_args)
     SettingsSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
-    # --- user_version を検証（互換は切って作り直し） ---
+    # --- 既知の設定DBマイグレーションを適用 ---
+    _migrate_settings_db_if_needed(engine)
+
+    # --- user_version / スキーマを検証 ---
     _verify_settings_db_user_version(engine)
 
     Base.metadata.create_all(bind=engine)
@@ -755,6 +830,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             archived=False,
             llm_api_key="",
             llm_model="openai/gpt-5-mini",
+            reply_web_search_enabled=True,
             max_turns_window=50,
             image_model="openai/gpt-5-mini",
             image_timeout_seconds=60,
