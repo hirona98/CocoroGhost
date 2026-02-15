@@ -22,6 +22,7 @@
 
 - API 追加/変更: `cocoro_ghost/api/` と `docs/07_API.md`
 - チャット（SSE）: `cocoro_ghost/api/chat.py` と `cocoro_ghost/memory/_chat_mixin.py`
+- 自発行動/Capability設計: `docs/03_自発行動アーキテクチャ方針.md` と `cocoro_ghost/desktop_watch.py` / `cocoro_ghost/reminders_service.py` / `cocoro_ghost/event_stream.py` / `cocoro_ghost/worker.py`
 - 検索（思い出す）: `docs/04_検索（思い出す）.md` と `cocoro_ghost/memory/_chat_search_mixin.py`
 - 記憶更新（育てる）: `docs/05_記憶更新（育てる）.md` と `cocoro_ghost/worker.py` / `cocoro_ghost/worker_handlers.py` / `cocoro_ghost/worker_handlers_*.py`
 - DB/ストレージ（SQLite）: `docs/06_ストレージ（SQLite）.md` と `cocoro_ghost/db.py`
@@ -43,10 +44,12 @@
 
 - HTTPS 必須（自己署名）で運用する（`http://` では接続できない）: `docs/07_API.md`
 - `/api/chat` は **SSE開始前に**「必要な記憶」を確定する: `docs/10_実行フロー.md`
-- Web検索（インターネット）は `/api/chat` の最終応答生成（L3）でのみ有効化可能（`llm_preset.reply_web_search_enabled`）: `docs/10_実行フロー.md` / `cocoro_ghost/llm_client.py`
+- Web検索（インターネット）の**現行実装**は `/api/chat` の最終応答生成（L3）でのみ有効化可能（`llm_preset.reply_web_search_enabled`）: `docs/10_実行フロー.md` / `cocoro_ghost/llm_client.py`
+- 自発行動向けWeb検索は `/api/chat` と**別経路**で将来追加する（混在させない）: `docs/03_自発行動アーキテクチャ方針.md`
 - token の正は `settings.db`（TOMLは初回の入口）: `docs/07_API.md`
 - `settings.db` は起動時に既知のスキーマ移行を行う（現行は `user_version=2 -> 3`）: `cocoro_ghost/db.py`
 - `/api/chat` は単一ユーザー前提で **同時に1本**へ制限する: `cocoro_ghost/memory/_chat_mixin.py`
+- `state` は `events` からの非同期更新（WritePlan）で育てる（直接入力しない）: `docs/03_自発行動アーキテクチャ方針.md` / `docs/05_記憶更新（育てる）.md`
 - `config/setting.toml` は **未知キーを許可しない**（起動時に弾く）: `cocoro_ghost/config.py`
 
 <!-- Block: Run/Build -->
