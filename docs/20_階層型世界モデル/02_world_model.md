@@ -4,11 +4,6 @@
 
 本書は、階層型世界モデルにおける World Model 永続化仕様を定義する。
 
-Phase 2 の目的:
-
-1. `wm_*` の最小テーブルを固定する
-2. `events` / `state` / `revisions` との境界を固定する
-
 ## 2. スコープ
 
 対象:
@@ -20,9 +15,9 @@ Phase 2 の目的:
 
 非対象:
 
-1. Capability Registry 詳細（`12_capability_registry.md`）
-2. Event/WritePlan 連携詳細（`13_event_writeplan連携.md`）
-3. capability 個別仕様（`14_web_access.md`）
+1. Capability Registry 詳細（`03_capability_registry.md`）
+2. Event/WritePlan 連携詳細（`04_event_writeplan連携.md`）
+3. capability 個別仕様（`05_web_access.md`）
 
 ## 3. 既存基盤との境界
 
@@ -304,7 +299,7 @@ Phase 2 の目的:
 ### 7.4 Intent State
 
 1. `goal_id` / `ticket_id` / `result_id` は再利用しない
-2. 状態遷移は `10_基盤ループ.md` を正とする
+2. 状態遷移は `01_基盤ループ.md` を正とする
 3. 状態更新時は `reason_code` を必須保存
 
 ## 8. revisions 連携規約
@@ -314,10 +309,3 @@ Phase 2 の目的:
 3. `reason` は reason_code と整合した短文を保存
 4. 根拠 event がある更新は `evidence_event_ids_json` を空にしない
 5. `revisions.entity_id` は `TEXT` で統一し、整数主キーは10進文字列で保存する
-
-## 9. 完了条件（Phase 2）
-
-1. `wm_*` 最小構成が固定されている
-2. 一意制約と必須インデックスが固定されている
-3. 競合時の並存規約が固定されている
-4. `events` / `state` / `revisions` 境界が固定されている

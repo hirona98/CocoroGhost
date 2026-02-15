@@ -89,7 +89,7 @@
 注記:
 
 - `events` / `state` は会話記憶の正、`wm_*` は自律判断の正として分離する
-- 詳細スキーマは `docs/20_階層型世界モデル/11_world_model.md` と `docs/20_階層型世界モデル/12_capability_registry.md` を正とする
+- 詳細スキーマは `docs/20_階層型世界モデル/02_world_model.md` と `docs/20_階層型世界モデル/03_capability_registry.md` を正とする
 - `wm_observations.source_type` は `event|action_result|system` を許可する（periodic/startup 観測を含む）
 - 本節は仕様要約であり、契約の正は 20 系文書側に置く
 

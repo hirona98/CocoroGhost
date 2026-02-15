@@ -29,12 +29,11 @@
 - 長期評価（会話/感情/時間前進）: `docs/15_長期会話評価計画.md` と `docs/16_長期会話シナリオ台帳.md`
 - 自律人格（階層型世界モデル）: `docs/20_階層型世界モデル/00_概要.md` と `docs/20_階層型世界モデル/README.md`
   - 注記: `docs/20_階層型世界モデル/` は自律人格仕様として読む
-- 自律人格（実装順）: `docs/20_階層型世界モデル/01_実装計画.md`
-- 自律人格（基盤ループ）: `docs/20_階層型世界モデル/10_基盤ループ.md`
-- 自律人格（World Model）: `docs/20_階層型世界モデル/11_world_model.md`
-- 自律人格（Capability Registry）: `docs/20_階層型世界モデル/12_capability_registry.md`
-- 自律人格（Event/WritePlan連携）: `docs/20_階層型世界モデル/13_event_writeplan連携.md`
-- 自律人格（`web_access`）: `docs/20_階層型世界モデル/14_web_access.md`
+- 自律人格（基盤ループ）: `docs/20_階層型世界モデル/01_基盤ループ.md`
+- 自律人格（World Model）: `docs/20_階層型世界モデル/02_world_model.md`
+- 自律人格（Capability Registry）: `docs/20_階層型世界モデル/03_capability_registry.md`
+- 自律人格（Event/WritePlan連携）: `docs/20_階層型世界モデル/04_event_writeplan連携.md`
+- 自律人格（`web_access`）: `docs/20_階層型世界モデル/05_web_access.md`
 - 自律人格（実装本体）: `cocoro_ghost/autonomy/loop_runtime.py` / `cocoro_ghost/autonomy/world_model_store.py` / `cocoro_ghost/autonomy/capability_registry.py` / `cocoro_ghost/autonomy/scheduler.py` / `cocoro_ghost/autonomy/runtime_control.py` / `cocoro_ghost/autonomy/capability_bootstrap.py` / `cocoro_ghost/autonomy/tactical_planner.py` / `cocoro_ghost/autonomy/preconditions.py` / `cocoro_ghost/autonomy/effect_reflector.py` / `cocoro_ghost/autonomy/capability_adapters/`
 
 <!-- Block: Search Cheatsheet -->

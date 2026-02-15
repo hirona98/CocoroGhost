@@ -4,11 +4,6 @@
 
 本書は、Capability Registry の仕様を定義する。
 
-Phase 3 の目的:
-
-1. capability/operation の登録・解決・検証契約を固定する
-2. capability 追加時に基盤ループ改修不要であることを担保する
-
 ## 2. スコープ
 
 対象:
@@ -21,9 +16,9 @@ Phase 3 の目的:
 
 非対象:
 
-1. capability 個別仕様（`14_web_access.md`）
-2. world model 詳細（`11_world_model.md`）
-3. Event/WritePlan 詳細（`13_event_writeplan連携.md`）
+1. capability 個別仕様（`05_web_access.md`）
+2. world model 詳細（`02_world_model.md`）
+3. Event/WritePlan 詳細（`04_event_writeplan連携.md`）
 
 ## 3. 前提
 
@@ -208,6 +203,25 @@ Phase 3 の目的:
 4. capability 不可用時は precondition 未成立として扱う
 5. precondition 語彙は `cocoro_ghost/autonomy/preconditions.py` を正とする
 
+### 9.1 precondition 語彙の拡張手順
+
+1. `cocoro_ghost/autonomy/preconditions.py` に定数を追加する
+2. `evaluate_preconditions()` に評価ロジックを追加する
+3. 必要なら `build_effective_preconditions()` に共通適用ルールを追加する
+4. Tacticalize 側（`tactical_planner.py`）で新語彙を参照する
+5. `01_基盤ループ.md` と `05_web_access.md` へ語彙追加を反映する
+
+禁止事項:
+
+1. 未定義語彙を ticket に出力しない
+2. fallback として「未知語彙を成功扱い」にしない
+
+### 9.2 Tacticalize と Registry の接続規約
+
+1. Tacticalize 出力の `capability_id + operation` は `resolve_operation` 可能であること
+2. Tacticalize 出力の `input_payload` は `validate_input_payload` を通ること
+3. これらを満たせない計画は Execute へ渡さず `ticket_precondition_failed` で確定すること
+
 ## 10. Adapter 規約
 
 1. adapter は capability 単位で実装してよい
@@ -218,44 +232,65 @@ Phase 3 の目的:
 
 ## 11. capability 追加手順（能力非依存）
 
-1. adapter 実装
-2. descriptor/schema 定義
-3. registry 登録
-4. 既存基盤ループ変更なしで実行
+### 11.1 実施順（一本道）
 
-禁止事項:
+1. 入力契約を決める
+   - `capability_id`
+   - operation 一覧
+   - 各 operation の `input_schema_json` / `result_schema_json` / `effect_schema_json`
+2. adapter を実装する
+   - `cocoro_ghost/autonomy/capability_adapters/<capability_id>.py`
+   - `execute_operation()` で operation 分岐を実装する
+   - 返り値は必ず `AdapterExecutionOutput(result_payload, effects, meta_json)` を返す
+3. adapter 公開面を更新する
+   - `cocoro_ghost/autonomy/capability_adapters/__init__.py`
+4. descriptor を登録する
+   - `cocoro_ghost/autonomy/capability_bootstrap.py`
+   - `register_default_capabilities()` へ capability と operation を追加する
+   - 再登録時の `enabled` 維持規約（既存状態優先）を守る
+5. Tacticalize 接続を実装する
+   - `cocoro_ghost/autonomy/tactical_planner.py`
+   - `TacticalPlanContract` で `capability_id + operation + input_payload + preconditions` を出力する
+6. precondition 語彙を必要に応じて拡張する
+   - `cocoro_ghost/autonomy/preconditions.py`
+   - `normalize_preconditions` / `build_effective_preconditions` / `evaluate_preconditions` を同時に更新する
+7. effect 反映を実装する
+   - `cocoro_ghost/autonomy/effect_reflector.py`
+   - `effects` から `wm_*` への反映規則を追加する
+8. 仕様書を更新する
+   - `docs/20_階層型世界モデル/03_capability_registry.md`
+   - 必要に応じて capability 個別仕様（例: `docs/20_階層型世界モデル/05_web_access.md` と同形式の新規ファイル）を追加する
+9. 手動確認を実施する
+   - registry 解決、schema 検証、execute、reflect までの一連経路を確認する
 
-1. `loop_runtime` に capability 固有 if を追加しない
-2. `worker_handlers.py` に capability 個別分岐を追加しない
+### 11.2 変更ファイル一覧（標準）
+
+必須変更:
+
+1. `cocoro_ghost/autonomy/capability_adapters/<capability_id>.py`
+2. `cocoro_ghost/autonomy/capability_adapters/__init__.py`
+3. `cocoro_ghost/autonomy/capability_bootstrap.py`
+4. `cocoro_ghost/autonomy/tactical_planner.py`
+5. `cocoro_ghost/autonomy/effect_reflector.py`
+6. `docs/20_階層型世界モデル/03_capability_registry.md`
+
+条件付き変更:
+
+1. `cocoro_ghost/autonomy/preconditions.py`（新語彙を導入する場合）
+2. `docs/20_階層型世界モデル/01_基盤ループ.md`（precondition 語彙一覧を更新する場合）
+3. `docs/20_階層型世界モデル/05_web_access.md` と同等の capability 個別仕様書（新 capability を追加した場合）
+
+変更禁止:
+
+1. `cocoro_ghost/autonomy/loop_runtime.py` に capability 固有 if を追加しない
+2. `cocoro_ghost/worker_handlers.py` に capability 個別分岐を追加しない
 3. fallback 専用経路を追加しない
 
-## 12. 初期セット（あるべき姿）
+### 11.3 完了チェックリスト（Phase 10 受け入れ条件）
 
-1. Phase 6 では registry 共通機構と内部基本 capability `speak`（descriptor + adapter）を実装する
-2. `speak` は環境依存しない最小出力能力として常設する
-3. 最初の外部 capability は `web_access` とする
-4. Phase 7 で `web_access` descriptor + adapter を登録する
-
-## 13. 実装マップ（Phase 6）
-
-1. `cocoro_ghost/memory_models.py`
-   - `wm_capabilities` / `wm_capability_operations`
-2. `cocoro_ghost/db.py`
-   - テーブル・インデックス作成
-3. `cocoro_ghost/autonomy/capability_registry.py`
-   - registry API
-4. `cocoro_ghost/autonomy/capability_adapters/base.py`
-   - adapter 共通契約
-5. `cocoro_ghost/autonomy/capability_adapters/speak.py`
-   - `speak` adapter
-6. `cocoro_ghost/autonomy/loop_runtime.py`
-   - Tacticalize/Execute から registry 利用
-7. `cocoro_ghost/autonomy/preconditions.py`
-   - `operation_available` を含む precondition 評価
-
-## 14. 完了条件（Phase 3）
-
-1. 登録/解決/検証契約が固定されている
-2. operation 単位 schema 検証規約が固定されている
-3. adapter 呼び出し規約が固定されている
-4. capability 追加手順が能力非依存で固定されている
+1. `capability_id + operation` が `resolve_operation()` で解決できる
+2. Tacticalize 出力 `input_payload` が `validate_input_payload()` を通る
+3. adapter 実行結果が `validate_result_payload()` / `validate_effects()` を通る
+4. Reflect で `effects` が `wm_*` に反映される
+5. `loop_runtime` 非改変で end-to-end 実行できる
+6. 仕様書更新が完了している

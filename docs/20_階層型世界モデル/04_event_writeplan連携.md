@@ -4,11 +4,6 @@
 
 本書は、自律ループの行動・観測・反省を既存記憶基盤（`events` / WritePlan）へ接続する仕様を定義する。
 
-Phase 4 の目的:
-
-1. 非永続 command event と永続 result event の切り分けを固定する
-2. `/api/chat` 同期経路と競合しない連携方式を固定する
-
 ## 2. スコープ
 
 対象:
@@ -20,9 +15,9 @@ Phase 4 の目的:
 
 非対象:
 
-1. world model 詳細（`11_world_model.md`）
-2. registry 詳細（`12_capability_registry.md`）
-3. capability 個別仕様（`14_web_access.md`）
+1. world model 詳細（`02_world_model.md`）
+2. registry 詳細（`03_capability_registry.md`）
+3. capability 個別仕様（`05_web_access.md`）
 
 ## 3. 前提
 
@@ -181,23 +176,3 @@ result event 保存後、同一経路で以下を投入する。
 3. WritePlan ジョブ投入件数（kind別）
 4. 自律起点 event の WritePlan 成功/失敗件数
 5. `event_id=0` 命令 timeout 件数
-
-## 11. 実装マップ（Phase 6）
-
-1. `cocoro_ghost/memory/_jobs_mixin.py`
-   - 自律結果 event 連携ジョブ投入
-2. `cocoro_ghost/autonomy/loop_runtime.py`
-   - result event 永続化と WritePlan 接続
-3. `cocoro_ghost/worker_handlers_autonomy.py`
-   - cycle 実行呼び出し
-4. `cocoro_ghost/memory_models.py`
-   - `events.source="autonomy_action"` を含む運用
-5. `cocoro_ghost/event_stream.py`
-   - command/result 配信契約維持
-
-## 12. 完了条件（Phase 4）
-
-1. command/result の切り分けが固定されている
-2. result event -> WritePlan 規約が固定されている
-3. world model と WritePlan の役割分担が固定されている
-4. `/api/chat` 同期経路と競合しないことが明記されている

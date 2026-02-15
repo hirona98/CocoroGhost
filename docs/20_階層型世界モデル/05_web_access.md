@@ -4,11 +4,6 @@
 
 本書は、`web_access` capability の仕様を定義する。
 
-Phase 5 の目的:
-
-1. `web_access` を capability 共通契約上で定義する
-2. `/api/chat` 最終応答の Web 検索制御と分離する
-
 ## 2. スコープ
 
 対象:
@@ -414,26 +409,3 @@ Phase 5 の目的:
 2. schema 不一致: `execute_schema_invalid`
 3. runtime 失敗: `execute_runtime_error`
 4. 失敗時は `ActionResult.error_message` と `reason_code` を必須保存
-
-## 12. 完了条件（Phase 5）
-
-1. operation 3種が定義されている
-2. input/result/effect schema が定義されている
-3. `/api/chat` Web検索制御と分離されている
-4. world model 反映規則が定義されている
-5. Event/WritePlan 連携規則が定義されている
-
-## 13. 実装マップ（Phase 7）
-
-1. `cocoro_ghost/autonomy/capability_adapters/web_access.py`
-   - `search` / `open_url` / `extract_structured` adapter 実装
-2. `cocoro_ghost/autonomy/loop_runtime.py`
-   - Tacticalize で `web_access` ticket を発行し Execute へ接続
-3. `cocoro_ghost/autonomy/capability_registry.py`
-   - `web_access` descriptor 登録と operation schema 検証
-4. `cocoro_ghost/autonomy/capability_bootstrap.py`
-   - `web_access` descriptor + adapter の標準登録
-5. `cocoro_ghost/autonomy/tactical_planner.py`
-   - `web_access` 操作選択（`search/open_url/extract_structured`）の戦術決定
-6. `cocoro_ghost/autonomy/effect_reflector.py`
-   - `web_access` effect の world model 反映
