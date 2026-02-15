@@ -30,6 +30,9 @@
 - 自律人格（階層型世界モデル）: `docs/20_階層型世界モデル/00_概要.md` と `docs/20_階層型世界モデル/README.md`
 - 自律人格（実装順）: `docs/20_階層型世界モデル/01_実装計画.md`
 - 自律人格（基盤ループ）: `docs/20_階層型世界モデル/10_基盤ループ.md`
+- 自律人格（World Model）: `docs/20_階層型世界モデル/11_world_model.md`
+- 自律人格（Capability Registry）: `docs/20_階層型世界モデル/12_capability_registry.md`
+- 自律人格（Event/WritePlan連携）: `docs/20_階層型世界モデル/13_event_writeplan連携.md`
 
 <!-- Block: Search Cheatsheet -->
 ## 迷ったら `rg`（入口に当てる）

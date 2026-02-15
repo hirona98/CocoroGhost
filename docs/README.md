@@ -32,6 +32,10 @@
 12. `docs/16_長期会話シナリオ台帳.md`（19セッションの台本概要と期待値）
 13. `docs/20_階層型世界モデル/00_概要.md`（自律人格・階層型世界モデルの概要）
 14. `docs/20_階層型世界モデル/01_実装計画.md`（階層型世界モデルの実装計画）
+15. `docs/20_階層型世界モデル/10_基盤ループ.md`（基盤ループ仕様）
+16. `docs/20_階層型世界モデル/11_world_model.md`（World Model仕様）
+17. `docs/20_階層型世界モデル/12_capability_registry.md`（Capability Registry仕様）
+18. `docs/20_階層型世界モデル/13_event_writeplan連携.md`（Event/WritePlan連携仕様）
 
 ## 自律人格拡張（階層型世界モデル）
 
@@ -40,5 +44,8 @@
 - 概要: `docs/20_階層型世界モデル/00_概要.md`
 - 実装計画: `docs/20_階層型世界モデル/01_実装計画.md`
 - 基盤ループ: `docs/20_階層型世界モデル/10_基盤ループ.md`
+- World Model: `docs/20_階層型世界モデル/11_world_model.md`
+- Capability Registry: `docs/20_階層型世界モデル/12_capability_registry.md`
+- Event/WritePlan連携: `docs/20_階層型世界モデル/13_event_writeplan連携.md`
 - サブディレクトリ索引: `docs/20_階層型世界モデル/README.md`
-- 仕様: `docs/20_階層型世界モデル/1x_*.md`（今後追加）
+- 仕様: `docs/20_階層型世界モデル/1x_*.md`（`10_` / `11_` / `12_` / `13_` を含み、以降も追加）
