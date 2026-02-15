@@ -27,6 +27,7 @@
 - DB/ストレージ（SQLite）: `docs/06_ストレージ（SQLite）.md` と `cocoro_ghost/db.py`
 - Web UI: `docs/13_WebブラウザUI.md` と `static/` と `cocoro_ghost/main.py`（static mount）
 - 長期評価（会話/感情/時間前進）: `docs/15_長期会話評価計画.md` と `docs/16_長期会話シナリオ台帳.md`
+- 自律人格（階層型世界モデル）: `docs/20_階層型世界モデル/00_基本設計.md` と `docs/20_階層型世界モデル/README.md`
 
 <!-- Block: Search Cheatsheet -->
 ## 迷ったら `rg`（入口に当てる）
@@ -43,11 +44,12 @@
 
 - HTTPS 必須（自己署名）で運用する（`http://` では接続できない）: `docs/07_API.md`
 - `/api/chat` は **SSE開始前に**「必要な記憶」を確定する: `docs/10_実行フロー.md`
-- Web検索（インターネット）は `/api/chat` の最終応答生成（L3）でのみ有効化可能（`llm_preset.reply_web_search_enabled`）: `docs/10_実行フロー.md` / `cocoro_ghost/llm_client.py`
+- Web検索（インターネット）は `/api/chat` の最終応答生成（L3）でのみ有効化可能（`llm_preset.reply_web_search_enabled`）。自律実行能力（例: `web_access`）とは別制御: `docs/10_実行フロー.md` / `cocoro_ghost/llm_client.py` / `docs/20_階層型世界モデル/00_基本設計.md`
 - token の正は `settings.db`（TOMLは初回の入口）: `docs/07_API.md`
 - `settings.db` は起動時に既知のスキーマ移行を行う（現行は `user_version=2 -> 3`）: `cocoro_ghost/db.py`
 - `/api/chat` は単一ユーザー前提で **同時に1本**へ制限する: `cocoro_ghost/memory/_chat_mixin.py`
 - `config/setting.toml` は **未知キーを許可しない**（起動時に弾く）: `cocoro_ghost/config.py`
+- 自律人格（階層型世界モデル）は `/api/chat` の同期経路に重い処理を混ぜず、worker/periodic 側で実行する: `docs/10_実行フロー.md` / `docs/20_階層型世界モデル/00_基本設計.md`
 
 <!-- Block: Run/Build -->
 ## 起動/配布メモ（最小）
