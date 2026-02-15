@@ -371,17 +371,20 @@ Phase 5 の目的:
 ### 8.1 `search` 後
 
 1. URL を `wm_entities(entity_type="web_resource")` へ upsert
-2. query と URL 群を `wm_links(link_type="evidence_for")` で記録
+2. observation -> URL entity を `wm_links(link_type="evidence_for")` で記録
+3. query と URL 群を `wm_beliefs(predicate="web.search.query")` で記録
 
 ### 8.2 `open_url` 後
 
-1. URL 観測を `wm_observations(source_type="action_result")` へ保存
-2. `text_digest` から命題候補を `wm_beliefs` へ反映
+1. URL を `wm_entities(entity_type="web_resource")` へ upsert
+2. observation -> URL entity を `wm_links(link_type="evidence_for")` で記録
+3. `text_digest` を `wm_beliefs(predicate="web.page.digest")` へ反映
 
 ### 8.3 `extract_structured` 後
 
-1. 抽出キーを `wm_beliefs.value_json` へ反映
-2. `source_url` 根拠を link/evidence に保持
+1. `source_url` を `wm_entities(entity_type="web_resource")` へ upsert
+2. observation -> URL entity を `wm_links(link_type="evidence_for")` で記録
+3. 抽出キーを `wm_beliefs(predicate="web.structured.keys")` へ反映
 
 ルール:
 
@@ -401,7 +404,7 @@ Phase 5 の目的:
 
 1. `search` 単体 ticket は許可
 2. `open_url` は URL 入手済みを precondition にする
-3. `extract_structured` は source_text 入手済みを precondition にする
+3. `extract_structured` は source_url と source_text 入手済みを precondition にする
 4. precondition 未成立 ticket は `cancelled`（`ticket_precondition_failed`）で確定
 
 ## 11. エラー規約
@@ -427,3 +430,9 @@ Phase 5 の目的:
    - Tacticalize で `web_access` ticket を発行し Execute へ接続
 3. `cocoro_ghost/autonomy/capability_registry.py`
    - `web_access` descriptor 登録と operation schema 検証
+4. `cocoro_ghost/autonomy/capability_bootstrap.py`
+   - `web_access` descriptor + adapter の標準登録
+5. `cocoro_ghost/autonomy/tactical_planner.py`
+   - `web_access` 操作選択（`search/open_url/extract_structured`）の戦術決定
+6. `cocoro_ghost/autonomy/effect_reflector.py`
+   - `web_access` effect の world model 反映

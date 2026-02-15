@@ -35,7 +35,7 @@
 - 自律人格（Capability Registry）: `docs/20_階層型世界モデル/12_capability_registry.md`
 - 自律人格（Event/WritePlan連携）: `docs/20_階層型世界モデル/13_event_writeplan連携.md`
 - 自律人格（`web_access`）: `docs/20_階層型世界モデル/14_web_access.md`
-- 自律人格（実装本体）: `cocoro_ghost/autonomy/loop_runtime.py` / `cocoro_ghost/autonomy/world_model_store.py` / `cocoro_ghost/autonomy/capability_registry.py` / `cocoro_ghost/autonomy/scheduler.py` / `cocoro_ghost/autonomy/runtime_control.py` / `cocoro_ghost/autonomy/capability_adapters/`
+- 自律人格（実装本体）: `cocoro_ghost/autonomy/loop_runtime.py` / `cocoro_ghost/autonomy/world_model_store.py` / `cocoro_ghost/autonomy/capability_registry.py` / `cocoro_ghost/autonomy/scheduler.py` / `cocoro_ghost/autonomy/runtime_control.py` / `cocoro_ghost/autonomy/capability_bootstrap.py` / `cocoro_ghost/autonomy/tactical_planner.py` / `cocoro_ghost/autonomy/effect_reflector.py` / `cocoro_ghost/autonomy/capability_adapters/`
 
 <!-- Block: Search Cheatsheet -->
 ## 迷ったら `rg`（入口に当てる）
