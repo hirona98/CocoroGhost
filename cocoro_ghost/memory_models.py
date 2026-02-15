@@ -38,7 +38,7 @@ class Event(MemoryBase):
 
     # --- 入力の識別（クライアントは単純I/Oなので、サーバ側で文脈を構築する） ---
     client_id: Mapped[Optional[str]] = mapped_column(Text)
-    source: Mapped[str] = mapped_column(Text, nullable=False)  # chat/notification/reminder/desktop_watch/meta_proactive/vision_detail など
+    source: Mapped[str] = mapped_column(Text, nullable=False)  # chat/notification/reminder/desktop_watch/meta_proactive/vision_detail/autonomy_action など
 
     # --- 本文（ターンの片側だけのイベントもあり得る） ---
     user_text: Mapped[Optional[str]] = mapped_column(Text)
@@ -323,6 +323,251 @@ class UserPreference(MemoryBase):
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class WmEntity(MemoryBase):
+    """階層型世界モデルのエンティティ。"""
+
+    __tablename__ = "wm_entities"
+    __table_args__ = (
+        UniqueConstraint("entity_key", name="uq_wm_entities_entity_key"),
+    )
+
+    # --- 主キー ---
+    entity_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # --- 同一性 ---
+    entity_key: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_type: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # --- 付帯情報 ---
+    value_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class WmRelation(MemoryBase):
+    """階層型世界モデルのエンティティ間関係。"""
+
+    __tablename__ = "wm_relations"
+    __table_args__ = (
+        UniqueConstraint("from_entity_id", "to_entity_id", "relation_type", name="uq_wm_relations_from_to_type"),
+    )
+
+    # --- 主キー ---
+    relation_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # --- 関係 ---
+    from_entity_id: Mapped[int] = mapped_column(ForeignKey("wm_entities.entity_id", ondelete="CASCADE"), nullable=False)
+    to_entity_id: Mapped[int] = mapped_column(ForeignKey("wm_entities.entity_id", ondelete="CASCADE"), nullable=False)
+    relation_type: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # --- 品質 ---
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    evidence_event_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class WmBelief(MemoryBase):
+    """階層型世界モデルの命題（belief）。"""
+
+    __tablename__ = "wm_beliefs"
+
+    # --- 主キー ---
+    belief_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # --- 主体と命題 ---
+    subject_entity_id: Mapped[Optional[int]] = mapped_column(ForeignKey("wm_entities.entity_id", ondelete="SET NULL"))
+    predicate: Mapped[str] = mapped_column(Text, nullable=False)
+    object_text: Mapped[str] = mapped_column(Text, nullable=False)
+    value_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    # --- 品質 ---
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    source_type: Mapped[str] = mapped_column(Text, nullable=False, default="observation")
+
+    # --- 適用期間 ---
+    valid_from_ts: Mapped[Optional[int]] = mapped_column(Integer)
+    valid_to_ts: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # --- 根拠 ---
+    evidence_event_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class WmStrategicGoal(MemoryBase):
+    """戦略層の目標（StrategicGoal）。"""
+
+    __tablename__ = "wm_strategic_goals"
+
+    # --- 主キー ---
+    goal_id: Mapped[str] = mapped_column(Text, primary_key=True, autoincrement=False)
+
+    # --- 本体 ---
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    intent: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    horizon_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    success_criteria_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    constraints_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class WmActionTicket(MemoryBase):
+    """戦術層が発行する実行単位（ActionTicket）。"""
+
+    __tablename__ = "wm_action_tickets"
+
+    # --- 主キー ---
+    ticket_id: Mapped[str] = mapped_column(Text, primary_key=True, autoincrement=False)
+
+    # --- 紐づけ ---
+    goal_id: Mapped[Optional[str]] = mapped_column(ForeignKey("wm_strategic_goals.goal_id", ondelete="SET NULL"))
+
+    # --- 実行情報 ---
+    capability_id: Mapped[str] = mapped_column(Text, nullable=False)
+    operation: Mapped[str] = mapped_column(Text, nullable=False)
+    input_payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    preconditions_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    expected_effect_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    verify_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
+    reason_code: Mapped[Optional[str]] = mapped_column(Text)
+
+    # --- 時刻 ---
+    issued_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    deadline_at: Mapped[Optional[int]] = mapped_column(Integer)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class WmActionResult(MemoryBase):
+    """実行結果（ActionResult）。"""
+
+    __tablename__ = "wm_action_results"
+
+    # --- 主キー ---
+    result_id: Mapped[str] = mapped_column(Text, primary_key=True, autoincrement=False)
+
+    # --- 紐づけ ---
+    ticket_id: Mapped[Optional[str]] = mapped_column(ForeignKey("wm_action_tickets.ticket_id", ondelete="SET NULL"))
+
+    # --- 結果 ---
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    observations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    effects_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+    reason_code: Mapped[Optional[str]] = mapped_column(Text)
+
+    # --- 時刻 ---
+    finished_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class WmObservation(MemoryBase):
+    """観測入力の正規化ログ。"""
+
+    __tablename__ = "wm_observations"
+
+    # --- 主キー ---
+    observation_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # --- 観測本体 ---
+    source_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_ref: Mapped[Optional[str]] = mapped_column(Text)
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class WmLink(MemoryBase):
+    """World Model 内の汎用リンク。"""
+
+    __tablename__ = "wm_links"
+    __table_args__ = (
+        UniqueConstraint("link_type", "from_type", "from_id", "to_type", "to_id", name="uq_wm_links_route"),
+    )
+
+    # --- 主キー ---
+    link_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # --- 関係 ---
+    link_type: Mapped[str] = mapped_column(Text, nullable=False)
+    from_type: Mapped[str] = mapped_column(Text, nullable=False)
+    from_id: Mapped[str] = mapped_column(Text, nullable=False)
+    to_type: Mapped[str] = mapped_column(Text, nullable=False)
+    to_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # --- 品質 ---
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    evidence_event_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class WmCapability(MemoryBase):
+    """CapabilityDescriptor のヘッダ情報。"""
+
+    __tablename__ = "wm_capabilities"
+
+    # --- 主キー ---
+    capability_id: Mapped[str] = mapped_column(Text, primary_key=True, autoincrement=False)
+
+    # --- 表示/制御 ---
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    version: Mapped[str] = mapped_column(Text, nullable=False, default="1")
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class WmCapabilityOperation(MemoryBase):
+    """Capability ごとの operation 定義。"""
+
+    __tablename__ = "wm_capability_operations"
+    __table_args__ = (
+        UniqueConstraint("capability_id", "operation", name="uq_wm_capability_operations_capability_operation"),
+    )
+
+    # --- 主キー ---
+    operation_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # --- 紐づけ ---
+    capability_id: Mapped[str] = mapped_column(ForeignKey("wm_capabilities.capability_id", ondelete="CASCADE"), nullable=False)
+    operation: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # --- 契約 ---
+    input_schema_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    result_schema_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    effect_schema_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class StateLink(MemoryBase):
     """状態間リンク（state↔state の関係）。
 
@@ -366,7 +611,7 @@ class Revision(MemoryBase):
 
     # --- 対象 ---
     entity_type: Mapped[str] = mapped_column(Text, nullable=False)  # state/event_links/event_threads/long_mood_state など
-    entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    entity_id: Mapped[str] = mapped_column(Text, nullable=False)
 
     # --- 差分 ---
     before_json: Mapped[Optional[str]] = mapped_column(Text)

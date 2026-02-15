@@ -230,7 +230,7 @@ def list_state_revisions(
         q = (
             db.query(Revision)
             .filter(Revision.entity_type == "state")
-            .filter(Revision.entity_id == int(state_id))
+            .filter(Revision.entity_id == str(int(state_id)))
             .order_by(Revision.created_at.desc(), Revision.revision_id.desc())
         )
         rows = q.offset(int(offset)).limit(int(limit)).all()
@@ -241,7 +241,7 @@ def list_state_revisions(
                 {
                     "revision_id": int(r.revision_id),
                     "entity_type": str(r.entity_type),
-                    "entity_id": int(r.entity_id),
+                    "entity_id": str(r.entity_id),
                     "before_json": r.before_json,
                     "after_json": r.after_json,
                     "reason": str(r.reason),

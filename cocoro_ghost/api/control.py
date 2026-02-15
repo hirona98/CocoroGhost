@@ -13,11 +13,16 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
+from sqlalchemy import func
 
+from cocoro_ghost.autonomy import runtime_control
 from cocoro_ghost.clock import ClockService
 from cocoro_ghost import event_stream, log_stream, schemas, worker
 from cocoro_ghost.deps import get_clock_service_dep
+from cocoro_ghost.db import memory_session_scope
+from cocoro_ghost.memory_models import Job
 from cocoro_ghost.time_utils import format_iso8601_local_with_tz
+from cocoro_ghost.worker_constants import JOB_PENDING, JOB_RUNNING
 
 logger = __import__("logging").getLogger(__name__)
 
@@ -55,6 +60,54 @@ def _build_time_snapshot_response(clock_service: ClockService) -> schemas.Contro
         domain_now_utc_ts=int(snap.domain_now_utc_ts),
         domain_now_iso=format_iso8601_local_with_tz(int(snap.domain_now_utc_ts)),
         domain_offset_seconds=int(snap.domain_offset_seconds),
+    )
+
+
+def _build_autonomy_runtime_response() -> schemas.ControlAutonomyResponse:
+    """自律ループの設定/稼働状態をレスポンス化する。"""
+
+    # --- runtime 設定を取得 ---
+    state = runtime_control.get_runtime_state()
+
+    # --- アクティブ embedding 設定で run_autonomy_cycle の件数を集計 ---
+    from cocoro_ghost.config import get_config_store
+
+    cfg = get_config_store().config
+    with memory_session_scope(str(cfg.embedding_preset_id), int(cfg.embedding_dimension)) as db:
+        pending_jobs = (
+            db.query(func.count(Job.id))
+            .filter(Job.kind == "run_autonomy_cycle")
+            .filter(Job.status == int(JOB_PENDING))
+            .scalar()
+        )
+        running_jobs = (
+            db.query(func.count(Job.id))
+            .filter(Job.kind == "run_autonomy_cycle")
+            .filter(Job.status == int(JOB_RUNNING))
+            .scalar()
+        )
+
+    # --- 時刻をISOへ整形 ---
+    last_started_iso = (
+        format_iso8601_local_with_tz(int(state.last_cycle_started_at))
+        if state.last_cycle_started_at is not None
+        else None
+    )
+    last_finished_iso = (
+        format_iso8601_local_with_tz(int(state.last_cycle_finished_at))
+        if state.last_cycle_finished_at is not None
+        else None
+    )
+
+    # --- レスポンスへ詰め替える ---
+    return schemas.ControlAutonomyResponse(
+        enabled=bool(state.enabled),
+        periodic_interval_seconds=int(state.periodic_interval_seconds),
+        pending_jobs=int(pending_jobs or 0),
+        running_jobs=int(running_jobs or 0),
+        last_cycle_started_at=last_started_iso,
+        last_cycle_finished_at=last_finished_iso,
+        last_cycle_status=(str(state.last_cycle_status) if state.last_cycle_status else None),
     )
 
 
@@ -170,3 +223,32 @@ def control_time_reset(
 
     # --- 変更後スナップショット ---
     return _build_time_snapshot_response(clock_service)
+
+
+@router.get("/control/autonomy", response_model=schemas.ControlAutonomyResponse)
+def control_autonomy_get() -> schemas.ControlAutonomyResponse:
+    """
+    自律ループの設定と稼働状態を返す。
+    """
+
+    # --- 現在状態を返す ---
+    return _build_autonomy_runtime_response()
+
+
+@router.put("/control/autonomy", response_model=schemas.ControlAutonomyResponse)
+def control_autonomy_put(request: schemas.ControlAutonomyUpdateRequest) -> schemas.ControlAutonomyResponse:
+    """
+    自律ループ設定（enabled/periodic_interval_seconds）を更新する。
+    """
+
+    # --- 入力を反映 ---
+    try:
+        runtime_control.update_runtime_control(
+            enabled=bool(request.enabled),
+            periodic_interval_seconds=int(request.periodic_interval_seconds),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # --- 変更後状態を返す ---
+    return _build_autonomy_runtime_response()

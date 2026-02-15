@@ -50,7 +50,8 @@ class _MemorySessionEntry:
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
-_MEMORY_DB_USER_VERSION = 8
+# --- wm_capability_operations.timeout_seconds を追加 ---
+_MEMORY_DB_USER_VERSION = 10
 _SETTINGS_DB_USER_VERSION = 3
 
 
@@ -314,6 +315,26 @@ def _create_memory_indexes(engine) -> None:
         "CREATE INDEX IF NOT EXISTS idx_user_preferences_updated_at ON user_preferences(updated_at)",
         # --- jobs ---
         "CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after)",
+        # --- wm_entities / wm_relations / wm_beliefs ---
+        "CREATE INDEX IF NOT EXISTS idx_wm_entities_type_name ON wm_entities(entity_type, name)",
+        "CREATE INDEX IF NOT EXISTS idx_wm_relations_from ON wm_relations(from_entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_wm_relations_to ON wm_relations(to_entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_wm_beliefs_subject ON wm_beliefs(subject_entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_wm_beliefs_predicate ON wm_beliefs(predicate)",
+        "CREATE INDEX IF NOT EXISTS idx_wm_beliefs_updated ON wm_beliefs(updated_at)",
+        # --- wm goals / tickets / results ---
+        "CREATE INDEX IF NOT EXISTS idx_wm_goals_status_priority ON wm_strategic_goals(status, priority)",
+        "CREATE INDEX IF NOT EXISTS idx_wm_tickets_goal_status ON wm_action_tickets(goal_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_wm_tickets_capability_op ON wm_action_tickets(capability_id, operation)",
+        "CREATE INDEX IF NOT EXISTS idx_wm_results_ticket_status ON wm_action_results(ticket_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_wm_results_finished_at ON wm_action_results(finished_at)",
+        # --- wm observations / links ---
+        "CREATE INDEX IF NOT EXISTS idx_wm_observations_source ON wm_observations(source_type, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_wm_links_route ON wm_links(from_type, from_id, to_type, to_id)",
+        # --- wm capabilities ---
+        "CREATE INDEX IF NOT EXISTS idx_wm_capabilities_enabled ON wm_capabilities(enabled)",
+        "CREATE INDEX IF NOT EXISTS idx_wm_cap_ops_capability_enabled ON wm_capability_operations(capability_id, enabled)",
+        "CREATE INDEX IF NOT EXISTS idx_wm_cap_ops_operation ON wm_capability_operations(operation)",
     ]
     with engine.connect() as conn:
         for stmt in stmts:
@@ -366,6 +387,40 @@ def _assert_memory_db_is_new_schema(engine) -> None:
                 f"memory DB user_version mismatch: db={current}, expected={_MEMORY_DB_USER_VERSION}. "
                 "DBを削除して作り直してください。"
             )
+
+        # --- revisions.entity_id は TEXT を必須とする ---
+        revisions_exists = (
+            conn.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='revisions'")
+            ).fetchone()
+            is not None
+        )
+        if revisions_exists:
+            revision_cols = conn.execute(text("PRAGMA table_info(revisions)")).fetchall()
+            revision_col_types = {str(r[1]): str(r[2] or "").upper() for r in revision_cols}
+            entity_id_decl = str(revision_col_types.get("entity_id") or "")
+            if "TEXT" not in entity_id_decl:
+                raise RuntimeError(
+                    "memory DB schema mismatch: revisions.entity_id must be TEXT. "
+                    "DBを削除して作り直してください。"
+                )
+
+        # --- wm_capability_operations.timeout_seconds は INTEGER を必須とする ---
+        cap_ops_exists = (
+            conn.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='wm_capability_operations'")
+            ).fetchone()
+            is not None
+        )
+        if cap_ops_exists:
+            cap_ops_cols = conn.execute(text("PRAGMA table_info(wm_capability_operations)")).fetchall()
+            cap_ops_col_types = {str(r[1]): str(r[2] or "").upper() for r in cap_ops_cols}
+            timeout_decl = str(cap_ops_col_types.get("timeout_seconds") or "")
+            if "INTEGER" not in timeout_decl:
+                raise RuntimeError(
+                    "memory DB schema mismatch: wm_capability_operations.timeout_seconds must be INTEGER. "
+                    "DBを削除して作り直してください。"
+                )
 
 
 def _set_memory_db_user_version(engine) -> None:

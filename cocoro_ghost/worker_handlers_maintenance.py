@@ -308,7 +308,7 @@ def _handle_build_state_links(
             def add_revision(
                 *,
                 entity_type: str,
-                entity_id: int,
+                entity_id: int | str,
                 before: Any,
                 after: Any,
                 reason: str,
@@ -317,7 +317,7 @@ def _handle_build_state_links(
                 db.add(
                     Revision(
                         entity_type=str(entity_type),
-                        entity_id=int(entity_id),
+                        entity_id=str(entity_id),
                         before_json=(common_utils.json_dumps(before) if before is not None else None),
                         after_json=(common_utils.json_dumps(after) if after is not None else None),
                         reason=str(reason or "").strip() or "(no reason)",
@@ -466,11 +466,11 @@ def _handle_tidy_memory(*, embedding_preset_id: str, embedding_dimension: int, p
 
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         # --- revisions を追加するヘルパ（整理でも説明責任を残す） ---
-        def add_revision(*, entity_type: str, entity_id: int, before: Any, after: Any, reason: str) -> None:
+        def add_revision(*, entity_type: str, entity_id: int | str, before: Any, after: Any, reason: str) -> None:
             db.add(
                 Revision(
                     entity_type=str(entity_type),
-                    entity_id=int(entity_id),
+                    entity_id=str(entity_id),
                     before_json=(common_utils.json_dumps(before) if before is not None else None),
                     after_json=(common_utils.json_dumps(after) if after is not None else None),
                     reason=str(reason or "").strip() or "(no reason)",

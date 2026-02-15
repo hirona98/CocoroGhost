@@ -16,6 +16,7 @@ from cocoro_ghost.worker_handlers_embeddings import (
     _handle_upsert_event_embedding,
     _handle_upsert_state_embedding,
 )
+from cocoro_ghost.worker_handlers_autonomy import _handle_run_autonomy_cycle
 from cocoro_ghost.worker_handlers_maintenance import _handle_build_state_links, _handle_tidy_memory
 from cocoro_ghost.worker_handlers_write_plan import _handle_apply_write_plan, _handle_generate_write_plan
 
@@ -98,6 +99,15 @@ def run_job_kind(
 
     if kind == "build_state_links":
         _handle_build_state_links(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            llm_client=llm_client,
+            payload=payload,
+        )
+        return
+
+    if kind == "run_autonomy_cycle":
+        _handle_run_autonomy_cycle(
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             llm_client=llm_client,

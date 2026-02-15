@@ -8,12 +8,15 @@ CocoroGhost APIサーバーのメインモジュール。
 from __future__ import annotations
 
 import asyncio
+import time
 
 from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from cocoro_ghost import event_stream, log_stream
+from cocoro_ghost.autonomy import runtime_control
+from cocoro_ghost.autonomy.scheduler import enqueue_autonomy_cycle_job
 from cocoro_ghost.api import (
     admin,
     auth,
@@ -236,6 +239,66 @@ def create_app() -> FastAPI:
             func=_reminders_tick,
             logger=logger,
         )
+
+        # --- 自律ループは memory_enabled=true のときだけ投入する ---
+        if bool(runtime_config.memory_enabled):
+            # --- 起動時: 自律ループを1回投入 ---
+            await asyncio.to_thread(
+                enqueue_autonomy_cycle_job,
+                embedding_preset_id=str(runtime_config.embedding_preset_id),
+                embedding_dimension=int(runtime_config.embedding_dimension),
+                trigger="startup",
+            )
+
+            # --- 1秒tick: 自律ループ（実周期は runtime_control で制御） ---
+            autonomy_next_due_ts = 0.0
+            autonomy_last_interval = float(runtime_control.get_runtime_state().periodic_interval_seconds)
+
+            async def _autonomy_tick() -> None:
+                nonlocal autonomy_next_due_ts, autonomy_last_interval
+
+                # --- 現在設定を取得 ---
+                state = runtime_control.get_runtime_state()
+                interval_seconds = float(max(1, int(state.periodic_interval_seconds)))
+                now_ts = float(time.time())
+
+                # --- 初回は基準時刻だけ作る ---
+                if float(autonomy_next_due_ts) <= 0.0:
+                    autonomy_next_due_ts = float(now_ts) + float(interval_seconds)
+                    autonomy_last_interval = float(interval_seconds)
+                    return
+
+                # --- 周期変更時は次回時刻を張り直す ---
+                if float(interval_seconds) != float(autonomy_last_interval):
+                    autonomy_next_due_ts = float(now_ts) + float(interval_seconds)
+                    autonomy_last_interval = float(interval_seconds)
+                    return
+
+                # --- due まで待つ ---
+                if float(now_ts) < float(autonomy_next_due_ts):
+                    return
+                autonomy_next_due_ts = float(now_ts) + float(interval_seconds)
+
+                # --- 無効時は実行しない ---
+                if not bool(state.enabled):
+                    return
+
+                # --- due なので1回だけ投入 ---
+                await asyncio.to_thread(
+                    enqueue_autonomy_cycle_job,
+                    embedding_preset_id=str(runtime_config.embedding_preset_id),
+                    embedding_dimension=int(runtime_config.embedding_dimension),
+                    trigger="periodic",
+                )
+
+            start_periodic_task(
+                app,
+                name="periodic_autonomy_loop",
+                interval_seconds=1.0,
+                wait_first=False,
+                func=_autonomy_tick,
+                logger=logger,
+            )
 
         logger.info("periodic services started")
 

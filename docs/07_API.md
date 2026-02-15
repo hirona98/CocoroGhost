@@ -728,9 +728,9 @@ Workerのジョブキュー統計を返す。
 
 - `GET /api/control/time` と同じ形式（リセット後の値）
 
-### `GET /api/control/autonomy`（Phase 6 対象）
+### `GET /api/control/autonomy`
 
-自律ループ設定と稼働状態を返す（仕様）。
+自律ループ設定と稼働状態を返す。
 
 レスポンス（例）:
 
@@ -746,9 +746,9 @@ Workerのジョブキュー統計を返す。
 }
 ```
 
-### `PUT /api/control/autonomy`（Phase 6 対象）
+### `PUT /api/control/autonomy`
 
-自律ループの有効/無効と周期を更新する（仕様）。
+自律ループの有効/無効と周期を更新する。
 
 リクエスト:
 

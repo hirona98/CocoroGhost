@@ -159,11 +159,19 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         db.add(ev)
 
         # --- revisions を追加するヘルパ ---
-        def add_revision(*, entity_type: str, entity_id: int, before: Any, after: Any, reason: str, evidence_event_ids: list[int]) -> None:
+        def add_revision(
+            *,
+            entity_type: str,
+            entity_id: int | str,
+            before: Any,
+            after: Any,
+            reason: str,
+            evidence_event_ids: list[int],
+        ) -> None:
             db.add(
                 Revision(
                     entity_type=str(entity_type),
-                    entity_id=int(entity_id),
+                    entity_id=str(entity_id),
                     before_json=(common_utils.json_dumps(before) if before is not None else None),
                     after_json=(common_utils.json_dumps(after) if after is not None else None),
                     reason=str(reason or "").strip() or "(no reason)",
@@ -1051,5 +1059,4 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         reason="chat_turn_interval",
                         watermark_event_id=int(watermark_event_id),
                     )
-
 

@@ -8,6 +8,7 @@ memory配下: ジョブ投入（mixin）
 
 from __future__ import annotations
 
+from cocoro_ghost.autonomy.scheduler import enqueue_autonomy_cycle_job
 from cocoro_ghost import common_utils
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.memory._utils import now_system_utc_ts
@@ -65,6 +66,14 @@ class _JobsMemoryMixin:
                     updated_at=int(now_ts),
                 )
             )
+
+        # --- 自律ループジョブも投入する（重複は scheduler 側で抑止） ---
+        enqueue_autonomy_cycle_job(
+            embedding_preset_id=str(embedding_preset_id),
+            embedding_dimension=int(embedding_dimension),
+            trigger="event_created",
+            event_id=int(event_id),
+        )
 
     def _enqueue_event_assistant_summary_job(
         self, *, embedding_preset_id: str, embedding_dimension: int, event_id: int

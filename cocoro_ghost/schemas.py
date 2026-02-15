@@ -290,6 +290,35 @@ class ControlTimeSnapshotResponse(BaseModel):
     domain_offset_seconds: int
 
 
+class ControlAutonomyUpdateRequest(BaseModel):
+    """
+    /control/autonomy 用更新リクエスト。
+
+    自律ループの有効/無効と周期を更新する。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    periodic_interval_seconds: int = Field(ge=1)
+
+
+class ControlAutonomyResponse(BaseModel):
+    """
+    /control/autonomy の状態レスポンス。
+
+    自律ループの設定値と実行状況を返す。
+    """
+
+    enabled: bool
+    periodic_interval_seconds: int
+    pending_jobs: int
+    running_jobs: int
+    last_cycle_started_at: Optional[str] = None
+    last_cycle_finished_at: Optional[str] = None
+    last_cycle_status: Optional[str] = None
+
+
 class EventStreamRuntimeStats(BaseModel):
     """
     イベントストリームのランタイム統計。
