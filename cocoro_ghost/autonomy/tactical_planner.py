@@ -11,6 +11,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from cocoro_ghost.autonomy.preconditions import (
+    PRECONDITION_SOURCE_TEXT_PRESENT,
+    PRECONDITION_SOURCE_URL_PRESENT,
+    PRECONDITION_URL_PRESENT,
+)
+
 
 def _extract_primary_user_text(source_event: dict[str, Any] | None) -> str:
     """戦術判断に使う主入力テキストを返す。"""
@@ -178,7 +184,7 @@ def decide_tactical_plan(
                 "source_text": str(source_text),
                 "target_schema_json": _build_target_schema_json(fields),
             },
-            "preconditions": ["source_url_present", "source_text_present"],
+            "preconditions": [PRECONDITION_SOURCE_URL_PRESENT, PRECONDITION_SOURCE_TEXT_PRESENT],
             "expected_effect": ["web.structured_extracted"],
             "verify": ["wm_action_results.status=succeeded"],
         }
@@ -194,7 +200,7 @@ def decide_tactical_plan(
             "capability_id": "web_access",
             "operation": "open_url",
             "input_payload": {"url": str(url), "max_chars": 8000},
-            "preconditions": ["url_present"],
+            "preconditions": [PRECONDITION_URL_PRESENT],
             "expected_effect": ["web.page_opened"],
             "verify": ["wm_action_results.status=succeeded"],
         }

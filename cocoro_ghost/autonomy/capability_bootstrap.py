@@ -16,15 +16,75 @@ from cocoro_ghost.autonomy.capability_registry import (
 )
 
 
+def _load_existing_enabled_state(*, registry: CapabilityRegistry) -> tuple[dict[str, bool], dict[tuple[str, str], bool]]:
+    """既存 capability/operation の enabled 状態を読み出す。"""
+
+    # --- 既存 descriptor を取得 ---
+    descriptors = list(registry.list_descriptors())
+
+    # --- capability/operation の enabled マップを作成 ---
+    capability_enabled: dict[str, bool] = {}
+    operation_enabled: dict[tuple[str, str], bool] = {}
+    for desc in list(descriptors or []):
+        cap_id = str(desc.capability_id or "").strip()
+        if not cap_id:
+            continue
+        capability_enabled[cap_id] = bool(desc.enabled)
+        for op in list(desc.operations or []):
+            op_name = str(op.operation or "").strip()
+            if not op_name:
+                continue
+            operation_enabled[(cap_id, op_name)] = bool(op.enabled)
+    return capability_enabled, operation_enabled
+
+
+def _resolve_capability_enabled(
+    *,
+    capability_id: str,
+    default_enabled: bool,
+    capability_enabled_by_id: dict[str, bool],
+) -> bool:
+    """capability の有効/無効を既存状態優先で決定する。"""
+
+    # --- 既存状態を優先 ---
+    cap_id = str(capability_id or "").strip()
+    if cap_id in capability_enabled_by_id:
+        return bool(capability_enabled_by_id[cap_id])
+    return bool(default_enabled)
+
+
+def _resolve_operation_enabled(
+    *,
+    capability_id: str,
+    operation: str,
+    default_enabled: bool,
+    operation_enabled_by_key: dict[tuple[str, str], bool],
+) -> bool:
+    """operation の有効/無効を既存状態優先で決定する。"""
+
+    # --- 既存状態を優先 ---
+    key = (str(capability_id or "").strip(), str(operation or "").strip())
+    if key in operation_enabled_by_key:
+        return bool(operation_enabled_by_key[key])
+    return bool(default_enabled)
+
+
 def register_default_capabilities(*, registry: CapabilityRegistry) -> None:
     """標準 capability を registry へ登録する。"""
+
+    # --- 既存 enabled 状態を事前取得 ---
+    capability_enabled_by_id, operation_enabled_by_key = _load_existing_enabled_state(registry=registry)
 
     # --- `speak` descriptor を登録 ---
     registry.register_descriptor(
         descriptor=CapabilityDescriptor(
             capability_id="speak",
             display_name="Speak",
-            enabled=True,
+            enabled=_resolve_capability_enabled(
+                capability_id="speak",
+                default_enabled=True,
+                capability_enabled_by_id=capability_enabled_by_id,
+            ),
             version="1",
             metadata_json={"owner": "phase6"},
             operations=[
@@ -61,7 +121,12 @@ def register_default_capabilities(*, registry: CapabilityRegistry) -> None:
                         },
                     },
                     timeout_seconds=10,
-                    enabled=True,
+                    enabled=_resolve_operation_enabled(
+                        capability_id="speak",
+                        operation="emit",
+                        default_enabled=True,
+                        operation_enabled_by_key=operation_enabled_by_key,
+                    ),
                 )
             ],
         )
@@ -72,7 +137,11 @@ def register_default_capabilities(*, registry: CapabilityRegistry) -> None:
         descriptor=CapabilityDescriptor(
             capability_id="web_access",
             display_name="Web Access",
-            enabled=True,
+            enabled=_resolve_capability_enabled(
+                capability_id="web_access",
+                default_enabled=True,
+                capability_enabled_by_id=capability_enabled_by_id,
+            ),
             version="1",
             metadata_json={"owner": "phase7"},
             operations=[
@@ -109,7 +178,12 @@ def register_default_capabilities(*, registry: CapabilityRegistry) -> None:
                         },
                     },
                     timeout_seconds=20,
-                    enabled=True,
+                    enabled=_resolve_operation_enabled(
+                        capability_id="web_access",
+                        operation="search",
+                        default_enabled=True,
+                        operation_enabled_by_key=operation_enabled_by_key,
+                    ),
                 ),
                 CapabilityOperationDescriptor(
                     operation="open_url",
@@ -144,7 +218,12 @@ def register_default_capabilities(*, registry: CapabilityRegistry) -> None:
                         },
                     },
                     timeout_seconds=20,
-                    enabled=True,
+                    enabled=_resolve_operation_enabled(
+                        capability_id="web_access",
+                        operation="open_url",
+                        default_enabled=True,
+                        operation_enabled_by_key=operation_enabled_by_key,
+                    ),
                 ),
                 CapabilityOperationDescriptor(
                     operation="extract_structured",
@@ -178,7 +257,12 @@ def register_default_capabilities(*, registry: CapabilityRegistry) -> None:
                         },
                     },
                     timeout_seconds=30,
-                    enabled=True,
+                    enabled=_resolve_operation_enabled(
+                        capability_id="web_access",
+                        operation="extract_structured",
+                        default_enabled=True,
+                        operation_enabled_by_key=operation_enabled_by_key,
+                    ),
                 ),
             ],
         )
@@ -187,4 +271,3 @@ def register_default_capabilities(*, registry: CapabilityRegistry) -> None:
     # --- adapter を登録 ---
     registry.register_adapter(adapter=SpeakCapabilityAdapter())
     registry.register_adapter(adapter=WebAccessCapabilityAdapter())
-

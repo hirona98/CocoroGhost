@@ -17,6 +17,7 @@ from cocoro_ghost.autonomy.capability_bootstrap import register_default_capabili
 from cocoro_ghost.autonomy.capability_registry import CapabilityRegistry
 from cocoro_ghost.autonomy.contracts import ActionResultContract
 from cocoro_ghost.autonomy.effect_reflector import reflect_effects_into_world_model
+from cocoro_ghost.autonomy.preconditions import build_effective_preconditions, evaluate_preconditions
 from cocoro_ghost.autonomy.tactical_planner import decide_tactical_plan
 from cocoro_ghost.autonomy.world_model_store import WorldModelStore
 from cocoro_ghost.db import memory_session_scope
@@ -96,29 +97,6 @@ class _ExecuteFailure(Exception):
 
     def __str__(self) -> str:
         return str(self.error_message)
-
-
-def _are_preconditions_satisfied(*, preconditions: list[str], input_payload: dict[str, Any]) -> bool:
-    """precondition 配列を評価する。"""
-
-    # --- preconditions を順に評価 ---
-    for pre in list(preconditions or []):
-        token = str(pre or "").strip()
-        if token == "url_present":
-            if not str(input_payload.get("url") or "").strip():
-                return False
-            continue
-        if token == "source_url_present":
-            if not str(input_payload.get("source_url") or "").strip():
-                return False
-            continue
-        if token == "source_text_present":
-            if not str(input_payload.get("source_text") or "").strip():
-                return False
-            continue
-        # --- 未知preconditionは失敗扱い ---
-        return False
-    return True
 
 
 def _execute_ticket_once(
@@ -292,7 +270,7 @@ def run_autonomy_cycle(
         capability_id = str(tactical["capability_id"])
         operation = str(tactical["operation"])
         input_payload = dict(tactical["input_payload"])
-        preconditions = list(tactical["preconditions"])
+        preconditions = build_effective_preconditions(preconditions=list(tactical["preconditions"]))
         expected_effect = list(tactical["expected_effect"])
         verify = list(tactical["verify"])
 
@@ -322,7 +300,14 @@ def run_autonomy_cycle(
         )
 
         # --- precondition 未成立は cancelled で確定 ---
-        if not _are_preconditions_satisfied(preconditions=list(preconditions), input_payload=dict(input_payload)):
+        precondition_result = evaluate_preconditions(
+            preconditions=list(preconditions),
+            capability_id=str(capability_id),
+            operation=str(operation),
+            input_payload=dict(input_payload),
+            registry=registry,
+        )
+        if not bool(precondition_result.satisfied):
             store.update_action_ticket_status(
                 ticket_id=str(ticket_id),
                 status="cancelled",
@@ -339,6 +324,7 @@ def run_autonomy_cycle(
                 "ticket_id": str(ticket_id),
                 "observation_id": int(observation_id),
                 "reason_code": "ticket_precondition_failed",
+                "failed_precondition": str(precondition_result.failed_precondition or ""),
             }
 
         # --- Execute: running へ遷移 ---

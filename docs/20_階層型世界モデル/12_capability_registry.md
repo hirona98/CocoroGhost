@@ -161,6 +161,8 @@ Phase 3 の目的:
    - capability 全体を有効/無効化
 3. `set_operation_enabled(capability_id, operation, enabled)`
    - operation 単位を有効/無効化
+4. `register_default_capabilities(registry)`
+   - 標準 descriptor を再登録する際、既存 capability/operation の `enabled` 状態を保持する
 
 ### 7.2 参照系
 
@@ -181,9 +183,11 @@ Phase 3 の目的:
 
 ### 8.1 実行前
 
-1. `resolve_operation` 実行
-2. 未解決なら `failed`（`execute_adapter_not_found`）
-3. `validate_input_payload` 失敗なら `failed`（`execute_schema_invalid`）
+1. precondition `operation_available` を先に評価する
+2. 不成立なら ticket を `cancelled`（`ticket_precondition_failed`）で確定する
+3. 成立後に `resolve_operation` 実行
+4. 実行直前に不可用化された場合は `failed`（`execute_adapter_not_found`）
+5. `validate_input_payload` 失敗なら `failed`（`execute_schema_invalid`）
 
 ### 8.2 実行中
 
@@ -202,6 +206,7 @@ Phase 3 の目的:
 2. 無効 capability しか使えない goal は `paused` 候補
 3. 未定義 operation ticket は発行しない
 4. capability 不可用時は precondition 未成立として扱う
+5. precondition 語彙は `cocoro_ghost/autonomy/preconditions.py` を正とする
 
 ## 10. Adapter 規約
 
@@ -245,6 +250,8 @@ Phase 3 の目的:
    - `speak` adapter
 6. `cocoro_ghost/autonomy/loop_runtime.py`
    - Tacticalize/Execute から registry 利用
+7. `cocoro_ghost/autonomy/preconditions.py`
+   - `operation_available` を含む precondition 評価
 
 ## 14. 完了条件（Phase 3）
 

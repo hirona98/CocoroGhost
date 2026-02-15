@@ -403,9 +403,10 @@ Phase 5 の目的:
 ## 10. Tacticalize 規約
 
 1. `search` 単体 ticket は許可
-2. `open_url` は URL 入手済みを precondition にする
-3. `extract_structured` は source_url と source_text 入手済みを precondition にする
+2. `open_url` は `url_present` を precondition にする
+3. `extract_structured` は `source_url_present` と `source_text_present` を precondition にする
 4. precondition 未成立 ticket は `cancelled`（`ticket_precondition_failed`）で確定
+5. 共通 precondition `operation_available` を常に評価する
 
 ## 11. エラー規約
 
