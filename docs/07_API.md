@@ -372,7 +372,7 @@ UI向けの「全設定」取得/更新。
 - 会話応答作成（`/api/chat` の最終生成）でのWeb検索（インターネット）は、`llm_preset.reply_web_search_enabled` でON/OFFする
 - `llm_model` は `openrouter/*` / `xai/*` / `openai/*` / `google/*` / `gemini/*` のいずれかを使用する
 - OpenRouter を OpenAI互換 `base_url` で使う場合（例: `https://openrouter.ai/api/v1`）も、設定がONなら最終生成時に OpenRouter のWeb検索 plugin を有効化する
-- このフラグは `/api/chat` の最終生成専用であり、自律実行能力（将来の `web_access` など）とは別制御とする
+- このフラグは `/api/chat` の最終生成専用であり、自律実行能力（`web_access` など）とは別制御とする
 
 #### リクエスト（例）
 
@@ -727,6 +727,47 @@ Workerのジョブキュー統計を返す。
 レスポンス:
 
 - `GET /api/control/time` と同じ形式（リセット後の値）
+
+### `GET /api/control/autonomy`（Phase 6 対象）
+
+自律ループ設定と稼働状態を返す（仕様）。
+
+レスポンス（例）:
+
+```json
+{
+  "enabled": true,
+  "periodic_interval_seconds": 5,
+  "pending_jobs": 0,
+  "running_jobs": 0,
+  "last_cycle_started_at": "2026-02-15T12:00:00+09:00",
+  "last_cycle_finished_at": "2026-02-15T12:00:01+09:00",
+  "last_cycle_status": "succeeded|failed"
+}
+```
+
+### `PUT /api/control/autonomy`（Phase 6 対象）
+
+自律ループの有効/無効と周期を更新する（仕様）。
+
+リクエスト:
+
+```json
+{
+  "enabled": true,
+  "periodic_interval_seconds": 5
+}
+```
+
+ルール:
+
+- 初期値は `periodic_interval_seconds=5`
+- `periodic_interval_seconds` は 1 以上
+- 更新は worker/periodic 経路にのみ反映し、`/api/chat` 同期経路へ影響させない
+
+レスポンス:
+
+- `GET /api/control/autonomy` と同じ形式（更新後の値）
 
 ### `POST /api/control`
 

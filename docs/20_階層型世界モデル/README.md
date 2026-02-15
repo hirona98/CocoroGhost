@@ -1,27 +1,31 @@
 # 階層型世界モデル ドキュメント
 
 このディレクトリは、CocoroGhost の自律人格アーキテクチャ
-（Hierarchical World Model）の文書をまとめる。
+（Hierarchical World Model）の仕様をまとめる。
 
 ## 文書一覧
 
 1. `docs/20_階層型世界モデル/00_概要.md`
-   - 全体方針、階層構造、データ契約、実行ループ、拡張方針
+   - ゴール、設計原則、共通契約
 2. `docs/20_階層型世界モデル/01_実装計画.md`
-   - 概要から仕様・実装へ進むための実装順序と確認ゲート
+   - Gate/Phase と完了条件
 3. `docs/20_階層型世界モデル/10_基盤ループ.md`
-   - 観測/戦略/戦術/実行/反省ループの仕様
+   - 5ループ、状態遷移、reason_code
 4. `docs/20_階層型世界モデル/11_world_model.md`
-   - World Model の永続化境界、最小テーブル、競合規約
+   - `wm_*` 最小スキーマ、競合規約
 5. `docs/20_階層型世界モデル/12_capability_registry.md`
-   - CapabilityDescriptor 登録/解決、schema 検証、adapter 呼び出し規約
+   - capability/operation 契約、検証、adapter 規約（`speak` 常設 / `web_access` は最初の外部能力）
 6. `docs/20_階層型世界モデル/13_event_writeplan連携.md`
-   - 行動/観測/反省のイベント連携、WritePlan接続、非永続命令の切り分け
-7. `docs/20_階層型世界モデル/1x_*.md`（`10_` / `11_` / `12_` / `13_` を含み、以降も追加）
-   - 項目別の詳細仕様（Webアクセスなど）
+   - command/result 分離、WritePlan 連携
+7. `docs/20_階層型世界モデル/14_web_access.md`
+   - `web_access` capability 仕様
+
+注記:
+
+- 追加仕様ファイルを作る場合は、実ファイル名をこの一覧へ追記する
 
 ## 運用方針
 
-- 先に `00_概要.md` を更新して全体整合を保つ
-- 仕様の追加時は `1x_*.md` を新設する
-- capability は固定しない（後から追加する前提）
+1. 先に `00_概要.md` の共通契約を更新する
+2. その後 `10_` 以降の詳細仕様へ反映する
+3. docs 間で契約矛盾を残したまま Gate を進めない

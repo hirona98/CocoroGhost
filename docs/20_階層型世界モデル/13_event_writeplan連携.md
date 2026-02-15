@@ -2,111 +2,114 @@
 
 ## 1. 目的
 
-本書は、階層型世界モデルの行動・観測・反省を既存記憶基盤（`events` / `WritePlan`）へ接続する仕様を定義する。
-Phase 4 の目的は次の2点。
+本書は、自律ループの行動・観測・反省を既存記憶基盤（`events` / WritePlan）へ接続する仕様を定義する。
 
-1. 非永続化命令イベントと永続化結果イベントの切り分けを固定する
-2. 既存 `/api/chat` 同期経路と競合しない連携方式を固定する
+Phase 4 の目的:
+
+1. 非永続 command event と永続 result event の切り分けを固定する
+2. `/api/chat` 同期経路と競合しない連携方式を固定する
 
 ## 2. スコープ
 
 対象:
 
-1. 自律ループのイベント分類（命令/結果）
-2. `events` 保存規約（source、本文、配信）
-3. WritePlan ジョブ投入規約
-4. `ActionResult` / `world_model_update_request` と `events` の接続順序
-5. 失敗時の再試行・観測規約
+1. 自律ループ起点イベント分類
+2. `events` 保存規約
+3. result event から WritePlan へのジョブ投入規約
+4. `ActionResult` / `world_model_update_request` / `events` の接続順序
 
 非対象:
 
-1. World Model テーブル定義の詳細（Phase 2）
-2. Capability Registry 詳細（Phase 3）
-3. `web_access` 個別仕様（Phase 5）
-4. 実コード実装（Phase 6）
+1. world model 詳細（`11_world_model.md`）
+2. registry 詳細（`12_capability_registry.md`）
+3. capability 個別仕様（`14_web_access.md`）
 
 ## 3. 前提
 
-1. `/api/chat` の同期経路に重い処理を混ぜない
+1. `/api/chat` 同期経路に重い処理を混ぜない
 2. 自律処理は worker/periodic 側で実行する
-3. fail-fast を正とし、fallback は入れない
-4. 命令イベントは非永続化可、結果イベントは永続化必須
+3. fail-fast を正とし fallback を入れない
+4. command event は非永続、result event は永続必須
 
 ## 4. イベント分類
 
-## 4.1 非永続化命令イベント（Command Event）
+### 4.1 非永続 command event
 
 定義:
 
-- クライアント/デバイスへ「実行要求」を送るためのイベント
+- クライアント/デバイスへの実行要求イベント
 - `events` テーブルへ保存しない
-- `events/stream` で配信し、`event_id=0` とする
+- `events/stream` へ `event_id=0` で配信する
 
 代表例:
 
 1. `vision.capture_request`
-2. 今後のデバイス命令（移動/家電制御等）の要求イベント
+2. 将来のデバイス命令（移動/家電操作）
 
 ルール:
 
-1. command event は WritePlan 対象にしない
-2. command event の成功/失敗判定は response 側で行う
+1. command event は WritePlan 対象外
+2. 成功/失敗は対応する result event で確定する
 
-## 4.2 永続化結果イベント（Result Event）
+### 4.2 永続 result event
 
 定義:
 
-- 実行結果・観測結果・自発発話の記録イベント
+- 実行結果・観測結果・自発発話の記録
 - `events` テーブルへ保存する
-- 必要に応じて `events/stream` へ配信する
+- 必要時のみ `events/stream` へ配信する
 
-対象 source（Phase 6で扱う最小セット）:
+対象 source（最小）:
 
-1. `meta_proactive`（自発発話）
-2. `vision_detail`（視覚結果の説明）
-3. `desktop_watch`（能動観測結果）
-4. `notification` / `reminder`（既存外部入力）
-5. `autonomy_action`（自律実行結果の要約。Phase 6 で追加）
+1. `meta_proactive`
+2. `vision_detail`
+3. `desktop_watch`
+4. `notification` / `reminder`
+5. `autonomy_action`
 
 ルール:
 
-1. result event は必ず `event_id>0` で永続化する
+1. result event は `event_id>0` で永続化
 2. result event は必ず WritePlan 入力へ流す
 
 ## 5. `events` 保存規約
 
-## 5.1 共通フィールド
+### 5.1 共通フィールド
 
-1. `created_at` / `updated_at`: 現在UTC秒
-2. `source`: 上記 source のいずれか
-3. `entities_json`: 初期値は `"[]"`（後段 WritePlan で更新）
-4. `client_context_json`: 取得できる場合のみ格納
+1. `source`: 上記 source のいずれか
+2. `created_at` / `updated_at`: UTC UNIX 秒
+3. `entities_json`: 初期は `[]`（後段で更新）
+4. `client_context_json`: 取得できた場合のみ保存
 
-## 5.2 自発発話（`operation=speak`）
+### 5.2 自発発話（`operation=speak`）
+
+注記:
+
+- `speak` は内部基本 capability（常設）として registry 経由で実行する
 
 1. `source="meta_proactive"`
-2. `assistant_text` に発話本文を入れる
-3. `user_text` は `null` でよい
-4. `events/stream` へ配信する
+2. `assistant_text` に発話本文
+3. `user_text` は `null`
+4. 必要時のみ `events/stream` へ配信
 
-## 5.3 非発話アクション結果（`autonomy_action`）
+### 5.3 非発話アクション結果
 
 1. `source="autonomy_action"`
-2. `user_text` に観測サマリ（何を実行し何が起きたか）を入れる
-3. `assistant_text` はユーザー共有文がある場合のみ入れる
-4. `events/stream` 配信は `ticket` の可視性ポリシーに従う
+2. `user_text` に観測サマリ
+3. `assistant_text` はユーザー共有文がある場合のみ
+4. 配信有無は ticket 可視性ポリシーで決定
 
-## 5.4 視覚命令の扱い
+### 5.4 視覚命令
 
-1. `vision.capture_request` は非永続化（`event_id=0`）
-2. `vision.capture_response` の結果説明は `source="vision_detail"` として永続化
-3. `vision_detail` はUI通知不要なら配信しない（既存方針を維持）
+1. `vision.capture_request` は非永続（`event_id=0`）
+2. `vision.capture_response` の説明は `source="vision_detail"` として永続化
+3. UI通知不要の `vision_detail` は配信しない
 
 ## 6. WritePlan 連携規約
 
-## 6.1 ジョブ投入規約
+### 6.1 ジョブ投入順序
 
-result event 保存後、同一経路で次のジョブを投入する。
+result event 保存後、同一経路で以下を投入する。
 
 1. `upsert_event_embedding`
 2. `upsert_event_assistant_summary`
@@ -114,64 +117,62 @@ result event 保存後、同一経路で次のジョブを投入する。
 
 注記:
 
-1. `assistant_text` が空でも `upsert_event_assistant_summary` は投入してよい（実処理側で判断）
-2. 既存 chat/external 経路と同じジョブチェーンを使う
+1. `assistant_text` が空でも `upsert_event_assistant_summary` は投入可
+2. 既存 chat/external と同一ジョブチェーンを使う
 
-## 6.2 WritePlan 出力の扱い
+### 6.2 WritePlan 出力の反映
 
-1. `event_annotations` は `events` 注釈へ反映する
-2. `state_updates` / `preference_updates` は既存 `state` / `user_preferences` 更新へ反映する
-3. `event_affect` は `event_affects` へ反映する
-4. 更新差分は `revisions` に記録する
+1. `event_annotations` -> `events` 注釈
+2. `state_updates` / `preference_updates` -> `state` / `user_preferences`
+3. `event_affect` -> `event_affects`
+4. 差分 -> `revisions`
 
-## 6.3 自律ループとの役割分担
+### 6.3 役割分担
 
-1. World Model（`wm_*`）更新:
-   - `world_model_update_request` で反映する
-2. 会話向け記憶（`state` 等）更新:
-   - WritePlan で反映する
-3. 二重管理を避けるため、`state -> wm_*` の直接同期は行わない
+1. 自律判断用構造状態は `wm_*` に反映
+2. 会話向け記憶更新は WritePlan で反映
+3. `state -> wm_*` の直接同期は行わない
 
-## 7. 実行順序（1 ticket 実行後）
+## 7. 実行順序（1 ticket 完了時）
 
-1. Execute で `ActionResult` を確定する
-2. Reflect 前後で `world_model_update_request` を発行する
-3. 結果を `events` に永続化する（必要なら配信）
-4. WritePlan ジョブを投入する
-5. 非同期 worker が既存 `generate_write_plan -> apply_write_plan` を実行する
+1. Execute で `ActionResult` 確定
+2. Reflect で `world_model_update_request` 発行・適用
+3. result event を `events` へ保存（必要時配信）
+4. WritePlan ジョブ投入
+5. worker が `generate_write_plan -> apply_write_plan` を実行
 
 ルール:
 
-1. `/api/chat` 同期経路でこの処理を待たない
-2. 連携処理はすべて worker 経路で完結させる
+1. `/api/chat` 同期経路で待たない
+2. 連携処理は worker 経路で完結させる
 
 ## 8. `events/stream` 配信規約
 
-## 8.1 配信するもの
+### 8.1 配信対象
 
-1. ユーザーに見せるべき result event
-2. command event（`event_id=0`）でクライアント実行が必要なもの
+1. ユーザーへ可視化すべき result event
+2. クライアント実行が必要な command event（`event_id=0`）
 
-## 8.2 配信しないもの
+### 8.2 非配信対象
 
-1. 内部観測だけで十分な result event（例: 一部 `vision_detail`）
-2. WritePlan の中間生成物
+1. 内部観測のみで十分な result event
+2. WritePlan 中間生成物
 
-## 8.3 宛先
+### 8.3 宛先
 
-1. 対象クライアントが必要な command/result は `target_client_id` 指定
-2. 全体通知は broadcast（`target_client_id=None`）
+1. 対象クライアント指定時は `target_client_id` を使う
+2. 全体通知は broadcast（`target_client_id=null`）
 
 ## 9. エラー/再試行規約
 
-1. result event 保存失敗:
-   - 当該 cycle を失敗として終了し、worker 再試行に委譲
-2. WritePlan ジョブ投入失敗:
-   - cycle は失敗として扱う（WritePlan 欠落を許容しない）
-3. WritePlan 実行失敗:
-   - 既存 worker retry ポリシー（`jobs`）に従う
-4. command event 応答なし:
-   - timeout として `ActionResult.failed` を確定する
+1. result event 保存失敗
+   - cycle を失敗として終了し worker retry へ委譲
+2. WritePlan ジョブ投入失敗
+   - cycle を失敗として扱う
+3. WritePlan 実行失敗
+   - 既存 worker retry ポリシーに従う
+4. command event 応答なし
+   - timeout として `ActionResult.failed` を確定
 
 ## 10. 観測項目
 
@@ -179,35 +180,24 @@ result event 保存後、同一経路で次のジョブを投入する。
 2. result event 永続化件数（source別）
 3. WritePlan ジョブ投入件数（kind別）
 4. 自律起点 event の WritePlan 成功/失敗件数
-5. `event_id=0` 命令の timeout 件数
+5. `event_id=0` 命令 timeout 件数
 
-## 11. 実装マップ（Phase 6 で実装する対象）
+## 11. 実装マップ（Phase 6）
 
 1. `cocoro_ghost/memory/_jobs_mixin.py`
-   - 自律結果event向けのジョブ投入ヘルパを追加
+   - 自律結果 event 連携ジョブ投入
 2. `cocoro_ghost/autonomy/loop_runtime.py`
-   - result event 永続化と WritePlan ジョブ投入を接続
+   - result event 永続化と WritePlan 接続
 3. `cocoro_ghost/worker_handlers_autonomy.py`
-   - cycle 内の連携実行を呼び出し
+   - cycle 実行呼び出し
 4. `cocoro_ghost/memory_models.py`
-   - `events.source="autonomy_action"` の運用追加
+   - `events.source="autonomy_action"` を含む運用
 5. `cocoro_ghost/event_stream.py`
-   - command/result 配信契約を維持（`event_id=0` 命令）
+   - command/result 配信契約維持
 
-## 12. 完了条件（Phase 4 仕様完了）
+## 12. 完了条件（Phase 4）
 
-1. 非永続化命令イベントと永続化結果イベントの切り分けが定義されている
-2. result event から WritePlan へ流す規約が定義されている
-3. `world_model_update_request` と WritePlan の役割分担が定義されている
+1. command/result の切り分けが固定されている
+2. result event -> WritePlan 規約が固定されている
+3. world model と WritePlan の役割分担が固定されている
 4. `/api/chat` 同期経路と競合しないことが明記されている
-5. `docs/10_実行フロー.md` と矛盾しない連携方式になっている
-
-## 13. 次フェーズへの引き継ぎ
-
-1. Gate 1 へ渡すもの
-   - Phase 1-4 の連携整合（ループ/World Model/Registry/WritePlan）
-2. Phase 5（`14_web_access.md`）へ渡すもの
-   - `web_access` 結果は result event 化して同一WritePlan経路へ流す前提
-   - `web_access` の command/result を本書のイベント分類に従わせる前提
-
-本書で確定した Event/WritePlan 連携規約は、後続フェーズでも維持する。

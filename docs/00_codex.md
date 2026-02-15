@@ -28,11 +28,14 @@
 - Web UI: `docs/13_WebブラウザUI.md` と `static/` と `cocoro_ghost/main.py`（static mount）
 - 長期評価（会話/感情/時間前進）: `docs/15_長期会話評価計画.md` と `docs/16_長期会話シナリオ台帳.md`
 - 自律人格（階層型世界モデル）: `docs/20_階層型世界モデル/00_概要.md` と `docs/20_階層型世界モデル/README.md`
+  - 注記: `docs/20_階層型世界モデル/` は自律人格仕様として読む
 - 自律人格（実装順）: `docs/20_階層型世界モデル/01_実装計画.md`
 - 自律人格（基盤ループ）: `docs/20_階層型世界モデル/10_基盤ループ.md`
 - 自律人格（World Model）: `docs/20_階層型世界モデル/11_world_model.md`
 - 自律人格（Capability Registry）: `docs/20_階層型世界モデル/12_capability_registry.md`
 - 自律人格（Event/WritePlan連携）: `docs/20_階層型世界モデル/13_event_writeplan連携.md`
+- 自律人格（`web_access`）: `docs/20_階層型世界モデル/14_web_access.md`
+- 自律人格（実装本体）: `cocoro_ghost/autonomy/loop_runtime.py` / `cocoro_ghost/autonomy/world_model_store.py` / `cocoro_ghost/autonomy/capability_registry.py` / `cocoro_ghost/autonomy/scheduler.py`
 
 <!-- Block: Search Cheatsheet -->
 ## 迷ったら `rg`（入口に当てる）
@@ -40,7 +43,7 @@
 - ルータ/エンドポイント: `rg -n "APIRouter\\(|@router\\.|/api/" cocoro_ghost/api`
 - 同期フローの本体: `rg -n "def stream_chat\\b|_chat_inflight_lock|SearchResultPack" cocoro_ghost/memory`
 - 非同期ジョブ/キュー: `rg -n "\\bJob\\b|enqueue|run_forever|tidy_memory" cocoro_ghost`
-- DBテーブル/モデル: `rg -n "class (Event|State|Job)\\b|retrieval_runs|event_links|state_links" cocoro_ghost`
+- DBテーブル/モデル: `rg -n "class (Event|State|Job|Wm[A-Za-z]+)\\b|retrieval_runs|event_links|state_links|wm_" cocoro_ghost`
 - 好み/苦手（confirmed）: `rg -n "UserPreference|user_preferences|ConfirmedPreferences|preference_updates" cocoro_ghost docs`
 - 設定の正（token/プリセット/active）: `rg -n "GlobalSettings|active_.*_preset_id|ensure_initial_settings" cocoro_ghost`
 
@@ -55,6 +58,7 @@
 - `/api/chat` は単一ユーザー前提で **同時に1本**へ制限する: `cocoro_ghost/memory/_chat_mixin.py`
 - `config/setting.toml` は **未知キーを許可しない**（起動時に弾く）: `cocoro_ghost/config.py`
 - 自律人格（階層型世界モデル）は `/api/chat` の同期経路に重い処理を混ぜず、worker/periodic 側で実行する: `docs/10_実行フロー.md` / `docs/20_階層型世界モデル/00_概要.md`
+- 自律仕様の契約定義で迷った場合は `docs/20_階層型世界モデル/00_概要.md` を正とする
 
 <!-- Block: Run/Build -->
 ## 起動/配布メモ（最小）

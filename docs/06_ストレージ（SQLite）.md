@@ -10,6 +10,8 @@
   - 出来事ログ（`events`）
   - 出来事ログのアシスタント本文要約（`event_assistant_summaries`、選別入力の高速化用）
   - 状態（`state`、`kind` で種別を持つ）
+  - World Model（`wm_entities` / `wm_relations` / `wm_beliefs` / `wm_strategic_goals` / `wm_action_tickets` / `wm_action_results` / `wm_observations` / `wm_links`）
+  - Capability Registry（`wm_capabilities` / `wm_capability_operations`）
   - 確定プロフィール（好み/苦手: `user_preferences`）
   - 改訂履歴（`revisions`）
   - 検索インデックス（ベクトル/文字n-gram）
@@ -51,7 +53,7 @@
 | updated_at | INTEGER | 更新時刻（UTC UNIX秒） |
 | searchable | INTEGER | 検索対象フラグ（1=想起対象、0=想起対象外） |
 | client_id | TEXT | クライアントID（NULL可） |
-| source | TEXT | イベント種別（chat/notification/reminder/desktop_watch/meta_proactive/vision_detail） |
+| source | TEXT | イベント種別（chat/notification/reminder/desktop_watch/meta_proactive/vision_detail/autonomy_action） |
 | user_text | TEXT | ユーザー入力（NULL可） |
 | assistant_text | TEXT | アシスタント出力（NULL可） |
 | image_summaries_json | TEXT | 画像要約（詳細）のJSON配列（内部用、NULL可、要素は最大5） |
@@ -69,6 +71,27 @@
 - クライアント入力には文脈IDが無い前提でよい
 - 文脈参照（文脈スレッド/返信関係）は、**イベント同士の関係を別テーブルとして構築**して、検索・更新で参照できるようにする
 - 同期で張る `reply_to` は「同じ `client_id` の直前チャットイベント」を指す（それ以外は非同期で補正する）
+- 命令イベント（例: `vision.capture_request`）は `events` へ保存しない。`events/stream` の `event_id=0` で扱う
+
+### World Model（`wm_*`）
+
+目的:
+
+- 自律ループの判断に使う構造化状態を保存する
+
+最小セット:
+
+- `wm_entities` / `wm_relations` / `wm_beliefs`
+- `wm_strategic_goals` / `wm_action_tickets` / `wm_action_results`
+- `wm_observations` / `wm_links`
+- `wm_capabilities` / `wm_capability_operations`
+
+注記:
+
+- `events` / `state` は会話記憶の正、`wm_*` は自律判断の正として分離する
+- 詳細スキーマは `docs/20_階層型世界モデル/11_world_model.md` と `docs/20_階層型世界モデル/12_capability_registry.md` を正とする
+- `wm_observations.source_type` は `event|action_result|system` を許可する（periodic/startup 観測を含む）
+- 本節は仕様要約であり、契約の正は 20 系文書側に置く
 
 ### `event_entities` / `state_entities`（エンティティ索引）
 
@@ -272,8 +295,8 @@
 | カラム | 型 | 説明 |
 |--------|------|------|
 | revision_id | INTEGER | 主キー（自動採番） |
-| entity_type | TEXT | 対象種別（state/event_links/event_threads/event_affects） |
-| entity_id | INTEGER | 対象レコードのID |
+| entity_type | TEXT | 対象種別（state/state_links/event_links/event_threads/event_affects/user_preferences/wm_*） |
+| entity_id | TEXT | 対象レコードのID（整数IDは10進文字列で保存） |
 | before_json | TEXT | 変更前のスナップショット（JSON、新規時はNULL） |
 | after_json | TEXT | 変更後のスナップショット（JSON） |
 | reason | TEXT | 変更理由（短文） |
@@ -282,12 +305,15 @@
 
 対象範囲（正）:
 
-- **revisions対象**: `state`, `state_links`, `event_links`, `event_threads`, `event_affects`, `user_preferences`
+- **revisions対象**: `state`, `state_links`, `event_links`, `event_threads`, `event_affects`, `user_preferences`, `wm_*`
 - **revisions対象外**: `events`（追記ログ）, `retrieval_runs`（観測ログ）
 
 注記:
 
 - テーブル名は `revisions` とする
+- `revisions.entity_id` は対象種別にかかわらず `TEXT` で統一する
+  - `events` や `state` のような整数主キーは文字列化して保存する（例: `"123"`）
+  - `wm_*` の UUID 主キーはそのまま保存する（例: `"550e8400-e29b-41d4-a716-446655440000"`）
 - 通常の会話検索は「出来事ログ（`events`）/状態（`state`）」を中心にし、`revisions` は「なぜ変えた？」の説明・デバッグに寄せる
 
 ### 観測ログ（`retrieval_runs`）
