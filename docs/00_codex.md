@@ -28,6 +28,7 @@
 - Web UI: `docs/13_WebブラウザUI.md` と `static/` と `cocoro_ghost/main.py`（static mount）
 - 長期評価（会話/感情/時間前進）: `docs/15_長期会話評価計画.md` と `docs/16_長期会話シナリオ台帳.md`
 - 自律人格（階層型世界モデル）: `docs/20_階層型世界モデル/00_基本設計.md` と `docs/20_階層型世界モデル/README.md`
+- 自律人格（実装順）: `docs/20_階層型世界モデル/01_実装計画.md`
 
 <!-- Block: Search Cheatsheet -->
 ## 迷ったら `rg`（入口に当てる）
