@@ -296,29 +296,28 @@ class CapabilityRegistry:
                 WmCapabilityOperation.capability_id.asc(),
                 WmCapabilityOperation.operation.asc(),
             ).all()
-
-        caps_plain = [
-            {
-                "capability_id": str(row.capability_id),
-                "display_name": str(row.display_name),
-                "enabled": bool(int(row.enabled or 0) == 1),
-                "version": str(row.version or "1"),
-                "metadata_json": common_utils.json_loads_maybe(str(row.metadata_json or "{}")),
-            }
-            for row in list(cap_rows or [])
-        ]
-        ops_plain = [
-            {
-                "capability_id": str(row.capability_id),
-                "operation": str(row.operation),
-                "input_schema_json": common_utils.json_loads_maybe(str(row.input_schema_json or "{}")),
-                "result_schema_json": common_utils.json_loads_maybe(str(row.result_schema_json or "{}")),
-                "effect_schema_json": common_utils.json_loads_maybe(str(row.effect_schema_json or "{}")),
-                "timeout_seconds": int(row.timeout_seconds or 30),
-                "enabled": bool(int(row.enabled or 0) == 1),
-            }
-            for row in list(op_rows or [])
-        ]
+            caps_plain = [
+                {
+                    "capability_id": str(row.capability_id),
+                    "display_name": str(row.display_name),
+                    "enabled": bool(int(row.enabled or 0) == 1),
+                    "version": str(row.version or "1"),
+                    "metadata_json": common_utils.json_loads_maybe(str(row.metadata_json or "{}")),
+                }
+                for row in list(cap_rows or [])
+            ]
+            ops_plain = [
+                {
+                    "capability_id": str(row.capability_id),
+                    "operation": str(row.operation),
+                    "input_schema_json": common_utils.json_loads_maybe(str(row.input_schema_json or "{}")),
+                    "result_schema_json": common_utils.json_loads_maybe(str(row.result_schema_json or "{}")),
+                    "effect_schema_json": common_utils.json_loads_maybe(str(row.effect_schema_json or "{}")),
+                    "timeout_seconds": int(row.timeout_seconds or 30),
+                    "enabled": bool(int(row.enabled or 0) == 1),
+                }
+                for row in list(op_rows or [])
+            ]
 
         # --- capability 単位で operation を束ねる ---
         ops_by_cap: dict[str, list[CapabilityOperationDescriptor]] = {}
@@ -532,4 +531,3 @@ class CapabilityRegistry:
                 schema=schema,
                 payload=dict(effect),
             )
-

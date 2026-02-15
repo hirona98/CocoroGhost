@@ -418,3 +418,12 @@ Phase 5 の目的:
 3. `/api/chat` Web検索制御と分離されている
 4. world model 反映規則が定義されている
 5. Event/WritePlan 連携規則が定義されている
+
+## 13. 実装マップ（Phase 7）
+
+1. `cocoro_ghost/autonomy/capability_adapters/web_access.py`
+   - `search` / `open_url` / `extract_structured` adapter 実装
+2. `cocoro_ghost/autonomy/loop_runtime.py`
+   - Tacticalize で `web_access` ticket を発行し Execute へ接続
+3. `cocoro_ghost/autonomy/capability_registry.py`
+   - `web_access` descriptor 登録と operation schema 検証

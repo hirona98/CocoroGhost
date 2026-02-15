@@ -247,7 +247,7 @@ def create_app() -> FastAPI:
                 enqueue_autonomy_cycle_job,
                 embedding_preset_id=str(runtime_config.embedding_preset_id),
                 embedding_dimension=int(runtime_config.embedding_dimension),
-                trigger="startup",
+                trigger_type="startup",
             )
 
             # --- 1秒tick: 自律ループ（実周期は runtime_control で制御） ---
@@ -288,7 +288,7 @@ def create_app() -> FastAPI:
                     enqueue_autonomy_cycle_job,
                     embedding_preset_id=str(runtime_config.embedding_preset_id),
                     embedding_dimension=int(runtime_config.embedding_dimension),
-                    trigger="periodic",
+                    trigger_type="periodic",
                 )
 
             start_periodic_task(

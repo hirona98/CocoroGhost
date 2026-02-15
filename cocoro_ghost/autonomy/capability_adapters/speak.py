@@ -143,7 +143,7 @@ class SpeakCapabilityAdapter(CapabilityAdapter):
         enqueue_autonomy_cycle_job(
             embedding_preset_id=str(context.embedding_preset_id),
             embedding_dimension=int(context.embedding_dimension),
-            trigger="event_created",
+            trigger_type="event_created",
             event_id=int(event_id),
         )
 
@@ -162,4 +162,3 @@ class SpeakCapabilityAdapter(CapabilityAdapter):
                 "target_client_id": (target_client_id if target_client_id else None),
             },
         )
-

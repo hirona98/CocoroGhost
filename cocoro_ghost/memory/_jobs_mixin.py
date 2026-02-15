@@ -71,7 +71,7 @@ class _JobsMemoryMixin:
         enqueue_autonomy_cycle_job(
             embedding_preset_id=str(embedding_preset_id),
             embedding_dimension=int(embedding_dimension),
-            trigger="event_created",
+            trigger_type="event_created",
             event_id=int(event_id),
         )
 

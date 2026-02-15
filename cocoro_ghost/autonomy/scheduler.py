@@ -28,7 +28,7 @@ def enqueue_autonomy_cycle_job(
     *,
     embedding_preset_id: str,
     embedding_dimension: int,
-    trigger: str,
+    trigger_type: str,
     event_id: int | None = None,
     result_id: str | None = None,
 ) -> bool:
@@ -39,7 +39,7 @@ def enqueue_autonomy_cycle_job(
         return False
 
     # --- 入力正規化 ---
-    trigger_s = str(trigger or "").strip() or "periodic"
+    trigger_s = str(trigger_type or "").strip() or "periodic"
     result_id_s = str(result_id or "").strip()
     now_ts = _now_utc_ts()
 

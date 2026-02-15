@@ -8,6 +8,7 @@ from cocoro_ghost.autonomy.capability_adapters.base import (
     CapabilityAdapter,
 )
 from cocoro_ghost.autonomy.capability_adapters.speak import SpeakCapabilityAdapter
+from cocoro_ghost.autonomy.capability_adapters.web_access import WebAccessCapabilityAdapter
 
 
 __all__ = [
@@ -15,5 +16,5 @@ __all__ = [
     "AdapterExecutionOutput",
     "CapabilityAdapter",
     "SpeakCapabilityAdapter",
+    "WebAccessCapabilityAdapter",
 ]
-
