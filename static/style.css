@@ -257,6 +257,10 @@ body {
   flex-wrap: wrap;
 }
 
+.settings-btn-logout {
+  margin-left: auto;
+}
+
 .settings-btn {
   height: 36px;
   border: 1px solid var(--border);
