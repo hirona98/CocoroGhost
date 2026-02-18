@@ -226,6 +226,81 @@ body {
   padding: 12px;
 }
 
+/* --- Settings panel --- */
+.settings {
+  width: min(var(--app-max-width), 100%);
+  border: 0;
+  border-radius: 0;
+  background: var(--panel);
+  box-shadow: none;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  gap: 10px;
+}
+
+.settings-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.settings-toolbar-right {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-btn {
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--text);
+  padding: 0 12px;
+  font-weight: 700;
+}
+
+.settings-btn.primary {
+  background: var(--header);
+  border-color: var(--header);
+  color: var(--header-text);
+}
+
+.settings-btn.danger {
+  border-color: rgba(217, 45, 32, 0.28);
+  color: var(--danger);
+}
+
+.settings-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.settings-desc {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings-editor {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 240px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: var(--text);
+  background: #ffffff;
+  resize: none;
+  outline: none;
+}
+
 .hidden {
   display: none !important;
 }

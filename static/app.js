@@ -5,6 +5,7 @@
  * 目的:
  * - /api/auth/login で Cookie セッションを張る
  * - /api/chat の SSE を逐次表示する
+ * - /api/settings を JSON で編集/保存できるようにする
  * - /api/events/stream (WebSocket) を受信して吹き出しとして表示する
  *
  * 方針:
@@ -20,12 +21,14 @@
   const apiAutoLoginPath = "/api/auth/auto_login";
   const apiLogoutPath = "/api/auth/logout";
   const apiChatPath = "/api/chat";
+  const apiSettingsPath = "/api/settings";
   // NOTE: CocoroGhost は HTTPS 必須（自己署名TLS）なので WebSocket も wss を使う。
   const webSocketEventsUrl = `wss://${location.host}/api/events/stream`;
 
   // --- DOM refs ---
   const panelLogin = document.getElementById("panel-login");
   const panelChat = document.getElementById("panel-chat");
+  const panelSettings = document.getElementById("panel-settings");
   const inputPanel = document.getElementById("input-panel");
 
   const loginTokenInput = document.getElementById("login-token");
@@ -45,6 +48,12 @@
 
   const statusLeft = document.getElementById("status-left");
   const statusRight = document.getElementById("status-right");
+  const settingsJsonInput = document.getElementById("settings-json");
+  const settingsStatus = document.getElementById("settings-status");
+  const settingsBackButton = document.getElementById("btn-settings-back");
+  const settingsReloadButton = document.getElementById("btn-settings-reload");
+  const settingsSaveButton = document.getElementById("btn-settings-save");
+  const settingsLogoutButton = document.getElementById("btn-settings-logout");
 
   // --- Camera modal DOM refs ---
   const cameraModal = document.getElementById("camera-modal");
@@ -325,6 +334,11 @@
     loginStatus.classList.toggle("error", !!isError);
   }
 
+  function setSettingsStatus(text, isError) {
+    settingsStatus.textContent = text || "";
+    settingsStatus.classList.toggle("error", !!isError);
+  }
+
   function setStatusBar(leftText, rightText) {
     statusLeft.textContent = leftText || "";
     statusRight.textContent = rightText || "";
@@ -333,17 +347,33 @@
   function showLogin() {
     // --- 念のため、開いているカメラがあれば閉じる ---
     closeCameraModal();
+    stopVoiceInput();
     panelLogin.classList.remove("hidden");
     panelChat.classList.add("hidden");
+    panelSettings.classList.add("hidden");
     inputPanel.classList.add("hidden");
+    setSettingsStatus("", false);
     setStatusBar("状態: ログイン待ち", "");
   }
 
   function showChat() {
+    panelSettings.classList.add("hidden");
     panelLogin.classList.add("hidden");
     panelChat.classList.remove("hidden");
     inputPanel.classList.remove("hidden");
+    refreshSendButtonEnabled();
     setStatusBar("状態: 正常動作中", "");
+  }
+
+  function showSettings() {
+    // --- 設定編集中は音声入力を停止する ---
+    stopVoiceInput();
+    panelLogin.classList.add("hidden");
+    panelChat.classList.add("hidden");
+    panelSettings.classList.remove("hidden");
+    inputPanel.classList.add("hidden");
+    setSettingsStatus("", false);
+    setStatusBar("状態: 設定編集中", "");
   }
 
   function scrollToBottom() {
@@ -1298,6 +1328,57 @@
     await fetch(apiLogoutPath, { method: "POST" });
   }
 
+  async function apiGetSettings() {
+    // --- 現在設定を取得する ---
+    const response = await fetch(apiSettingsPath, { method: "GET" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return await response.json();
+  }
+
+  async function apiPutSettings(payload) {
+    // --- JSON設定を全量更新する ---
+    const response = await fetch(apiSettingsPath, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      let detail = "";
+      try {
+        detail = await response.text();
+      } catch (_) {
+        detail = "";
+      }
+      throw new Error(`HTTP ${response.status}${detail ? ` ${detail}` : ""}`);
+    }
+    return await response.json();
+  }
+
+  async function reloadSettingsJson() {
+    setSettingsStatus("設定を読み込み中...", false);
+    const payload = await apiGetSettings();
+    settingsJsonInput.value = JSON.stringify(payload, null, 2);
+    setSettingsStatus("設定を読み込みました。", false);
+  }
+
+  async function saveSettingsJson() {
+    const raw = String(settingsJsonInput.value || "");
+    let payload = null;
+    try {
+      payload = JSON.parse(raw);
+    } catch (error) {
+      setSettingsStatus(`JSONの解析に失敗しました: ${String(error && error.message ? error.message : error)}`, true);
+      return;
+    }
+
+    setSettingsStatus("設定を保存中...", false);
+    const latest = await apiPutSettings(payload);
+    settingsJsonInput.value = JSON.stringify(latest, null, 2);
+    setSettingsStatus("設定を保存しました。", false);
+  }
+
   // --- WebSocket (events) ---
   /**
    * WebSocket を閉じる（再接続の有効/無効は変更しない）。
@@ -1788,7 +1869,7 @@
     await submitLogin();
   });
 
-  // --- Icons: no-op except gear (logout) ---
+  // --- Icons ---
   micButton.addEventListener("click", async () => {
     // --- トグル（再度押すまでON） ---
     if (speechWantedOn) {
@@ -1798,6 +1879,36 @@
     await startVoiceInputAndAutoSend();
   });
   gearButton.addEventListener("click", async () => {
+    if (!panelLogin.classList.contains("hidden")) return;
+    showSettings();
+    try {
+      await reloadSettingsJson();
+    } catch (error) {
+      setSettingsStatus(`設定の読込に失敗しました: ${String(error && error.message ? error.message : error)}`, true);
+    }
+  });
+
+  settingsBackButton.addEventListener("click", () => {
+    showChat();
+  });
+
+  settingsReloadButton.addEventListener("click", async () => {
+    try {
+      await reloadSettingsJson();
+    } catch (error) {
+      setSettingsStatus(`設定の読込に失敗しました: ${String(error && error.message ? error.message : error)}`, true);
+    }
+  });
+
+  settingsSaveButton.addEventListener("click", async () => {
+    try {
+      await saveSettingsJson();
+    } catch (error) {
+      setSettingsStatus(`設定の保存に失敗しました: ${String(error && error.message ? error.message : error)}`, true);
+    }
+  });
+
+  settingsLogoutButton.addEventListener("click", async () => {
     const ok = confirm("ログアウトしますか？");
     if (!ok) return;
 
@@ -1806,6 +1917,7 @@
     await apiLogout();
     showLogin();
     setLoginStatus("", false);
+    setSettingsStatus("", false);
   });
 
   // --- Input handling ---
