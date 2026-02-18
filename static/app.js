@@ -138,7 +138,7 @@
   let selectedImageFiles = [];
   /** @type {any|null} */
   let settingsDraft = null;
-  /** @type {"chat"|"memory"|"persona"|"addon"|"system"} */
+  /** @type {"chat"|"memory"|"persona"|"system"} */
   let settingsCurrentTab = "chat";
 
   // --- Camera state ---
@@ -1465,7 +1465,7 @@
   }
 
   function setSettingsTab(nextTab) {
-    settingsCurrentTab = /** @type {"chat"|"memory"|"persona"|"addon"|"system"} */ (nextTab);
+    settingsCurrentTab = /** @type {"chat"|"memory"|"persona"|"system"} */ (nextTab);
     for (const btn of settingsTabButtons) {
       btn.classList.toggle("active", String(btn.dataset.tab || "") === settingsCurrentTab);
     }
