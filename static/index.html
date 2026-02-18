@@ -86,18 +86,18 @@
         <div class="settings-title">設定</div>
         <div class="settings-desc">項目ごとにタブを切り替えて編集し、最後に保存してください。</div>
 
-        <!-- Settings tabs -->
-        <div class="settings-tabs" role="tablist" aria-label="設定タブ">
-          <button class="settings-tab" type="button" data-tab="persona">ペルソナ</button>
-          <button class="settings-tab active" type="button" data-tab="chat">会話</button>
-          <button class="settings-tab" type="button" data-tab="memory">記憶</button>
-          <button class="settings-tab" type="button" data-tab="system">システム</button>
-        </div>
+          <!-- Settings tabs -->
+          <div class="settings-tabs" role="tablist" aria-label="設定タブ">
+            <button class="settings-tab active" type="button" data-tab="persona">ペルソナ</button>
+            <button class="settings-tab" type="button" data-tab="chat">会話</button>
+            <button class="settings-tab" type="button" data-tab="memory">記憶</button>
+            <button class="settings-tab" type="button" data-tab="system">システム</button>
+          </div>
 
-        <!-- Settings pages -->
-        <div class="settings-pages">
-          <!-- Chat tab -->
-          <section class="settings-page" data-tab-page="chat">
+          <!-- Settings pages -->
+          <div class="settings-pages">
+            <!-- Chat tab -->
+            <section class="settings-page hidden" data-tab-page="chat">
             <div class="settings-card">
               <div class="settings-card-title">会話プリセット</div>
               <div class="settings-preset-row">
@@ -209,8 +209,8 @@
             </div>
           </section>
 
-          <!-- Persona tab -->
-          <section class="settings-page hidden" data-tab-page="persona">
+            <!-- Persona tab -->
+            <section class="settings-page" data-tab-page="persona">
             <div class="settings-card">
               <div class="settings-card-title">ペルソナプリセット</div>
               <div class="settings-preset-row">

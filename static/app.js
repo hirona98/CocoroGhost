@@ -138,7 +138,7 @@
   /** @type {any|null} */
   let settingsDraft = null;
   /** @type {"chat"|"memory"|"persona"|"system"} */
-  let settingsCurrentTab = "chat";
+  let settingsCurrentTab = "persona";
 
   // --- Camera state ---
   /** @type {MediaStream|null} */
@@ -2269,7 +2269,7 @@
 
   for (const btn of settingsTabButtons) {
     btn.addEventListener("click", () => {
-      setSettingsTab(String(btn.dataset.tab || "chat"));
+      setSettingsTab(String(btn.dataset.tab || "persona"));
     });
   }
 
