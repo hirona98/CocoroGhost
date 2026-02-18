@@ -244,21 +244,31 @@ body {
 }
 
 .settings-toolbar {
-  display: flex;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "back spacer logout"
+    "actions actions actions";
+  gap: 8px 10px;
   align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
+}
+
+.settings-btn-back {
+  grid-area: back;
 }
 
 .settings-toolbar-right {
+  grid-area: actions;
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  justify-self: start;
 }
 
 .settings-btn-logout {
-  margin-left: auto;
+  grid-area: logout;
+  justify-self: end;
+  margin-left: 0;
 }
 
 .settings-btn {
