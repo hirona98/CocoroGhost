@@ -138,7 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(notification.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
     app.include_router(meta_request.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
     app.include_router(vision.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
-    app.include_router(settings.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
+    app.include_router(settings.router, dependencies=[Depends(require_bearer_or_cookie_session)], prefix="/api")
     app.include_router(reminders.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
     app.include_router(admin.router, dependencies=[Depends(require_bearer_only)], prefix="/api")
     app.include_router(mood.router, dependencies=[Depends(require_bearer_only)], prefix="/api")

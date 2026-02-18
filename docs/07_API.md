@@ -26,6 +26,8 @@ Web UI:
 - `web_auto_login_enabled=true` の場合、`POST /api/auth/auto_login` でトークン無しの自動ログインが可能
 - Cookie 認証を許可するエンドポイントは次に限定する
   - `POST /api/chat`
+  - `GET /api/settings`
+  - `PUT /api/settings`
   - `WS /api/events/stream`
   - `POST /api/auth/auto_login`
   - `POST /api/auth/logout`
