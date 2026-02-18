@@ -5,7 +5,7 @@
  * 目的:
  * - /api/auth/login で Cookie セッションを張る
  * - /api/chat の SSE を逐次表示する
- * - /api/settings を JSON で編集/保存できるようにする
+ * - /api/settings をタブ形式のフォームで編集/保存できるようにする
  * - /api/events/stream (WebSocket) を受信して吹き出しとして表示する
  *
  * 方針:
@@ -48,12 +48,62 @@
 
   const statusLeft = document.getElementById("status-left");
   const statusRight = document.getElementById("status-right");
-  const settingsJsonInput = document.getElementById("settings-json");
   const settingsStatus = document.getElementById("settings-status");
   const settingsBackButton = document.getElementById("btn-settings-back");
   const settingsReloadButton = document.getElementById("btn-settings-reload");
   const settingsSaveButton = document.getElementById("btn-settings-save");
   const settingsLogoutButton = document.getElementById("btn-settings-logout");
+  const settingsTabButtons = Array.from(document.querySelectorAll(".settings-tab"));
+  const settingsPageNodes = Array.from(document.querySelectorAll("[data-tab-page]"));
+
+  const settingsActiveLlmSelect = document.getElementById("settings-active-llm");
+  const llmAddButton = document.getElementById("btn-llm-add");
+  const llmDuplicateButton = document.getElementById("btn-llm-duplicate");
+  const llmDeleteButton = document.getElementById("btn-llm-delete");
+  const llmNameInput = document.getElementById("llm-name");
+  const llmModelInput = document.getElementById("llm-model");
+  const llmApiKeyInput = document.getElementById("llm-api-key");
+  const llmBaseUrlInput = document.getElementById("llm-base-url");
+  const llmReasoningEffortInput = document.getElementById("llm-reasoning-effort");
+  const llmMaxTurnsWindowInput = document.getElementById("llm-max-turns-window");
+  const llmMaxTokensInput = document.getElementById("llm-max-tokens");
+  const llmReplyWebSearchEnabledInput = document.getElementById("llm-reply-web-search-enabled");
+  const llmImageModelInput = document.getElementById("llm-image-model");
+  const llmImageApiKeyInput = document.getElementById("llm-image-api-key");
+  const llmImageBaseUrlInput = document.getElementById("llm-image-base-url");
+  const llmMaxTokensVisionInput = document.getElementById("llm-max-tokens-vision");
+  const llmImageTimeoutSecondsInput = document.getElementById("llm-image-timeout-seconds");
+
+  const settingsMemoryEnabledInput = document.getElementById("settings-memory-enabled");
+  const settingsActiveEmbeddingSelect = document.getElementById("settings-active-embedding");
+  const embeddingAddButton = document.getElementById("btn-embedding-add");
+  const embeddingDuplicateButton = document.getElementById("btn-embedding-duplicate");
+  const embeddingDeleteButton = document.getElementById("btn-embedding-delete");
+  const embeddingNameInput = document.getElementById("embedding-name");
+  const embeddingModelInput = document.getElementById("embedding-model");
+  const embeddingApiKeyInput = document.getElementById("embedding-api-key");
+  const embeddingBaseUrlInput = document.getElementById("embedding-base-url");
+  const embeddingDimensionInput = document.getElementById("embedding-dimension");
+  const embeddingSimilarEpisodesLimitInput = document.getElementById("embedding-similar-episodes-limit");
+
+  const settingsActivePersonaSelect = document.getElementById("settings-active-persona");
+  const personaAddButton = document.getElementById("btn-persona-add");
+  const personaDuplicateButton = document.getElementById("btn-persona-duplicate");
+  const personaDeleteButton = document.getElementById("btn-persona-delete");
+  const personaNameInput = document.getElementById("persona-name");
+  const personaSecondPersonLabelInput = document.getElementById("persona-second-person-label");
+  const personaTextInput = document.getElementById("persona-text");
+
+  const settingsActiveAddonSelect = document.getElementById("settings-active-addon");
+  const addonAddButton = document.getElementById("btn-addon-add");
+  const addonDuplicateButton = document.getElementById("btn-addon-duplicate");
+  const addonDeleteButton = document.getElementById("btn-addon-delete");
+  const addonNameInput = document.getElementById("addon-name");
+  const addonTextInput = document.getElementById("addon-text");
+
+  const desktopWatchEnabledInput = document.getElementById("desktop-watch-enabled");
+  const desktopWatchIntervalSecondsInput = document.getElementById("desktop-watch-interval-seconds");
+  const desktopWatchTargetClientIdInput = document.getElementById("desktop-watch-target-client-id");
 
   // --- Camera modal DOM refs ---
   const cameraModal = document.getElementById("camera-modal");
@@ -86,6 +136,10 @@
   let attachmentPreviewObjectUrls = [];
   /** @type {File[]} */
   let selectedImageFiles = [];
+  /** @type {any|null} */
+  let settingsDraft = null;
+  /** @type {"chat"|"memory"|"persona"|"addon"|"system"} */
+  let settingsCurrentTab = "chat";
 
   // --- Camera state ---
   /** @type {MediaStream|null} */
@@ -372,6 +426,7 @@
     panelChat.classList.add("hidden");
     panelSettings.classList.remove("hidden");
     inputPanel.classList.add("hidden");
+    setSettingsTab(settingsCurrentTab);
     setSettingsStatus("", false);
     setStatusBar("状態: 設定編集中", "");
   }
@@ -1328,6 +1383,255 @@
     await fetch(apiLogoutPath, { method: "POST" });
   }
 
+  function cloneJson(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function createUuidLikeId() {
+    return typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+  }
+
+  function getPresetMeta(kind) {
+    // --- kind 別の設定キー定義 ---
+    const metaByKind = {
+      llm: {
+        arrayKey: "llm_preset",
+        activeKey: "active_llm_preset_id",
+        idKey: "llm_preset_id",
+        nameKey: "llm_preset_name",
+      },
+      embedding: {
+        arrayKey: "embedding_preset",
+        activeKey: "active_embedding_preset_id",
+        idKey: "embedding_preset_id",
+        nameKey: "embedding_preset_name",
+      },
+      persona: {
+        arrayKey: "persona_preset",
+        activeKey: "active_persona_preset_id",
+        idKey: "persona_preset_id",
+        nameKey: "persona_preset_name",
+      },
+      addon: {
+        arrayKey: "addon_preset",
+        activeKey: "active_addon_preset_id",
+        idKey: "addon_preset_id",
+        nameKey: "addon_preset_name",
+      },
+    };
+    return metaByKind[kind] || null;
+  }
+
+  function getPresetList(kind) {
+    const meta = getPresetMeta(kind);
+    if (!meta || !settingsDraft) return [];
+    return Array.isArray(settingsDraft[meta.arrayKey]) ? settingsDraft[meta.arrayKey] : [];
+  }
+
+  function getActivePreset(kind) {
+    const meta = getPresetMeta(kind);
+    if (!meta || !settingsDraft) return null;
+    const activeId = String(settingsDraft[meta.activeKey] || "");
+    const presets = getPresetList(kind);
+    for (const preset of presets) {
+      if (String(preset[meta.idKey] || "") === activeId) return preset;
+    }
+    return null;
+  }
+
+  function renderPresetSelect(selectEl, kind) {
+    if (!selectEl || !settingsDraft) return;
+    const meta = getPresetMeta(kind);
+    if (!meta) return;
+    const presets = getPresetList(kind);
+    const activeId = String(settingsDraft[meta.activeKey] || "");
+
+    selectEl.innerHTML = "";
+    for (const preset of presets) {
+      const opt = document.createElement("option");
+      const presetId = String(preset[meta.idKey] || "");
+      const presetName = String(preset[meta.nameKey] || "");
+      opt.value = presetId;
+      opt.textContent = presetName || "(no name)";
+      if (presetId === activeId) opt.selected = true;
+      selectEl.appendChild(opt);
+    }
+  }
+
+  function readNumberInput(inputEl) {
+    const n = Number(inputEl.value);
+    if (!Number.isFinite(n)) return null;
+    return Math.trunc(n);
+  }
+
+  function setSettingsTab(nextTab) {
+    settingsCurrentTab = /** @type {"chat"|"memory"|"persona"|"addon"|"system"} */ (nextTab);
+    for (const btn of settingsTabButtons) {
+      btn.classList.toggle("active", String(btn.dataset.tab || "") === settingsCurrentTab);
+    }
+    for (const page of settingsPageNodes) {
+      page.classList.toggle("hidden", String(page.dataset.tabPage || "") !== settingsCurrentTab);
+    }
+  }
+
+  function createDefaultPreset(kind) {
+    const id = createUuidLikeId();
+    if (kind === "llm") {
+      return {
+        llm_preset_id: id,
+        llm_preset_name: "new-llm-preset",
+        llm_api_key: "",
+        llm_model: "openrouter/google/gemini-3-flash-preview",
+        reasoning_effort: "",
+        reply_web_search_enabled: true,
+        llm_base_url: "",
+        max_turns_window: 50,
+        max_tokens: 4096,
+        image_model_api_key: "",
+        image_model: "openrouter/google/gemini-3-flash-preview",
+        image_llm_base_url: "",
+        max_tokens_vision: 4096,
+        image_timeout_seconds: 60,
+      };
+    }
+    if (kind === "embedding") {
+      return {
+        embedding_preset_id: id,
+        embedding_preset_name: "new-embedding-preset",
+        embedding_model_api_key: "",
+        embedding_model: "openrouter/google/gemini-embedding-001",
+        embedding_base_url: "",
+        embedding_dimension: 3072,
+        similar_episodes_limit: 60,
+      };
+    }
+    if (kind === "persona") {
+      return {
+        persona_preset_id: id,
+        persona_preset_name: "new-persona-preset",
+        persona_text: "",
+        second_person_label: "マスター",
+      };
+    }
+    return {
+      addon_preset_id: id,
+      addon_preset_name: "new-addon-preset",
+      addon_text: "",
+    };
+  }
+
+  function addPreset(kind) {
+    if (!settingsDraft) return;
+    const meta = getPresetMeta(kind);
+    if (!meta) return;
+    const list = getPresetList(kind);
+    const newPreset = createDefaultPreset(kind);
+    list.push(newPreset);
+    settingsDraft[meta.activeKey] = String(newPreset[meta.idKey] || "");
+    renderSettingsForm();
+    setSettingsStatus("プリセットを追加しました。", false);
+  }
+
+  function duplicatePreset(kind) {
+    if (!settingsDraft) return;
+    const meta = getPresetMeta(kind);
+    if (!meta) return;
+    const source = getActivePreset(kind);
+    if (!source) return;
+
+    const list = getPresetList(kind);
+    const copied = cloneJson(source);
+    copied[meta.idKey] = createUuidLikeId();
+    copied[meta.nameKey] = `${String(source[meta.nameKey] || "")} copy`;
+    list.push(copied);
+    settingsDraft[meta.activeKey] = String(copied[meta.idKey] || "");
+    renderSettingsForm();
+    setSettingsStatus("プリセットを複製しました。", false);
+  }
+
+  function deletePreset(kind) {
+    if (!settingsDraft) return;
+    const meta = getPresetMeta(kind);
+    if (!meta) return;
+    const list = getPresetList(kind);
+    if (list.length <= 1) {
+      setSettingsStatus("最後の1件は削除できません。", true);
+      return;
+    }
+
+    const activeId = String(settingsDraft[meta.activeKey] || "");
+    const idx = list.findIndex((x) => String(x[meta.idKey] || "") === activeId);
+    if (idx < 0) return;
+
+    list.splice(idx, 1);
+    settingsDraft[meta.activeKey] = String(list[Math.min(idx, list.length - 1)][meta.idKey] || "");
+    renderSettingsForm();
+    setSettingsStatus("プリセットを削除しました。", false);
+  }
+
+  function renderSettingsForm() {
+    if (!settingsDraft) return;
+
+    // --- タブ状態 ---
+    setSettingsTab(settingsCurrentTab);
+
+    // --- プリセット選択 ---
+    renderPresetSelect(settingsActiveLlmSelect, "llm");
+    renderPresetSelect(settingsActiveEmbeddingSelect, "embedding");
+    renderPresetSelect(settingsActivePersonaSelect, "persona");
+    renderPresetSelect(settingsActiveAddonSelect, "addon");
+
+    // --- 会話設定（LLM） ---
+    const llmPreset = getActivePreset("llm");
+    if (llmPreset) {
+      llmNameInput.value = String(llmPreset.llm_preset_name || "");
+      llmModelInput.value = String(llmPreset.llm_model || "");
+      llmApiKeyInput.value = String(llmPreset.llm_api_key || "");
+      llmBaseUrlInput.value = String(llmPreset.llm_base_url || "");
+      llmReasoningEffortInput.value = String(llmPreset.reasoning_effort || "");
+      llmMaxTurnsWindowInput.value = String(llmPreset.max_turns_window);
+      llmMaxTokensInput.value = String(llmPreset.max_tokens);
+      llmReplyWebSearchEnabledInput.checked = !!llmPreset.reply_web_search_enabled;
+      llmImageModelInput.value = String(llmPreset.image_model || "");
+      llmImageApiKeyInput.value = String(llmPreset.image_model_api_key || "");
+      llmImageBaseUrlInput.value = String(llmPreset.image_llm_base_url || "");
+      llmMaxTokensVisionInput.value = String(llmPreset.max_tokens_vision);
+      llmImageTimeoutSecondsInput.value = String(llmPreset.image_timeout_seconds);
+    }
+
+    // --- 記憶設定（Embedding + memory_enabled） ---
+    settingsMemoryEnabledInput.checked = !!settingsDraft.memory_enabled;
+    const embeddingPreset = getActivePreset("embedding");
+    if (embeddingPreset) {
+      embeddingNameInput.value = String(embeddingPreset.embedding_preset_name || "");
+      embeddingModelInput.value = String(embeddingPreset.embedding_model || "");
+      embeddingApiKeyInput.value = String(embeddingPreset.embedding_model_api_key || "");
+      embeddingBaseUrlInput.value = String(embeddingPreset.embedding_base_url || "");
+      embeddingDimensionInput.value = String(embeddingPreset.embedding_dimension);
+      embeddingSimilarEpisodesLimitInput.value = String(embeddingPreset.similar_episodes_limit);
+    }
+
+    // --- ペルソナ設定 ---
+    const personaPreset = getActivePreset("persona");
+    if (personaPreset) {
+      personaNameInput.value = String(personaPreset.persona_preset_name || "");
+      personaSecondPersonLabelInput.value = String(personaPreset.second_person_label || "");
+      personaTextInput.value = String(personaPreset.persona_text || "");
+    }
+
+    // --- アドオン設定 ---
+    const addonPreset = getActivePreset("addon");
+    if (addonPreset) {
+      addonNameInput.value = String(addonPreset.addon_preset_name || "");
+      addonTextInput.value = String(addonPreset.addon_text || "");
+    }
+
+    // --- システム設定 ---
+    desktopWatchEnabledInput.checked = !!settingsDraft.desktop_watch_enabled;
+    desktopWatchIntervalSecondsInput.value = String(settingsDraft.desktop_watch_interval_seconds);
+    desktopWatchTargetClientIdInput.value = String(settingsDraft.desktop_watch_target_client_id || "");
+  }
+
   async function apiGetSettings() {
     // --- 現在設定を取得する ---
     const response = await fetch(apiSettingsPath, { method: "GET" });
@@ -1356,27 +1660,95 @@
     return await response.json();
   }
 
-  async function reloadSettingsJson() {
+  async function reloadSettingsForm() {
     setSettingsStatus("設定を読み込み中...", false);
     const payload = await apiGetSettings();
-    settingsJsonInput.value = JSON.stringify(payload, null, 2);
+    settingsDraft = cloneJson(payload);
+    renderSettingsForm();
     setSettingsStatus("設定を読み込みました。", false);
   }
 
-  async function saveSettingsJson() {
-    const raw = String(settingsJsonInput.value || "");
-    let payload = null;
-    try {
-      payload = JSON.parse(raw);
-    } catch (error) {
-      setSettingsStatus(`JSONの解析に失敗しました: ${String(error && error.message ? error.message : error)}`, true);
+  async function saveSettingsForm() {
+    if (!settingsDraft) return;
+    setSettingsStatus("設定を保存中...", false);
+    const latest = await apiPutSettings(settingsDraft);
+    settingsDraft = cloneJson(latest);
+    renderSettingsForm();
+    setSettingsStatus("設定を保存しました。", false);
+  }
+
+  function syncLlmFormToDraft() {
+    const preset = getActivePreset("llm");
+    if (!preset) return;
+    const maxTurns = readNumberInput(llmMaxTurnsWindowInput);
+    const maxTokens = readNumberInput(llmMaxTokensInput);
+    const maxTokensVision = readNumberInput(llmMaxTokensVisionInput);
+    const imageTimeout = readNumberInput(llmImageTimeoutSecondsInput);
+    if (maxTurns == null || maxTokens == null || maxTokensVision == null || imageTimeout == null) {
+      setSettingsStatus("会話設定の数値項目が不正です。", true);
       return;
     }
 
-    setSettingsStatus("設定を保存中...", false);
-    const latest = await apiPutSettings(payload);
-    settingsJsonInput.value = JSON.stringify(latest, null, 2);
-    setSettingsStatus("設定を保存しました。", false);
+    preset.llm_preset_name = String(llmNameInput.value || "");
+    preset.llm_model = String(llmModelInput.value || "");
+    preset.llm_api_key = String(llmApiKeyInput.value || "");
+    preset.llm_base_url = String(llmBaseUrlInput.value || "");
+    preset.reasoning_effort = String(llmReasoningEffortInput.value || "");
+    preset.max_turns_window = maxTurns;
+    preset.max_tokens = maxTokens;
+    preset.reply_web_search_enabled = !!llmReplyWebSearchEnabledInput.checked;
+    preset.image_model = String(llmImageModelInput.value || "");
+    preset.image_model_api_key = String(llmImageApiKeyInput.value || "");
+    preset.image_llm_base_url = String(llmImageBaseUrlInput.value || "");
+    preset.max_tokens_vision = maxTokensVision;
+    preset.image_timeout_seconds = imageTimeout;
+  }
+
+  function syncEmbeddingFormToDraft() {
+    if (!settingsDraft) return;
+    const preset = getActivePreset("embedding");
+    if (!preset) return;
+    const dimension = readNumberInput(embeddingDimensionInput);
+    const similarLimit = readNumberInput(embeddingSimilarEpisodesLimitInput);
+    if (dimension == null || similarLimit == null) {
+      setSettingsStatus("記憶設定の数値項目が不正です。", true);
+      return;
+    }
+
+    settingsDraft.memory_enabled = !!settingsMemoryEnabledInput.checked;
+    preset.embedding_preset_name = String(embeddingNameInput.value || "");
+    preset.embedding_model = String(embeddingModelInput.value || "");
+    preset.embedding_model_api_key = String(embeddingApiKeyInput.value || "");
+    preset.embedding_base_url = String(embeddingBaseUrlInput.value || "");
+    preset.embedding_dimension = dimension;
+    preset.similar_episodes_limit = similarLimit;
+  }
+
+  function syncPersonaFormToDraft() {
+    const preset = getActivePreset("persona");
+    if (!preset) return;
+    preset.persona_preset_name = String(personaNameInput.value || "");
+    preset.second_person_label = String(personaSecondPersonLabelInput.value || "");
+    preset.persona_text = String(personaTextInput.value || "");
+  }
+
+  function syncAddonFormToDraft() {
+    const preset = getActivePreset("addon");
+    if (!preset) return;
+    preset.addon_preset_name = String(addonNameInput.value || "");
+    preset.addon_text = String(addonTextInput.value || "");
+  }
+
+  function syncSystemFormToDraft() {
+    if (!settingsDraft) return;
+    const interval = readNumberInput(desktopWatchIntervalSecondsInput);
+    if (interval == null) {
+      setSettingsStatus("システム設定の数値項目が不正です。", true);
+      return;
+    }
+    settingsDraft.desktop_watch_enabled = !!desktopWatchEnabledInput.checked;
+    settingsDraft.desktop_watch_interval_seconds = interval;
+    settingsDraft.desktop_watch_target_client_id = String(desktopWatchTargetClientIdInput.value || "");
   }
 
   // --- WebSocket (events) ---
@@ -1882,11 +2254,17 @@
     if (!panelLogin.classList.contains("hidden")) return;
     showSettings();
     try {
-      await reloadSettingsJson();
+      await reloadSettingsForm();
     } catch (error) {
       setSettingsStatus(`設定の読込に失敗しました: ${String(error && error.message ? error.message : error)}`, true);
     }
   });
+
+  for (const btn of settingsTabButtons) {
+    btn.addEventListener("click", () => {
+      setSettingsTab(String(btn.dataset.tab || "chat"));
+    });
+  }
 
   settingsBackButton.addEventListener("click", () => {
     showChat();
@@ -1894,7 +2272,7 @@
 
   settingsReloadButton.addEventListener("click", async () => {
     try {
-      await reloadSettingsJson();
+      await reloadSettingsForm();
     } catch (error) {
       setSettingsStatus(`設定の読込に失敗しました: ${String(error && error.message ? error.message : error)}`, true);
     }
@@ -1902,11 +2280,81 @@
 
   settingsSaveButton.addEventListener("click", async () => {
     try {
-      await saveSettingsJson();
+      await saveSettingsForm();
     } catch (error) {
       setSettingsStatus(`設定の保存に失敗しました: ${String(error && error.message ? error.message : error)}`, true);
     }
   });
+
+  // --- Settings: active preset switches ---
+  settingsActiveLlmSelect.addEventListener("change", () => {
+    if (!settingsDraft) return;
+    settingsDraft.active_llm_preset_id = String(settingsActiveLlmSelect.value || "");
+    renderSettingsForm();
+  });
+  settingsActiveEmbeddingSelect.addEventListener("change", () => {
+    if (!settingsDraft) return;
+    settingsDraft.active_embedding_preset_id = String(settingsActiveEmbeddingSelect.value || "");
+    renderSettingsForm();
+  });
+  settingsActivePersonaSelect.addEventListener("change", () => {
+    if (!settingsDraft) return;
+    settingsDraft.active_persona_preset_id = String(settingsActivePersonaSelect.value || "");
+    renderSettingsForm();
+  });
+  settingsActiveAddonSelect.addEventListener("change", () => {
+    if (!settingsDraft) return;
+    settingsDraft.active_addon_preset_id = String(settingsActiveAddonSelect.value || "");
+    renderSettingsForm();
+  });
+
+  // --- Settings: preset operations ---
+  llmAddButton.addEventListener("click", () => addPreset("llm"));
+  llmDuplicateButton.addEventListener("click", () => duplicatePreset("llm"));
+  llmDeleteButton.addEventListener("click", () => deletePreset("llm"));
+  embeddingAddButton.addEventListener("click", () => addPreset("embedding"));
+  embeddingDuplicateButton.addEventListener("click", () => duplicatePreset("embedding"));
+  embeddingDeleteButton.addEventListener("click", () => deletePreset("embedding"));
+  personaAddButton.addEventListener("click", () => addPreset("persona"));
+  personaDuplicateButton.addEventListener("click", () => duplicatePreset("persona"));
+  personaDeleteButton.addEventListener("click", () => deletePreset("persona"));
+  addonAddButton.addEventListener("click", () => addPreset("addon"));
+  addonDuplicateButton.addEventListener("click", () => duplicatePreset("addon"));
+  addonDeleteButton.addEventListener("click", () => deletePreset("addon"));
+
+  // --- Settings: form bindings ---
+  llmNameInput.addEventListener("input", syncLlmFormToDraft);
+  llmModelInput.addEventListener("input", syncLlmFormToDraft);
+  llmApiKeyInput.addEventListener("input", syncLlmFormToDraft);
+  llmBaseUrlInput.addEventListener("input", syncLlmFormToDraft);
+  llmReasoningEffortInput.addEventListener("input", syncLlmFormToDraft);
+  llmMaxTurnsWindowInput.addEventListener("input", syncLlmFormToDraft);
+  llmMaxTokensInput.addEventListener("input", syncLlmFormToDraft);
+  llmReplyWebSearchEnabledInput.addEventListener("change", syncLlmFormToDraft);
+  llmImageModelInput.addEventListener("input", syncLlmFormToDraft);
+  llmImageApiKeyInput.addEventListener("input", syncLlmFormToDraft);
+  llmImageBaseUrlInput.addEventListener("input", syncLlmFormToDraft);
+  llmMaxTokensVisionInput.addEventListener("input", syncLlmFormToDraft);
+  llmImageTimeoutSecondsInput.addEventListener("input", syncLlmFormToDraft);
+
+  settingsMemoryEnabledInput.addEventListener("change", syncEmbeddingFormToDraft);
+  embeddingNameInput.addEventListener("input", syncEmbeddingFormToDraft);
+  embeddingModelInput.addEventListener("input", syncEmbeddingFormToDraft);
+  embeddingApiKeyInput.addEventListener("input", syncEmbeddingFormToDraft);
+  embeddingBaseUrlInput.addEventListener("input", syncEmbeddingFormToDraft);
+  embeddingDimensionInput.addEventListener("input", syncEmbeddingFormToDraft);
+  embeddingSimilarEpisodesLimitInput.addEventListener("input", syncEmbeddingFormToDraft);
+
+  personaNameInput.addEventListener("input", syncPersonaFormToDraft);
+  personaSecondPersonLabelInput.addEventListener("input", syncPersonaFormToDraft);
+  personaTextInput.addEventListener("input", syncPersonaFormToDraft);
+
+  addonNameInput.addEventListener("input", syncAddonFormToDraft);
+  addonTextInput.addEventListener("input", syncAddonFormToDraft);
+
+  desktopWatchEnabledInput.addEventListener("change", syncSystemFormToDraft);
+  desktopWatchIntervalSecondsInput.addEventListener("input", syncSystemFormToDraft);
+  desktopWatchTargetClientIdInput.addEventListener("input", syncSystemFormToDraft);
 
   settingsLogoutButton.addEventListener("click", async () => {
     const ok = confirm("ログアウトしますか？");

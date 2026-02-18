@@ -29,7 +29,7 @@
         <div class="topbar-right">
           <!--
             右上アイコン群（CocoroUI.png 風）
-            実装は最小に留め、設定（⚙）のみ logout に使う。
+            実装は最小に留め、設定（⚙）で設定画面を開く。
           -->
           <button class="icon-btn" id="btn-mic" type="button" title="音声入力" aria-label="音声入力">
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -80,9 +80,210 @@
               <button id="btn-settings-logout" class="settings-btn danger" type="button">ログアウト</button>
             </div>
           </div>
-          <div class="settings-title">設定（/api/settings JSON）</div>
-          <div class="settings-desc">JSONを編集して保存すると、サーバ設定へ即時反映されます。</div>
-          <textarea id="settings-json" class="settings-editor" spellcheck="false"></textarea>
+          <div class="settings-title">設定</div>
+          <div class="settings-desc">項目ごとにタブを切り替えて編集し、最後に保存してください。</div>
+
+          <!-- Settings tabs -->
+          <div class="settings-tabs" role="tablist" aria-label="設定タブ">
+            <button class="settings-tab active" type="button" data-tab="chat">会話</button>
+            <button class="settings-tab" type="button" data-tab="memory">記憶</button>
+            <button class="settings-tab" type="button" data-tab="persona">ペルソナ</button>
+            <button class="settings-tab" type="button" data-tab="addon">アドオン</button>
+            <button class="settings-tab" type="button" data-tab="system">システム</button>
+          </div>
+
+          <!-- Settings pages -->
+          <div class="settings-pages">
+            <!-- Chat tab -->
+            <section class="settings-page" data-tab-page="chat">
+              <div class="settings-card">
+                <div class="settings-card-title">会話プリセット</div>
+                <div class="settings-preset-row">
+                  <select id="settings-active-llm" class="settings-select"></select>
+                  <button id="btn-llm-add" class="settings-mini-btn" type="button">追加</button>
+                  <button id="btn-llm-duplicate" class="settings-mini-btn" type="button">複製</button>
+                  <button id="btn-llm-delete" class="settings-mini-btn danger" type="button">削除</button>
+                </div>
+                <div class="settings-grid">
+                  <label class="settings-field">
+                    <span class="settings-label">プリセット名</span>
+                    <input id="llm-name" class="settings-input" type="text" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">LLMモデル</span>
+                    <input id="llm-model" class="settings-input" type="text" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">APIキー</span>
+                    <input id="llm-api-key" class="settings-input" type="password" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">Base URL</span>
+                    <input id="llm-base-url" class="settings-input" type="text" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">Reasoning Effort</span>
+                    <input id="llm-reasoning-effort" class="settings-input" type="text" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">会話履歴件数</span>
+                    <input id="llm-max-turns-window" class="settings-input" type="number" min="1" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">最大トークン</span>
+                    <input id="llm-max-tokens" class="settings-input" type="number" min="1" />
+                  </label>
+                </div>
+                <label class="settings-check">
+                  <input id="llm-reply-web-search-enabled" type="checkbox" />
+                  <span>Web検索を有効化する</span>
+                </label>
+              </div>
+
+              <div class="settings-card">
+                <div class="settings-card-title">画像認識用LLM</div>
+                <div class="settings-grid">
+                  <label class="settings-field">
+                    <span class="settings-label">画像モデル</span>
+                    <input id="llm-image-model" class="settings-input" type="text" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">画像APIキー</span>
+                    <input id="llm-image-api-key" class="settings-input" type="password" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">画像Base URL</span>
+                    <input id="llm-image-base-url" class="settings-input" type="text" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">最大トークン（画像）</span>
+                    <input id="llm-max-tokens-vision" class="settings-input" type="number" min="1" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">画像タイムアウト秒</span>
+                    <input id="llm-image-timeout-seconds" class="settings-input" type="number" min="1" />
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <!-- Memory tab -->
+            <section class="settings-page hidden" data-tab-page="memory">
+              <div class="settings-card">
+                <div class="settings-card-title">記憶機能</div>
+                <label class="settings-check">
+                  <input id="settings-memory-enabled" type="checkbox" />
+                  <span>記憶機能を有効化する</span>
+                </label>
+              </div>
+
+              <div class="settings-card">
+                <div class="settings-card-title">Embeddingプリセット</div>
+                <div class="settings-preset-row">
+                  <select id="settings-active-embedding" class="settings-select"></select>
+                  <button id="btn-embedding-add" class="settings-mini-btn" type="button">追加</button>
+                  <button id="btn-embedding-duplicate" class="settings-mini-btn" type="button">複製</button>
+                  <button id="btn-embedding-delete" class="settings-mini-btn danger" type="button">削除</button>
+                </div>
+                <div class="settings-grid">
+                  <label class="settings-field">
+                    <span class="settings-label">プリセット名</span>
+                    <input id="embedding-name" class="settings-input" type="text" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">Embeddingモデル</span>
+                    <input id="embedding-model" class="settings-input" type="text" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">Embedding APIキー</span>
+                    <input id="embedding-api-key" class="settings-input" type="password" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">Embedding Base URL</span>
+                    <input id="embedding-base-url" class="settings-input" type="text" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">Embedding次元数</span>
+                    <input id="embedding-dimension" class="settings-input" type="number" min="1" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">類似エピソード数</span>
+                    <input id="embedding-similar-episodes-limit" class="settings-input" type="number" min="1" />
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <!-- Persona tab -->
+            <section class="settings-page hidden" data-tab-page="persona">
+              <div class="settings-card">
+                <div class="settings-card-title">ペルソナプリセット</div>
+                <div class="settings-preset-row">
+                  <select id="settings-active-persona" class="settings-select"></select>
+                  <button id="btn-persona-add" class="settings-mini-btn" type="button">追加</button>
+                  <button id="btn-persona-duplicate" class="settings-mini-btn" type="button">複製</button>
+                  <button id="btn-persona-delete" class="settings-mini-btn danger" type="button">削除</button>
+                </div>
+                <div class="settings-grid">
+                  <label class="settings-field">
+                    <span class="settings-label">プリセット名</span>
+                    <input id="persona-name" class="settings-input" type="text" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">ユーザーの呼び方</span>
+                    <input id="persona-second-person-label" class="settings-input" type="text" />
+                  </label>
+                </div>
+                <label class="settings-field">
+                  <span class="settings-label">ペルソナ本文</span>
+                  <textarea id="persona-text" class="settings-textarea" spellcheck="false"></textarea>
+                </label>
+              </div>
+            </section>
+
+            <!-- Addon tab -->
+            <section class="settings-page hidden" data-tab-page="addon">
+              <div class="settings-card">
+                <div class="settings-card-title">アドオンプリセット</div>
+                <div class="settings-preset-row">
+                  <select id="settings-active-addon" class="settings-select"></select>
+                  <button id="btn-addon-add" class="settings-mini-btn" type="button">追加</button>
+                  <button id="btn-addon-duplicate" class="settings-mini-btn" type="button">複製</button>
+                  <button id="btn-addon-delete" class="settings-mini-btn danger" type="button">削除</button>
+                </div>
+                <label class="settings-field">
+                  <span class="settings-label">プリセット名</span>
+                  <input id="addon-name" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">アドオン本文</span>
+                  <textarea id="addon-text" class="settings-textarea" spellcheck="false"></textarea>
+                </label>
+              </div>
+            </section>
+
+            <!-- System tab -->
+            <section class="settings-page hidden" data-tab-page="system">
+              <div class="settings-card">
+                <div class="settings-card-title">システム設定</div>
+                <label class="settings-check">
+                  <input id="desktop-watch-enabled" type="checkbox" />
+                  <span>デスクトップ監視を有効化する</span>
+                </label>
+                <div class="settings-grid">
+                  <label class="settings-field">
+                    <span class="settings-label">監視間隔（秒）</span>
+                    <input id="desktop-watch-interval-seconds" class="settings-input" type="number" min="1" />
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">対象クライアントID</span>
+                    <input id="desktop-watch-target-client-id" class="settings-input" type="text" />
+                  </label>
+                </div>
+              </div>
+            </section>
+          </div>
+
           <div id="settings-status" class="status"></div>
         </section>
       </main>
