@@ -169,12 +169,8 @@
             <!-- Memory tab -->
             <section class="settings-page hidden" data-tab-page="memory">
               <div class="settings-card">
-                <div class="settings-card-title">記憶機能</div>
-                <div class="settings-note danger">※記憶機能（Embedding）は常時有効です。OFFにはできません。</div>
-              </div>
-
-              <div class="settings-card">
                 <div class="settings-card-title">Embeddingプリセット</div>
+                <div class="settings-note danger">※記憶機能（Embedding）は常時有効です。OFFにはできません。</div>
                 <div class="settings-note danger">※赤字項目は一度設定したら変更しないでください。</div>
                 <div class="settings-preset-row">
                   <select id="settings-active-embedding" class="settings-select"></select>
@@ -188,7 +184,7 @@
                     <input id="embedding-name" class="settings-input" type="text" />
                   </label>
                   <label class="settings-field">
-                    <span class="settings-label">Embeddingモデル</span>
+                    <span class="settings-label danger">Embeddingモデル</span>
                     <input id="embedding-model" class="settings-input" type="text" />
                   </label>
                   <label class="settings-field">
@@ -200,7 +196,7 @@
                     <input id="embedding-base-url" class="settings-input" type="text" />
                   </label>
                   <label class="settings-field">
-                    <span class="settings-label">Embedding次元数</span>
+                    <span class="settings-label danger">Embedding次元数</span>
                     <input id="embedding-dimension" class="settings-input" type="number" min="1" />
                   </label>
                   <label class="settings-field">

@@ -401,6 +401,10 @@ body {
   font-weight: 700;
 }
 
+.settings-label.danger {
+  color: var(--danger);
+}
+
 .settings-input {
   height: 34px;
   border: 1px solid var(--border);
