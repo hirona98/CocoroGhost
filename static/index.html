@@ -170,14 +170,12 @@
             <section class="settings-page hidden" data-tab-page="memory">
               <div class="settings-card">
                 <div class="settings-card-title">記憶機能</div>
-                <label class="settings-check">
-                  <input id="settings-memory-enabled" type="checkbox" />
-                  <span>記憶機能を有効化する</span>
-                </label>
+                <div class="settings-note danger">※記憶機能（Embedding）は常時有効です。OFFにはできません。</div>
               </div>
 
               <div class="settings-card">
                 <div class="settings-card-title">Embeddingプリセット</div>
+                <div class="settings-note danger">※赤字項目は一度設定したら変更しないでください。</div>
                 <div class="settings-preset-row">
                   <select id="settings-active-embedding" class="settings-select"></select>
                   <button id="btn-embedding-add" class="settings-mini-btn" type="button">追加</button>

@@ -3,7 +3,7 @@
 
 アプリケーション設定の取得・更新を行うエンドポイント。
 LLM/Embedding/PersonaPreset/AddonPreset各プリセットの管理、
-GlobalSettings（除外キーワード、記憶機能ON/OFF等）の更新、
+GlobalSettings（除外キーワード、記憶機能=常時ON等）の更新、
 デスクトップウォッチ設定の管理をサポートする。
 """
 
@@ -39,6 +39,11 @@ def get_settings(
 ):
     """全設定を取得（GlobalSettings + アクティブなプリセット情報）。"""
     global_settings = load_global_settings(db)
+    # 記憶機能は常時有効のため、過去データに false が残っていても true に正規化する。
+    if not bool(global_settings.memory_enabled):
+        global_settings.memory_enabled = True
+        db.commit()
+        db.refresh(global_settings)
 
     llm_presets: list[schemas.LlmPresetSettings] = []
     embedding_presets: list[schemas.EmbeddingPresetSettings] = []
@@ -156,9 +161,12 @@ def commit_settings(
         raise HTTPException(status_code=400, detail="active_persona_preset_id must be included in persona_preset list")
     if str(request.active_addon_preset_id) not in set(addon_ids):
         raise HTTPException(status_code=400, detail="active_addon_preset_id must be included in addon_preset list")
+    # 記憶機能は仕様上OFF不可。
+    if not bool(request.memory_enabled):
+        raise HTTPException(status_code=400, detail="memory_enabled must be true")
 
     # 共通設定更新
-    global_settings.memory_enabled = request.memory_enabled
+    global_settings.memory_enabled = True
     global_settings.desktop_watch_enabled = bool(request.desktop_watch_enabled)
     global_settings.desktop_watch_interval_seconds = int(request.desktop_watch_interval_seconds)
     global_settings.desktop_watch_target_client_id = (

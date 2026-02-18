@@ -74,7 +74,6 @@
   const llmMaxTokensVisionInput = document.getElementById("llm-max-tokens-vision");
   const llmImageTimeoutSecondsInput = document.getElementById("llm-image-timeout-seconds");
 
-  const settingsMemoryEnabledInput = document.getElementById("settings-memory-enabled");
   const settingsActiveEmbeddingSelect = document.getElementById("settings-active-embedding");
   const embeddingAddButton = document.getElementById("btn-embedding-add");
   const embeddingDuplicateButton = document.getElementById("btn-embedding-duplicate");
@@ -1599,8 +1598,9 @@
       llmImageTimeoutSecondsInput.value = String(llmPreset.image_timeout_seconds);
     }
 
-    // --- 記憶設定（Embedding + memory_enabled） ---
-    settingsMemoryEnabledInput.checked = !!settingsDraft.memory_enabled;
+    // --- 記憶設定（Embedding） ---
+    // 記憶機能は常時有効のため、ドラフト値も固定する。
+    settingsDraft.memory_enabled = true;
     const embeddingPreset = getActivePreset("embedding");
     if (embeddingPreset) {
       embeddingNameInput.value = String(embeddingPreset.embedding_preset_name || "");
@@ -1664,6 +1664,8 @@
     setSettingsStatus("設定を読み込み中...", false);
     const payload = await apiGetSettings();
     settingsDraft = cloneJson(payload);
+    // 記憶機能は常時有効で扱う。
+    settingsDraft.memory_enabled = true;
     renderSettingsForm();
     setSettingsStatus("設定を読み込みました。", false);
   }
@@ -1671,8 +1673,12 @@
   async function saveSettingsForm() {
     if (!settingsDraft) return;
     setSettingsStatus("設定を保存中...", false);
+    // 記憶機能は常時有効でサーバへ送る。
+    settingsDraft.memory_enabled = true;
     const latest = await apiPutSettings(settingsDraft);
     settingsDraft = cloneJson(latest);
+    // サーバ応答も同じ制約で扱う。
+    settingsDraft.memory_enabled = true;
     renderSettingsForm();
     setSettingsStatus("設定を保存しました。", false);
   }
@@ -1715,7 +1721,8 @@
       return;
     }
 
-    settingsDraft.memory_enabled = !!settingsMemoryEnabledInput.checked;
+    // 記憶機能は常時有効で固定する。
+    settingsDraft.memory_enabled = true;
     preset.embedding_preset_name = String(embeddingNameInput.value || "");
     preset.embedding_model = String(embeddingModelInput.value || "");
     preset.embedding_model_api_key = String(embeddingApiKeyInput.value || "");
@@ -2337,7 +2344,6 @@
   llmMaxTokensVisionInput.addEventListener("input", syncLlmFormToDraft);
   llmImageTimeoutSecondsInput.addEventListener("input", syncLlmFormToDraft);
 
-  settingsMemoryEnabledInput.addEventListener("change", syncEmbeddingFormToDraft);
   embeddingNameInput.addEventListener("input", syncEmbeddingFormToDraft);
   embeddingModelInput.addEventListener("input", syncEmbeddingFormToDraft);
   embeddingApiKeyInput.addEventListener("input", syncEmbeddingFormToDraft);
