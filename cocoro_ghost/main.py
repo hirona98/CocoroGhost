@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from cocoro_ghost import event_stream, log_stream
+from cocoro_ghost.autonomy.orchestrator import get_autonomy_orchestrator
 from cocoro_ghost.api import (
     admin,
     auth,
@@ -234,6 +235,20 @@ def create_app() -> FastAPI:
             interval_seconds=1.0,
             wait_first=True,
             func=_reminders_tick,
+            logger=logger,
+        )
+
+        # --- 1秒周期: 自発行動オーケストレータ ---
+        async def _autonomy_tick() -> None:
+            orchestrator = get_autonomy_orchestrator()
+            await asyncio.to_thread(orchestrator.tick)
+
+        start_periodic_task(
+            app,
+            name="periodic_autonomy",
+            interval_seconds=1.0,
+            wait_first=True,
+            func=_autonomy_tick,
             logger=logger,
         )
 

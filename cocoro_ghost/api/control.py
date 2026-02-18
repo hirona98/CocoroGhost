@@ -12,10 +12,12 @@ import signal
 import time
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 
+from cocoro_ghost.autonomy.orchestrator import get_autonomy_orchestrator
 from cocoro_ghost.clock import ClockService
 from cocoro_ghost import event_stream, log_stream, schemas, worker
+from cocoro_ghost.db import load_global_settings, settings_session_scope
 from cocoro_ghost.deps import get_clock_service_dep
 from cocoro_ghost.time_utils import format_iso8601_local_with_tz
 
@@ -170,3 +172,73 @@ def control_time_reset(
 
     # --- 変更後スナップショット ---
     return _build_time_snapshot_response(clock_service)
+
+
+@router.get("/control/autonomy/status", response_model=schemas.ControlAutonomyStatusResponse)
+def control_autonomy_status() -> schemas.ControlAutonomyStatusResponse:
+    """
+    自発行動の稼働状態と滞留数を返す。
+    """
+
+    orchestrator = get_autonomy_orchestrator()
+    return schemas.ControlAutonomyStatusResponse(**orchestrator.get_status())
+
+
+@router.post("/control/autonomy/start", response_model=schemas.ControlAutonomyToggleResponse)
+def control_autonomy_start() -> schemas.ControlAutonomyToggleResponse:
+    """
+    自発行動を有効化する。
+    """
+
+    with settings_session_scope() as db:
+        settings = load_global_settings(db)
+        settings.autonomy_enabled = True
+    return schemas.ControlAutonomyToggleResponse(autonomy_enabled=True)
+
+
+@router.post("/control/autonomy/stop", response_model=schemas.ControlAutonomyToggleResponse)
+def control_autonomy_stop() -> schemas.ControlAutonomyToggleResponse:
+    """
+    自発行動を無効化する。
+    """
+
+    with settings_session_scope() as db:
+        settings = load_global_settings(db)
+        settings.autonomy_enabled = False
+    return schemas.ControlAutonomyToggleResponse(autonomy_enabled=False)
+
+
+@router.post("/control/autonomy/trigger", response_model=schemas.ControlAutonomyToggleResponse)
+def control_autonomy_trigger(request: schemas.ControlAutonomyTriggerRequest) -> schemas.ControlAutonomyToggleResponse:
+    """
+    手動トリガを投入する（デバッグ用）。
+    """
+
+    orchestrator = get_autonomy_orchestrator()
+    inserted = orchestrator.enqueue_manual_trigger(
+        trigger_type=str(request.trigger_type),
+        trigger_key=str(request.trigger_key),
+        payload=dict(request.payload or {}),
+        scheduled_at=(int(request.scheduled_at) if request.scheduled_at is not None else None),
+    )
+    if not bool(inserted):
+        raise HTTPException(status_code=409, detail="trigger already queued or claimed")
+    with settings_session_scope() as db:
+        settings = load_global_settings(db)
+        enabled = bool(getattr(settings, "autonomy_enabled", False))
+    return schemas.ControlAutonomyToggleResponse(autonomy_enabled=bool(enabled))
+
+
+@router.get("/control/autonomy/intents", response_model=schemas.ControlAutonomyIntentsResponse)
+def control_autonomy_intents(
+    limit: int = Query(default=50, ge=1, le=500),
+) -> schemas.ControlAutonomyIntentsResponse:
+    """
+    intent 一覧を返す。
+    """
+
+    orchestrator = get_autonomy_orchestrator()
+    items = orchestrator.list_intents(limit=int(limit))
+    return schemas.ControlAutonomyIntentsResponse(
+        items=[schemas.ControlAutonomyIntentItem(**item) for item in items]
+    )

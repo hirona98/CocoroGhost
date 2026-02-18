@@ -372,6 +372,12 @@ class _ExternalMemoryMixin:
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),
         )
+        self._enqueue_autonomy_event_trigger(  # type: ignore[attr-defined]
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+            source="vision_detail",
+        )
 
     def run_reminder_once(self, *, hhmm: str, content: str) -> None:
         """
@@ -458,6 +464,12 @@ class _ExternalMemoryMixin:
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),
+        )
+        self._enqueue_autonomy_event_trigger(  # type: ignore[attr-defined]
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+            source="reminder",
         )
 
     def run_desktop_watch_once(self, *, target_client_id: str) -> str:
@@ -579,5 +591,11 @@ class _ExternalMemoryMixin:
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),
+        )
+        self._enqueue_autonomy_event_trigger(  # type: ignore[attr-defined]
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+            source="desktop_watch",
         )
         return "ok"

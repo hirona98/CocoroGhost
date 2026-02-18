@@ -580,3 +580,129 @@ def meta_request_user_prompt(*, second_person_label: str, instruction: str, payl
             pl,
         ]
     ).strip()
+
+
+def autonomy_deliberation_system_prompt(
+    *,
+    persona_text: str,
+    addon_text: str,
+    second_person_label: str,
+) -> str:
+    """
+    自発行動の Deliberation（意思決定）用 system prompt を返す。
+
+    目的:
+        - Trigger + Context から do_action/skip/defer を厳密JSONで返す。
+        - Persona/Mood の影響を監査可能な形で残す。
+    """
+
+    # --- 入力を正規化 ---
+    pt = str(persona_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    at = str(addon_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    sp = str(second_person_label or "").strip() or "あなた"
+
+    # --- 固定契約 ---
+    lines: list[str] = [
+        "あなたは自発行動エンジンの Deliberation 層。",
+        "入力JSONを読み、次に行うべき行動を決める。",
+        "出力はJSONオブジェクトのみ。前後に説明文やコードフェンスは禁止。",
+        "",
+        "最重要ルール:",
+        "- capability は実行しない。ここは意思決定だけを返す。",
+        "- 事実は入力JSONに基づく。無い事実を作らない。",
+        "- decision_outcome は do_action / skip / defer のいずれか。",
+        "- decision_outcome='do_action' のとき action_type と action_payload は必須。",
+        "- decision_outcome='defer' のとき defer_reason/defer_until/next_deliberation_at は必須。",
+        "- next_deliberation_at は defer_until 以上にする。",
+        "- persona_influence と mood_influence は必ず埋める（空文字は禁止）。",
+        "- evidence.event_ids/state_ids/goal_ids は、根拠として使ったIDだけを入れる。",
+        "",
+        "Mood バイアス（厳守）:",
+        "- A が低い時は do_action 閾値を上げる。",
+        "- V が低い時は刺激の強い行動を避ける。",
+        "- D が低い時は defer を優先しやすくする。",
+        "",
+        "ペルソナ:",
+        f"- 二人称は「{sp}」を前提に判断する。",
+        "",
+        "出力スキーマ:",
+        "{",
+        '  "decision_outcome": "do_action|skip|defer",',
+        '  "do_action": true,',
+        '  "action_type": "web_research",',
+        '  "action_payload": {',
+        '    "query": "string",',
+        '    "goal": "string",',
+        '    "constraints": ["string"]',
+        "  },",
+        '  "priority": 0,',
+        '  "reason": "string",',
+        '  "defer_reason": null,',
+        '  "defer_until": null,',
+        '  "next_deliberation_at": null,',
+        '  "persona_influence": {',
+        '    "summary": "string",',
+        '    "traits": ["string"]',
+        "  },",
+        '  "mood_influence": {',
+        '    "summary": "string",',
+        '    "vad": {"v": 0.0, "a": 0.0, "d": 0.0}',
+        "  },",
+        '  "evidence": {',
+        '    "event_ids": [1],',
+        '    "state_ids": [1],',
+        '    "goal_ids": ["goal-1"]',
+        "  },",
+        '  "confidence": 0.0',
+        "}",
+        "",
+        "persona_text:",
+        "<<<PERSONA_TEXT>>>",
+        pt,
+        "<<<END_PERSONA_TEXT>>>",
+        "",
+        "addon_text:",
+        "<<<ADDON_TEXT>>>",
+        at,
+        "<<<END_ADDON_TEXT>>>",
+    ]
+    return "\n".join(lines).strip()
+
+
+def autonomy_web_access_system_prompt(*, second_person_label: str) -> str:
+    """
+    自発行動の web_access Capability 用 system prompt を返す。
+
+    目的:
+        - Web検索で得た情報を JSON で返し、ActionResultへ保存しやすくする。
+        - 出典URLを必ず含める。
+    """
+
+    # --- 二人称を正規化 ---
+    sp = str(second_person_label or "").strip() or "あなた"
+
+    # --- 固定契約 ---
+    return "\n".join(
+        [
+            "あなたは web_access capability。",
+            "入力の query/goal/constraints に基づいて Web 検索し、構造化JSONで返す。",
+            "出力はJSONオブジェクトのみ。前後に説明文やコードフェンスは禁止。",
+            "",
+            "ルール:",
+            "- 事実は検索結果に基づく。推測は明示する。",
+            "- sources は最低1件入れる（検索結果が空でも sources=[] で明示）。",
+            "- summary は短く具体的に書く。",
+            "- useful_for_recall_hint は長期再利用価値がある場合のみ true。",
+            f"- 利用者（{sp}）に返す内容として不自然な内部メモは書かない。",
+            "",
+            "出力スキーマ:",
+            "{",
+            '  "result_status": "success|partial|failed|no_effect",',
+            '  "summary": "string",',
+            '  "findings": ["string"],',
+            '  "sources": [{"title":"string","url":"https://..."}],',
+            '  "notes": "string",',
+            '  "useful_for_recall_hint": true',
+            "}",
+        ]
+    ).strip()

@@ -151,8 +151,9 @@ def run_forever(
     # NOTE:
     # - apply_write_plan は大量のDB更新 + 子ジョブenqueue を伴う。
     # - tidy_memory は多量のclose/link整理が入る。
+    # - snapshot_runtime はスナップショット一貫性を優先して排他で扱う。
     # - これらは並列に走らせると sqlite ロック競合が増えやすく、失敗/遅延の原因になり得る。
-    exclusive_kinds = {"apply_write_plan", "tidy_memory"}
+    exclusive_kinds = {"apply_write_plan", "tidy_memory", "snapshot_runtime"}
 
     # --- ワーカースレッドプール ---
     # NOTE:

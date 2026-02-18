@@ -10,6 +10,12 @@ from __future__ import annotations
 from typing import Any
 
 from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost.worker_handlers_autonomy import (
+    _handle_deliberate_once,
+    _handle_execute_intent,
+    _handle_promote_action_result_to_searchable,
+    _handle_snapshot_runtime,
+)
 from cocoro_ghost.worker_handlers_embeddings import (
     _handle_upsert_event_affect_embedding,
     _handle_upsert_event_assistant_summary,
@@ -101,6 +107,40 @@ def run_job_kind(
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             llm_client=llm_client,
+            payload=payload,
+        )
+        return
+
+    if kind == "deliberate_once":
+        _handle_deliberate_once(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            llm_client=llm_client,
+            payload=payload,
+        )
+        return
+
+    if kind == "execute_intent":
+        _handle_execute_intent(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            llm_client=llm_client,
+            payload=payload,
+        )
+        return
+
+    if kind == "promote_action_result_to_searchable":
+        _handle_promote_action_result_to_searchable(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            payload=payload,
+        )
+        return
+
+    if kind == "snapshot_runtime":
+        _handle_snapshot_runtime(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
             payload=payload,
         )
         return

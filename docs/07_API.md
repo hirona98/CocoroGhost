@@ -308,6 +308,11 @@ UI向けの「全設定」取得/更新。
   "desktop_watch_enabled": false,
   "desktop_watch_interval_seconds": 300,
   "desktop_watch_target_client_id": "console-uuid-or-stable-id",
+  "autonomy_enabled": false,
+  "autonomy_heartbeat_seconds": 30,
+  "autonomy_max_parallel_intents": 2,
+  "camera_watch_enabled": false,
+  "camera_watch_interval_seconds": 15,
   "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
@@ -320,6 +325,8 @@ UI向けの「全設定」取得/更新。
       "llm_model": "string",
       "reasoning_effort": "optional",
       "reply_web_search_enabled": true,
+      "deliberation_model": "openai/gpt-5-mini",
+      "deliberation_max_tokens": 2048,
       "llm_base_url": "optional",
       "max_turns_window": 10,
       "max_tokens": 2048,
@@ -370,6 +377,7 @@ UI向けの「全設定」取得/更新。
 - リクエストに含まれない既存プリセットは削除せず `archived=true` にする
 - `GET /api/settings` は `archived=false` のもののみ返す
 - 会話応答作成（`/api/chat` の最終生成）でのWeb検索（インターネット）は、`llm_preset.reply_web_search_enabled` でON/OFFする
+- 自発行動（autonomy）のWeb検索は `/api/chat` と別経路で実行し、`reply_web_search_enabled` では制御しない
 - `llm_model` は `openrouter/*` / `xai/*` / `openai/*` / `google/*` / `gemini/*` のいずれかを使用する
 - OpenRouter を OpenAI互換 `base_url` で使う場合（例: `https://openrouter.ai/api/v1`）も、設定がONなら最終生成時に OpenRouter のWeb検索 plugin を有効化する
 
@@ -726,6 +734,107 @@ Workerのジョブキュー統計を返す。
 レスポンス:
 
 - `GET /api/control/time` と同じ形式（リセット後の値）
+
+### `GET /api/control/autonomy/status`
+
+自発行動（autonomy）の稼働状態と滞留数を返す。
+
+レスポンス（例）:
+
+```json
+{
+  "autonomy_enabled": true,
+  "autonomy_heartbeat_seconds": 30,
+  "autonomy_max_parallel_intents": 2,
+  "now_domain_utc_ts": 1769654424,
+  "triggers_queued": 3,
+  "triggers_claimed": 1,
+  "triggers_due": 2,
+  "intents_queued": 1,
+  "intents_running": 1,
+  "intents_blocked": 0
+}
+```
+
+### `POST /api/control/autonomy/start`
+
+自発行動を有効化する。
+
+レスポンス（例）:
+
+```json
+{
+  "autonomy_enabled": true
+}
+```
+
+### `POST /api/control/autonomy/stop`
+
+自発行動を無効化する。
+
+レスポンス（例）:
+
+```json
+{
+  "autonomy_enabled": false
+}
+```
+
+### `POST /api/control/autonomy/trigger`
+
+手動トリガを投入する（管理/デバッグ用）。
+
+リクエスト（例）:
+
+```json
+{
+  "trigger_type": "manual",
+  "trigger_key": "manual:debug:001",
+  "payload": {"note": "debug run"},
+  "scheduled_at": 1769654424
+}
+```
+
+レスポンス（例）:
+
+```json
+{
+  "autonomy_enabled": true
+}
+```
+
+補足:
+
+- `trigger_key` は `queued/claimed` で重複不可
+- 重複時は `409 Conflict`（`detail="trigger already queued or claimed"`）
+
+### `GET /api/control/autonomy/intents`
+
+intent 一覧を返す（新しい順）。
+
+クエリ:
+
+- `limit`（任意, 1..500, 既定50）
+
+レスポンス（例）:
+
+```json
+{
+  "items": [
+    {
+      "intent_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "decision_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "action_type": "web_research",
+      "status": "queued",
+      "priority": 60,
+      "scheduled_at": null,
+      "blocked_reason": null,
+      "dropped_reason": null,
+      "updated_at": 1769654424
+    }
+  ]
+}
+```
 
 ### `POST /api/control`
 

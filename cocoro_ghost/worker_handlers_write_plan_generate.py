@@ -13,7 +13,7 @@ from typing import Any
 from cocoro_ghost import common_utils, prompt_builders
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
-from cocoro_ghost.memory_models import Event, Job, State
+from cocoro_ghost.memory_models import ActionDecision, ActionResult, Event, Job, State
 from cocoro_ghost.time_utils import format_iso8601_local
 from cocoro_ghost.worker_constants import JOB_PENDING as _JOB_PENDING
 from cocoro_ghost.worker_handlers_common import _now_utc_ts
@@ -115,6 +115,47 @@ def _handle_generate_write_plan(
             "client_context": _client_context_dict(getattr(ev, "client_context_json", None)),
             "observation": observation_meta,
         }
+
+        # --- source別の構造化参照（autonomy系） ---
+        if str(ev.source) == "deliberation_decision":
+            decision_row = (
+                db.query(ActionDecision)
+                .filter(ActionDecision.event_id == int(ev.event_id))
+                .one_or_none()
+            )
+            if decision_row is not None:
+                event_snapshot["deliberation_decision"] = {
+                    "decision_id": str(decision_row.decision_id),
+                    "trigger_type": str(decision_row.trigger_type),
+                    "trigger_ref": (str(decision_row.trigger_ref) if decision_row.trigger_ref is not None else None),
+                    "decision_outcome": str(decision_row.decision_outcome),
+                    "do_action": bool(int(decision_row.do_action)),
+                    "action_type": (str(decision_row.action_type) if decision_row.action_type is not None else None),
+                    "action_payload_json": (
+                        str(decision_row.action_payload_json) if decision_row.action_payload_json is not None else None
+                    ),
+                    "reason_text": (str(decision_row.reason_text) if decision_row.reason_text is not None else None),
+                    "confidence": float(decision_row.confidence),
+                }
+        if str(ev.source) == "action_result":
+            result_row = (
+                db.query(ActionResult)
+                .filter(ActionResult.event_id == int(ev.event_id))
+                .one_or_none()
+            )
+            if result_row is not None:
+                event_snapshot["action_result"] = {
+                    "result_id": str(result_row.result_id),
+                    "intent_id": (str(result_row.intent_id) if result_row.intent_id is not None else None),
+                    "decision_id": (str(result_row.decision_id) if result_row.decision_id is not None else None),
+                    "capability_name": (
+                        str(result_row.capability_name) if result_row.capability_name is not None else None
+                    ),
+                    "result_status": str(result_row.result_status),
+                    "summary_text": (str(result_row.summary_text) if result_row.summary_text is not None else None),
+                    "result_payload_json": str(result_row.result_payload_json),
+                    "useful_for_recall_hint": bool(int(result_row.useful_for_recall_hint)),
+                }
 
         # --- 直近の出来事（同一client優先） ---
         recent_events_q = db.query(Event).filter(Event.searchable == 1).order_by(Event.event_id.desc())

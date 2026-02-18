@@ -8,7 +8,7 @@
 設計方針:
 - cron無し運用を前提に、サーバ側の定期タスクから tick() を呼び出す。
 - reminders_enabled が OFF のときは「完全に発火しない」。
-- 接続中クライアントが0のときは「接続まで待って遅延発火」。
+- クライアント接続有無に依存せず、due 到達で発火する。
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import logging
 import threading
 
 from cocoro_ghost.clock import get_clock_service
-from cocoro_ghost import event_stream
 from cocoro_ghost.deps import get_memory_manager
 from cocoro_ghost.reminders_logic import (
     DEFAULT_REMINDER_TIME_ZONE,
@@ -89,10 +88,6 @@ class ReminderService:
                 if not self._enabled_prev:
                     self._enabled_prev = True
                     self._drop_past_due_on_enable(db, now_utc_ts=now_utc_ts)
-
-                # --- 接続クライアントが無ければ発火できない（保持） ---
-                if not event_stream.has_any_client_connected():
-                    return
 
                 # --- due を抽出（複数溜まることを許容） ---
                 due = (

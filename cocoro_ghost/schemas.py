@@ -357,6 +357,66 @@ class WorkerRuntimeStatsResponse(BaseModel):
     stale_seconds: int
 
 
+class ControlAutonomyStatusResponse(BaseModel):
+    """
+    /control/autonomy/status レスポンス。
+    """
+
+    autonomy_enabled: bool
+    autonomy_heartbeat_seconds: int
+    autonomy_max_parallel_intents: int
+    now_domain_utc_ts: int
+    triggers_queued: int
+    triggers_claimed: int
+    triggers_due: int
+    intents_queued: int
+    intents_running: int
+    intents_blocked: int
+
+
+class ControlAutonomyTriggerRequest(BaseModel):
+    """
+    /control/autonomy/trigger リクエスト。
+    """
+
+    trigger_type: str
+    trigger_key: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    scheduled_at: Optional[int] = None
+
+
+class ControlAutonomyToggleResponse(BaseModel):
+    """
+    /control/autonomy/start|stop の共通レスポンス。
+    """
+
+    autonomy_enabled: bool
+
+
+class ControlAutonomyIntentItem(BaseModel):
+    """
+    intent 一覧の1件。
+    """
+
+    intent_id: str
+    decision_id: str
+    action_type: str
+    status: str
+    priority: int
+    scheduled_at: Optional[int] = None
+    blocked_reason: Optional[str] = None
+    dropped_reason: Optional[str] = None
+    updated_at: int
+
+
+class ControlAutonomyIntentsResponse(BaseModel):
+    """
+    /control/autonomy/intents レスポンス。
+    """
+
+    items: List[ControlAutonomyIntentItem] = Field(default_factory=list)
+
+
 # --- 設定関連 ---
 
 

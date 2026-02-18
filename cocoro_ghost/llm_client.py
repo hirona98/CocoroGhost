@@ -411,6 +411,8 @@ class LlmRequestPurpose:
     ASYNC_WRITE_PLAN = "【WORKER】＜＜ 記憶更新計画作成（WritePlan） ＞＞"
     ASYNC_EVENT_ASSISTANT_SUMMARY = "【WORKER】＜＜ アシスタント本文要約（events） ＞＞"
     ASYNC_STATE_LINKS = "【WORKER】＜＜ 状態リンク生成（state_links） ＞＞"
+    ASYNC_AUTONOMY_DELIBERATION = "【WORKER】＜＜ 自発行動の意思決定（Deliberation） ＞＞"
+    ASYNC_AUTONOMY_WEB_ACCESS = "【WORKER】＜＜ 自発行動のWeb調査（web_access） ＞＞"
 
 
 def _normalize_purpose(purpose: str) -> str:
@@ -868,6 +870,31 @@ class LlmClient:
         if str(purpose or "").strip() != LlmRequestPurpose.SYNC_CONVERSATION:
             return None
 
+        return self._resolve_web_search_config_for_model(model=model, base_url=base_url)
+
+    def _resolve_autonomy_web_search_config(
+        self,
+        *,
+        model: str,
+        base_url: Optional[str],
+    ) -> ReplyWebSearchConfig:
+        """
+        自発行動（autonomy）用のWeb検索設定を返す。
+
+        方針:
+            - `/api/chat` 側の `reply_web_search_enabled` と完全分離する。
+            - 自発行動は purpose 専用経路でのみ呼び出す。
+        """
+        return self._resolve_web_search_config_for_model(model=model, base_url=base_url)
+
+    def _resolve_web_search_config_for_model(
+        self,
+        *,
+        model: str,
+        base_url: Optional[str],
+    ) -> ReplyWebSearchConfig:
+        """モデル/経路に応じたWeb検索設定を返す（共通実装）。"""
+
         # --- モデル文字列を正規化して判定する ---
         model_name = str(model or "").strip()
         model_name_lower = model_name.lower()
@@ -903,7 +930,7 @@ class LlmClient:
 
         # --- 方針上、対象外は明示的にエラーにする（無言で検索OFFにしない） ---
         raise ValueError(
-            "Web検索付き最終応答は openrouter/*, xai/*, openai/*, google/*, gemini/* のみ対応です"
+            "Web検索は openrouter/*, xai/*, openai/*, google/*, gemini/* のみ対応です"
         )
 
     def generate_reply_response(
@@ -1031,6 +1058,7 @@ class LlmClient:
         input_text: str,
         purpose: str,
         max_tokens: Optional[int] = None,
+        model_override: Optional[str] = None,
     ):
         """JSON（json_object）を生成する（Responseオブジェクト）。
 
@@ -1048,8 +1076,9 @@ class LlmClient:
         start = time.perf_counter()
 
         requested_max_tokens = max_tokens or self.max_tokens
+        model_for_request = str(model_override or self.model)
         kwargs = self._build_completion_kwargs(
-            model=self.model,
+            model=model_for_request,
             messages=messages,
             api_key=self.api_key,
             base_url=self.llm_base_url,
@@ -1108,6 +1137,120 @@ class LlmClient:
         self._log_llm_payload(
             "LLM response (json)",
             _sanitize_for_llm_log({"finish_reason": finish_reason, "content": content}),
+            llm_log_level=llm_log_level,
+        )
+        return resp
+
+    def generate_reply_response_with_web_search(
+        self,
+        *,
+        system_prompt: str,
+        conversation: List[Dict[str, str]],
+        purpose: str,
+        stream: bool = False,
+    ):
+        """
+        自発行動（autonomy）向けに、常時Web検索有効で会話応答を生成する。
+
+        注意:
+            - `/api/chat` の最終応答経路とは分離して運用する。
+            - purpose は監査ログのラベルに使う。
+        """
+        # --- メッセージ配列を構築 ---
+        messages = [{"role": "system", "content": system_prompt}]
+        for m in conversation:
+            messages.append({"role": m["role"], "content": m["content"]})
+
+        llm_log_level = normalize_llm_log_level(self._get_llm_log_level())
+        purpose_label = _normalize_purpose(purpose)
+        start = time.perf_counter()
+        web_search_cfg = self._resolve_autonomy_web_search_config(
+            model=self.model,
+            base_url=self.llm_base_url,
+        )
+
+        kwargs = self._build_completion_kwargs(
+            model=self.model,
+            messages=messages,
+            api_key=self.api_key,
+            base_url=self.llm_base_url,
+            max_tokens=self.max_tokens,
+            stream=stream,
+            web_search_options=(web_search_cfg.web_search_options if web_search_cfg else None),
+            tools=(web_search_cfg.tools if web_search_cfg else None),
+            extra_body=(web_search_cfg.extra_body if web_search_cfg else None),
+            timeout=(self.stream_timeout_seconds if stream else self.timeout_seconds),
+        )
+
+        msg_count = len(messages)
+        approx_chars = _estimate_text_chars(messages)
+        if llm_log_level != "OFF":
+            self._log_llm_info(
+                "LLM request 送信 %s kind=chat+web stream=%s messages=%s 文字数=%s",
+                purpose_label,
+                bool(stream),
+                msg_count,
+                approx_chars,
+            )
+            self._log_llm_info(
+                "LLM web search 有効化 %s mode=%s",
+                purpose_label,
+                str(web_search_cfg.mode),
+            )
+        self._log_llm_payload("LLM request (chat+web)", _sanitize_for_llm_log(kwargs), llm_log_level=llm_log_level)
+
+        try:
+            resp = litellm.completion(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if llm_log_level != "OFF":
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+                if self._is_context_window_exceeded(exc):
+                    self._log_context_window_exceeded_error(
+                        purpose_label=purpose_label,
+                        kind="chat+web",
+                        elapsed_ms=elapsed_ms,
+                        approx_chars=approx_chars,
+                        messages_count=msg_count,
+                        stream=bool(stream),
+                        exc=exc,
+                    )
+                else:
+                    self._log_llm_error(
+                        "LLM request failed %s kind=chat+web stream=%s messages=%s ms=%s error=%s",
+                        purpose_label,
+                        bool(stream),
+                        msg_count,
+                        elapsed_ms,
+                        str(exc),
+                        exc_info=exc,
+                    )
+            raise
+
+        # --- ストリームは呼び出し側へ返す ---
+        if stream:
+            return resp
+
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        content = _first_choice_content(resp)
+        finish_reason = _finish_reason(resp)
+        if llm_log_level != "OFF":
+            self._log_llm_info(
+                "LLM response 受信 %s kind=chat+web stream=%s finish_reason=%s chars=%s ms=%s",
+                purpose_label,
+                False,
+                finish_reason,
+                len(content or ""),
+                elapsed_ms,
+            )
+        self._log_llm_payload(
+            "LLM response (chat+web)",
+            _sanitize_for_llm_log(
+                {
+                    "model": self.model,
+                    "finish_reason": finish_reason,
+                    "content": content,
+                }
+            ),
             llm_log_level=llm_log_level,
         )
         return resp

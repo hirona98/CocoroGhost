@@ -1421,6 +1421,15 @@ class _ChatMemoryMixin:
             event_id=int(event_id),
         )
 
+        # --- 10.7) 非同期: 自発行動トリガ（event） ---
+        background_tasks.add_task(
+            self._enqueue_autonomy_event_trigger,
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+            source="chat",
+        )
+
         # --- 10.6) 非同期: 否定フィードバックによる自動分離（検索対象から除外） ---
         # NOTE:
         # - チャットターン開始（応答開始）を遅くしないため、レスポンス完了後に実行する。

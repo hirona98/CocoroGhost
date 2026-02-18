@@ -6,6 +6,7 @@ from .llm_debug import format_debug_payload, log_llm_payload  # noqa: F401
 """CocoroAI core package."""
 
 __all__ = [
+    "autonomy",
     "config",
     "db",
     "models",
