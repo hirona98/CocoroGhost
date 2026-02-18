@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import Float, ForeignKey, Integer, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, Float, ForeignKey, Index, Integer, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from cocoro_ghost.db import MemoryBase
@@ -419,3 +419,290 @@ class Job(MemoryBase):
     # --- タイムスタンプ ---
     created_at: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ActionDecision(MemoryBase):
+    """Deliberation の判断結果（ActionDecision）。
+
+    方針:
+        - 1判断 = 1event（source=deliberation_decision）を不変条件にする。
+        - do_action/skip/defer の契約をDB制約で固定する。
+    """
+
+    __tablename__ = "action_decisions"
+    __table_args__ = (
+        CheckConstraint("decision_outcome IN ('do_action','skip','defer')", name="ck_action_decisions_outcome"),
+        CheckConstraint(
+            "decision_outcome <> 'defer' OR length(trim(COALESCE(defer_reason,''))) > 0",
+            name="ck_action_decisions_defer_reason",
+        ),
+        CheckConstraint(
+            "decision_outcome <> 'defer' OR defer_until IS NOT NULL",
+            name="ck_action_decisions_defer_until_required",
+        ),
+        CheckConstraint(
+            "decision_outcome <> 'defer' OR next_deliberation_at IS NOT NULL",
+            name="ck_action_decisions_next_deliberation_required",
+        ),
+        CheckConstraint(
+            "decision_outcome <> 'defer' OR next_deliberation_at >= defer_until",
+            name="ck_action_decisions_defer_order",
+        ),
+        CheckConstraint(
+            "decision_outcome = 'do_action' OR do_action = 0",
+            name="ck_action_decisions_do_action_false_when_not_do_action",
+        ),
+        CheckConstraint(
+            "decision_outcome <> 'do_action' OR do_action = 1",
+            name="ck_action_decisions_do_action_true_when_do_action",
+        ),
+        CheckConstraint(
+            "decision_outcome <> 'do_action' OR length(trim(COALESCE(action_type,''))) > 0",
+            name="ck_action_decisions_action_type_required_for_do_action",
+        ),
+        CheckConstraint(
+            "decision_outcome <> 'do_action' OR length(trim(COALESCE(action_payload_json,''))) > 0",
+            name="ck_action_decisions_action_payload_required_for_do_action",
+        ),
+    )
+
+    # --- 主キー/イベント対応 ---
+    decision_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.event_id", ondelete="CASCADE"), nullable=False, unique=True)
+
+    # --- トリガ起点 ---
+    trigger_type: Mapped[str] = mapped_column(Text, nullable=False)
+    trigger_ref: Mapped[Optional[str]] = mapped_column(Text)
+
+    # --- 判断本体 ---
+    do_action: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision_outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    action_type: Mapped[Optional[str]] = mapped_column(Text)
+    action_payload_json: Mapped[Optional[str]] = mapped_column(Text)
+    reason_text: Mapped[Optional[str]] = mapped_column(Text)
+    defer_reason: Mapped[Optional[str]] = mapped_column(Text)
+    defer_until: Mapped[Optional[int]] = mapped_column(Integer)
+    next_deliberation_at: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # --- 監査情報 ---
+    persona_influence_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    mood_influence_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    evidence_event_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    evidence_state_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    evidence_goal_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class Goal(MemoryBase):
+    """中長期目標（goal）。"""
+
+    __tablename__ = "goals"
+
+    # --- 主キー ---
+    goal_id: Mapped[str] = mapped_column(Text, primary_key=True)
+
+    # --- 目標の基本情報 ---
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    goal_type: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    target_condition_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    horizon: Mapped[str] = mapped_column(Text, nullable=False, default="mid")
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class Intent(MemoryBase):
+    """Execution 対象の intent。"""
+
+    __tablename__ = "intents"
+    __table_args__ = (
+        UniqueConstraint("decision_id", name="uq_intents_decision_id"),
+        CheckConstraint(
+            "status IN ('proposed','queued','running','blocked','done','dropped')",
+            name="ck_intents_status",
+        ),
+        CheckConstraint(
+            "status <> 'dropped' OR length(trim(dropped_reason)) > 0",
+            name="ck_intents_dropped_reason",
+        ),
+        CheckConstraint(
+            "status <> 'dropped' OR dropped_at IS NOT NULL",
+            name="ck_intents_dropped_at",
+        ),
+        CheckConstraint(
+            "length(trim(action_type)) > 0",
+            name="ck_intents_action_type_non_empty",
+        ),
+        CheckConstraint(
+            "length(trim(action_payload_json)) > 0",
+            name="ck_intents_action_payload_non_empty",
+        ),
+    )
+
+    # --- 主キー/参照 ---
+    intent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    decision_id: Mapped[str] = mapped_column(ForeignKey("action_decisions.decision_id", ondelete="CASCADE"), nullable=False)
+    goal_id: Mapped[Optional[str]] = mapped_column(ForeignKey("goals.goal_id", ondelete="SET NULL"))
+
+    # --- 実行定義 ---
+    action_type: Mapped[str] = mapped_column(Text, nullable=False)
+    action_payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    scheduled_at: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # --- 遷移補助 ---
+    blocked_reason: Mapped[Optional[str]] = mapped_column(Text)
+    dropped_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    dropped_at: Mapped[Optional[int]] = mapped_column(Integer)
+    last_result_status: Mapped[Optional[str]] = mapped_column(Text)
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ActionResult(MemoryBase):
+    """Capability 実行結果（ActionResult）。"""
+
+    __tablename__ = "action_results"
+    __table_args__ = (
+        CheckConstraint("useful_for_recall_hint IN (0,1)", name="ck_action_results_useful_for_recall_hint"),
+        CheckConstraint(
+            "result_status IN ('success','partial','failed','no_effect')",
+            name="ck_action_results_result_status",
+        ),
+        CheckConstraint("recall_decision IN (-1,0,1)", name="ck_action_results_recall_decision"),
+        CheckConstraint(
+            "recall_decision = -1 OR recall_decided_at IS NOT NULL",
+            name="ck_action_results_recall_decided_at",
+        ),
+    )
+
+    # --- 主キー/参照 ---
+    result_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.event_id", ondelete="CASCADE"), nullable=False, unique=True)
+    intent_id: Mapped[Optional[str]] = mapped_column(ForeignKey("intents.intent_id", ondelete="SET NULL"))
+    decision_id: Mapped[Optional[str]] = mapped_column(ForeignKey("action_decisions.decision_id", ondelete="SET NULL"))
+
+    # --- 実行結果 ---
+    capability_name: Mapped[Optional[str]] = mapped_column(Text)
+    result_status: Mapped[str] = mapped_column(Text, nullable=False)
+    result_payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    summary_text: Mapped[Optional[str]] = mapped_column(Text)
+    useful_for_recall_hint: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    recall_decision: Mapped[int] = mapped_column(Integer, nullable=False, default=-1)
+    recall_decided_at: Mapped[Optional[int]] = mapped_column(Integer)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class WorldModelItem(MemoryBase):
+    """世界モデル項目（観測を集約した構造化状態）。"""
+
+    __tablename__ = "world_model_items"
+    __table_args__ = (
+        UniqueConstraint("item_key", name="uq_world_model_items_item_key"),
+        CheckConstraint("observation_count >= 1", name="ck_world_model_items_observation_count"),
+        CheckConstraint("confidence >= 0.0 AND confidence <= 1.0", name="ck_world_model_items_confidence"),
+        CheckConstraint("active IN (0,1)", name="ck_world_model_items_active"),
+        CheckConstraint("freshness_at >= 0", name="ck_world_model_items_freshness_at"),
+        CheckConstraint(
+            "length(trim(content_fingerprint)) > 0",
+            name="ck_world_model_items_content_fingerprint_non_empty",
+        ),
+    )
+
+    # --- 主キー/根拠参照 ---
+    item_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    source_event_id: Mapped[Optional[int]] = mapped_column(ForeignKey("events.event_id", ondelete="SET NULL"))
+    source_result_id: Mapped[Optional[str]] = mapped_column(ForeignKey("action_results.result_id", ondelete="SET NULL"))
+
+    # --- 構造化内容 ---
+    item_key: Mapped[str] = mapped_column(Text, nullable=False)
+    observation_class: Mapped[Optional[str]] = mapped_column(Text)
+    entity_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    relation_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    location_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    affordance_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    content_fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    observation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    freshness_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class RuntimeSnapshot(MemoryBase):
+    """Runtime Blackboard のスナップショット。"""
+
+    __tablename__ = "runtime_snapshots"
+
+    # --- 主キー ---
+    snapshot_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # --- 内容 ---
+    snapshot_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class AutonomyTrigger(MemoryBase):
+    """自発行動トリガ（イベント/時刻/heartbeat/policy）。"""
+
+    __tablename__ = "autonomy_triggers"
+    __table_args__ = (
+        CheckConstraint("status IN ('queued','claimed','done','dropped')", name="ck_autonomy_triggers_status"),
+        CheckConstraint(
+            "status <> 'dropped' OR length(trim(dropped_reason)) > 0",
+            name="ck_autonomy_triggers_dropped_reason",
+        ),
+        CheckConstraint(
+            "status <> 'dropped' OR dropped_at IS NOT NULL",
+            name="ck_autonomy_triggers_dropped_at",
+        ),
+    )
+
+    # --- 主キー/参照 ---
+    trigger_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    trigger_type: Mapped[str] = mapped_column(Text, nullable=False)
+    trigger_key: Mapped[str] = mapped_column(Text, nullable=False)
+    source_event_id: Mapped[Optional[int]] = mapped_column(ForeignKey("events.event_id", ondelete="SET NULL"))
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    # --- 実行状態 ---
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    scheduled_at: Mapped[Optional[int]] = mapped_column(Integer)
+    claim_token: Mapped[Optional[str]] = mapped_column(Text)
+    claimed_at: Mapped[Optional[int]] = mapped_column(Integer)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+    dropped_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    dropped_at: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+# --- autonomy_triggers の重複排除（queued/claimed のみ一意） ---
+Index(
+    "uq_autonomy_triggers_trigger_key_active",
+    AutonomyTrigger.trigger_key,
+    unique=True,
+    sqlite_where=text("status IN ('queued','claimed')"),
+)
+
+
+# --- 主要参照用インデックス（SQLAlchemy create_all 時に作成） ---
+Index("idx_action_decisions_created_at", ActionDecision.created_at)
+Index("idx_intents_status_scheduled_at", Intent.status, Intent.scheduled_at)
+Index("idx_action_results_created_at", ActionResult.created_at)
+Index("idx_world_model_items_freshness_at", WorldModelItem.freshness_at)
+Index("idx_world_model_items_active_confidence", WorldModelItem.active, WorldModelItem.confidence)
+Index("idx_runtime_snapshots_created_at", RuntimeSnapshot.created_at)
+Index("idx_autonomy_triggers_status_scheduled_at", AutonomyTrigger.status, AutonomyTrigger.scheduled_at)

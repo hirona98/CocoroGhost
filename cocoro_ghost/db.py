@@ -50,8 +50,8 @@ class _MemorySessionEntry:
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
-_MEMORY_DB_USER_VERSION = 8
-_SETTINGS_DB_USER_VERSION = 3
+_MEMORY_DB_USER_VERSION = 9
+_SETTINGS_DB_USER_VERSION = 4
 
 
 def get_db_dir() -> Path:
@@ -314,6 +314,20 @@ def _create_memory_indexes(engine) -> None:
         "CREATE INDEX IF NOT EXISTS idx_user_preferences_updated_at ON user_preferences(updated_at)",
         # --- jobs ---
         "CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after)",
+        # --- autonomy: decisions/intents/results ---
+        "CREATE INDEX IF NOT EXISTS idx_action_decisions_created_at ON action_decisions(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_action_decisions_outcome_created ON action_decisions(decision_outcome, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_intents_status_scheduled_at ON intents(status, scheduled_at)",
+        "CREATE INDEX IF NOT EXISTS idx_intents_updated_at ON intents(updated_at)",
+        "CREATE INDEX IF NOT EXISTS idx_action_results_created_at ON action_results(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_action_results_recall_decision ON action_results(recall_decision, created_at)",
+        # --- autonomy: world model ---
+        "CREATE INDEX IF NOT EXISTS idx_world_model_items_active_confidence ON world_model_items(active, confidence)",
+        "CREATE INDEX IF NOT EXISTS idx_world_model_items_freshness_at ON world_model_items(freshness_at)",
+        # --- autonomy: runtime/triggers ---
+        "CREATE INDEX IF NOT EXISTS idx_runtime_snapshots_created_at ON runtime_snapshots(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_autonomy_triggers_status_scheduled_at ON autonomy_triggers(status, scheduled_at)",
+        "CREATE INDEX IF NOT EXISTS idx_autonomy_triggers_created_at ON autonomy_triggers(created_at)",
     ]
     with engine.connect() as conn:
         for stmt in stmts:
@@ -428,20 +442,91 @@ def _migrate_settings_db_v2_to_v3(engine) -> None:
             )
 
         # --- スキーマバージョンを更新 ---
-        conn.execute(text(f"PRAGMA user_version={_SETTINGS_DB_USER_VERSION}"))
+        conn.execute(text("PRAGMA user_version=3"))
         conn.commit()
 
     logger.info("settings DB migrated: user_version 2 -> 3")
 
 
+def _migrate_settings_db_v3_to_v4(engine) -> None:
+    """設定DBを v3 から v4 へ移行する。"""
+    with engine.connect() as conn:
+        # --- global_settings へ autonomy/camera 設定列を追加 ---
+        gs_columns = _get_table_columns(conn, "global_settings")
+        if "autonomy_enabled" not in gs_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE global_settings "
+                    "ADD COLUMN autonomy_enabled INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+        if "autonomy_heartbeat_seconds" not in gs_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE global_settings "
+                    "ADD COLUMN autonomy_heartbeat_seconds INTEGER NOT NULL DEFAULT 30"
+                )
+            )
+        if "autonomy_max_parallel_intents" not in gs_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE global_settings "
+                    "ADD COLUMN autonomy_max_parallel_intents INTEGER NOT NULL DEFAULT 2"
+                )
+            )
+        if "camera_watch_enabled" not in gs_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE global_settings "
+                    "ADD COLUMN camera_watch_enabled INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+        if "camera_watch_interval_seconds" not in gs_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE global_settings "
+                    "ADD COLUMN camera_watch_interval_seconds INTEGER NOT NULL DEFAULT 15"
+                )
+            )
+
+        # --- llm_presets へ Deliberation 設定列を追加 ---
+        llm_columns = _get_table_columns(conn, "llm_presets")
+        if "deliberation_model" not in llm_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE llm_presets "
+                    "ADD COLUMN deliberation_model TEXT NOT NULL DEFAULT 'openai/gpt-5-mini'"
+                )
+            )
+        if "deliberation_max_tokens" not in llm_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE llm_presets "
+                    "ADD COLUMN deliberation_max_tokens INTEGER NOT NULL DEFAULT 1200"
+                )
+            )
+
+        # --- スキーマバージョンを更新 ---
+        conn.execute(text(f"PRAGMA user_version={_SETTINGS_DB_USER_VERSION}"))
+        conn.commit()
+
+    logger.info("settings DB migrated: user_version 3 -> 4")
+
+
 def _migrate_settings_db_if_needed(engine) -> None:
     """設定DBに必要なマイグレーションを適用する。"""
-    with engine.connect() as conn:
-        current = _get_settings_db_user_version(conn)
+    # --- 既知版を順に進める（飛び番を許可しない） ---
+    while True:
+        with engine.connect() as conn:
+            current = _get_settings_db_user_version(conn)
 
-    # --- 現在のスキーマ版に応じて移行を実行 ---
-    if current == 2 and _SETTINGS_DB_USER_VERSION == 3:
-        _migrate_settings_db_v2_to_v3(engine)
+        if current == 2 and _SETTINGS_DB_USER_VERSION >= 3:
+            _migrate_settings_db_v2_to_v3(engine)
+            continue
+        if current == 3 and _SETTINGS_DB_USER_VERSION >= 4:
+            _migrate_settings_db_v3_to_v4(engine)
+            continue
+        break
 
 
 def _verify_settings_db_user_version(engine) -> None:
@@ -473,6 +558,28 @@ def _verify_settings_db_user_version(engine) -> None:
             )
 
         # --- 現行スキーマの必須列を検証する ---
+        gs_table_exists = (
+            conn.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='global_settings'")
+            ).fetchone()
+            is not None
+        )
+        if gs_table_exists:
+            gs_columns = _get_table_columns(conn, "global_settings")
+            required_global_columns = {
+                "autonomy_enabled",
+                "autonomy_heartbeat_seconds",
+                "autonomy_max_parallel_intents",
+                "camera_watch_enabled",
+                "camera_watch_interval_seconds",
+            }
+            missing_global = sorted(required_global_columns - gs_columns)
+            if missing_global:
+                raise RuntimeError(
+                    "settings DB schema mismatch: global_settings columns missing. "
+                    f"missing={missing_global}. settings.db を削除して作り直してください。"
+                )
+
         llm_table_exists = (
             conn.execute(
                 text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_presets'")
@@ -481,10 +588,16 @@ def _verify_settings_db_user_version(engine) -> None:
         )
         if llm_table_exists:
             columns = _get_table_columns(conn, "llm_presets")
-            if "reply_web_search_enabled" not in columns:
+            required_llm_columns = {
+                "reply_web_search_enabled",
+                "deliberation_model",
+                "deliberation_max_tokens",
+            }
+            missing_llm = sorted(required_llm_columns - columns)
+            if missing_llm:
                 raise RuntimeError(
-                    "settings DB schema mismatch: llm_presets.reply_web_search_enabled is missing. "
-                    "settings.db を削除して作り直してください。"
+                    "settings DB schema mismatch: llm_presets columns missing. "
+                    f"missing={missing_llm}. settings.db を削除して作り直してください。"
                 )
 
 
@@ -810,11 +923,25 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             desktop_watch_enabled=False,
             desktop_watch_interval_seconds=300,
             desktop_watch_target_client_id=None,
+            # 自発行動（Autonomy）
+            autonomy_enabled=False,
+            autonomy_heartbeat_seconds=30,
+            autonomy_max_parallel_intents=2,
+            # 視覚（Vision）: カメラ監視（初期は無効）
+            camera_watch_enabled=False,
+            camera_watch_interval_seconds=15,
         )
         session.add(global_settings)
         session.flush()
     if not getattr(global_settings, "token", ""):
         global_settings.token = toml_config.token
+    # --- 自発行動/カメラ監視の最小整合を補完 ---
+    if int(getattr(global_settings, "autonomy_heartbeat_seconds", 0) or 0) <= 0:
+        global_settings.autonomy_heartbeat_seconds = 30
+    if int(getattr(global_settings, "autonomy_max_parallel_intents", 0) or 0) <= 0:
+        global_settings.autonomy_max_parallel_intents = 2
+    if int(getattr(global_settings, "camera_watch_interval_seconds", 0) or 0) <= 0:
+        global_settings.camera_watch_interval_seconds = 15
 
     # LlmPresetの用意（存在しない/アクティブでない場合は空のdefaultを作成）
     llm_preset = None
@@ -831,12 +958,19 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             llm_api_key="",
             llm_model="openai/gpt-5-mini",
             reply_web_search_enabled=True,
+            deliberation_model="openai/gpt-5-mini",
+            deliberation_max_tokens=1200,
             max_turns_window=50,
             image_model="openai/gpt-5-mini",
             image_timeout_seconds=60,
         )
         session.add(llm_preset)
         session.flush()
+    # --- Deliberation 設定の最小整合を補完 ---
+    if not str(getattr(llm_preset, "deliberation_model", "") or "").strip():
+        llm_preset.deliberation_model = str(llm_preset.llm_model)
+    if int(getattr(llm_preset, "deliberation_max_tokens", 0) or 0) <= 0:
+        llm_preset.deliberation_max_tokens = 1200
 
     if active_llm_id is None or str(llm_preset.id) != str(active_llm_id):
         global_settings.active_llm_preset_id = str(llm_preset.id)

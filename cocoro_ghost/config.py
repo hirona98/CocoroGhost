@@ -106,6 +106,15 @@ class RuntimeConfig:
     desktop_watch_interval_seconds: int
     desktop_watch_target_client_id: Optional[str]
 
+    # 自発行動（Autonomy）
+    autonomy_enabled: bool
+    autonomy_heartbeat_seconds: int
+    autonomy_max_parallel_intents: int
+
+    # 視覚（Vision）: カメラ監視
+    camera_watch_enabled: bool
+    camera_watch_interval_seconds: int
+
     # LlmPreset由来（LLM設定）
     llm_preset_name: str          # LLMプリセット名
     llm_api_key: str              # LLM APIキー
@@ -113,6 +122,8 @@ class RuntimeConfig:
     llm_base_url: Optional[str]   # カスタムAPIエンドポイント
     reasoning_effort: Optional[str]  # 推論の詳細度設定
     reply_web_search_enabled: bool  # 最終応答（SYNC_CONVERSATION）でWeb検索を有効化するか
+    deliberation_model: str       # Deliberation専用モデル
+    deliberation_max_tokens: int  # Deliberationの最大トークン
     max_turns_window: int         # 会話履歴の最大ターン数
     max_tokens_vision: int        # 画像認識時の最大トークン数
     max_tokens: int               # 通常時の最大トークン数
@@ -507,6 +518,11 @@ def build_runtime_config(
             if global_settings.desktop_watch_target_client_id is not None
             else None
         ),
+        autonomy_enabled=bool(getattr(global_settings, "autonomy_enabled", False)),
+        autonomy_heartbeat_seconds=max(1, int(getattr(global_settings, "autonomy_heartbeat_seconds", 30))),
+        autonomy_max_parallel_intents=max(1, int(getattr(global_settings, "autonomy_max_parallel_intents", 2))),
+        camera_watch_enabled=bool(getattr(global_settings, "camera_watch_enabled", False)),
+        camera_watch_interval_seconds=max(1, int(getattr(global_settings, "camera_watch_interval_seconds", 15))),
         # LlmPreset由来
         llm_preset_name=llm_preset.name,
         llm_api_key=llm_preset.llm_api_key,
@@ -514,6 +530,8 @@ def build_runtime_config(
         llm_base_url=llm_preset.llm_base_url,
         reasoning_effort=llm_preset.reasoning_effort,
         reply_web_search_enabled=bool(llm_preset.reply_web_search_enabled),
+        deliberation_model=str(getattr(llm_preset, "deliberation_model", llm_preset.llm_model)),
+        deliberation_max_tokens=max(1, int(getattr(llm_preset, "deliberation_max_tokens", 1200))),
         max_turns_window=llm_preset.max_turns_window,
         max_tokens_vision=llm_preset.max_tokens_vision,
         max_tokens=llm_preset.max_tokens,

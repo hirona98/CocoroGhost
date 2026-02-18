@@ -56,6 +56,20 @@ class GlobalSettings(Base):
     # デスクトップ担当クライアントID（1台指名）
     desktop_watch_target_client_id: Mapped[Optional[str]] = mapped_column(String(_CLIENT_ID_MAX_LEN), nullable=True)
 
+    # --- 自発行動（Autonomy） ---
+    # 自発行動の有効/無効
+    autonomy_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # heartbeat間隔（秒）
+    autonomy_heartbeat_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    # 実行中Intentの並列上限
+    autonomy_max_parallel_intents: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+
+    # --- 視覚（Vision）: カメラ監視 ---
+    # カメラ監視の有効/無効
+    camera_watch_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # カメラ監視間隔（秒）
+    camera_watch_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+
     # アクティブなプリセットへの外部キー
     active_llm_preset_id: Mapped[Optional[str]] = mapped_column(String(_UUID_STR_LEN), ForeignKey("llm_presets.id"))
     active_embedding_preset_id: Mapped[Optional[str]] = mapped_column(
@@ -105,6 +119,10 @@ class LlmPreset(Base):
     reasoning_effort: Mapped[Optional[str]] = mapped_column(String)
     # 最終応答（SYNC_CONVERSATION）でWeb検索を有効化するか
     reply_web_search_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Deliberation専用モデル
+    deliberation_model: Mapped[str] = mapped_column(String, nullable=False, default="openai/gpt-5-mini")
+    # Deliberationの最大トークン
+    deliberation_max_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=1200)
     max_turns_window: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
     max_tokens_vision: Mapped[int] = mapped_column(Integer, nullable=False, default=4096)
     max_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=4096)

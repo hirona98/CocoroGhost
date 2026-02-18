@@ -372,6 +372,11 @@ class FullSettingsResponse(BaseModel):
     desktop_watch_enabled: bool
     desktop_watch_interval_seconds: int
     desktop_watch_target_client_id: Optional[str] = None
+    autonomy_enabled: bool
+    autonomy_heartbeat_seconds: int
+    autonomy_max_parallel_intents: int
+    camera_watch_enabled: bool
+    camera_watch_interval_seconds: int
 
     # アクティブなプリセットID
     active_llm_preset_id: Optional[str] = None
@@ -400,6 +405,8 @@ class LlmPresetSettings(BaseModel):
     llm_model: str
     reasoning_effort: Optional[str] = None
     reply_web_search_enabled: bool
+    deliberation_model: str
+    deliberation_max_tokens: int
     llm_base_url: Optional[str] = None
     max_turns_window: int
     max_tokens: int
@@ -445,6 +452,11 @@ class FullSettingsUpdateRequest(BaseModel):
     desktop_watch_enabled: bool
     desktop_watch_interval_seconds: int
     desktop_watch_target_client_id: Optional[str] = None
+    autonomy_enabled: bool
+    autonomy_heartbeat_seconds: int
+    autonomy_max_parallel_intents: int
+    camera_watch_enabled: bool
+    camera_watch_interval_seconds: int
     active_llm_preset_id: str
     active_embedding_preset_id: str
     active_persona_preset_id: str

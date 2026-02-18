@@ -56,6 +56,8 @@ def get_settings(
                 llm_model=preset.llm_model,
                 reasoning_effort=preset.reasoning_effort,
                 reply_web_search_enabled=bool(preset.reply_web_search_enabled),
+                deliberation_model=str(getattr(preset, "deliberation_model", preset.llm_model)),
+                deliberation_max_tokens=max(1, int(getattr(preset, "deliberation_max_tokens", 1200))),
                 llm_base_url=preset.llm_base_url,
                 max_turns_window=preset.max_turns_window,
                 max_tokens=preset.max_tokens,
@@ -114,6 +116,11 @@ def get_settings(
             if global_settings.desktop_watch_target_client_id is not None
             else None
         ),
+        autonomy_enabled=bool(getattr(global_settings, "autonomy_enabled", False)),
+        autonomy_heartbeat_seconds=max(1, int(getattr(global_settings, "autonomy_heartbeat_seconds", 30))),
+        autonomy_max_parallel_intents=max(1, int(getattr(global_settings, "autonomy_max_parallel_intents", 2))),
+        camera_watch_enabled=bool(getattr(global_settings, "camera_watch_enabled", False)),
+        camera_watch_interval_seconds=max(1, int(getattr(global_settings, "camera_watch_interval_seconds", 15))),
         active_llm_preset_id=global_settings.active_llm_preset_id,
         active_embedding_preset_id=global_settings.active_embedding_preset_id,
         active_persona_preset_id=global_settings.active_persona_preset_id,
@@ -164,6 +171,11 @@ def commit_settings(
     global_settings.desktop_watch_target_client_id = (
         str(request.desktop_watch_target_client_id).strip() if request.desktop_watch_target_client_id else None
     )
+    global_settings.autonomy_enabled = bool(request.autonomy_enabled)
+    global_settings.autonomy_heartbeat_seconds = max(1, int(request.autonomy_heartbeat_seconds))
+    global_settings.autonomy_max_parallel_intents = max(1, int(request.autonomy_max_parallel_intents))
+    global_settings.camera_watch_enabled = bool(request.camera_watch_enabled)
+    global_settings.camera_watch_interval_seconds = max(1, int(request.camera_watch_interval_seconds))
 
     # LLMプリセットの更新（複数件 / 全置換 + アーカイブ）
     llm_existing = db.query(models.LlmPreset).order_by(models.LlmPreset.id.asc()).all()
@@ -180,6 +192,8 @@ def commit_settings(
                 llm_model=lp.llm_model,
                 reasoning_effort=lp.reasoning_effort,
                 reply_web_search_enabled=bool(lp.reply_web_search_enabled),
+                deliberation_model=str(lp.deliberation_model),
+                deliberation_max_tokens=max(1, int(lp.deliberation_max_tokens)),
                 llm_base_url=lp.llm_base_url,
                 max_turns_window=lp.max_turns_window,
                 max_tokens=lp.max_tokens,
@@ -198,6 +212,8 @@ def commit_settings(
             preset.llm_model = lp.llm_model
             preset.reasoning_effort = lp.reasoning_effort
             preset.reply_web_search_enabled = bool(lp.reply_web_search_enabled)
+            preset.deliberation_model = str(lp.deliberation_model)
+            preset.deliberation_max_tokens = max(1, int(lp.deliberation_max_tokens))
             preset.llm_base_url = lp.llm_base_url
             preset.max_turns_window = lp.max_turns_window
             preset.max_tokens = lp.max_tokens
