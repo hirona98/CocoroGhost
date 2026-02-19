@@ -26,6 +26,8 @@ Web UI:
 - `web_auto_login_enabled=true` の場合、`POST /api/auth/auto_login` でトークン無しの自動ログインが可能
 - Cookie 認証を許可するエンドポイントは次に限定する
   - `POST /api/chat`
+  - `GET /api/settings`
+  - `PUT /api/settings`
   - `WS /api/events/stream`
   - `POST /api/auth/auto_login`
   - `POST /api/auth/logout`
@@ -369,6 +371,7 @@ UI向けの「全設定」取得/更新。
 - サーバ側は `*_preset_id`（UUID）で `upsert` する
 - リクエストに含まれない既存プリセットは削除せず `archived=true` にする
 - `GET /api/settings` は `archived=false` のもののみ返す
+- `memory_enabled` は常に `true` を扱う（`false` を送ると `400 Bad Request`）
 - 会話応答作成（`/api/chat` の最終生成）でのWeb検索（インターネット）は、`llm_preset.reply_web_search_enabled` でON/OFFする
 - `llm_model` は `openrouter/*` / `xai/*` / `openai/*` / `google/*` / `gemini/*` のいずれかを使用する
 - OpenRouter を OpenAI互換 `base_url` で使う場合（例: `https://openrouter.ai/api/v1`）も、設定がONなら最終生成時に OpenRouter のWeb検索 plugin を有効化する
@@ -819,7 +822,7 @@ Workerのジョブキュー統計を返す。
 
 エラー:
 
-- `503 Service Unavailable`（記憶機能が無効: `memory_enabled=false`）
+- 主要な業務エラーは現時点で未定義（入力不正時は `400/422` 系を返す）
 
 ## 管理API（案）
 

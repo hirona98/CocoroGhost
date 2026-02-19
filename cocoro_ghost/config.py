@@ -98,7 +98,7 @@ class RuntimeConfig:
     llm_stream_timeout_seconds: int  # LLM API（ストリーム開始）のタイムアウト秒数
 
     # GlobalSettings由来（DB設定）
-    memory_enabled: bool          # 記憶機能の有効/無効
+    memory_enabled: bool          # 記憶機能（常時有効）
     shared_conversation_id: str   # 端末跨ぎ会話の固定ID
 
     # 視覚（Vision）: デスクトップウォッチ
@@ -179,7 +179,7 @@ class ConfigStore:
 
     @property
     def memory_enabled(self) -> bool:
-        """記憶機能の有効/無効を返す。"""
+        """記憶機能の有効状態を返す（常に true）。"""
         return bool(self._runtime.memory_enabled)
 
 
@@ -497,7 +497,8 @@ def build_runtime_config(
         llm_timeout_seconds=int(toml_config.llm_timeout_seconds),
         llm_stream_timeout_seconds=int(toml_config.llm_stream_timeout_seconds),
         # GlobalSettings由来
-        memory_enabled=bool(getattr(global_settings, "memory_enabled", True)),
+        # 記憶機能は常時有効のため、ランタイムでは true に固定する。
+        memory_enabled=True,
         shared_conversation_id=str(getattr(global_settings, "shared_conversation_id", "") or "").strip(),
         # 視覚（Vision）: デスクトップウォッチ
         desktop_watch_enabled=bool(global_settings.desktop_watch_enabled),

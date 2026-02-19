@@ -765,6 +765,11 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
 
     # 既にアクティブなプリセットがあれば何もしない
     global_settings = session.query(models.GlobalSettings).first()
+    # 既存データに false が残っていても、記憶機能は常時有効へ正規化する。
+    memory_enabled_normalized = False
+    if global_settings is not None and not bool(getattr(global_settings, "memory_enabled", True)):
+        global_settings.memory_enabled = True
+        memory_enabled_normalized = True
 
     # --- Web UI: 端末跨ぎ会話の固定ID ---
     # NOTE:
@@ -796,6 +801,8 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
                 id=global_settings.active_addon_preset_id, archived=False
             ).first()
             if active_llm and active_embedding and active_persona and active_addon:
+                if memory_enabled_normalized:
+                    session.commit()
                 return
 
     logger.info("設定DBの初期化を行います（TOMLのLLM設定は使用しません）")
