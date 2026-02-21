@@ -2,27 +2,7 @@
 
 CocoroGhost は、CocoroAI Ver5 の会話・記憶処理を担う Python/FastAPI バックエンドです。  
 単体で起動でき、Web UI と API を同じプロセス・同じポートで提供します。
-
-<!-- Block: Overview -->
-## アプリ概要
-
-- 会話 API（`/api/chat`）を SSE で配信し、トークンを逐次返す
-- 記憶を SQLite（`sqlite-vec` 含む）で管理し、会話ごとに検索・更新する
-- Web UI（`/`）を同梱し、ブラウザだけで利用できる
-- HTTPS を常時有効化し、自己署名証明書を自動生成する
-
-<!-- Block: Differences -->
-## 特徴
-
-1. **記憶品質を最優先に設計**  
-速度より品質を重視します
-会話ログを追記保存しつつ、「状態」を育てる構造で長期運用時の一貫性を重視しています。
-1. **単一ユーザー運用を前提**  
-シンプルな設計にするため単一ユーザーしか対応しません。
-1. **SSE 開始前に必要記憶を同期確定**  
-レスポンス開始後に検索を挟まないため、会話中の文脈ぶれを抑えます。
-1. **記憶更新を非同期ジョブ化**  
-WritePlan ベースで整理・索引化を分離し、会話体感と記憶品質を両立します。
+安全なローカル環境での実行を前提としています。
 
 <!-- Block: Docs -->
 ## ドキュメント
@@ -40,16 +20,6 @@ WritePlan ベースで整理・索引化を分離し、会話体感と記憶品�
 - カレントディレクトリをリポジトリルートにする
 - 初回起動前に `config/setting.toml` を作成する
 
-`config/setting.toml` の最低限の編集項目:
-
-- `token`: API 認証トークン
-- `web_auto_login_enabled`: Web UI 自動ログイン可否
-- `log_level`: ログレベル
-
-注意:
-
-- `config/setting.toml` は未知キーを許可しません（起動時にエラー）
-- token の正は初回以降 `settings.db` 側です
 
 <!-- Block: Windows Run -->
 ## 起動方法（Windows）
@@ -87,13 +57,20 @@ start.bat
 <!-- Block: Linux Run -->
 ## 起動方法（Linux）
 
+### 0. 前提（Ubuntu/Debian）
+
+```bash
+sudo apt update
+sudo apt install -y python3-pip python3-venv python3.12-venv
+```
+
 ### 1. セットアップ
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install -e .
+python -m pip install --upgrade pip
+python -m pip install -e .
 cp config/setting.toml.release config/setting.toml
 ```
 
@@ -111,6 +88,56 @@ python3 -X utf8 -m cocoro_ghost.entrypoint
 python3 -X utf8 run.py
 ```
 
+<!-- Block: Linux Service -->
+## ターミナルを閉じても実行する（Linux / systemd --user）
+
+前提:
+
+- `.venv` の作成と依存インストールが完了していること
+- `APP_DIR` はこのリポジトリの絶対パスに置き換えること
+
+### 1. ユーザーサービスを作成
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/cocoro-ghost.service <<'EOF'
+[Unit]
+Description=CocoroGhost
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=<APP_DIR>
+Environment=COCORO_GHOST_HOME=<APP_DIR>
+ExecStart=<APP_DIR>/.venv/bin/python -X utf8 -m cocoro_ghost.entrypoint
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+```
+
+### 2. 起動と自動起動を有効化
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now cocoro-ghost
+```
+
+### 3. ログアウト後も継続実行する設定
+
+```bash
+loginctl enable-linger "$USER"
+```
+
+### 4. 状態確認
+
+```bash
+systemctl --user status cocoro-ghost
+journalctl --user -u cocoro-ghost -f
+```
+
 <!-- Block: Verify -->
 ## 動作確認
 
@@ -120,27 +147,12 @@ python3 -X utf8 run.py
 
 ヘルスチェック:
 
-- Windows
-
-```bat
-curl.exe -k https://127.0.0.1:55601/api/health
-```
-
-- Linux
-
 ```bash
 curl -k https://127.0.0.1:55601/api/health
 ```
 
-<!-- Block: Paths -->
-## 保存先（要点）
-
-- 通常実行（非 frozen）: `config/` `logs/` `data/` は実行時 CWD 基準
-- `COCORO_GHOST_HOME` を設定すると、そのパスを最優先で使用
-- Windows 配布（PyInstaller frozen）では DB を `../UserData/Ghost/` に分離保存
-
 <!-- Block: Packaging -->
-## Windows配布（PyInstaller）
+## Windows配布版作成（PyInstaller）
 
 ```bat
 .\.venv\Scripts\activate
