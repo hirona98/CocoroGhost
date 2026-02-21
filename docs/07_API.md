@@ -372,6 +372,7 @@ UI向けの「全設定」取得/更新。
 - リクエストに含まれない既存プリセットは削除せず `archived=true` にする
 - `GET /api/settings` は `archived=false` のもののみ返す
 - `memory_enabled` は常に `true` を扱う（`false` を送ると `400 Bad Request`）
+- `desktop_watch_target_client_id` は未送信なら既存DB値を保持する（明示送信時のみ更新）
 - 会話応答作成（`/api/chat` の最終生成）でのWeb検索（インターネット）は、`llm_preset.reply_web_search_enabled` でON/OFFする
 - `llm_model` は `openrouter/*` / `xai/*` / `openai/*` / `google/*` / `gemini/*` のいずれかを使用する
 - OpenRouter を OpenAI互換 `base_url` で使う場合（例: `https://openrouter.ai/api/v1`）も、設定がONなら最終生成時に OpenRouter のWeb検索 plugin を有効化する

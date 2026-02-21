@@ -169,9 +169,14 @@ def commit_settings(
     global_settings.memory_enabled = True
     global_settings.desktop_watch_enabled = bool(request.desktop_watch_enabled)
     global_settings.desktop_watch_interval_seconds = int(request.desktop_watch_interval_seconds)
-    global_settings.desktop_watch_target_client_id = (
-        str(request.desktop_watch_target_client_id).strip() if request.desktop_watch_target_client_id else None
-    )
+    # --- desktop_watch_target_client_id は「明示指定されたときだけ更新」する ---
+    # NOTE:
+    # - Web UI はこの項目を編集しないため、未送信時は既存DB値を保持する。
+    # - 対応クライアントから明示的に null/空文字が来た場合のみ None へ更新する。
+    if "desktop_watch_target_client_id" in request.model_fields_set:
+        global_settings.desktop_watch_target_client_id = (
+            str(request.desktop_watch_target_client_id).strip() if request.desktop_watch_target_client_id else None
+        )
 
     # LLMプリセットの更新（複数件 / 全置換 + アーカイブ）
     llm_existing = db.query(models.LlmPreset).order_by(models.LlmPreset.id.asc()).all()

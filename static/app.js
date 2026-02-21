@@ -102,7 +102,6 @@
 
   const desktopWatchEnabledInput = document.getElementById("desktop-watch-enabled");
   const desktopWatchIntervalSecondsInput = document.getElementById("desktop-watch-interval-seconds");
-  const desktopWatchTargetClientIdInput = document.getElementById("desktop-watch-target-client-id");
 
   // --- Camera modal DOM refs ---
   const cameraModal = document.getElementById("camera-modal");
@@ -1629,7 +1628,6 @@
     // --- システム設定 ---
     desktopWatchEnabledInput.checked = !!settingsDraft.desktop_watch_enabled;
     desktopWatchIntervalSecondsInput.value = String(settingsDraft.desktop_watch_interval_seconds);
-    desktopWatchTargetClientIdInput.value = String(settingsDraft.desktop_watch_target_client_id || "");
   }
 
   async function apiGetSettings() {
@@ -1675,7 +1673,10 @@
     setSettingsStatus("設定を保存中...", false);
     // 記憶機能は常時有効でサーバへ送る。
     settingsDraft.memory_enabled = true;
-    const latest = await apiPutSettings(settingsDraft);
+    // --- Web UI では desktop_watch_target_client_id を更新しない ---
+    const payload = cloneJson(settingsDraft);
+    delete payload.desktop_watch_target_client_id;
+    const latest = await apiPutSettings(payload);
     settingsDraft = cloneJson(latest);
     // サーバ応答も同じ制約で扱う。
     settingsDraft.memory_enabled = true;
@@ -1755,7 +1756,6 @@
     }
     settingsDraft.desktop_watch_enabled = !!desktopWatchEnabledInput.checked;
     settingsDraft.desktop_watch_interval_seconds = interval;
-    settingsDraft.desktop_watch_target_client_id = String(desktopWatchTargetClientIdInput.value || "");
   }
 
   // --- WebSocket (events) ---
@@ -2360,7 +2360,6 @@
 
   desktopWatchEnabledInput.addEventListener("change", syncSystemFormToDraft);
   desktopWatchIntervalSecondsInput.addEventListener("input", syncSystemFormToDraft);
-  desktopWatchTargetClientIdInput.addEventListener("input", syncSystemFormToDraft);
 
   settingsLogoutButton.addEventListener("click", async () => {
     const ok = confirm("ログアウトしますか？");
