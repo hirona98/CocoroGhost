@@ -100,7 +100,7 @@ python3 -X utf8 run.py
 前提:
 
 - `.venv` の作成と依存インストールが完了していること
-- `APP_DIR` はこのリポジトリの絶対パスに置き換えること
+- `cocoro-ghost.service` 内の `Environment=APP_DIR=...` だけをこのリポジトリの絶対パスに置き換えること
 
 ### 1. ユーザーサービスを作成
 
@@ -113,9 +113,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=<APP_DIR>
-Environment=COCORO_GHOST_HOME=<APP_DIR>
-ExecStart=<APP_DIR>/.venv/bin/python -X utf8 -m cocoro_ghost.entrypoint
+Environment=APP_DIR=/path/to/CocoroGhost
+ExecStart=/bin/bash -lc 'cd "$APP_DIR"; export COCORO_GHOST_HOME="$APP_DIR"; exec "$APP_DIR/.venv/bin/python" -X utf8 -m cocoro_ghost.entrypoint'
 Restart=always
 RestartSec=3
 
