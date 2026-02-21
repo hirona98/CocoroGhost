@@ -1,8 +1,14 @@
 # CocoroGhost
 
 CocoroGhost は、CocoroAI Ver5 の会話・記憶処理を担う Python/FastAPI バックエンドです。  
-単体で起動でき、Web UI と API を同じプロセス・同じポートで提供します。
+単体で起動でき、`https://127.0.0.1:55601/`でアクセス可能です。
 安全なローカル環境での実行を前提としています。
+
+フルセットのCocoroAIはこちら
+https://alice-encoder.booth.pm/items/6821221
+
+Windows用のUIはこちら
+https://github.com/hirona98/CocoroConsole
 
 <!-- Block: Docs -->
 ## ドキュメント
