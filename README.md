@@ -1,179 +1,157 @@
 # CocoroGhost
 
-CocoroAI Ver5（AI人格システム）のLLMと記憶処理を担当するPython/FastAPIバックエンドサーバー
-CocoroConsoleやCocoroShell無しでの単独動作も可能とする
+CocoroGhost は、CocoroAI Ver5 の会話・記憶処理を担う Python/FastAPI バックエンドです。  
+単体で起動でき、Web UI と API を同じプロセス・同じポートで提供します。
 
-## 機能
+<!-- Block: Overview -->
+## アプリ概要
 
-- FastAPIによるREST APIサーバー
-- LLMとの対話処理
-- SQLite/sqlite-vecによる記憶管理
+- 会話 API（`/api/chat`）を SSE で配信し、トークンを逐次返す
+- 記憶を SQLite（`sqlite-vec` 含む）で管理し、会話ごとに検索・更新する
+- Web UI（`/`）を同梱し、ブラウザだけで利用できる
+- HTTPS を常時有効化し、自己署名証明書を自動生成する
 
+<!-- Block: Differences -->
 ## 特徴
 
-- AI人格システム専用の会話/記憶システム
-- AI視点での記憶整理
+1. **記憶品質を最優先に設計**  
+速度より品質を重視します
+会話ログを追記保存しつつ、「状態」を育てる構造で長期運用時の一貫性を重視しています。
+1. **単一ユーザー運用を前提**  
+シンプルな設計にするため単一ユーザーしか対応しません。
+1. **SSE 開始前に必要記憶を同期確定**  
+レスポンス開始後に検索を挟まないため、会話中の文脈ぶれを抑えます。
+1. **記憶更新を非同期ジョブ化**  
+WritePlan ベースで整理・索引化を分離し、会話体感と記憶品質を両立します。
 
+<!-- Block: Docs -->
 ## ドキュメント
 
-- 仕様: `docs/README.md`
+- 設計入口: `docs/00_はじめに.md`
+- API 仕様: `docs/07_API.md`
+- 実行フロー: `docs/10_実行フロー.md`
+- Web UI: `docs/13_WebブラウザUI.md`
+- Codex 作業索引: `docs/00_codex.md`
 
-## セットアップ
+<!-- Block: Prerequisites -->
+## 起動前の前提
 
-### 自動セットアップ
+- Python `3.10+`
+- カレントディレクトリをリポジトリルートにする
+- 初回起動前に `config/setting.toml` を作成する
 
-```bash
-setup.bat
-```
+`config/setting.toml` の最低限の編集項目:
 
-このスクリプトは以下を自動で実行します：
-- 仮想環境の作成（存在しない場合）
-- 依存パッケージのインストール
-- 設定ファイルの準備
-- dataディレクトリの作成
+- `token`: API 認証トークン
+- `web_auto_login_enabled`: Web UI 自動ログイン可否
+- `log_level`: ログレベル
 
-### 手動セットアップ
+注意:
 
-1. **仮想環境の作成**
-   ```bash
-   python.exe -m venv .venv
-   ```
+- `config/setting.toml` は未知キーを許可しません（起動時にエラー）
+- token の正は初回以降 `settings.db` 側です
 
-2. **依存パッケージのインストール**
-   ```bash
-   .venv\Scripts\activate
-   python.exe -m pip install -e .
-   ```
+<!-- Block: Windows Run -->
+## 起動方法（Windows）
 
-   依存関係は `pyproject.toml` で管理されています。
+### 1. セットアップ
 
-3. **設定ファイルの準備**
-   ```bash
-   copy config\setting.toml.release config\setting.toml
-   ```
-
-4. **設定ファイルの編集**
-
-   `config/setting.toml` を編集して、最小限の起動設定を記述：
-
-   - `token`: API認証トークン（初回起動時に `settings.db` に保存され、以後は `settings.db` 側が正になる）
-   - `web_auto_login_enabled`: Web UI 自動ログインの有効/無効
-   - `log_level`: ログレベル
-
-   ※ DBファイル（`settings.db` / `reminders.db` / `memory_<embedding_preset_id>.db`）は自動作成されます（保存先は「DB/パス」を参照）
-
-## 起動方法
-
-### バッチファイルで起動（推奨）
-
-```bash
-start.bat
-```
-
-## 設定管理
-
-#### 1. 基本設定（起動時必須）
-
-`config/setting.toml` で以下を設定：
-
-- `token`: API認証トークン
-- `web_auto_login_enabled`: Web UI 自動ログインの有効/無効
-- `log_level`: ログレベル（DEBUG, INFO, WARNING, ERROR）
-- `log_file_enabled`: ファイルログの有効/無効
-- `log_file_path`: ファイルログの保存先
-- `log_file_max_bytes`: ログローテーションサイズ（bytes、既定は200000=200KB）
-- `llm_timeout_seconds`: LLMのタイムアウト秒数（非ストリーム、JSON生成など）
-- `llm_stream_timeout_seconds`: LLMのタイムアウト秒数（ストリーム開始まで）
-
-#### 2. LLM設定
-
-設定DBにLLMなどの設定を保持
-
-
-## 依存関係管理
-
-依存関係は `pyproject.toml` で管理されています（安定動作のため、バージョンを固定しています）。以下のパッケージが含まれます：
-
-- **fastapi** - Web フレームワーク
-- **uvicorn[standard]** - ASGI サーバー
-- **sqlalchemy** - ORM
-- **litellm==1.81.6** - LLM クライアント
-- **pydantic** - データバリデーション
-- **python-multipart** - マルチパートフォームデータ処理
-- **httpx** - HTTP クライアント
-- **tomli** - TOML パーサー
-- **sqlite-vec** - SQLite ベクトル検索拡張
-- **typing_inspect** - 型チェックユーティリティ
-
-新しい依存関係を追加する場合は `pyproject.toml` を編集して、再度 `pip install -e .` を実行してください。
-
-## 開発時の注意
-
-- Python実行時は必ず `-X utf8` オプションを付けること
-- 開発モードでインストール（`pip install -e .`）すると、コード変更が即座に反映されます
-
-### 設定ファイルが見つからない
-
-`config/setting.toml` が存在することを確認してください。存在しない場合：
-```bash
+```bat
+python.exe -m venv .venv
+.\.venv\Scripts\activate
+python.exe -m pip install --upgrade pip
+python.exe -m pip install -e .
 copy config\setting.toml.release config\setting.toml
 ```
 
-## DB/パス
+### 2. 起動
 
-保存先の方針は `cocoro_ghost/paths.py` に準拠する。
+配布向け挙動（`reload=False`）:
 
-- 通常実行（非frozen）:
-  - `config/` / `logs/` / `data/` は `app_root` 直下
-  - `app_root` は基本 CWD（例: `start.bat` の実行場所）
-  - `COCORO_GHOST_HOME` があれば最優先で `app_root` になる
-- Windows配布（PyInstaller frozen）:
-  - `config/` / `logs/` は exe の隣（`<exe_dir>/config` / `<exe_dir>/logs`）
-  - DBは exe の 1つ上の `UserData/Ghost/` に保存する（`<exe_dir>/../UserData/Ghost`）
-
-## Windows配布（PyInstaller）
-
-配布方針:
-
-- PyInstaller は `onedir` 前提（配布をシンプルにする）
-- 設定とログは exe の隣に置く（`<exe_dir>/config` / `<exe_dir>/logs`）
-- DBはユーザーデータとして exe と分離し、`<exe_dir>/../UserData/Ghost` に保存する
-
-### フォルダ構成（配布後）
-
-- `CocoroGhost.exe`
-- `config/setting.toml`（ユーザーが作成。テンプレ: `config/setting.toml.release`）
-- `logs/`（ファイルログ有効時に作成）
-- `../UserData/Ghost/settings.db`（自動作成）
-- `../UserData/Ghost/memory_<embedding_preset_id>.db`（自動作成）
-- `../UserData/Ghost/reminders.db`（自動作成）
-
-### ビルド手順
-
-1) 依存を入れる（開発環境）
-
-```bash
-.venv\Scripts\activate
-python.exe -m pip install pyinstaller
+```bat
+python.exe -X utf8 -m cocoro_ghost.entrypoint
 ```
 
-2) ビルド（推奨: バッチ）
+開発向け挙動（`reload=True`）:
+
+```bat
+python.exe -X utf8 run.py
+```
+
+既存の補助スクリプトを使う場合:
+
+```bat
+start.bat
+```
+
+<!-- Block: Linux Run -->
+## 起動方法（Linux）
+
+### 1. セットアップ
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -e .
+cp config/setting.toml.release config/setting.toml
+```
+
+### 2. 起動
+
+配布向け挙動（`reload=False`）:
+
+```bash
+python3 -X utf8 -m cocoro_ghost.entrypoint
+```
+
+開発向け挙動（`reload=True`）:
+
+```bash
+python3 -X utf8 run.py
+```
+
+<!-- Block: Verify -->
+## 動作確認
+
+ブラウザ:
+
+- `https://127.0.0.1:55601/`
+
+ヘルスチェック:
+
+- Windows
+
+```bat
+curl.exe -k https://127.0.0.1:55601/api/health
+```
+
+- Linux
+
+```bash
+curl -k https://127.0.0.1:55601/api/health
+```
+
+<!-- Block: Paths -->
+## 保存先（要点）
+
+- 通常実行（非 frozen）: `config/` `logs/` `data/` は実行時 CWD 基準
+- `COCORO_GHOST_HOME` を設定すると、そのパスを最優先で使用
+- Windows 配布（PyInstaller frozen）では DB を `../UserData/Ghost/` に分離保存
+
+<!-- Block: Packaging -->
+## Windows配布（PyInstaller）
+
+```bat
+.\.venv\Scripts\activate
+python.exe -m pip install pyinstaller
 build.bat
 ```
 
-（補足）手動で spec からビルドする場合
+spec から直接ビルドする場合:
 
-```bash
+```bat
 pyinstaller.exe --noconfirm cocoro_ghost_windows.spec
 ```
 
-3) 生成物
-
-`dist/CocoroGhost/` 配下をそのまま配布してください。
-
-
-補足:
-
-- 初回起動前に `config/setting.toml.release` を `config/setting.toml` にコピーし、`token` 等を編集してください。
+生成物は `dist/CocoroGhost/` 配下です。
