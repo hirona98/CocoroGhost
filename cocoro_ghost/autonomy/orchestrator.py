@@ -29,6 +29,8 @@ class AutonomyOrchestrator:
         self._lock = threading.Lock()
         self._running = False
         self._last_heartbeat_bucket: int | None = None
+        self._last_snapshot_bucket: int | None = None
+        self._runtime_recovered_once = False
 
     def tick(self) -> None:
         """
@@ -58,6 +60,23 @@ class AutonomyOrchestrator:
                 embedding_dimension=int(cfg.embedding_dimension),
             )
 
+            # --- 起動後1回だけ runtime snapshot を復元 ---
+            if not bool(self._runtime_recovered_once):
+                recovered = repo.recover_runtime_from_latest_snapshot(
+                    now_system_ts=int(now_system_ts),
+                    now_domain_ts=int(now_domain_ts),
+                    max_requeue_intents=256,
+                )
+                self._runtime_recovered_once = True
+                logger.info(
+                    "autonomy runtime snapshot recovered restored=%s snapshot_id=%s active=%s requeued_running=%s reenqueue_jobs=%s",
+                    bool(recovered.get("restored")),
+                    recovered.get("snapshot_id"),
+                    int(recovered.get("active_ids_in_snapshot") or 0),
+                    int(recovered.get("requeued_running_intents") or 0),
+                    int(recovered.get("reenqueued_execute_jobs") or 0),
+                )
+
             # --- heartbeat trigger を投入 ---
             heartbeat_seconds = int(settings["autonomy_heartbeat_seconds"])
             heartbeat_bucket = int(now_domain_ts // max(1, int(heartbeat_seconds)))
@@ -70,6 +89,21 @@ class AutonomyOrchestrator:
                     now_system_ts=int(now_system_ts),
                     scheduled_at=int(now_domain_ts),
                     source_event_id=None,
+                )
+
+            # --- runtime snapshot ジョブ（30秒ごと）を投入 ---
+            snapshot_interval_seconds = 30
+            snapshot_bucket = int(now_system_ts // int(snapshot_interval_seconds))
+            if self._last_snapshot_bucket != int(snapshot_bucket):
+                self._last_snapshot_bucket = int(snapshot_bucket)
+                repo.enqueue_job(
+                    kind="snapshot_runtime",
+                    payload={
+                        "snapshot_kind": "periodic",
+                        "snapshot_bucket": int(snapshot_bucket),
+                    },
+                    run_after_system_ts=int(now_system_ts),
+                    now_system_ts=int(now_system_ts),
                 )
 
             # --- due trigger を claimed にして deliberate_once を投入 ---

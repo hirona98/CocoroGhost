@@ -16,7 +16,7 @@ from sqlalchemy import text
 
 from cocoro_ghost import common_utils
 from cocoro_ghost.db import memory_session_scope
-from cocoro_ghost.memory_models import Job
+from cocoro_ghost.memory_models import Intent, Job, RuntimeSnapshot
 
 
 _JOB_PENDING = 0
@@ -197,6 +197,158 @@ class AutonomyRepository:
                     updated_at=int(now_system_ts),
                 )
             )
+
+    def recover_runtime_from_latest_snapshot(
+        self,
+        *,
+        now_system_ts: int,
+        now_domain_ts: int,
+        max_requeue_intents: int = 256,
+    ) -> dict[str, Any]:
+        """
+        最新 runtime snapshot から active intents を復元する。
+
+        方針:
+            - snapshot 内の active_intent_ids を読み、再起動で取り残された `running` を `queued` に戻す。
+            - `queued` のものも含めて execute_intent ジョブを再投入する（execute 側は queued->running claim で冪等）。
+            - `blocked` は外部条件待ちとして維持する（勝手に実行しない）。
+        """
+
+        # --- 上限を正規化 ---
+        limit_i = max(1, int(max_requeue_intents))
+
+        with memory_session_scope(self.embedding_preset_id, self.embedding_dimension) as db:
+            # --- 最新 snapshot を取得 ---
+            latest = (
+                db.query(RuntimeSnapshot)
+                .order_by(RuntimeSnapshot.snapshot_id.desc())
+                .first()
+            )
+            if latest is None:
+                return {
+                    "restored": False,
+                    "snapshot_id": None,
+                    "active_ids_in_snapshot": 0,
+                    "requeued_running_intents": 0,
+                    "reenqueued_execute_jobs": 0,
+                }
+
+            # --- payload から active_intent_ids を抽出 ---
+            payload = common_utils.json_loads_maybe(str(latest.payload_json or ""))
+            if not isinstance(payload, dict):
+                payload = {}
+            active_ids_raw = payload.get("active_intent_ids")
+            if not isinstance(active_ids_raw, list):
+                active_ids_raw = []
+
+            # --- 重複/空を除去（snapshot 順序を維持） ---
+            active_ids: list[str] = []
+            seen: set[str] = set()
+            for value in active_ids_raw:
+                intent_id = str(value or "").strip()
+                if not intent_id or intent_id in seen:
+                    continue
+                seen.add(intent_id)
+                active_ids.append(intent_id)
+                if len(active_ids) >= int(limit_i):
+                    break
+
+            if not active_ids:
+                # --- 復元試行の監査を残す（空でも startup_recovered を記録） ---
+                db.add(
+                    RuntimeSnapshot(
+                        snapshot_kind="startup_recovered",
+                        payload_json=common_utils.json_dumps(
+                            {
+                                "source_snapshot_id": int(latest.snapshot_id),
+                                "active_intent_ids": [],
+                                "requeued_running_intents": 0,
+                                "reenqueued_execute_jobs": 0,
+                                "recovered_at_system_utc_ts": int(now_system_ts),
+                                "recovered_at_domain_utc_ts": int(now_domain_ts),
+                            }
+                        ),
+                        created_at=int(now_system_ts),
+                    )
+                )
+                return {
+                    "restored": True,
+                    "snapshot_id": int(latest.snapshot_id),
+                    "active_ids_in_snapshot": 0,
+                    "requeued_running_intents": 0,
+                    "reenqueued_execute_jobs": 0,
+                }
+
+            # --- 対象 intent を読み込む ---
+            intents = (
+                db.query(Intent)
+                .filter(Intent.intent_id.in_(list(active_ids)))
+                .all()
+            )
+            intents_by_id = {str(x.intent_id): x for x in intents}
+
+            requeued_running_intents = 0
+            reenqueue_execute_jobs = 0
+
+            # --- active intents を復元（running -> queued、queued は再実行ジョブだけ投入） ---
+            for intent_id in active_ids:
+                intent = intents_by_id.get(str(intent_id))
+                if intent is None:
+                    continue
+
+                status = str(intent.status or "").strip()
+                if status in {"done", "dropped"}:
+                    continue
+                if status == "blocked":
+                    # --- blocked は外部条件待ちなので、そのまま維持 ---
+                    continue
+                if status == "running":
+                    intent.status = "queued"
+                    intent.updated_at = int(now_system_ts)
+                    db.add(intent)
+                    requeued_running_intents += 1
+
+                # --- queued/running(->queued) は execute_intent を再投入 ---
+                if str(intent.status or "").strip() == "queued":
+                    db.add(
+                        Job(
+                            kind="execute_intent",
+                            payload_json=common_utils.json_dumps({"intent_id": str(intent.intent_id)}),
+                            status=int(_JOB_PENDING),
+                            run_after=int(now_system_ts),
+                            tries=0,
+                            last_error=None,
+                            created_at=int(now_system_ts),
+                            updated_at=int(now_system_ts),
+                        )
+                    )
+                    reenqueue_execute_jobs += 1
+
+            # --- 復元結果を snapshot として記録 ---
+            db.add(
+                RuntimeSnapshot(
+                    snapshot_kind="startup_recovered",
+                    payload_json=common_utils.json_dumps(
+                        {
+                            "source_snapshot_id": int(latest.snapshot_id),
+                            "active_intent_ids": list(active_ids),
+                            "requeued_running_intents": int(requeued_running_intents),
+                            "reenqueued_execute_jobs": int(reenqueue_execute_jobs),
+                            "recovered_at_system_utc_ts": int(now_system_ts),
+                            "recovered_at_domain_utc_ts": int(now_domain_ts),
+                        }
+                    ),
+                    created_at=int(now_system_ts),
+                )
+            )
+
+            return {
+                "restored": True,
+                "snapshot_id": int(latest.snapshot_id),
+                "active_ids_in_snapshot": int(len(active_ids)),
+                "requeued_running_intents": int(requeued_running_intents),
+                "reenqueued_execute_jobs": int(reenqueue_execute_jobs),
+            }
 
     def get_status_counts(self, *, now_domain_ts: int) -> dict[str, int]:
         """
