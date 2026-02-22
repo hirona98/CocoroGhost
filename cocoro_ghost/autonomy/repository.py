@@ -228,6 +228,7 @@ class AutonomyRepository:
                 return {
                     "restored": False,
                     "snapshot_id": None,
+                    "active_intent_ids": [],
                     "active_ids_in_snapshot": 0,
                     "requeued_running_intents": 0,
                     "reenqueued_execute_jobs": 0,
@@ -274,6 +275,7 @@ class AutonomyRepository:
                 return {
                     "restored": True,
                     "snapshot_id": int(latest.snapshot_id),
+                    "active_intent_ids": [],
                     "active_ids_in_snapshot": 0,
                     "requeued_running_intents": 0,
                     "reenqueued_execute_jobs": 0,
@@ -345,6 +347,7 @@ class AutonomyRepository:
             return {
                 "restored": True,
                 "snapshot_id": int(latest.snapshot_id),
+                "active_intent_ids": list(active_ids),
                 "active_ids_in_snapshot": int(len(active_ids)),
                 "requeued_running_intents": int(requeued_running_intents),
                 "reenqueued_execute_jobs": int(reenqueue_execute_jobs),

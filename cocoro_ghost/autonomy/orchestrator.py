@@ -14,6 +14,7 @@ from typing import Any
 
 from cocoro_ghost.autonomy.policies import build_time_routine_trigger
 from cocoro_ghost.autonomy.repository import AutonomyRepository
+from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.clock import get_clock_service
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.db import settings_session_scope
@@ -70,6 +71,16 @@ class AutonomyOrchestrator:
                     max_requeue_intents=256,
                 )
                 self._runtime_recovered_once = True
+                get_runtime_blackboard().mark_recovered(
+                    source_snapshot_id=(
+                        int(recovered.get("snapshot_id"))
+                        if recovered.get("snapshot_id") is not None
+                        else None
+                    ),
+                    active_intent_ids=[str(x) for x in list(recovered.get("active_intent_ids") or [])],
+                    now_system_ts=int(now_system_ts),
+                    now_domain_ts=int(now_domain_ts),
+                )
                 logger.info(
                     "autonomy runtime snapshot recovered restored=%s snapshot_id=%s active=%s requeued_running=%s reenqueue_jobs=%s",
                     bool(recovered.get("restored")),

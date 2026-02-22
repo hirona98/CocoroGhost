@@ -22,7 +22,7 @@
 
 - API 追加/変更: `cocoro_ghost/api/` と `docs/07_API.md`
 - チャット（SSE）: `cocoro_ghost/api/chat.py` と `cocoro_ghost/memory/_chat_mixin.py`
-- 自発行動/Capability設計: `docs/03_自発行動アーキテクチャ方針.md` と `cocoro_ghost/autonomy/orchestrator.py` / `cocoro_ghost/autonomy/repository.py` / `cocoro_ghost/autonomy/policies/` / `cocoro_ghost/autonomy/capabilities/` / `cocoro_ghost/worker_handlers_autonomy.py` / `cocoro_ghost/desktop_watch.py` / `cocoro_ghost/camera_watch.py` / `cocoro_ghost/reminders_service.py` / `cocoro_ghost/event_stream.py` / `cocoro_ghost/worker.py`
+- 自発行動/Capability設計: `docs/03_自発行動アーキテクチャ方針.md` と `cocoro_ghost/autonomy/orchestrator.py` / `cocoro_ghost/autonomy/repository.py` / `cocoro_ghost/autonomy/runtime_blackboard.py` / `cocoro_ghost/autonomy/policies/` / `cocoro_ghost/autonomy/capabilities/` / `cocoro_ghost/worker_handlers_autonomy.py` / `cocoro_ghost/desktop_watch.py` / `cocoro_ghost/camera_watch.py` / `cocoro_ghost/reminders_service.py` / `cocoro_ghost/event_stream.py` / `cocoro_ghost/worker.py`
 - 自発行動の詳細設計: `docs/18_自発行動アーキテクチャ詳細設計.md`（実装順序/データ/ジョブ/API/責務分割の実装契約）
 - 検索（思い出す）: `docs/04_検索（思い出す）.md` と `cocoro_ghost/memory/_chat_search_mixin.py`
 - 記憶更新（育てる）: `docs/05_記憶更新（育てる）.md` と `cocoro_ghost/worker.py` / `cocoro_ghost/worker_handlers.py` / `cocoro_ghost/worker_handlers_*.py`

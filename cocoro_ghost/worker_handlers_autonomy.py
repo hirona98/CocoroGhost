@@ -24,6 +24,7 @@ from cocoro_ghost.autonomy.capabilities.schedule_alarm import execute_schedule_a
 from cocoro_ghost.autonomy.capabilities.vision_perception import execute_vision_perception
 from cocoro_ghost.autonomy.capabilities.web_access import execute_web_research
 from cocoro_ghost.autonomy.contracts import CapabilityExecutionResult, parse_action_decision
+from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.clock import get_clock_service
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.db import memory_session_scope
@@ -1266,6 +1267,13 @@ def _handle_snapshot_runtime(
             },
             "worker_now_system_utc_ts": int(now_system_ts),
         }
+
+        # --- RAM blackboard へも反映（DB snapshot と同じ内容を保持） ---
+        get_runtime_blackboard().apply_snapshot_payload(
+            snapshot_kind=str(snapshot_kind),
+            payload=dict(snapshot_payload),
+            created_at=int(now_system_ts),
+        )
 
         db.add(
             RuntimeSnapshot(
