@@ -1,13 +1,13 @@
 """
 デスクトップウォッチ（能動視覚）
 
-設定（settings.db / global_settings）に従い、一定間隔でデスクトップ担当クライアントへ
-キャプチャ要求を送って画像を取得し、人格としてコメントを生成して保存・配信する。
+設定（settings.db / global_settings）に従い、一定間隔で desktop_watch policy trigger を投入する。
 
 実装方針:
 - cron無し運用を前提に、サーバ側の定期タスクから tick() を呼び出す。
 - ON/OFF の遷移をメモリ上で検出し、ONになったら5秒後に最初の1枚を確認する。
 - 起動時にすでにONの場合は「設定間隔が経過してから」初回を実行する（起動直後に覗かない）。
+- 実際の観測実行は Deliberation/Execution（vision_perception capability）へ委譲する。
 """
 
 from __future__ import annotations
@@ -16,8 +16,10 @@ import logging
 import threading
 import time
 
+from cocoro_ghost.autonomy.orchestrator import get_autonomy_orchestrator
+from cocoro_ghost.autonomy.policies import build_desktop_watch_trigger
+from cocoro_ghost.clock import get_clock_service
 from cocoro_ghost.config import get_config_store
-from cocoro_ghost.deps import get_memory_manager
 
 
 logger = logging.getLogger(__name__)
@@ -25,9 +27,9 @@ logger = logging.getLogger(__name__)
 
 class DesktopWatchService:
     """
-    デスクトップウォッチの状態管理と実行を行うサービス。
+    デスクトップウォッチの状態管理と policy trigger 投入を行うサービス。
 
-    - 設定の変化（enabled/interval/target）を定期的に読み取り、必要なタイミングで実行する。
+    - 設定の変化（enabled/interval/target）を定期的に読み取り、必要なタイミングで trigger を投入する。
     - tick() は複数回呼ばれても安全（重複実行は抑制）。
     """
 
@@ -39,7 +41,7 @@ class DesktopWatchService:
         self._next_run_ts = 0.0
 
     def tick(self) -> None:
-        """現在設定に基づき、必要ならデスクトップウォッチを1回実行する。"""
+        """現在設定に基づき、必要なら desktop_watch policy trigger を1件投入する。"""
         with self._lock:
             if self._running:
                 return
@@ -88,22 +90,28 @@ class DesktopWatchService:
             if float(now) < float(self._next_run_ts):
                 return
 
-            # --- 実行 ---
+            # --- policy trigger 投入 ---
             if not target_client_id:
                 logger.warning("desktop_watch enabled but target_client_id is empty; skipping")
                 self._next_run_ts = float(now) + float(interval)
                 return
 
-            mm = get_memory_manager()
-            result = mm.run_desktop_watch_once(target_client_id=target_client_id)
+            # --- domain時刻で trigger を組み立てる ---
+            now_domain_ts = int(get_clock_service().now_domain_utc_ts())
+            trigger = build_desktop_watch_trigger(
+                now_domain_ts=int(now_domain_ts),
+                interval_seconds=int(interval),
+                target_client_id=str(target_client_id),
+            )
+            inserted = get_autonomy_orchestrator().enqueue_policy_trigger(
+                trigger_key=str(trigger["trigger_key"]),
+                payload=dict(trigger.get("payload") or {}),
+                scheduled_at=int(trigger["scheduled_at"]),
+            )
+            if not bool(inserted):
+                logger.debug("desktop_watch trigger deduped key=%s", str(trigger["trigger_key"]))
 
             # --- 次回予約 ---
-            # - アイドル等でスキップされた場合は60秒間隔で再要求
-            if result in {"skipped_idle", "skipped_excluded_window_title"}:
-                cooldown = max(float(interval), float(60))
-                self._next_run_ts = float(now) + float(cooldown)
-                return
-
             self._next_run_ts = float(now) + float(interval)
         finally:
             with self._lock:
