@@ -30,6 +30,7 @@ from cocoro_ghost.api import (
     vision,
 )
 from cocoro_ghost.logging_config import setup_logging, suppress_uvicorn_access_log_paths
+from cocoro_ghost.camera_watch import get_camera_watch_service
 from cocoro_ghost.desktop_watch import get_desktop_watch_service
 from cocoro_ghost.reminders_service import get_reminder_service
 from cocoro_ghost.api.http_auth import require_bearer_only, require_bearer_or_cookie_session
@@ -203,7 +204,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def start_periodic_services() -> None:
-        """デスクトップウォッチ/リマインダーの定期実行タスクを起動する。"""
+        """デスクトップウォッチ/カメラウォッチ/リマインダーの定期実行タスクを起動する。"""
 
         # NOTE:
         # - デスクトップウォッチ/リマインダーは別スレッドから event_stream.publish() を呼ぶ。
@@ -221,6 +222,20 @@ def create_app() -> FastAPI:
             interval_seconds=1.0,
             wait_first=True,
             func=_desktop_watch_tick,
+            logger=logger,
+        )
+
+        # --- 1秒周期: カメラウォッチ（Policy trigger） ---
+        async def _camera_watch_tick() -> None:
+            service = get_camera_watch_service()
+            await asyncio.to_thread(service.tick)
+
+        start_periodic_task(
+            app,
+            name="periodic_camera_watch",
+            interval_seconds=1.0,
+            wait_first=True,
+            func=_camera_watch_tick,
             logger=logger,
         )
 

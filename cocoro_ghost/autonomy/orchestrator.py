@@ -12,6 +12,7 @@ import logging
 import threading
 from typing import Any
 
+from cocoro_ghost.autonomy.policies import build_time_routine_trigger
 from cocoro_ghost.autonomy.repository import AutonomyRepository
 from cocoro_ghost.clock import get_clock_service
 from cocoro_ghost.config import get_config_store
@@ -30,6 +31,7 @@ class AutonomyOrchestrator:
         self._running = False
         self._last_heartbeat_bucket: int | None = None
         self._last_snapshot_bucket: int | None = None
+        self._last_time_routine_bucket: int | None = None
         self._runtime_recovered_once = False
 
     def tick(self) -> None:
@@ -88,6 +90,20 @@ class AutonomyOrchestrator:
                     payload={"heartbeat_bucket": int(heartbeat_bucket)},
                     now_system_ts=int(now_system_ts),
                     scheduled_at=int(now_domain_ts),
+                    source_event_id=None,
+                )
+
+            # --- time_routine policy trigger（分単位） ---
+            time_trigger = build_time_routine_trigger(now_domain_ts=int(now_domain_ts))
+            minute_bucket = int((time_trigger.get("payload") or {}).get("minute_bucket") or 0)
+            if self._last_time_routine_bucket != int(minute_bucket):
+                self._last_time_routine_bucket = int(minute_bucket)
+                repo.enqueue_trigger(
+                    trigger_type="policy",
+                    trigger_key=str(time_trigger["trigger_key"]),
+                    payload=dict(time_trigger.get("payload") or {}),
+                    now_system_ts=int(now_system_ts),
+                    scheduled_at=int(time_trigger["scheduled_at"]),
                     source_event_id=None,
                 )
 
@@ -226,6 +242,43 @@ class AutonomyOrchestrator:
         scheduled = int(scheduled_at) if scheduled_at is not None else int(now_domain_ts)
         return repo.enqueue_trigger(
             trigger_type="time",
+            trigger_key=str(trigger_key),
+            payload=dict(payload or {}),
+            now_system_ts=int(now_system_ts),
+            scheduled_at=int(scheduled),
+            source_event_id=None,
+        )
+
+    def enqueue_policy_trigger(
+        self,
+        *,
+        trigger_key: str,
+        payload: dict[str, Any] | None,
+        scheduled_at: int | None,
+    ) -> bool:
+        """
+        policy 起点の trigger を queued 追加する（Policy用）。
+        """
+
+        # --- 設定がOFFなら積まない ---
+        settings = self._load_runtime_settings()
+        if settings is None:
+            return False
+        if not bool(settings["autonomy_enabled"]):
+            return False
+
+        # --- 時刻とリポジトリ ---
+        clock = get_clock_service()
+        now_domain_ts = int(clock.now_domain_utc_ts())
+        now_system_ts = int(clock.now_system_utc_ts())
+        cfg = get_config_store().config
+        repo = AutonomyRepository(
+            embedding_preset_id=str(cfg.embedding_preset_id),
+            embedding_dimension=int(cfg.embedding_dimension),
+        )
+        scheduled = int(scheduled_at) if scheduled_at is not None else int(now_domain_ts)
+        return repo.enqueue_trigger(
+            trigger_type="policy",
             trigger_key=str(trigger_key),
             payload=dict(payload or {}),
             now_system_ts=int(now_system_ts),

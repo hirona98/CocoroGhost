@@ -18,6 +18,10 @@ from typing import Any
 from sqlalchemy import text
 
 from cocoro_ghost import common_utils, prompt_builders
+from cocoro_ghost.autonomy.capabilities.device_control import execute_device_control
+from cocoro_ghost.autonomy.capabilities.mobility_move import execute_mobility_move
+from cocoro_ghost.autonomy.capabilities.schedule_alarm import execute_schedule_alarm
+from cocoro_ghost.autonomy.capabilities.vision_perception import execute_vision_perception
 from cocoro_ghost.autonomy.capabilities.web_access import execute_web_research
 from cocoro_ghost.autonomy.contracts import CapabilityExecutionResult, parse_action_decision
 from cocoro_ghost.clock import get_clock_service
@@ -437,9 +441,25 @@ def _collect_deliberation_input(db, *, trigger: AutonomyTrigger) -> dict[str, An
         "mood": _load_recent_mood_snapshot(db),
         "capabilities": [
             {
+                "capability": "vision_perception",
+                "action_types": ["observe_screen", "observe_camera"],
+            },
+            {
                 "capability": "web_access",
                 "action_types": ["web_research"],
-            }
+            },
+            {
+                "capability": "schedule_alarm",
+                "action_types": ["schedule_action"],
+            },
+            {
+                "capability": "device_control",
+                "action_types": ["device_action"],
+            },
+            {
+                "capability": "mobility_move",
+                "action_types": ["move_to"],
+            },
         ],
     }
 
@@ -836,9 +856,18 @@ def _handle_execute_intent(
                        updated_at=:updated_at
                  WHERE intent_id=:intent_id
                    AND status='queued'
+                   AND (
+                        SELECT COUNT(*)
+                          FROM intents AS i2
+                         WHERE i2.status='running'
+                   ) < :max_parallel
                 """
             ),
-            {"updated_at": int(now_system_ts), "intent_id": str(intent_id)},
+            {
+                "updated_at": int(now_system_ts),
+                "intent_id": str(intent_id),
+                "max_parallel": max(1, int(cfg.autonomy_max_parallel_intents)),
+            },
         )
         if int(claimed.rowcount or 0) != 1:
             return
@@ -885,6 +914,28 @@ def _handle_execute_intent(
                 constraints=[str(x) for x in list(intent_payload.get("constraints") or [])],
             )
             capability_name = "web_access"
+        elif str(intent.action_type) in {"observe_screen", "observe_camera"}:
+            result = execute_vision_perception(
+                llm_client=llm_client,
+                action_type=str(intent.action_type),
+                action_payload=intent_payload,
+            )
+            capability_name = "vision_perception"
+        elif str(intent.action_type) == "schedule_action":
+            result = execute_schedule_alarm(
+                action_payload=intent_payload,
+            )
+            capability_name = "schedule_alarm"
+        elif str(intent.action_type) == "device_action":
+            result = execute_device_control(
+                action_payload=intent_payload,
+            )
+            capability_name = "device_control"
+        elif str(intent.action_type) == "move_to":
+            result = execute_mobility_move(
+                action_payload=intent_payload,
+            )
+            capability_name = "mobility_move"
         else:
             capability_name = "unknown"
             result = CapabilityExecutionResult(
