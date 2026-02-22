@@ -465,12 +465,9 @@ class _ExternalMemoryMixin:
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),
         )
-        self._enqueue_autonomy_event_trigger(  # type: ignore[attr-defined]
-            embedding_preset_id=embedding_preset_id,
-            embedding_dimension=embedding_dimension,
-            event_id=int(event_id),
-            source="reminder",
-        )
+        # NOTE:
+        # - autonomy trigger は reminders_service（Scheduler Policy）側で `time` として投入する。
+        # - ここでは reminder event の保存/配信だけを責務にする。
 
     def run_desktop_watch_once(self, *, target_client_id: str) -> str:
         """デスクトップウォッチを1回実行する（結果コードを返す）。"""

@@ -196,6 +196,43 @@ class AutonomyOrchestrator:
             source_event_id=None,
         )
 
+    def enqueue_time_trigger(
+        self,
+        *,
+        trigger_key: str,
+        payload: dict[str, Any] | None,
+        scheduled_at: int | None,
+    ) -> bool:
+        """
+        time 起点の trigger を queued 追加する（Policy用）。
+        """
+
+        # --- 設定がOFFなら積まない ---
+        settings = self._load_runtime_settings()
+        if settings is None:
+            return False
+        if not bool(settings["autonomy_enabled"]):
+            return False
+
+        # --- 時刻とリポジトリ ---
+        clock = get_clock_service()
+        now_domain_ts = int(clock.now_domain_utc_ts())
+        now_system_ts = int(clock.now_system_utc_ts())
+        cfg = get_config_store().config
+        repo = AutonomyRepository(
+            embedding_preset_id=str(cfg.embedding_preset_id),
+            embedding_dimension=int(cfg.embedding_dimension),
+        )
+        scheduled = int(scheduled_at) if scheduled_at is not None else int(now_domain_ts)
+        return repo.enqueue_trigger(
+            trigger_type="time",
+            trigger_key=str(trigger_key),
+            payload=dict(payload or {}),
+            now_system_ts=int(now_system_ts),
+            scheduled_at=int(scheduled),
+            source_event_id=None,
+        )
+
     def get_status(self) -> dict[str, Any]:
         """
         autonomy の稼働状態を返す（制御API用）。

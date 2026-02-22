@@ -17,6 +17,7 @@ import logging
 import threading
 
 from cocoro_ghost.clock import get_clock_service
+from cocoro_ghost.autonomy.orchestrator import get_autonomy_orchestrator
 from cocoro_ghost.deps import get_memory_manager
 from cocoro_ghost.reminders_logic import (
     DEFAULT_REMINDER_TIME_ZONE,
@@ -168,6 +169,23 @@ class ReminderService:
         mm.run_reminder_once(
             hhmm=str(hhmm),
             content=str(reminder.content),
+        )
+
+        # --- 自発行動トリガ（time） ---
+        # NOTE:
+        # - reminder は Scheduler Policy のため、autonomy には event ではなく time trigger を投入する。
+        # - trigger_key は「同じ reminder の同じ発火スロット」で一意にする。
+        get_autonomy_orchestrator().enqueue_time_trigger(
+            trigger_key=f"reminder:{str(reminder.id)}:{int(next_fire_at_utc)}",
+            payload={
+                "source": "reminder",
+                "reminder_id": str(reminder.id),
+                "scheduled_fire_at_utc": int(next_fire_at_utc),
+                "hhmm": str(hhmm),
+                "content": str(reminder.content),
+                "repeat_kind": str(reminder.repeat_kind or ""),
+            },
+            scheduled_at=int(next_fire_at_utc),
         )
 
         # --- 次回へ進める（1回だけ発火） ---
