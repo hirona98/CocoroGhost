@@ -13,7 +13,7 @@ from typing import Any
 from cocoro_ghost import common_utils, prompt_builders
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
-from cocoro_ghost.memory_models import ActionDecision, ActionResult, Event, Job, State
+from cocoro_ghost.memory_models import ActionDecision, ActionResult, Event, Job, State, WorldModelItem
 from cocoro_ghost.time_utils import format_iso8601_local
 from cocoro_ghost.worker_constants import JOB_PENDING as _JOB_PENDING
 from cocoro_ghost.worker_handlers_common import _now_utc_ts
@@ -57,8 +57,14 @@ def _handle_generate_write_plan(
         ev = db.query(Event).filter(Event.event_id == int(event_id)).one_or_none()
         if ev is None:
             return
-        # --- 検索対象外（自動分離など）なら、記憶更新の材料にしない ---
-        if int(getattr(ev, "searchable", 1) or 0) != 1:
+        # --- 検索対象外でも autonomy の内部イベントは記憶更新対象にする ---
+        # NOTE:
+        # - `deliberation_decision` / `action_result` は searchable=0 が正だが、
+        #   state/world_model 更新の材料としては扱う必要がある。
+        if (
+            int(getattr(ev, "searchable", 1) or 0) != 1
+            and str(ev.source) not in {"deliberation_decision", "action_result"}
+        ):
             return
 
         # --- 画像要約（events.image_summaries_json）をlist[str]へ正規化する ---
@@ -137,6 +143,7 @@ def _handle_generate_write_plan(
                     "reason_text": (str(decision_row.reason_text) if decision_row.reason_text is not None else None),
                     "confidence": float(decision_row.confidence),
                 }
+        world_model_state_promotions: list[dict[str, Any]] = []
         if str(ev.source) == "action_result":
             result_row = (
                 db.query(ActionResult)
@@ -156,6 +163,89 @@ def _handle_generate_write_plan(
                     "result_payload_json": str(result_row.result_payload_json),
                     "useful_for_recall_hint": bool(int(result_row.useful_for_recall_hint)),
                 }
+
+                # --- world_model_items の昇格候補を deterministic に作る ---
+                # NOTE:
+                # - 最終判定責務は generate_write_plan に置く（LLM出力に依存しない）。
+                # - apply_write_plan は state_updates を適用するだけにする。
+                now_domain_ts = int(ev.created_at)
+                wm_rows = (
+                    db.query(WorldModelItem)
+                    .filter(WorldModelItem.source_result_id == str(result_row.result_id))
+                    .order_by(WorldModelItem.updated_at.desc(), WorldModelItem.item_id.asc())
+                    .limit(16)
+                    .all()
+                )
+                for wm in wm_rows:
+                    if str(wm.observation_class or "") != "fact":
+                        continue
+                    if int(wm.active or 0) != 1:
+                        continue
+                    if float(wm.confidence or 0.0) < 0.80:
+                        continue
+                    if int(now_domain_ts) - int(wm.freshness_at or 0) > 604800:
+                        continue
+                    if not (
+                        int(wm.observation_count or 0) >= 2
+                        or float(wm.confidence or 0.0) >= 0.93
+                    ):
+                        continue
+
+                    # --- JSON を読みやすい payload へ整形 ---
+                    entity_obj = common_utils.json_loads_maybe(str(wm.entity_json or "{}"))
+                    relation_obj = common_utils.json_loads_maybe(str(wm.relation_json or "{}"))
+                    location_obj = common_utils.json_loads_maybe(str(wm.location_json or "{}"))
+                    affordance_obj = common_utils.json_loads_maybe(str(wm.affordance_json or "{}"))
+                    if not isinstance(entity_obj, dict):
+                        entity_obj = {}
+                    if not isinstance(relation_obj, dict):
+                        relation_obj = {}
+                    if not isinstance(location_obj, dict):
+                        location_obj = {}
+                    if not isinstance(affordance_obj, dict):
+                        affordance_obj = {}
+
+                    # --- 同じ world_model_item を表す state を探して upsert する ---
+                    marker = f"\"world_model_item_id\":\"{str(wm.item_id)}\""
+                    existing_state = (
+                        db.query(State)
+                        .filter(State.kind == "fact")
+                        .filter(State.payload_json.like(f"%{marker}%"))
+                        .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+                        .first()
+                    )
+
+                    summary_text = str(affordance_obj.get("summary") or "").strip()
+                    if not summary_text:
+                        summary_text = str(result_row.summary_text or "").strip()
+                    if not summary_text:
+                        summary_text = f"web調査メモ: {str(wm.item_key)}"
+
+                    world_model_state_promotions.append(
+                        {
+                            "op": "upsert",
+                            "kind": "fact",
+                            "state_id": (int(existing_state.state_id) if existing_state is not None else None),
+                            "body_text": str(summary_text)[:2000],
+                            "payload": {
+                                "world_model_item_id": str(wm.item_id),
+                                "item_key": str(wm.item_key),
+                                "observation_class": str(wm.observation_class or ""),
+                                "observation_count": int(wm.observation_count or 0),
+                                "freshness_at": int(wm.freshness_at or 0),
+                                "entity": entity_obj,
+                                "relation": relation_obj,
+                                "location": location_obj,
+                                "affordance": affordance_obj,
+                            },
+                            "confidence": float(wm.confidence or 0.0),
+                            "valid_from_ts": int(wm.freshness_at or 0),
+                            "valid_to_ts": None,
+                            "reason": "world_model_items から state.fact へ昇格した",
+                            "evidence_event_ids": [int(ev.event_id)],
+                            "entities": [],
+                        }
+                    )
 
         # --- 直近の出来事（同一client優先） ---
         recent_events_q = db.query(Event).filter(Event.searchable == 1).order_by(Event.event_id.desc())
@@ -232,6 +322,15 @@ def _handle_generate_write_plan(
         except Exception:  # noqa: BLE001
             content = ""
     plan_obj = common_utils.parse_first_json_object_or_raise(content)
+
+    # --- deterministic: world_model 昇格を state_updates へ合成 ---
+    if world_model_state_promotions:
+        su = plan_obj.get("state_updates") if isinstance(plan_obj, dict) else None
+        if not isinstance(su, list):
+            plan_obj["state_updates"] = []
+            su = plan_obj["state_updates"]
+        for item in world_model_state_promotions:
+            su.append(item)
 
     # --- apply_write_plan を投入する（planはpayloadに入れて監査できるようにする） ---
     now_ts = _now_utc_ts()

@@ -10,6 +10,7 @@ Workerジョブハンドラ（autonomy）。
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from typing import Any
@@ -31,6 +32,7 @@ from cocoro_ghost.memory_models import (
     EventAffect,
     Intent,
     Job,
+    Goal,
     RuntimeSnapshot,
     State,
 )
@@ -80,6 +82,249 @@ def _load_recent_mood_snapshot(db) -> dict[str, Any]:
         "long_mood_state": long_mood_payload,
         "recent_vad_average": {"v": float(v), "a": float(a), "d": float(d)},
     }
+
+
+def _maybe_create_goal_from_decision(
+    *,
+    db,
+    decision_id: str,
+    action_type: str,
+    action_payload_json: str | None,
+    priority: int,
+    now_system_ts: int,
+) -> str | None:
+    """ActionDecision から goals を1件生成し、goal_id を返す。"""
+
+    # --- action_payload を読む ---
+    payload = common_utils.json_loads_maybe(str(action_payload_json or ""))
+    if not isinstance(payload, dict):
+        payload = {}
+
+    # --- goal 文言が無ければ作らない ---
+    goal_title = str(payload.get("goal") or "").strip()
+    if not goal_title:
+        return None
+
+    # --- goal_type を action_type から決める ---
+    action_type_norm = str(action_type or "").strip()
+    goal_type = "research" if action_type_norm == "web_research" else "task"
+
+    # --- Goal を1件作成（単一ユーザー前提・decision単位） ---
+    goal_id = str(uuid.uuid4())
+    db.add(
+        Goal(
+            goal_id=str(goal_id),
+            title=str(goal_title)[:240],
+            goal_type=str(goal_type),
+            status="active",
+            priority=max(0, min(100, int(priority))),
+            target_condition_json=common_utils.json_dumps(
+                {
+                    "decision_id": str(decision_id),
+                    "action_type": str(action_type_norm),
+                    "action_payload": payload,
+                }
+            ),
+            horizon="short",
+            created_at=int(now_system_ts),
+            updated_at=int(now_system_ts),
+        )
+    )
+    return str(goal_id)
+
+
+def _upsert_world_model_item_from_action_result(
+    *,
+    db,
+    source_event_id: int,
+    source_result_id: str,
+    capability_name: str,
+    result_status: str,
+    summary_text: str,
+    result_payload_json: str,
+    now_system_ts: int,
+    now_domain_ts: int,
+) -> None:
+    """ActionResult を world_model_items に集約する。"""
+
+    # --- web_access 以外は現時点では対象外 ---
+    if str(capability_name or "").strip() != "web_access":
+        return
+
+    # --- payload を読む ---
+    payload = common_utils.json_loads_maybe(str(result_payload_json or ""))
+    if not isinstance(payload, dict):
+        payload = {}
+
+    query = str(payload.get("query") or "").strip()
+    goal = str(payload.get("goal") or "").strip()
+    notes = str(payload.get("notes") or "").strip()
+    findings_raw = payload.get("findings") if isinstance(payload.get("findings"), list) else []
+    sources_raw = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+
+    # --- findings を短い文字列配列へ正規化 ---
+    findings: list[str] = []
+    for x in findings_raw:
+        if isinstance(x, dict):
+            text_v = str(x.get("text") or x.get("summary") or x.get("title") or "").strip()
+        else:
+            text_v = str(x or "").strip()
+        if not text_v:
+            continue
+        findings.append(text_v[:500])
+        if len(findings) >= 20:
+            break
+
+    # --- sources を監査しやすい形に正規化 ---
+    sources: list[dict[str, Any]] = []
+    for x in sources_raw:
+        if isinstance(x, dict):
+            url = str(x.get("url") or "").strip()
+            title = str(x.get("title") or "").strip()
+        else:
+            url = str(x or "").strip()
+            title = ""
+        if not url and not title:
+            continue
+        sources.append({"url": url[:1000], "title": title[:240]})
+        if len(sources) >= 10:
+            break
+
+    # --- observation_class / confidence を決める ---
+    result_status_norm = str(result_status or "").strip()
+    has_findings = bool(findings)
+    has_sources = bool(sources)
+    if result_status_norm == "success" and has_findings and has_sources:
+        observation_class = "fact"
+        confidence = 0.93
+    elif result_status_norm in {"success", "partial"} and has_findings:
+        observation_class = "fact"
+        confidence = 0.84 if result_status_norm == "partial" else 0.88
+    elif result_status_norm in {"success", "partial"} and has_sources:
+        observation_class = "inferred"
+        confidence = 0.70
+    elif result_status_norm == "no_effect":
+        observation_class = "unknown"
+        confidence = 0.20
+    else:
+        observation_class = "unknown"
+        confidence = 0.10
+
+    # --- item_key（同一 query の観測を統合） ---
+    query_key = str(query).strip().lower()
+    if not query_key:
+        query_key = hashlib.sha256(str(summary_text or "").encode("utf-8")).hexdigest()[:24]
+    item_key = f"web_research:{query_key}"
+
+    # --- 保存JSON ---
+    entity_obj = {
+        "kind": "web_research_query",
+        "query": str(query),
+        "goal": str(goal),
+    }
+    relation_obj = {
+        "result_status": str(result_status_norm),
+        "capability_name": "web_access",
+    }
+    location_obj = {
+        "space": "web",
+    }
+    affordance_obj = {
+        "summary": str(summary_text or "")[:1000],
+        "findings": list(findings),
+        "sources": list(sources),
+        "notes": str(notes)[:1000],
+    }
+
+    # --- フィンガープリント（内容比較用） ---
+    fingerprint_payload = {
+        "summary": str(summary_text or ""),
+        "findings": list(findings),
+        "sources": list(sources),
+        "result_status": str(result_status_norm),
+    }
+    content_fingerprint = hashlib.sha256(
+        common_utils.json_dumps(fingerprint_payload).encode("utf-8")
+    ).hexdigest()
+
+    # --- world_model_items を item_key 単位で原子的 UPSERT ---
+    db.execute(
+        text(
+            """
+            INSERT INTO world_model_items(
+                item_id,
+                source_event_id,
+                source_result_id,
+                item_key,
+                observation_class,
+                entity_json,
+                relation_json,
+                location_json,
+                affordance_json,
+                content_fingerprint,
+                observation_count,
+                confidence,
+                freshness_at,
+                active,
+                created_at,
+                updated_at
+            )
+            VALUES(
+                :item_id,
+                :source_event_id,
+                :source_result_id,
+                :item_key,
+                :observation_class,
+                :entity_json,
+                :relation_json,
+                :location_json,
+                :affordance_json,
+                :content_fingerprint,
+                1,
+                :confidence,
+                :freshness_at,
+                1,
+                :created_at,
+                :updated_at
+            )
+            ON CONFLICT(item_key) DO UPDATE SET
+                source_event_id = excluded.source_event_id,
+                source_result_id = excluded.source_result_id,
+                observation_class = excluded.observation_class,
+                entity_json = excluded.entity_json,
+                relation_json = excluded.relation_json,
+                location_json = excluded.location_json,
+                affordance_json = excluded.affordance_json,
+                content_fingerprint = excluded.content_fingerprint,
+                observation_count = world_model_items.observation_count + 1,
+                confidence = CASE
+                    WHEN world_model_items.content_fingerprint = excluded.content_fingerprint THEN
+                        MIN(1.0, world_model_items.confidence * 0.80 + excluded.confidence * 0.20 + 0.05)
+                    ELSE
+                        MAX(0.0, world_model_items.confidence * 0.60 + excluded.confidence * 0.40 - 0.15)
+                END,
+                freshness_at = MAX(COALESCE(world_model_items.freshness_at, 0), excluded.freshness_at),
+                active = excluded.active,
+                updated_at = excluded.updated_at
+            """
+        ),
+        {
+            "item_id": str(uuid.uuid4()),
+            "source_event_id": int(source_event_id),
+            "source_result_id": str(source_result_id),
+            "item_key": str(item_key),
+            "observation_class": str(observation_class),
+            "entity_json": common_utils.json_dumps(entity_obj),
+            "relation_json": common_utils.json_dumps(relation_obj),
+            "location_json": common_utils.json_dumps(location_obj),
+            "affordance_json": common_utils.json_dumps(affordance_obj),
+            "content_fingerprint": str(content_fingerprint),
+            "confidence": float(max(0.0, min(1.0, confidence))),
+            "freshness_at": int(max(0, int(now_domain_ts))),
+            "created_at": int(now_system_ts),
+            "updated_at": int(now_system_ts),
+        },
+    )
 
 
 def _collect_deliberation_input(db, *, trigger: AutonomyTrigger) -> dict[str, Any]:
@@ -395,8 +640,30 @@ def _handle_deliberate_once(
                 )
             )
 
+            # --- 記憶更新（WritePlan）ジョブを投入（decision は searchable=0 でも対象） ---
+            db.add(
+                Job(
+                    kind="generate_write_plan",
+                    payload_json=common_utils.json_dumps({"event_id": int(decision_event.event_id)}),
+                    status=int(_JOB_PENDING),
+                    run_after=int(now_system_ts),
+                    tries=0,
+                    last_error=None,
+                    created_at=int(now_system_ts),
+                    updated_at=int(now_system_ts),
+                )
+            )
+
             # --- do_action: Intent を冪等生成して execute_intent を投入 ---
             if str(decision.decision_outcome) == "do_action":
+                goal_id_for_intent = _maybe_create_goal_from_decision(
+                    db=db,
+                    decision_id=str(decision_id),
+                    action_type=str(decision.action_type or ""),
+                    action_payload_json=(str(decision.action_payload_json) if decision.action_payload_json else None),
+                    priority=int(decision.priority),
+                    now_system_ts=int(now_system_ts),
+                )
                 proposed_intent_id = str(uuid.uuid4())
                 db.execute(
                     text(
@@ -420,7 +687,7 @@ def _handle_deliberate_once(
                         VALUES(
                             :intent_id,
                             :decision_id,
-                            NULL,
+                            :goal_id,
                             :action_type,
                             :action_payload_json,
                             'queued',
@@ -438,6 +705,7 @@ def _handle_deliberate_once(
                     {
                         "intent_id": str(proposed_intent_id),
                         "decision_id": str(decision_id),
+                        "goal_id": (str(goal_id_for_intent) if goal_id_for_intent else None),
                         "action_type": str(decision.action_type or ""),
                         "action_payload_json": str(decision.action_payload_json or "{}"),
                         "priority": int(decision.priority),
@@ -674,6 +942,19 @@ def _handle_execute_intent(
             )
         )
 
+        # --- world_model_items へ集約（Capability 本体ではなく Worker が担当） ---
+        _upsert_world_model_item_from_action_result(
+            db=db,
+            source_event_id=int(result_event.event_id),
+            source_result_id=str(result_id),
+            capability_name=str(capability_name),
+            result_status=str(result.result_status),
+            summary_text=str(result.summary),
+            result_payload_json=str(result.result_payload_json),
+            now_system_ts=int(now_system_ts),
+            now_domain_ts=int(now_domain_ts),
+        )
+
         # --- intent 状態を終端へ遷移 ---
         if str(result.result_status) == "failed":
             db.execute(
@@ -713,6 +994,25 @@ def _handle_execute_intent(
                     "intent_id": str(intent_id),
                 },
             )
+
+            # --- goal は成功/部分成功で完了に寄せる ---
+            if intent.goal_id is not None and str(intent.goal_id).strip():
+                db.execute(
+                    text(
+                        """
+                        UPDATE goals
+                           SET status='done',
+                               updated_at=:updated_at
+                         WHERE goal_id=:goal_id
+                           AND status <> 'done'
+                           AND status <> 'dropped'
+                        """
+                    ),
+                    {
+                        "updated_at": int(now_system_ts),
+                        "goal_id": str(intent.goal_id),
+                    },
+                )
 
         # --- next_trigger があれば投入 ---
         if isinstance(result.next_trigger, dict) and bool(result.next_trigger.get("required")):
