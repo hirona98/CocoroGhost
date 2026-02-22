@@ -425,7 +425,7 @@ class FullSettingsResponse(BaseModel):
     全設定統合レスポンス。
     アプリケーションのすべての設定を一括で返す。
     """
-    # 記憶機能の有効/無効（UI用）
+    # 記憶機能（常時 true、UI互換で返却）
     memory_enabled: bool
 
     # 視覚（Vision）: デスクトップウォッチ
@@ -508,6 +508,7 @@ class FullSettingsUpdateRequest(BaseModel):
     全設定更新リクエスト。
     すべての設定を一括で更新する際に使用する。
     """
+    # 記憶機能（常時 true のみ受け付ける）
     memory_enabled: bool
     desktop_watch_enabled: bool
     desktop_watch_interval_seconds: int

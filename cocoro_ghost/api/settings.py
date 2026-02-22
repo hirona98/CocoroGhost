@@ -3,7 +3,7 @@
 
 アプリケーション設定の取得・更新を行うエンドポイント。
 LLM/Embedding/PersonaPreset/AddonPreset各プリセットの管理、
-GlobalSettings（除外キーワード、記憶機能ON/OFF等）の更新、
+GlobalSettings（除外キーワード、記憶機能=常時ON等）の更新、
 デスクトップウォッチ設定の管理をサポートする。
 """
 
@@ -39,6 +39,11 @@ def get_settings(
 ):
     """全設定を取得（GlobalSettings + アクティブなプリセット情報）。"""
     global_settings = load_global_settings(db)
+    # 記憶機能は常時有効のため、過去データに false が残っていても true に正規化する。
+    if not bool(global_settings.memory_enabled):
+        global_settings.memory_enabled = True
+        db.commit()
+        db.refresh(global_settings)
 
     llm_presets: list[schemas.LlmPresetSettings] = []
     embedding_presets: list[schemas.EmbeddingPresetSettings] = []
@@ -168,9 +173,14 @@ def commit_settings(
     global_settings.memory_enabled = request.memory_enabled
     global_settings.desktop_watch_enabled = bool(request.desktop_watch_enabled)
     global_settings.desktop_watch_interval_seconds = int(request.desktop_watch_interval_seconds)
-    global_settings.desktop_watch_target_client_id = (
-        str(request.desktop_watch_target_client_id).strip() if request.desktop_watch_target_client_id else None
-    )
+    # --- desktop_watch_target_client_id は「明示指定されたときだけ更新」する ---
+    # NOTE:
+    # - Web UI はこの項目を編集しないため、未送信時は既存DB値を保持する。
+    # - 対応クライアントから明示的に null/空文字が来た場合のみ None へ更新する。
+    if "desktop_watch_target_client_id" in request.model_fields_set:
+        global_settings.desktop_watch_target_client_id = (
+            str(request.desktop_watch_target_client_id).strip() if request.desktop_watch_target_client_id else None
+        )
     global_settings.autonomy_enabled = bool(request.autonomy_enabled)
     global_settings.autonomy_heartbeat_seconds = max(1, int(request.autonomy_heartbeat_seconds))
     global_settings.autonomy_max_parallel_intents = max(1, int(request.autonomy_max_parallel_intents))

@@ -1,10 +1,11 @@
 <!doctype html>
 <html lang="ja">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
 
-    <!--
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+
+  <!--
       CocoroGhost Web UI (CocoroUI.png 互換レイアウト)
 
       方針:
@@ -13,168 +14,352 @@
       - 同一オリジンで /api/* を呼ぶ（CORS不要）
     -->
 
-    <title>CocoroAI - CocoroGhost</title>
-    <!-- Favicon -->
-    <link rel="icon" href="/favicon.ico" type="image/x-icon" sizes="any" />
-    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
-    <link rel="stylesheet" href="/static/style.css" />
-  </head>
-  <body>
-    <div class="app">
-      <!-- Header -->
-      <header class="topbar">
-        <div class="topbar-left">
-          <div class="topbar-title">CocoroAI</div>
-        </div>
-        <div class="topbar-right">
-          <!--
+  <title>CocoroAI - CocoroGhost</title>
+  <!-- Favicon -->
+  <link rel="icon" href="/favicon.ico" type="image/x-icon" sizes="any" />
+  <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="topbar-title">CocoroAI</div>
+      </div>
+      <div class="topbar-right">
+        <!--
             右上アイコン群（CocoroUI.png 風）
-            実装は最小に留め、設定（⚙）のみ logout に使う。
+            実装は最小に留め、設定（⚙）で設定画面を開く。
           -->
-          <button class="icon-btn" id="btn-mic" type="button" title="音声入力" aria-label="音声入力">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"
-              ></path>
-              <!-- NOTE: OFF 状態は斜線あり、ON 状態は斜線なし（CSS で切替） -->
-              <path class="mic-slash" d="M4 4l16 16" stroke="currentColor" stroke-width="2" fill="none"></path>
-            </svg>
-          </button>
-          <button class="icon-btn" id="btn-gear" type="button" title="Logout" aria-label="Logout">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.2 7.2 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.58.22-1.12.52-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.7 7.8a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.82 14.5a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.41 1.05.72 1.63.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.58-.22 1.12-.52 1.63-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.56zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z"
-              ></path>
-            </svg>
-          </button>
-        </div>
-      </header>
+        <button class="icon-btn" id="btn-mic" type="button" title="音声入力" aria-label="音声入力">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z">
+            </path>
+            <!-- NOTE: OFF 状態は斜線あり、ON 状態は斜線なし（CSS で切替） -->
+            <path class="mic-slash" d="M4 4l16 16" stroke="currentColor" stroke-width="2" fill="none"></path>
+          </svg>
+        </button>
+        <button class="icon-btn" id="btn-gear" type="button" title="設定" aria-label="設定">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.2 7.2 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.58.22-1.12.52-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.7 7.8a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.82 14.5a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.41 1.05.72 1.63.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.58-.22 1.12-.52 1.63-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.56zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z">
+            </path>
+          </svg>
+        </button>
+      </div>
+    </header>
 
-      <!-- Main -->
-      <main class="main">
-        <!-- Login panel -->
-        <section id="panel-login" class="login">
-          <div class="login-inner">
-            <div class="login-title">ログイン</div>
-            <div class="login-desc">Token を入力してログインしてください</div>
-            <div class="login-row">
-              <input id="login-token" class="login-input" type="password" autocomplete="current-password" placeholder="Token" />
-              <button id="btn-login" class="login-btn" type="button">Login</button>
-            </div>
-            <div id="login-status" class="status"></div>
+    <!-- Main -->
+    <main class="main">
+      <!-- Login panel -->
+      <section id="panel-login" class="login">
+        <div class="login-inner">
+          <div class="login-title">ログイン</div>
+          <div class="login-desc">Token を入力してログインしてください</div>
+          <div class="login-row">
+            <input id="login-token" class="login-input" type="password" autocomplete="current-password"
+              placeholder="Token" />
+            <button id="btn-login" class="login-btn" type="button">Login</button>
           </div>
-        </section>
+          <div id="login-status" class="status"></div>
+        </div>
+      </section>
 
-        <!-- Chat panel -->
-        <section id="panel-chat" class="chat hidden" aria-live="polite">
-          <div id="chat-scroll" class="chat-scroll"></div>
-        </section>
-      </main>
+      <!-- Chat panel -->
+      <section id="panel-chat" class="chat hidden" aria-live="polite">
+        <div id="chat-scroll" class="chat-scroll"></div>
+      </section>
 
-      <!-- Input (LINE/スマホアプリ風) -->
-      <section id="input-panel" class="composer hidden">
-        <div id="attachments" class="attachments" aria-label="添付ファイル一覧"></div>
-        <div class="composer-row">
-          <label class="composer-icon" for="file-input" title="画像を追加" aria-label="画像を追加">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M16.5 6.5l-7.78 7.78a2 2 0 1 0 2.83 2.83l8.49-8.49a4 4 0 0 0-5.66-5.66L6.4 11.44a6 6 0 0 0 8.49 8.49l7.07-7.07"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              ></path>
-            </svg>
-          </label>
-          <input id="file-input" class="file-hidden" type="file" accept="image/*" multiple />
+      <!-- Settings panel -->
+      <section id="panel-settings" class="settings hidden" aria-live="polite">
+        <div class="settings-toolbar">
+          <button id="btn-settings-back" class="settings-btn settings-btn-back" type="button">チャットに戻る</button>
+          <div class="settings-toolbar-right">
+            <button id="btn-settings-reload" class="settings-btn" type="button">再読込</button>
+            <button id="btn-settings-save" class="settings-btn primary" type="button">保存</button>
+          </div>
+          <button id="btn-settings-logout" class="settings-btn danger settings-btn-logout" type="button">ログアウト</button>
+        </div>
+        <div class="settings-desc">項目ごとにタブを切り替えて編集し、最後に保存してください。</div>
 
-          <!--
+        <!-- Settings tabs -->
+        <div class="settings-tabs" role="tablist" aria-label="設定タブ">
+          <button class="settings-tab active" type="button" data-tab="persona">ペルソナ</button>
+          <button class="settings-tab" type="button" data-tab="chat">会話</button>
+          <button class="settings-tab" type="button" data-tab="memory">記憶</button>
+          <button class="settings-tab" type="button" data-tab="system">システム</button>
+        </div>
+
+        <!-- Settings pages -->
+        <div class="settings-pages">
+          <!-- Chat tab -->
+          <section class="settings-page hidden" data-tab-page="chat">
+            <div class="settings-card">
+              <div class="settings-card-title">会話プリセット</div>
+              <div class="settings-preset-row">
+                <select id="settings-active-llm" class="settings-select"></select>
+                <button id="btn-llm-add" class="settings-mini-btn" type="button">追加</button>
+                <button id="btn-llm-duplicate" class="settings-mini-btn" type="button">複製</button>
+                <button id="btn-llm-delete" class="settings-mini-btn danger" type="button">削除</button>
+              </div>
+              <div class="settings-grid">
+                <label class="settings-field">
+                  <span class="settings-label">プリセット名</span>
+                  <input id="llm-name" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">LLMモデル</span>
+                  <input id="llm-model" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">APIキー</span>
+                  <input id="llm-api-key" class="settings-input" type="password" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">Base URL</span>
+                  <input id="llm-base-url" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">Reasoning Effort</span>
+                  <input id="llm-reasoning-effort" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">会話履歴件数</span>
+                  <input id="llm-max-turns-window" class="settings-input" type="number" min="1" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">最大トークン</span>
+                  <input id="llm-max-tokens" class="settings-input" type="number" min="1" />
+                </label>
+              </div>
+              <label class="settings-check">
+                <input id="llm-reply-web-search-enabled" type="checkbox" />
+                <span>Web検索を有効化する</span>
+              </label>
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-card-title">画像認識用LLM</div>
+              <div class="settings-grid">
+                <label class="settings-field">
+                  <span class="settings-label">画像モデル</span>
+                  <input id="llm-image-model" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">画像APIキー</span>
+                  <input id="llm-image-api-key" class="settings-input" type="password" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">画像Base URL</span>
+                  <input id="llm-image-base-url" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">最大トークン（画像）</span>
+                  <input id="llm-max-tokens-vision" class="settings-input" type="number" min="1" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">画像タイムアウト秒</span>
+                  <input id="llm-image-timeout-seconds" class="settings-input" type="number" min="1" />
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <!-- Memory tab -->
+          <section class="settings-page hidden" data-tab-page="memory">
+            <div class="settings-card">
+              <div class="settings-card-title">Embeddingプリセット</div>
+              <div class="settings-note danger">※赤字項目は一度設定したら変更しないでください。</div>
+              <div class="settings-preset-row">
+                <select id="settings-active-embedding" class="settings-select"></select>
+                <button id="btn-embedding-add" class="settings-mini-btn" type="button">追加</button>
+                <button id="btn-embedding-duplicate" class="settings-mini-btn" type="button">複製</button>
+                <button id="btn-embedding-delete" class="settings-mini-btn danger" type="button">削除</button>
+              </div>
+              <div class="settings-grid">
+                <label class="settings-field">
+                  <span class="settings-label">プリセット名</span>
+                  <input id="embedding-name" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label danger">Embeddingモデル</span>
+                  <input id="embedding-model" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">Embedding APIキー</span>
+                  <input id="embedding-api-key" class="settings-input" type="password" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">Embedding Base URL</span>
+                  <input id="embedding-base-url" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label danger">Embedding次元数</span>
+                  <input id="embedding-dimension" class="settings-input" type="number" min="1" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">類似エピソード数</span>
+                  <input id="embedding-similar-episodes-limit" class="settings-input" type="number" min="1" />
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <!-- Persona tab -->
+          <section class="settings-page" data-tab-page="persona">
+            <div class="settings-card">
+              <div class="settings-card-title">ペルソナプリセット</div>
+              <div class="settings-preset-row">
+                <select id="settings-active-persona" class="settings-select"></select>
+                <button id="btn-persona-add" class="settings-mini-btn" type="button">追加</button>
+                <button id="btn-persona-duplicate" class="settings-mini-btn" type="button">複製</button>
+                <button id="btn-persona-delete" class="settings-mini-btn danger" type="button">削除</button>
+              </div>
+              <div class="settings-grid">
+                <label class="settings-field">
+                  <span class="settings-label">プリセット名</span>
+                  <input id="persona-name" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">ユーザーの呼び方</span>
+                  <input id="persona-second-person-label" class="settings-input" type="text" />
+                </label>
+              </div>
+              <label class="settings-field">
+                <span class="settings-label">ペルソナ本文</span>
+                <textarea id="persona-text" class="settings-textarea" spellcheck="false"></textarea>
+              </label>
+            </div>
+
+            <!-- Addon settings in persona tab -->
+            <div class="settings-card">
+              <div class="settings-card-title">アドオンプリセット</div>
+              <div class="settings-preset-row">
+                <select id="settings-active-addon" class="settings-select"></select>
+                <button id="btn-addon-add" class="settings-mini-btn" type="button">追加</button>
+                <button id="btn-addon-duplicate" class="settings-mini-btn" type="button">複製</button>
+                <button id="btn-addon-delete" class="settings-mini-btn danger" type="button">削除</button>
+              </div>
+              <label class="settings-field">
+                <span class="settings-label">プリセット名</span>
+                <input id="addon-name" class="settings-input" type="text" />
+              </label>
+              <label class="settings-field">
+                <span class="settings-label">アドオン本文</span>
+                <textarea id="addon-text" class="settings-textarea" spellcheck="false"></textarea>
+              </label>
+            </div>
+          </section>
+
+          <!-- System tab -->
+          <section class="settings-page hidden" data-tab-page="system">
+            <div class="settings-card">
+              <div class="settings-card-title">システム設定</div>
+              <label class="settings-check">
+                <input id="desktop-watch-enabled" type="checkbox" />
+                <span>デスクトップ監視を有効化する</span>
+              </label>
+              <div class="settings-grid">
+                <label class="settings-field">
+                  <span class="settings-label">監視間隔（秒）</span>
+                  <input id="desktop-watch-interval-seconds" class="settings-input" type="number" min="1" />
+                </label>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div id="settings-status" class="status"></div>
+      </section>
+    </main>
+
+    <!-- Input (LINE/スマホアプリ風) -->
+    <section id="input-panel" class="composer hidden">
+      <div id="attachments" class="attachments" aria-label="添付ファイル一覧"></div>
+      <div class="composer-row">
+        <label class="composer-icon" for="file-input" title="画像を追加" aria-label="画像を追加">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M16.5 6.5l-7.78 7.78a2 2 0 1 0 2.83 2.83l8.49-8.49a4 4 0 0 0-5.66-5.66L6.4 11.44a6 6 0 0 0 8.49 8.49l7.07-7.07"
+              fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </label>
+        <input id="file-input" class="file-hidden" type="file" accept="image/*" multiple />
+
+        <!--
             カメラ（撮影）
             - 対応環境では getUserMedia でプレビュー撮影
             - 非対応/許可不可の場合は capture input にフォールバック
           -->
-          <button class="composer-icon" id="btn-camera" type="button" title="カメラ" aria-label="カメラ">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M4 8a2 2 0 0 1 2-2h3l1.6-1.6h2.8L15 6h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              ></path>
-              <circle cx="12" cy="12.5" r="3.2" fill="none" stroke="currentColor" stroke-width="2"></circle>
-            </svg>
-          </button>
-          <input id="camera-input" class="file-hidden" type="file" accept="image/*" capture="environment" />
+        <button class="composer-icon" id="btn-camera" type="button" title="カメラ" aria-label="カメラ">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 8a2 2 0 0 1 2-2h3l1.6-1.6h2.8L15 6h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z"
+              fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+            <circle cx="12" cy="12.5" r="3.2" fill="none" stroke="currentColor" stroke-width="2"></circle>
+          </svg>
+        </button>
+        <input id="camera-input" class="file-hidden" type="file" accept="image/*" capture="environment" />
 
-          <div class="composer-field">
-            <textarea
-              id="text-input"
-              class="composer-textarea"
-              rows="1"
-              placeholder="テキストと画像の入力が可能です"
-            ></textarea>
-          </div>
+        <div class="composer-field">
+          <textarea id="text-input" class="composer-textarea" rows="1" placeholder="テキストと画像の入力が可能です"></textarea>
+        </div>
 
-          <button id="btn-send" class="composer-send" type="button" disabled>送信</button>
-        </div>
-      </section>
-
-      <!-- Status bar -->
-      <footer class="statusbar">
-        <div id="status-left" class="statusbar-left">状態: CocoroGhost起動待ち</div>
-        <div id="status-right" class="statusbar-right"></div>
-      </footer>
-    </div>
-
-    <!-- Camera modal -->
-      <div id="camera-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="カメラ">
-      <div class="modal-backdrop"></div>
-      <div class="camera-sheet">
-        <div id="camera-preview" class="camera-preview">
-          <video id="camera-video" class="camera-video" playsinline autoplay muted></video>
-          <div id="camera-mode-label" class="camera-mode-label" aria-live="polite"></div>
-        </div>
-        <div class="camera-controls">
-          <!-- NOTE: イン/アウト切替はアイコン表示（アクセシビリティ用に aria-label は残す） -->
-          <button
-            id="btn-camera-flip"
-            class="camera-btn secondary icon-only"
-            type="button"
-            title="イン/アウト切替"
-            aria-label="イン/アウト切替"
-          >
-            <svg class="camera-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <!-- NOTE: 前後カメラ切替のニュアンス（回転/入替）に寄せる -->
-              <path d="M3 12a9 9 0 0 1 15-6" />
-              <path d="M18 3v3h3" />
-              <path d="M21 12a9 9 0 0 1-15 6" />
-              <path d="M6 21v-3H3" />
-            </svg>
-          </button>
-          <div class="camera-ratios" aria-label="比率">
-            <button class="ratio-btn" id="btn-ratio-3x4" type="button" data-ratio="3:4">3:4</button>
-            <button class="ratio-btn" id="btn-ratio-1x1" type="button" data-ratio="1:1">1:1</button>
-            <button class="ratio-btn" id="btn-ratio-16x9" type="button" data-ratio="16:9">16:9</button>
-          </div>
-          <div id="camera-zoom" class="camera-zoom hidden" aria-label="ズーム">
-            <div class="camera-zoom-row">
-              <span class="camera-zoom-label">ズーム</span>
-              <span id="camera-zoom-value" class="camera-zoom-value">1.0×</span>
-            </div>
-            <input id="camera-zoom-slider" class="camera-zoom-slider" type="range" min="1" max="1" step="0.1" value="1" />
-          </div>
-        </div>
-        <div class="camera-actions">
-          <button id="btn-camera-cancel" class="camera-btn secondary" type="button">キャンセル</button>
-          <button id="btn-camera-shot" class="camera-btn primary" type="button">撮影</button>
-        </div>
-        <div id="camera-status" class="camera-status"></div>
+        <button id="btn-send" class="composer-send" type="button" disabled>送信</button>
       </div>
-    </div>
+    </section>
 
-    <script src="/static/app.js"></script>
-  </body>
+    <!-- Status bar -->
+    <footer class="statusbar">
+      <div id="status-left" class="statusbar-left">状態: CocoroGhost起動待ち</div>
+      <div id="status-right" class="statusbar-right"></div>
+    </footer>
+  </div>
+
+  <!-- Camera modal -->
+  <div id="camera-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="カメラ">
+    <div class="modal-backdrop"></div>
+    <div class="camera-sheet">
+      <div id="camera-preview" class="camera-preview">
+        <video id="camera-video" class="camera-video" playsinline autoplay muted></video>
+        <div id="camera-mode-label" class="camera-mode-label" aria-live="polite"></div>
+      </div>
+      <div class="camera-controls">
+        <!-- NOTE: イン/アウト切替はアイコン表示（アクセシビリティ用に aria-label は残す） -->
+        <button id="btn-camera-flip" class="camera-btn secondary icon-only" type="button" title="イン/アウト切替"
+          aria-label="イン/アウト切替">
+          <svg class="camera-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <!-- NOTE: 前後カメラ切替のニュアンス（回転/入替）に寄せる -->
+            <path d="M3 12a9 9 0 0 1 15-6" />
+            <path d="M18 3v3h3" />
+            <path d="M21 12a9 9 0 0 1-15 6" />
+            <path d="M6 21v-3H3" />
+          </svg>
+        </button>
+        <div class="camera-ratios" aria-label="比率">
+          <button class="ratio-btn" id="btn-ratio-3x4" type="button" data-ratio="3:4">3:4</button>
+          <button class="ratio-btn" id="btn-ratio-1x1" type="button" data-ratio="1:1">1:1</button>
+          <button class="ratio-btn" id="btn-ratio-16x9" type="button" data-ratio="16:9">16:9</button>
+        </div>
+        <div id="camera-zoom" class="camera-zoom hidden" aria-label="ズーム">
+          <div class="camera-zoom-row">
+            <span class="camera-zoom-label">ズーム</span>
+            <span id="camera-zoom-value" class="camera-zoom-value">1.0×</span>
+          </div>
+          <input id="camera-zoom-slider" class="camera-zoom-slider" type="range" min="1" max="1" step="0.1" value="1" />
+        </div>
+      </div>
+      <div class="camera-actions">
+        <button id="btn-camera-cancel" class="camera-btn secondary" type="button">キャンセル</button>
+        <button id="btn-camera-shot" class="camera-btn primary" type="button">撮影</button>
+      </div>
+      <div id="camera-status" class="camera-status"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+
 </html>

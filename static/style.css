@@ -226,6 +226,229 @@ body {
   padding: 12px;
 }
 
+/* --- Settings panel --- */
+.settings {
+  width: min(var(--app-max-width), 100%);
+  border: 0;
+  border-radius: 0;
+  background: var(--panel);
+  box-shadow: none;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  gap: 10px;
+  overflow: auto;
+}
+
+.settings-toolbar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "back spacer logout"
+    "actions actions actions";
+  gap: 8px 10px;
+  align-items: center;
+}
+
+.settings-btn-back {
+  grid-area: back;
+}
+
+.settings-toolbar-right {
+  grid-area: actions;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-self: start;
+}
+
+.settings-btn-logout {
+  grid-area: logout;
+  justify-self: end;
+  margin-left: 0;
+}
+
+.settings-btn {
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--text);
+  padding: 0 14px;
+  font-weight: 700;
+}
+
+.settings-btn.primary {
+  background: var(--header);
+  border-color: var(--header);
+  color: var(--header-text);
+}
+
+.settings-btn.danger {
+  border-color: rgba(217, 45, 32, 0.28);
+  color: var(--danger);
+}
+
+.settings-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.settings-desc {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings-note {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.settings-note.danger {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.settings-tab {
+  height: 34px;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  background: #f1f5ff;
+  color: #274891;
+  padding: 0 12px;
+  font-weight: 700;
+}
+
+.settings-tab.active {
+  background: #ffffff;
+  color: var(--text);
+}
+
+.settings-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.settings-card-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #315cbb;
+  margin-bottom: 8px;
+}
+
+.settings-preset-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.settings-select {
+  height: 34px;
+  min-width: 240px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #ffffff;
+  color: var(--text);
+  flex: 1 1 280px;
+}
+
+.settings-mini-btn {
+  height: 34px;
+  border: 1px solid #6e8fd4;
+  border-radius: 6px;
+  background: #4c73c7;
+  color: #ffffff;
+  font-weight: 700;
+  padding: 0 12px;
+}
+
+.settings-mini-btn.danger {
+  border-color: #d92d20;
+  background: #d92d20;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 8px 12px;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-label {
+  font-size: 12px;
+  color: #315cbb;
+  font-weight: 700;
+}
+
+.settings-label.danger {
+  color: var(--danger);
+}
+
+.settings-input {
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 8px;
+  font-size: 14px;
+}
+
+.settings-textarea {
+  width: 100%;
+  min-height: 220px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: var(--text);
+  background: #ffffff;
+  resize: vertical;
+  outline: none;
+}
+
+.settings-check {
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
 .hidden {
   display: none !important;
 }
@@ -693,5 +916,14 @@ body {
 
   .bubble {
     max-width: 90%;
+  }
+
+  .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-select {
+    min-width: 0;
+    width: 100%;
   }
 }

@@ -26,6 +26,8 @@ Web UI:
 - `web_auto_login_enabled=true` の場合、`POST /api/auth/auto_login` でトークン無しの自動ログインが可能
 - Cookie 認証を許可するエンドポイントは次に限定する
   - `POST /api/chat`
+  - `GET /api/settings`
+  - `PUT /api/settings`
   - `WS /api/events/stream`
   - `POST /api/auth/auto_login`
   - `POST /api/auth/logout`
@@ -376,6 +378,8 @@ UI向けの「全設定」取得/更新。
 - サーバ側は `*_preset_id`（UUID）で `upsert` する
 - リクエストに含まれない既存プリセットは削除せず `archived=true` にする
 - `GET /api/settings` は `archived=false` のもののみ返す
+- `memory_enabled` は常に `true` を扱う（`false` を送ると `400 Bad Request`）
+- `desktop_watch_target_client_id` は未送信なら既存DB値を保持する（明示送信時のみ更新）
 - 会話応答作成（`/api/chat` の最終生成）でのWeb検索（インターネット）は、`llm_preset.reply_web_search_enabled` でON/OFFする
 - 自発行動（autonomy）のWeb検索は `/api/chat` と別経路で実行し、`reply_web_search_enabled` では制御しない
 - `llm_model` は `openrouter/*` / `xai/*` / `openai/*` / `google/*` / `gemini/*` のいずれかを使用する
@@ -928,7 +932,7 @@ intent 一覧を返す（新しい順）。
 
 エラー:
 
-- `503 Service Unavailable`（記憶機能が無効: `memory_enabled=false`）
+- 主要な業務エラーは現時点で未定義（入力不正時は `400/422` 系を返す）
 
 ## 管理API（案）
 

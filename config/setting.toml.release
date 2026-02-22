@@ -1,4 +1,4 @@
-# CocoroGhost 起動設定
+# cocoro_ghost 起動設定
 
 # CocoroGhost API の待受ポート
 cocoro_ghost_port = 55601
@@ -6,19 +6,19 @@ cocoro_ghost_port = 55601
 token = "cocoro_token"
 
 # Web UI 自動ログイン（Cookieセッションをトークン無しで自動発行）
+# - true: Web UI は起動時に自動ログイン（ログイン画面を基本的に使わない）
+# - false: 従来通り token を入力してログイン
 web_auto_login_enabled = true
 
-# ログレベル
+# ログレベル: DEBUG=詳細表示, INFO=通常表示, WARNING=警告以上表示, ERROR=エラーのみ表示
 log_level = "DEBUG"
 #log_level = "INFO"
 #log_level = "WARNING"
 #log_level = "ERROR"
 
-# LLM送受信ログレベル
-llm_log_level = "DEBUG"
+# LLM送受信ログレベル: DEBUG=内容表示, INFO=送受信事実のみ, OFF=出力なし
 #llm_log_level = "INFO"
-#llm_log_level = "WARNING"
-#llm_log_level = "ERROR"
+llm_log_level = "DEBUG"
 #llm_log_level = "OFF"
 
 # LLMのタイムアウト（秒）
@@ -61,7 +61,6 @@ retrieval_quota_assoc_state_percent = 20
 retrieval_quota_assoc_multi_hit_percent = 40
 retrieval_quota_assoc_vector_only_percent = 15
 retrieval_quota_assoc_context_only_percent = 10
-retrieval_quota_assoc_entity_only_percent = 5
 retrieval_quota_assoc_trigram_only_percent = 5
 retrieval_quota_assoc_recent_only_percent = 0
 
@@ -72,36 +71,18 @@ retrieval_quota_broad_multi_hit_percent = 30
 retrieval_quota_broad_about_time_only_percent = 20
 retrieval_quota_broad_vector_only_percent = 10
 retrieval_quota_broad_context_only_percent = 5
-retrieval_quota_broad_entity_only_percent = 5
 retrieval_quota_broad_trigram_only_percent = 5
 
-# 記憶検索: entity展開（seed→entity→関連候補）
-# - 既存候補（seed）に付与されたentitiesから、関連イベント/状態を追加で拾う
-# - 候補が膨らみやすいので、上限/足切りを強めに固定する
-retrieval_entity_expand_enabled = true
-retrieval_entity_expand_seed_limit = 12
-retrieval_entity_expand_max_entities = 12
-retrieval_entity_expand_per_entity_event_limit = 10
-retrieval_entity_expand_per_entity_state_limit = 6
-retrieval_entity_expand_min_confidence = 0.45
-retrieval_entity_expand_min_seed_occurrences = 2
-
-# 記憶検索: stateリンク展開（seed→state_links→関連state）
-retrieval_state_link_expand_enabled = true
-retrieval_state_link_expand_seed_limit = 8
-retrieval_state_link_expand_per_seed_limit = 8
-retrieval_state_link_expand_min_confidence = 0.6
-
-# LLM送受信ログの最大文字数（ターミナル/ファイル）
-llm_log_console_max_chars = 1000
+# LLM送受信ログの最大文字数（ターミナル/ファイル, 整形の空白含む）
+llm_log_console_max_chars = 2000
 llm_log_file_max_chars = 20000
 
-# LLM送受信ログの各Value最大文字数（JSON向け、0で無効）
-llm_log_console_value_max_chars = 100
-llm_log_file_value_max_chars = 6000
+# LLM送受信ログの各Value最大文字数（JSON向け、0で無効,  整形の空白含む）
+llm_log_console_value_max_chars = 500
+llm_log_file_value_max_chars = 60000
 
 # LLMログのファイル出力
-log_file_enabled = false
+log_file_enabled = true
 log_file_path = "logs/cocoro_ghost.log"
 # ログファイルのローテーションサイズ（bytes）。例: 200KB = 200000
 log_file_max_bytes = 2000000
