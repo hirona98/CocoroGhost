@@ -426,7 +426,7 @@ class ActionDecision(MemoryBase):
 
     方針:
         - 1判断 = 1event（source=deliberation_decision）を不変条件にする。
-        - do_action/skip/defer の契約をDB制約で固定する。
+        - decision_outcome / action/defer 必須項目の契約をDB制約で固定する。
     """
 
     __tablename__ = "action_decisions"
@@ -449,14 +449,6 @@ class ActionDecision(MemoryBase):
             name="ck_action_decisions_defer_order",
         ),
         CheckConstraint(
-            "decision_outcome = 'do_action' OR do_action = 0",
-            name="ck_action_decisions_do_action_false_when_not_do_action",
-        ),
-        CheckConstraint(
-            "decision_outcome <> 'do_action' OR do_action = 1",
-            name="ck_action_decisions_do_action_true_when_do_action",
-        ),
-        CheckConstraint(
             "decision_outcome <> 'do_action' OR length(trim(COALESCE(action_type,''))) > 0",
             name="ck_action_decisions_action_type_required_for_do_action",
         ),
@@ -475,7 +467,6 @@ class ActionDecision(MemoryBase):
     trigger_ref: Mapped[Optional[str]] = mapped_column(Text)
 
     # --- 判断本体 ---
-    do_action: Mapped[int] = mapped_column(Integer, nullable=False)
     decision_outcome: Mapped[str] = mapped_column(Text, nullable=False)
     action_type: Mapped[Optional[str]] = mapped_column(Text)
     action_payload_json: Mapped[Optional[str]] = mapped_column(Text)

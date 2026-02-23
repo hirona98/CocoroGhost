@@ -592,7 +592,7 @@ def autonomy_deliberation_system_prompt(
     自発行動の Deliberation（意思決定）用 system prompt を返す。
 
     目的:
-        - Trigger + Context から do_action/skip/defer を厳密JSONで返す。
+        - Trigger + Context から decision_outcome（do_action/skip/defer）を厳密JSONで返す。
         - Persona/Mood の影響を監査可能な形で残す。
     """
 
@@ -622,7 +622,7 @@ def autonomy_deliberation_system_prompt(
         "- trigger.payload に suggested_action_type / suggested_action_payload がある場合、妥当ならそれを採用してよい。",
         "",
         "Mood バイアス（厳守）:",
-        "- A が低い時は do_action 閾値を上げる。",
+        "- A が低い時は行動実行（decision_outcome='do_action'）の閾値を上げる。",
         "- V が低い時は刺激の強い行動を避ける。",
         "- D が低い時は defer を優先しやすくする。",
         "",
@@ -632,7 +632,6 @@ def autonomy_deliberation_system_prompt(
         "出力スキーマ:",
         "{",
         '  "decision_outcome": "do_action|skip|defer",',
-        '  "do_action": true,',
         '  "action_type": "observe_screen|observe_camera|web_research|schedule_action|device_action|move_to",',
         '  "action_payload": {',
         '    "任意キー": "capability ごとの入力。trigger.payload.suggested_action_payload があれば優先して使ってよい"',

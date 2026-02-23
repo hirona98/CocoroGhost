@@ -25,7 +25,6 @@ class ParsedActionDecision:
     """
 
     decision_outcome: str
-    do_action: int
     action_type: str | None
     action_payload_json: str | None
     priority: int
@@ -63,14 +62,6 @@ def parse_action_decision(value: dict[str, Any]) -> ParsedActionDecision:
     outcome = str(value.get("decision_outcome") or "").strip()
     if outcome not in _DECISION_OUTCOMES:
         raise ValueError("decision_outcome must be one of do_action/skip/defer")
-
-    # --- do_action を正規化 ---
-    do_action_raw = value.get("do_action")
-    do_action = 1 if bool(do_action_raw) else 0
-    if outcome == "do_action" and do_action != 1:
-        raise ValueError("decision_outcome=do_action requires do_action=true")
-    if outcome != "do_action" and do_action != 0:
-        raise ValueError("decision_outcome!=do_action requires do_action=false")
 
     # --- action_type / action_payload を正規化 ---
     action_type = str(value.get("action_type") or "").strip() or None
@@ -126,7 +117,6 @@ def parse_action_decision(value: dict[str, Any]) -> ParsedActionDecision:
 
     return ParsedActionDecision(
         decision_outcome=str(outcome),
-        do_action=int(do_action),
         action_type=action_type,
         action_payload_json=action_payload_json,
         priority=int(priority),

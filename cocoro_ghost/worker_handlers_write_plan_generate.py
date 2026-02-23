@@ -135,7 +135,6 @@ def _handle_generate_write_plan(
                     "trigger_type": str(decision_row.trigger_type),
                     "trigger_ref": (str(decision_row.trigger_ref) if decision_row.trigger_ref is not None else None),
                     "decision_outcome": str(decision_row.decision_outcome),
-                    "do_action": bool(int(decision_row.do_action)),
                     "action_type": (str(decision_row.action_type) if decision_row.action_type is not None else None),
                     "action_payload_json": (
                         str(decision_row.action_payload_json) if decision_row.action_payload_json is not None else None

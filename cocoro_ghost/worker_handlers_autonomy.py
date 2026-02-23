@@ -641,7 +641,6 @@ def _handle_deliberate_once(
                     event_id=int(decision_event.event_id),
                     trigger_type=str(trigger.trigger_type),
                     trigger_ref=str(trigger.trigger_id),
-                    do_action=int(decision.do_action),
                     decision_outcome=str(decision.decision_outcome),
                     action_type=(str(decision.action_type) if decision.action_type else None),
                     action_payload_json=(str(decision.action_payload_json) if decision.action_payload_json else None),
@@ -675,7 +674,7 @@ def _handle_deliberate_once(
                 )
             )
 
-            # --- do_action: Intent を冪等生成して execute_intent を投入 ---
+            # --- decision_outcome=do_action: Intent を冪等生成して execute_intent を投入 ---
             if str(decision.decision_outcome) == "do_action":
                 goal_id_for_intent = _maybe_create_goal_from_decision(
                     db=db,
