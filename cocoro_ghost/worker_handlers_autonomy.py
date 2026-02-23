@@ -48,6 +48,16 @@ from cocoro_ghost.worker_handlers_common import _now_utc_ts
 logger = logging.getLogger(__name__)
 
 
+class _DeliberationInvalidOutputError(RuntimeError):
+    """Deliberation の LLM 出力不正（JSON/契約違反）を表す内部例外。"""
+
+    # --- 種別コードで trigger dropped の理由を安定化する ---
+    def __init__(self, *, drop_reason: str, detail: str) -> None:
+        super().__init__(str(detail))
+        self.drop_reason = str(drop_reason)
+        self.detail = str(detail)
+
+
 def _now_domain_utc_ts() -> int:
     """domain時刻（UTC UNIX秒）を返す。"""
     return int(get_clock_service().now_domain_utc_ts())
@@ -606,10 +616,26 @@ def _handle_deliberate_once(
                 max_tokens=int(cfg.deliberation_max_tokens),
                 model_override=str(cfg.deliberation_model),
             )
-            decision_raw = llm_client.response_json(resp)
+            # --- LLM出力不正（JSON崩れ/契約違反）は業務エラーとして drop 扱いにする ---
+            try:
+                decision_raw = llm_client.response_json(resp)
+            except ValueError as exc:
+                raise _DeliberationInvalidOutputError(
+                    drop_reason="deliberation_invalid_json",
+                    detail=str(exc),
+                ) from exc
             if not isinstance(decision_raw, dict):
-                raise ValueError("deliberation output is not a JSON object")
-            decision = parse_action_decision(decision_raw)
+                raise _DeliberationInvalidOutputError(
+                    drop_reason="deliberation_invalid_json",
+                    detail="deliberation output is not a JSON object",
+                )
+            try:
+                decision = parse_action_decision(decision_raw)
+            except ValueError as exc:
+                raise _DeliberationInvalidOutputError(
+                    drop_reason="deliberation_invalid_contract",
+                    detail=str(exc),
+                ) from exc
 
             # --- event: deliberation_decision（常時 searchable=0） ---
             decision_event = Event(
@@ -823,6 +849,22 @@ def _handle_deliberate_once(
                 claim_token=str(claim_token),
                 now_system_ts=int(now_system_ts),
             )
+    except _DeliberationInvalidOutputError as exc:
+        # --- 想定内のLLM出力不正は warning に落として trigger を drop する ---
+        logger.warning(
+            "deliberate_once dropped invalid LLM output trigger_id=%s reason=%s detail=%s",
+            str(trigger_id),
+            str(exc.drop_reason),
+            str(exc.detail),
+        )
+        _mark_trigger_dropped(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            trigger_id=str(trigger_id),
+            claim_token=str(claim_token),
+            now_system_ts=int(now_system_ts),
+            reason=str(exc.drop_reason),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("deliberate_once failed trigger_id=%s", str(trigger_id))
         _mark_trigger_dropped(
