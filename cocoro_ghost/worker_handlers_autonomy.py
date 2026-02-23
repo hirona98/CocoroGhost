@@ -852,7 +852,7 @@ def _handle_deliberate_once(
     except _DeliberationInvalidOutputError as exc:
         # --- 想定内のLLM出力不正は warning に落として trigger を drop する ---
         # --- ログ上で JSON系の異常を見分けやすくするため、分類ラベルを付ける ---
-        anomaly_label = "JSON異常(契約)"
+        anomaly_label = "JSON異常(形式不整合)"
         if str(exc.drop_reason) == "deliberation_invalid_json":
             anomaly_label = "JSON異常(パース)"
         logger.warning(
