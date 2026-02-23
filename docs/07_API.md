@@ -315,6 +315,7 @@ UI向けの「全設定」取得/更新。
   "autonomy_max_parallel_intents": 2,
   "camera_watch_enabled": false,
   "camera_watch_interval_seconds": 15,
+  "agent_backend_gmini_command": "gemini.exe -p",
   "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
