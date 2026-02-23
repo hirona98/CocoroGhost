@@ -12,7 +12,6 @@ import logging
 import threading
 from typing import Any
 
-from cocoro_ghost.autonomy.policies import build_time_routine_trigger
 from cocoro_ghost.autonomy.repository import AutonomyRepository
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.clock import get_clock_service
@@ -32,7 +31,6 @@ class AutonomyOrchestrator:
         self._running = False
         self._last_heartbeat_bucket: int | None = None
         self._last_snapshot_bucket: int | None = None
-        self._last_time_routine_bucket: int | None = None
         self._runtime_recovered_once = False
 
     def tick(self) -> None:
@@ -104,22 +102,6 @@ class AutonomyOrchestrator:
                     source_event_id=None,
                 )
 
-            # --- time_routine policy trigger（設定秒数単位） ---
-            time_trigger = build_time_routine_trigger(
-                now_domain_ts=int(now_domain_ts),
-                interval_seconds=int(heartbeat_seconds),
-            )
-            time_bucket = int((time_trigger.get("payload") or {}).get("time_bucket") or 0)
-            if self._last_time_routine_bucket != int(time_bucket):
-                self._last_time_routine_bucket = int(time_bucket)
-                repo.enqueue_trigger(
-                    trigger_type="policy",
-                    trigger_key=str(time_trigger["trigger_key"]),
-                    payload=dict(time_trigger.get("payload") or {}),
-                    now_system_ts=int(now_system_ts),
-                    scheduled_at=int(time_trigger["scheduled_at"]),
-                    source_event_id=None,
-                )
 
             # --- runtime snapshot ジョブ（30秒ごと）を投入 ---
             snapshot_interval_seconds = 30
