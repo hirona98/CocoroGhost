@@ -76,10 +76,11 @@ def _load_recent_mood_snapshot(db) -> dict[str, Any]:
     )
     long_mood_payload = None
     if long_mood is not None:
+        mood_payload_obj = common_utils.json_loads_maybe(str(long_mood.payload_json or ""))
         long_mood_payload = {
             "state_id": int(long_mood.state_id),
             "body_text": str(long_mood.body_text),
-            "payload_json": str(long_mood.payload_json),
+            "payload": mood_payload_obj,
             "last_confirmed_at": int(long_mood.last_confirmed_at),
         }
 
@@ -385,7 +386,7 @@ def _collect_deliberation_input(
             "state_id": int(s.state_id),
             "kind": str(s.kind),
             "body_text": str(s.body_text)[:800],
-            "payload_json": str(s.payload_json)[:800],
+            "payload": common_utils.json_loads_maybe(str(s.payload_json or "")),
             "confidence": float(s.confidence),
             "last_confirmed_at": int(s.last_confirmed_at),
         }
@@ -411,7 +412,7 @@ def _collect_deliberation_input(
             "goal_type": str(r[2]),
             "status": str(r[3]),
             "priority": int(r[4] or 0),
-            "target_condition_json": str(r[5] or "{}"),
+            "target_condition": common_utils.json_loads_maybe(str(r[5] or "{}")),
             "horizon": str(r[6] or ""),
         }
         for r in goals_rows
