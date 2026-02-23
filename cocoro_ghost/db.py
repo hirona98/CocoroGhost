@@ -418,113 +418,6 @@ def _get_table_columns(conn, table_name: str) -> set[str]:
     return {str(r[1]) for r in rows}
 
 
-def _migrate_settings_db_v2_to_v3(engine) -> None:
-    """設定DBを v2 から v3 へ移行する。"""
-    with engine.connect() as conn:
-        # --- v2 では llm_presets が存在する前提 ---
-        llm_table_exists = (
-            conn.execute(
-                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_presets'")
-            ).fetchone()
-            is not None
-        )
-        if not llm_table_exists:
-            raise RuntimeError(
-                "settings DB migration failed: llm_presets table missing in user_version=2 database."
-            )
-
-        # --- 最終応答Web検索フラグ列を追加（既存行は既定値1） ---
-        columns = _get_table_columns(conn, "llm_presets")
-        if "reply_web_search_enabled" not in columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE llm_presets "
-                    "ADD COLUMN reply_web_search_enabled INTEGER NOT NULL DEFAULT 1"
-                )
-            )
-
-        # --- スキーマバージョンを更新 ---
-        conn.execute(text("PRAGMA user_version=3"))
-        conn.commit()
-
-    logger.info("settings DB migrated: user_version 2 -> 3")
-
-
-def _migrate_settings_db_v3_to_v4(engine) -> None:
-    """設定DBを v3 から v4 へ移行する。"""
-    with engine.connect() as conn:
-        # --- global_settings へ autonomy/camera 設定列を追加 ---
-        gs_columns = _get_table_columns(conn, "global_settings")
-        if "autonomy_enabled" not in gs_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE global_settings "
-                    "ADD COLUMN autonomy_enabled INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-        if "autonomy_heartbeat_seconds" not in gs_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE global_settings "
-                    "ADD COLUMN autonomy_heartbeat_seconds INTEGER NOT NULL DEFAULT 30"
-                )
-            )
-        if "autonomy_max_parallel_intents" not in gs_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE global_settings "
-                    "ADD COLUMN autonomy_max_parallel_intents INTEGER NOT NULL DEFAULT 2"
-                )
-            )
-        if "camera_watch_enabled" not in gs_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE global_settings "
-                    "ADD COLUMN camera_watch_enabled INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-        if "camera_watch_interval_seconds" not in gs_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE global_settings "
-                    "ADD COLUMN camera_watch_interval_seconds INTEGER NOT NULL DEFAULT 15"
-                )
-            )
-
-        # --- llm_presets へ Deliberation 設定列を追加 ---
-        llm_columns = _get_table_columns(conn, "llm_presets")
-        if "deliberation_model" not in llm_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE llm_presets "
-                    "ADD COLUMN deliberation_model TEXT NOT NULL DEFAULT 'openai/gpt-5-mini'"
-                )
-            )
-        if "deliberation_max_tokens" not in llm_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE llm_presets "
-                    "ADD COLUMN deliberation_max_tokens INTEGER NOT NULL DEFAULT 4096"
-                )
-            )
-
-        # --- スキーマバージョンを更新 ---
-        conn.execute(text(f"PRAGMA user_version={_SETTINGS_DB_USER_VERSION}"))
-        conn.commit()
-
-    logger.info("settings DB migrated: user_version 3 -> 4")
-
-
-def _migrate_settings_db_if_needed(engine) -> None:
-    """設定DBに必要なマイグレーションを適用する。"""
-    # --- マイグレーション実装は別ファイルに集約し、ここでは委譲する ---
-    db_migrations.migrate_settings_db_if_needed(
-        engine=engine,
-        target_user_version=int(_SETTINGS_DB_USER_VERSION),
-        logger=logger,
-    )
-
-
 def _verify_settings_db_user_version(engine) -> None:
     """
     設定DBの user_version を検証する。
@@ -616,7 +509,11 @@ def init_settings_db() -> None:
     SettingsSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
     # --- 既知の設定DBマイグレーションを適用 ---
-    _migrate_settings_db_if_needed(engine)
+    db_migrations.migrate_settings_db_if_needed(
+        engine=engine,
+        target_user_version=int(_SETTINGS_DB_USER_VERSION),
+        logger=logger,
+    )
 
     # --- user_version / スキーマを検証 ---
     _verify_settings_db_user_version(engine)
