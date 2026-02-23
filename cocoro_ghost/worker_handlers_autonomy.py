@@ -436,9 +436,9 @@ def _collect_deliberation_input(db, *, trigger: AutonomyTrigger) -> dict[str, An
     if not isinstance(trigger_payload, dict):
         trigger_payload = {}
 
+    # --- Deliberation入力には内部追跡用UUIDを出さない（evidence IDsとの混同を防ぐ） ---
     return {
         "trigger": {
-            "trigger_id": str(trigger.trigger_id),
             "trigger_type": str(trigger.trigger_type),
             "trigger_key": str(trigger.trigger_key),
             "source_event_id": (int(trigger.source_event_id) if trigger.source_event_id is not None else None),
