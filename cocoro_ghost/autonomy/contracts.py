@@ -18,6 +18,77 @@ _DECISION_OUTCOMES = {"do_action", "skip", "defer"}
 _RESULT_STATUSES = {"success", "partial", "failed", "no_effect"}
 
 
+def _normalize_string_list(value: Any, *, field_name: str, min_items: int = 0) -> list[str]:
+    """
+    list[str] を正規化して返す。
+
+    Deliberation の JSON 契約では、人格/気分の影響説明に文字列配列を使うため、
+    ここで最小限の型検証を行う。
+    """
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list")
+    out: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        out.append(text)
+    if len(out) < int(min_items):
+        raise ValueError(f"{field_name} must contain at least {int(min_items)} item(s)")
+    return out
+
+
+def _parse_persona_influence(value: Any) -> dict[str, Any]:
+    """
+    persona_influence を検証して正規化する。
+
+    方針:
+        - 文字列比較による意味判定はしない。
+        - 構造（summary/traits）が埋まっていることだけを保証する。
+    """
+    if not isinstance(value, dict):
+        raise ValueError("persona_influence must be an object")
+    summary = str(value.get("summary") or "").strip()
+    if not summary:
+        raise ValueError("persona_influence.summary is required")
+    traits = _normalize_string_list(value.get("traits"), field_name="persona_influence.traits", min_items=1)
+
+    out = dict(value)
+    out["summary"] = str(summary)
+    out["traits"] = list(traits)
+    return out
+
+
+def _parse_mood_influence(value: Any) -> dict[str, Any]:
+    """
+    mood_influence を検証して正規化する。
+
+    方針:
+        - mood の影響を説明する summary と VAD 数値の両方を必須にする。
+        - 意味の正しさではなく、構造の妥当性を検証する。
+    """
+    if not isinstance(value, dict):
+        raise ValueError("mood_influence must be an object")
+    summary = str(value.get("summary") or "").strip()
+    if not summary:
+        raise ValueError("mood_influence.summary is required")
+
+    vad = value.get("vad")
+    if not isinstance(vad, dict):
+        raise ValueError("mood_influence.vad must be an object")
+    try:
+        v = float(vad.get("v"))
+        a = float(vad.get("a"))
+        d = float(vad.get("d"))
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("mood_influence.vad must contain numeric v/a/d") from exc
+
+    out = dict(value)
+    out["summary"] = str(summary)
+    out["vad"] = {"v": float(v), "a": float(a), "d": float(d)}
+    return out
+
+
 @dataclass(frozen=True)
 class ParsedActionDecision:
     """
@@ -105,9 +176,11 @@ def parse_action_decision(value: dict[str, Any]) -> ParsedActionDecision:
     confidence = float(value.get("confidence") or 0.0)
     confidence = max(0.0, min(1.0, confidence))
 
-    # --- persona/mood 監査情報 ---
-    persona_influence_json = common_utils.json_dumps(value.get("persona_influence") or {})
-    mood_influence_json = common_utils.json_dumps(value.get("mood_influence") or {})
+    # --- persona/mood 監査情報（判断で使った構造を必須化） ---
+    persona_influence_obj = _parse_persona_influence(value.get("persona_influence"))
+    mood_influence_obj = _parse_mood_influence(value.get("mood_influence"))
+    persona_influence_json = common_utils.json_dumps(persona_influence_obj)
+    mood_influence_json = common_utils.json_dumps(mood_influence_obj)
 
     # --- evidence を配列化 ---
     evidence = value.get("evidence") if isinstance(value.get("evidence"), dict) else {}
