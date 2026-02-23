@@ -122,7 +122,7 @@ class LlmPreset(Base):
     # Deliberation専用モデル
     deliberation_model: Mapped[str] = mapped_column(String, nullable=False, default="openai/gpt-5-mini")
     # Deliberationの最大トークン
-    deliberation_max_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=1200)
+    deliberation_max_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=4096)
     max_turns_window: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
     max_tokens_vision: Mapped[int] = mapped_column(Integer, nullable=False, default=4096)
     max_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=4096)
@@ -202,7 +202,7 @@ class EmbeddingPreset(Base):
 
     # 記憶検索パラメータ
     similar_episodes_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
-    max_inject_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=1200)
+    max_inject_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=4096)
     similar_limit_by_kind_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
     # タイムスタンプ

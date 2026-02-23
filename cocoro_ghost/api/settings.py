@@ -62,7 +62,7 @@ def get_settings(
                 reasoning_effort=preset.reasoning_effort,
                 reply_web_search_enabled=bool(preset.reply_web_search_enabled),
                 deliberation_model=str(getattr(preset, "deliberation_model", preset.llm_model)),
-                deliberation_max_tokens=max(1, int(getattr(preset, "deliberation_max_tokens", 1200))),
+                deliberation_max_tokens=max(1, int(getattr(preset, "deliberation_max_tokens", 4096))),
                 llm_base_url=preset.llm_base_url,
                 max_turns_window=preset.max_turns_window,
                 max_tokens=preset.max_tokens,

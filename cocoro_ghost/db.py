@@ -502,7 +502,7 @@ def _migrate_settings_db_v3_to_v4(engine) -> None:
             conn.execute(
                 text(
                     "ALTER TABLE llm_presets "
-                    "ADD COLUMN deliberation_max_tokens INTEGER NOT NULL DEFAULT 1200"
+                    "ADD COLUMN deliberation_max_tokens INTEGER NOT NULL DEFAULT 4096"
                 )
             )
 
@@ -966,7 +966,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             llm_model="openai/gpt-5-mini",
             reply_web_search_enabled=True,
             deliberation_model="openai/gpt-5-mini",
-            deliberation_max_tokens=1200,
+            deliberation_max_tokens=4096,
             max_turns_window=50,
             image_model="openai/gpt-5-mini",
             image_timeout_seconds=60,
@@ -977,7 +977,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     if not str(getattr(llm_preset, "deliberation_model", "") or "").strip():
         llm_preset.deliberation_model = str(llm_preset.llm_model)
     if int(getattr(llm_preset, "deliberation_max_tokens", 0) or 0) <= 0:
-        llm_preset.deliberation_max_tokens = 1200
+        llm_preset.deliberation_max_tokens = 4096
 
     if active_llm_id is None or str(llm_preset.id) != str(active_llm_id):
         global_settings.active_llm_preset_id = str(llm_preset.id)
@@ -998,7 +998,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             embedding_base_url=None,
             embedding_dimension=3072,
             similar_episodes_limit=60,
-            max_inject_tokens=1200,
+            max_inject_tokens=4096,
             similar_limit_by_kind_json="{}",
         )
         session.add(embedding_preset)

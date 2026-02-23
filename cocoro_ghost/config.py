@@ -532,7 +532,7 @@ def build_runtime_config(
         reasoning_effort=llm_preset.reasoning_effort,
         reply_web_search_enabled=bool(llm_preset.reply_web_search_enabled),
         deliberation_model=str(getattr(llm_preset, "deliberation_model", llm_preset.llm_model)),
-        deliberation_max_tokens=max(1, int(getattr(llm_preset, "deliberation_max_tokens", 1200))),
+        deliberation_max_tokens=max(1, int(getattr(llm_preset, "deliberation_max_tokens", 4096))),
         max_turns_window=llm_preset.max_turns_window,
         max_tokens_vision=llm_preset.max_tokens_vision,
         max_tokens=llm_preset.max_tokens,
