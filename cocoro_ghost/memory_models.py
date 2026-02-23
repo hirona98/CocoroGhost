@@ -71,7 +71,6 @@ class EventEntity(MemoryBase):
           参照テーブルとして `event_entities` を持つ。
 
     注意:
-        - 運用前のためマイグレーションは扱わない（DB作り直し前提）。
         - entity_name_raw は表示/診断用。検索は entity_name_norm を正にする。
     """
 
@@ -105,9 +104,6 @@ class StateEntity(MemoryBase):
         - stateは「育つ」ため、本文の近くにあるエンティティを索引化しておくと、
           seed→entity→関連state の展開が安定する。
         - 現行は WritePlan に entity が含まれるため、まずは「イベント由来の entity を state へ付与」する。
-
-    注意:
-        - 運用前のためマイグレーションは扱わない（DB作り直し前提）。
     """
 
     __tablename__ = "state_entities"
@@ -213,7 +209,6 @@ class EventAssistantSummary(MemoryBase):
     方針:
         - 1イベントにつき1件（event_id を主キー）として保持する。
         - events.updated_at の値を一緒に保存し、元本文が更新された場合は作り直せるようにする。
-        - 運用前のためマイグレーションは扱わない（DBを作り直す前提）。
     """
 
     __tablename__ = "event_assistant_summaries"
