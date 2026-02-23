@@ -712,15 +712,13 @@ class LlmClient:
             """
             OpenRouter の reasoning.effort に合わせて値を正規化する。
 
-            OpenRouter は low/medium/high/xhigh を受け付けるため、それ以外は
-            なるべく最小の low に寄せる（落ちにくさ優先）。
+            OpenRouter は none/minimal/low/medium/high/xhigh を受け付ける。
+            未知値は落ちにくさ優先で none に寄せる。
             """
             v = str(value or "").strip().lower()
-            if v in {"low", "medium", "high", "xhigh"}:
+            if v in {"none", "minimal", "low", "medium", "high", "xhigh"}:
                 return v
-            if v in {"minimal", "none"}:
-                return "low"
-            return v
+            return "none"
 
         def _openai_model_id_from_litellm_model(litellm_model: str) -> str:
             """LiteLLMの model 文字列から OpenAI側の model id を取り出す。"""
@@ -773,25 +771,39 @@ class LlmClient:
             return None
 
         def _default_reasoning_effort_for_model(litellm_model: str) -> Optional[str]:
-            """reasoning_effort 未指定時の既定値（最低レベル）を返す。"""
+            """reasoning_effort 未指定時の既定値を返す（原則 none、非対応モデルは最低値）。"""
             model_cleaned = str(litellm_model or "").strip().lower()
             if not model_cleaned:
                 return None
 
-            # --- OpenRouter: reasoning.effort の最小は low（モデル側が未対応でも丸められる） ---
+            # --- OpenRouter: 既定は推論なし（none）を明示する ---
+            # NOTE:
+            # - OpenRouter docs では effort に none があり、推論無効化を表せる。
+            # - JSON出力系で reasoning が本文を圧迫する事例があるため、未設定時は none を優先する。
             if model_cleaned.startswith("openrouter/"):
-                return "low"
+                return "none"
 
-            # --- OpenAI: 推論モデルにだけ既定値を入れる（非推論モデルに投げて落とさない） ---
+            # --- OpenAI: none が使えないモデルだけ、仕様上の最小値へ寄せる ---
             if model_cleaned.startswith("openai/"):
                 model_id = _openai_model_id_from_litellm_model(model_cleaned)
                 return _default_reasoning_effort_for_openai_model_id(model_id)
 
-            # --- Gemini: LiteLLM の reasoning_effort は thinkingConfig にマップされる ---
+            # --- Gemini直呼び: 原則 none。none不可の系列だけ最低値へ寄せる ---
+            # NOTE:
+            # - Gemini 3 Pro は thinking off 非対応（low が最小）。
+            # - Gemini 3 Flash は full off 非対応（minimal が最小）。
+            # - Gemini 2.5 Pro は thinking off 非対応（LiteLLM経由では minimal に寄せる）。
+            # - Gemini 2.5 Flash / Flash-Lite は none を優先する。
             if model_cleaned.startswith(("google/", "gemini/")):
                 _, _, model_id = model_cleaned.partition("/")
-                if model_id.startswith("gemini-"):
+                if model_id.startswith("gemini-3-pro"):
+                    return "low"
+                if model_id.startswith("gemini-3-flash"):
                     return "minimal"
+                if model_id.startswith("gemini-2.5-pro"):
+                    return "minimal"
+                if model_id.startswith("gemini-"):
+                    return "none"
                 return None
 
             return None
