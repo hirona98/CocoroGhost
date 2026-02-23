@@ -231,12 +231,13 @@ def _handle_build_state_links(
         input_obj = {"base_state": dict(base_snapshot), "candidate_states": list(candidate_snapshots)}
         input_text = common_utils.json_dumps(input_obj)
 
-        # --- LLMでリンクを判定（JSONのみ） ---
+        # --- LLMでリンクを判定（JSONのみ。会話用 max_tokens 設定を共用） ---
+        shared_json_max_tokens = max(1, int(getattr(llm_client, "max_tokens", 0) or 1))
         resp = llm_client.generate_json_response(
             system_prompt=prompt_builders.state_links_system_prompt(),
             input_text=input_text,
             purpose=LlmRequestPurpose.ASYNC_STATE_LINKS,
-            max_tokens=2000,
+            max_tokens=int(shared_json_max_tokens),
         )
         content = common_utils.first_choice_content(resp)
         obj = common_utils.parse_first_json_object_or_none(content) or {}
@@ -248,10 +249,11 @@ def _handle_build_state_links(
                 logger.error(
                     (
                         "build_state_links JSON parse failed by truncation "
-                        "(finish_reason=length, base_state_id=%s, max_tokens=2000, chars=%s). "
+                        "(finish_reason=length, base_state_id=%s, max_tokens=%s, chars=%s). "
                         "Increase max_tokens for ASYNC_STATE_LINKS."
                     ),
                     int(base_snapshot["state_id"]),
+                    int(shared_json_max_tokens),
                     int(len(content or "")),
                     extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
                 )
