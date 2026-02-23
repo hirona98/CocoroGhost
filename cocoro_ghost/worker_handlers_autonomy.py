@@ -685,6 +685,13 @@ def _handle_deliberate_once(
                     priority=int(decision.priority),
                     now_system_ts=int(now_system_ts),
                 )
+
+                # --- 親行（action_decisions / goals）を先に flush する ---
+                # `intents` は `decision_id` / `goal_id` の外部キーを持つ。
+                # ここで生SQL `INSERT` を使うため、ORM の pending 行を明示 flush して
+                # FK親を先にDBへ反映してから `intents` を追加する。
+                db.flush()
+
                 proposed_intent_id = str(uuid.uuid4())
                 db.execute(
                     text(
