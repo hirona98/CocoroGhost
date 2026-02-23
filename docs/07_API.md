@@ -838,6 +838,132 @@ intent 一覧を返す（新しい順）。
 }
 ```
 
+### `POST /api/control/agent-jobs/claim`
+
+外部 `agent_runner` が実行可能な `agent_job` を claim する。
+
+リクエスト（例）:
+
+```json
+{
+  "runner_id": "agent-runner-01",
+  "backends": ["codex"],
+  "limit": 1
+}
+```
+
+レスポンス（例）:
+
+```json
+{
+  "items": [
+    {
+      "job_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "claim_token": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
+      "backend": "codex",
+      "task_instruction": "メールをチェックして、対応が必要なものがあれば要点だけ報告して",
+      "intent_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "decision_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "created_at": 1769654424
+    }
+  ]
+}
+```
+
+### `POST /api/control/agent-jobs/{job_id}/heartbeat`
+
+実行中 `agent_job` の heartbeat を更新する。
+
+リクエスト（例）:
+
+```json
+{
+  "runner_id": "agent-runner-01",
+  "claim_token": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
+  "progress_text": "メール一覧を確認中"
+}
+```
+
+レスポンス（例）:
+
+```json
+{
+  "ok": true,
+  "job_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "status": "running"
+}
+```
+
+### `POST /api/control/agent-jobs/{job_id}/complete`
+
+`agent_runner` の完了 callback。
+
+リクエスト（例）:
+
+```json
+{
+  "runner_id": "agent-runner-01",
+  "claim_token": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
+  "result_status": "success",
+  "summary_text": "対応が必要なメールを2件検出しました。要点を報告します。",
+  "details_json": {
+    "items": [
+      {"kind": "mail", "subject": "A"},
+      {"kind": "mail", "subject": "B"}
+    ]
+  }
+}
+```
+
+レスポンス（例）:
+
+```json
+{
+  "ok": true,
+  "job_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "status": "completed"
+}
+```
+
+### `POST /api/control/agent-jobs/{job_id}/fail`
+
+`agent_runner` の失敗 callback。
+
+リクエスト（例）:
+
+```json
+{
+  "runner_id": "agent-runner-01",
+  "claim_token": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
+  "error_code": "agent_execution_failed",
+  "error_message": "メールAPI応答の解析に失敗しました"
+}
+```
+
+レスポンス（例）:
+
+```json
+{
+  "ok": true,
+  "job_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "status": "failed"
+}
+```
+
+### `GET /api/control/agent-jobs`
+
+`agent_job` 一覧を返す（監視用）。
+
+クエリ:
+
+- `limit`（任意, 1..500, 既定50）
+- `status`（任意）
+- `backend`（任意）
+
+### `GET /api/control/agent-jobs/{job_id}`
+
+`agent_job` 1件を返す（監視用）。
+
 ### `POST /api/control`
 
 ```json
