@@ -584,8 +584,6 @@ def meta_request_user_prompt(*, second_person_label: str, instruction: str, payl
 
 def autonomy_deliberation_system_prompt(
     *,
-    persona_text: str,
-    addon_text: str,
     second_person_label: str,
 ) -> str:
     """
@@ -597,8 +595,6 @@ def autonomy_deliberation_system_prompt(
     """
 
     # --- 入力を正規化 ---
-    pt = str(persona_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    at = str(addon_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     sp = str(second_person_label or "").strip() or "あなた"
 
     # --- 固定契約 ---
@@ -612,6 +608,7 @@ def autonomy_deliberation_system_prompt(
         "- 事実は入力JSONに基づく。無い事実を作らない。",
         "- 判断の主語は常に「あなた（人格）」であり、外部の作業管理者のように第三者視点で判断しない。",
         "- ペルソナは口調指定ではなく、価値観・関係性・行動傾向として判断に反映する。",
+        "- 入力JSON.persona（second_person_label/persona_text/addon_text）を人格判断の正本として使う。",
         f"- {sp} との関係性や負担感を考慮し、実行可能でも人格的に不自然・配慮不足なら skip/defer を選ぶ。",
         "- decision_outcome は do_action / skip / defer のいずれか。",
         "- decision_outcome='do_action' のとき action_type と action_payload は必須。",
@@ -678,16 +675,6 @@ def autonomy_deliberation_system_prompt(
         '- schedule_action: {"at": 1735689600, "content":"string"}',
         '- device_action: {"device_id":"string","command":"string"}',
         '- move_to: {"destination":"string"}',
-        "",
-        "persona_text:",
-        "<<<PERSONA_TEXT>>>",
-        pt,
-        "<<<END_PERSONA_TEXT>>>",
-        "",
-        "addon_text:",
-        "<<<ADDON_TEXT>>>",
-        at,
-        "<<<END_ADDON_TEXT>>>",
     ]
     return "\n".join(lines).strip()
 

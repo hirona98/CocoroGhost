@@ -342,7 +342,14 @@ def _upsert_world_model_item_from_action_result(
     )
 
 
-def _collect_deliberation_input(db, *, trigger: AutonomyTrigger) -> dict[str, Any]:
+def _collect_deliberation_input(
+    db,
+    *,
+    trigger: AutonomyTrigger,
+    persona_text: str,
+    addon_text: str,
+    second_person_label: str,
+) -> dict[str, Any]:
     """DeliberationContextPack 相当の入力を構築する。"""
 
     # --- events（会話想起ノイズ制御: deliberation_decision は常時除外） ---
@@ -437,6 +444,9 @@ def _collect_deliberation_input(db, *, trigger: AutonomyTrigger) -> dict[str, An
         trigger_payload = {}
 
     # --- Deliberation入力には内部追跡用UUIDを出さない（evidence IDsとの混同を防ぐ） ---
+    pt = str(persona_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    at = str(addon_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    sp = str(second_person_label or "").strip() or "あなた"
     return {
         "trigger": {
             "trigger_type": str(trigger.trigger_type),
@@ -444,6 +454,11 @@ def _collect_deliberation_input(db, *, trigger: AutonomyTrigger) -> dict[str, An
             "source_event_id": (int(trigger.source_event_id) if trigger.source_event_id is not None else None),
             "payload": trigger_payload,
             "scheduled_at": (int(trigger.scheduled_at) if trigger.scheduled_at is not None else None),
+        },
+        "persona": {
+            "second_person_label": str(sp),
+            "persona_text": str(pt),
+            "addon_text": str(at),
         },
         "events": event_rows,
         "states": state_rows,
@@ -600,11 +615,15 @@ def _handle_deliberate_once(
                 return
 
             # --- Deliberation入力 ---
-            deliberation_input = _collect_deliberation_input(db, trigger=trigger)
             cfg = get_config_store().config
-            system_prompt = prompt_builders.autonomy_deliberation_system_prompt(
+            deliberation_input = _collect_deliberation_input(
+                db,
+                trigger=trigger,
                 persona_text=str(cfg.persona_text),
                 addon_text=str(cfg.addon_text),
+                second_person_label=str(cfg.second_person_label),
+            )
+            system_prompt = prompt_builders.autonomy_deliberation_system_prompt(
                 second_person_label=str(cfg.second_person_label),
             )
 
