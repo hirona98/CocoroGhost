@@ -311,7 +311,7 @@ def _handle_generate_write_plan(
         ),
         input_text=common_utils.json_dumps(input_obj),
         purpose=LlmRequestPurpose.ASYNC_WRITE_PLAN,
-        max_tokens=2400,
+        max_tokens=2000,
     )
     content = ""
     try:
