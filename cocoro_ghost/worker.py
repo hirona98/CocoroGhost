@@ -28,10 +28,7 @@ from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.worker_constants import (
     JOB_DONE as _JOB_DONE,
     JOB_FAILED as _JOB_FAILED,
-    JOB_MAX_RETRIES as _JOB_MAX_RETRIES,
     JOB_PENDING as _JOB_PENDING,
-    JOB_RETRY_BASE_SECONDS as _JOB_RETRY_BASE_SECONDS,
-    JOB_RETRY_MAX_SECONDS as _JOB_RETRY_MAX_SECONDS,
     JOB_RUNNING as _JOB_RUNNING,
     JOB_RUNNING_STALE_SECONDS as _JOB_RUNNING_STALE_SECONDS,
     JOB_STALE_SWEEP_INTERVAL_SECONDS as _JOB_STALE_SWEEP_INTERVAL_SECONDS,
@@ -111,15 +108,6 @@ def get_job_queue_stats(*, embedding_preset_id: str, embedding_dimension: int) -
     }
 
 
-def _compute_retry_delay_seconds(*, failed_tries: int) -> int:
-    """失敗回数に応じた再試行遅延（指数バックオフ）を返す。"""
-
-    # --- 1回目失敗: base秒、以降は2倍 ---
-    tries_i = max(1, int(failed_tries))
-    delay = int(_JOB_RETRY_BASE_SECONDS) * (2 ** int(tries_i - 1))
-    return int(min(int(delay), int(_JOB_RETRY_MAX_SECONDS)))
-
-
 def run_forever(
     *,
     embedding_preset_id: str,
@@ -137,7 +125,7 @@ def run_forever(
     - due(pending & run_after<=now) を running にして実行キューへ投入する。
     - 実行は ThreadPoolExecutor で並列化する（主に LLM 呼び出しの待ち時間を隠す目的）。
     - apply_write_plan / tidy_memory は排他で実行する（DB更新が大きく衝突しやすいため）。
-    - stale running は一定間隔で回収し、指数バックオフ再試行する。
+    - stale running は一定間隔で回収し、failed（スキップ）へ遷移する。
     """
 
     _ = periodic_interval_seconds  # cron無し定期は採用しない（ターン回数ベースを正とする）
