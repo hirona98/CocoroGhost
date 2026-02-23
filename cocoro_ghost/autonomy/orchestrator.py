@@ -104,11 +104,14 @@ class AutonomyOrchestrator:
                     source_event_id=None,
                 )
 
-            # --- time_routine policy trigger（分単位） ---
-            time_trigger = build_time_routine_trigger(now_domain_ts=int(now_domain_ts))
-            minute_bucket = int((time_trigger.get("payload") or {}).get("minute_bucket") or 0)
-            if self._last_time_routine_bucket != int(minute_bucket):
-                self._last_time_routine_bucket = int(minute_bucket)
+            # --- time_routine policy trigger（設定秒数単位） ---
+            time_trigger = build_time_routine_trigger(
+                now_domain_ts=int(now_domain_ts),
+                interval_seconds=int(heartbeat_seconds),
+            )
+            time_bucket = int((time_trigger.get("payload") or {}).get("time_bucket") or 0)
+            if self._last_time_routine_bucket != int(time_bucket):
+                self._last_time_routine_bucket = int(time_bucket)
                 repo.enqueue_trigger(
                     trigger_type="policy",
                     trigger_key=str(time_trigger["trigger_key"]),
