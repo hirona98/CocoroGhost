@@ -12,11 +12,11 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from cocoro_ghost import common_utils
 from cocoro_ghost.db import memory_session_scope
-from cocoro_ghost.memory_models import Intent, Job, RuntimeSnapshot
+from cocoro_ghost.memory_models import AgentJob, Intent, Job, RuntimeSnapshot
 
 
 _JOB_PENDING = 0
@@ -197,6 +197,240 @@ class AutonomyRepository:
                     updated_at=int(now_system_ts),
                 )
             )
+
+    def claim_agent_jobs(
+        self,
+        *,
+        runner_id: str,
+        backends: list[str],
+        now_system_ts: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """
+        queued な agent_jobs を claimed に遷移し、runner 向けスナップショットを返す。
+        """
+
+        # --- 入力を正規化 ---
+        runner_id_norm = str(runner_id or "").strip()
+        if not runner_id_norm:
+            return []
+        backend_list = [str(x or "").strip() for x in list(backends or []) if str(x or "").strip()]
+        if not backend_list:
+            return []
+        limit_i = max(1, int(limit))
+
+        out: list[dict[str, Any]] = []
+        with memory_session_scope(self.embedding_preset_id, self.embedding_dimension) as db:
+            # --- backend 候補に一致する queued job を先に読む ---
+            rows = db.execute(
+                text(
+                    """
+                    SELECT job_id
+                      FROM agent_jobs
+                     WHERE status = 'queued'
+                       AND backend IN :backends
+                     ORDER BY created_at ASC
+                     LIMIT :limit
+                    """
+                ).bindparams(bindparam("backends", expanding=True)),
+                {"backends": list(backend_list), "limit": int(limit_i)},
+            ).fetchall()
+            for row in rows:
+                job_id = str(row[0] or "").strip()
+                if not job_id:
+                    continue
+                claim_token = str(uuid.uuid4())
+                claimed = db.execute(
+                    text(
+                        """
+                        UPDATE agent_jobs
+                           SET status='claimed',
+                               claim_token=:claim_token,
+                               runner_id=:runner_id,
+                               attempts=attempts+1,
+                               updated_at=:updated_at
+                         WHERE job_id=:job_id
+                           AND status='queued'
+                        """
+                    ),
+                    {
+                        "claim_token": str(claim_token),
+                        "runner_id": str(runner_id_norm),
+                        "updated_at": int(now_system_ts),
+                        "job_id": str(job_id),
+                    },
+                )
+                if int(claimed.rowcount or 0) != 1:
+                    continue
+                job = db.query(AgentJob).filter(AgentJob.job_id == str(job_id)).one_or_none()
+                if job is None:
+                    continue
+                out.append(
+                    {
+                        "job_id": str(job.job_id),
+                        "claim_token": str(claim_token),
+                        "backend": str(job.backend),
+                        "task_instruction": str(job.task_instruction),
+                        "intent_id": str(job.intent_id),
+                        "decision_id": str(job.decision_id),
+                        "created_at": int(job.created_at or 0),
+                    }
+                )
+        return out
+
+    def heartbeat_agent_job(
+        self,
+        *,
+        job_id: str,
+        claim_token: str,
+        runner_id: str,
+        now_system_ts: int,
+    ) -> bool:
+        """
+        claim 済み/実行中 agent_job の heartbeat を更新する。
+        """
+
+        # --- 値を正規化 ---
+        job_id_norm = str(job_id or "").strip()
+        token_norm = str(claim_token or "").strip()
+        runner_id_norm = str(runner_id or "").strip()
+        if not job_id_norm or not token_norm or not runner_id_norm:
+            return False
+
+        with memory_session_scope(self.embedding_preset_id, self.embedding_dimension) as db:
+            row = db.execute(
+                text(
+                    """
+                    UPDATE agent_jobs
+                       SET status = CASE WHEN status='claimed' THEN 'running' ELSE status END,
+                           started_at = COALESCE(started_at, :started_at),
+                           heartbeat_at = :heartbeat_at,
+                           updated_at = :updated_at
+                     WHERE job_id=:job_id
+                       AND claim_token=:claim_token
+                       AND runner_id=:runner_id
+                       AND status IN ('claimed','running')
+                    """
+                ),
+                {
+                    "started_at": int(now_system_ts),
+                    "heartbeat_at": int(now_system_ts),
+                    "updated_at": int(now_system_ts),
+                    "job_id": str(job_id_norm),
+                    "claim_token": str(token_norm),
+                    "runner_id": str(runner_id_norm),
+                },
+            )
+            return int(row.rowcount or 0) == 1
+
+    def list_recent_agent_jobs(
+        self,
+        *,
+        limit: int,
+        status: str | None = None,
+        backend: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        agent_jobs 一覧（新しい順）を返す。
+        """
+
+        limit_i = max(1, int(limit))
+        status_norm = str(status or "").strip()
+        backend_norm = str(backend or "").strip()
+        where_parts: list[str] = []
+        params: dict[str, Any] = {"limit": int(limit_i)}
+        if status_norm:
+            where_parts.append("status = :status")
+            params["status"] = str(status_norm)
+        if backend_norm:
+            where_parts.append("backend = :backend")
+            params["backend"] = str(backend_norm)
+        where_sql = ""
+        if where_parts:
+            where_sql = "WHERE " + " AND ".join(where_parts)
+
+        with memory_session_scope(self.embedding_preset_id, self.embedding_dimension) as db:
+            rows = db.execute(
+                text(
+                    f"""
+                    SELECT job_id, intent_id, decision_id, backend, task_instruction, status,
+                           runner_id, attempts, heartbeat_at, result_status, result_summary_text,
+                           error_code, error_message, created_at, started_at, finished_at, updated_at
+                      FROM agent_jobs
+                      {where_sql}
+                     ORDER BY updated_at DESC, created_at DESC
+                     LIMIT :limit
+                    """
+                ),
+                params,
+            ).fetchall()
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                out.append(
+                    {
+                        "job_id": str(row[0]),
+                        "intent_id": str(row[1]),
+                        "decision_id": str(row[2]),
+                        "backend": str(row[3]),
+                        "task_instruction": str(row[4]),
+                        "status": str(row[5]),
+                        "runner_id": (str(row[6]) if row[6] is not None else None),
+                        "attempts": int(row[7] or 0),
+                        "heartbeat_at": (int(row[8]) if row[8] is not None else None),
+                        "result_status": (str(row[9]) if row[9] is not None else None),
+                        "result_summary_text": (str(row[10]) if row[10] is not None else None),
+                        "error_code": (str(row[11]) if row[11] is not None else None),
+                        "error_message": (str(row[12]) if row[12] is not None else None),
+                        "created_at": int(row[13] or 0),
+                        "started_at": (int(row[14]) if row[14] is not None else None),
+                        "finished_at": (int(row[15]) if row[15] is not None else None),
+                        "updated_at": int(row[16] or 0),
+                    }
+                )
+            return out
+
+    def get_agent_job(self, *, job_id: str) -> dict[str, Any] | None:
+        """
+        agent_job 1件を返す。
+        """
+
+        job_id_norm = str(job_id or "").strip()
+        if not job_id_norm:
+            return None
+        with memory_session_scope(self.embedding_preset_id, self.embedding_dimension) as db:
+            row = db.execute(
+                text(
+                    """
+                    SELECT job_id, intent_id, decision_id, backend, task_instruction, status,
+                           runner_id, attempts, heartbeat_at, result_status, result_summary_text,
+                           error_code, error_message, created_at, started_at, finished_at, updated_at
+                      FROM agent_jobs
+                     WHERE job_id = :job_id
+                    """
+                ),
+                {"job_id": str(job_id_norm)},
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "job_id": str(row[0]),
+                "intent_id": str(row[1]),
+                "decision_id": str(row[2]),
+                "backend": str(row[3]),
+                "task_instruction": str(row[4]),
+                "status": str(row[5]),
+                "runner_id": (str(row[6]) if row[6] is not None else None),
+                "attempts": int(row[7] or 0),
+                "heartbeat_at": (int(row[8]) if row[8] is not None else None),
+                "result_status": (str(row[9]) if row[9] is not None else None),
+                "result_summary_text": (str(row[10]) if row[10] is not None else None),
+                "error_code": (str(row[11]) if row[11] is not None else None),
+                "error_message": (str(row[12]) if row[12] is not None else None),
+                "created_at": int(row[13] or 0),
+                "started_at": (int(row[14]) if row[14] is not None else None),
+                "finished_at": (int(row[15]) if row[15] is not None else None),
+                "updated_at": int(row[16] or 0),
+            }
 
     def recover_runtime_from_latest_snapshot(
         self,

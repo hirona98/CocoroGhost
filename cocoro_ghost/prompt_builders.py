@@ -650,7 +650,7 @@ def autonomy_deliberation_system_prompt(
         "出力スキーマ:",
         "{",
         '  "decision_outcome": "do_action|skip|defer",',
-        '  "action_type": "observe_screen|observe_camera|web_research|schedule_action|device_action|move_to",',
+        '  "action_type": "observe_screen|observe_camera|web_research|schedule_action|device_action|move_to|agent_delegate",',
         '  "action_payload": {',
         '    "任意キー": "capability ごとの入力。trigger.payload.suggested_action_payload があれば優先して使ってよい"',
         "  },",
@@ -686,6 +686,7 @@ def autonomy_deliberation_system_prompt(
         '- schedule_action: {"at": 1735689600, "content":"string"}',
         '- device_action: {"device_id":"string","command":"string"}',
         '- move_to: {"destination":"string"}',
+        '- agent_delegate: {"backend":"string","task_instruction":"string"}',
     ]
     return "\n".join(lines).strip()
 

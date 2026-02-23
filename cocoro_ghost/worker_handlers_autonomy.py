@@ -32,6 +32,7 @@ from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.memory_models import (
     ActionDecision,
     ActionResult,
+    AgentJob,
     AutonomyTrigger,
     Event,
     EventAffect,
@@ -343,6 +344,256 @@ def _upsert_world_model_item_from_action_result(
     )
 
 
+def _enqueue_standard_post_action_jobs(
+    *,
+    db,
+    event_id: int,
+    result_id: str,
+    now_system_ts: int,
+) -> None:
+    """ActionResult 保存後に共通で投入する worker jobs を追加する。"""
+
+    # --- recall判定ジョブを投入 ---
+    db.add(
+        Job(
+            kind="promote_action_result_to_searchable",
+            payload_json=common_utils.json_dumps({"result_id": str(result_id)}),
+            status=int(_JOB_PENDING),
+            run_after=int(now_system_ts),
+            tries=0,
+            last_error=None,
+            created_at=int(now_system_ts),
+            updated_at=int(now_system_ts),
+        )
+    )
+
+    # --- 記憶更新（WritePlan）ジョブを投入 ---
+    db.add(
+        Job(
+            kind="generate_write_plan",
+            payload_json=common_utils.json_dumps({"event_id": int(event_id)}),
+            status=int(_JOB_PENDING),
+            run_after=int(now_system_ts),
+            tries=0,
+            last_error=None,
+            created_at=int(now_system_ts),
+            updated_at=int(now_system_ts),
+        )
+    )
+
+
+def _finalize_intent_and_save_action_result(
+    *,
+    db,
+    intent: Intent,
+    decision_id: str,
+    action_type: str,
+    capability_name: str,
+    result_status: str,
+    summary_text: str,
+    result_payload_json: str,
+    useful_for_recall_hint: int,
+    now_system_ts: int,
+    now_domain_ts: int,
+    goal_id_hint: str | None = None,
+    next_trigger: dict[str, Any] | None = None,
+) -> str:
+    """
+    ActionResult/Event を保存し、Intent を終端化する（execute_intent/callback 共通処理）。
+
+    Returns:
+        保存した ActionResult.result_id
+    """
+
+    # --- event: action_result（既定 searchable=0） ---
+    result_event = Event(
+        created_at=int(now_domain_ts),
+        updated_at=int(now_domain_ts),
+        searchable=0,
+        client_id=None,
+        source="action_result",
+        user_text=str(summary_text),
+        assistant_text=None,
+        entities_json="[]",
+        client_context_json=common_utils.json_dumps(
+            {
+                "intent_id": str(intent.intent_id),
+                "decision_id": str(decision_id),
+                "action_type": str(action_type),
+                "capability": str(capability_name),
+                "result_status": str(result_status),
+            }
+        ),
+    )
+    db.add(result_event)
+    db.flush()
+
+    # --- action_results に保存 ---
+    result_id = str(uuid.uuid4())
+    db.add(
+        ActionResult(
+            result_id=str(result_id),
+            event_id=int(result_event.event_id),
+            intent_id=str(intent.intent_id),
+            decision_id=str(decision_id),
+            capability_name=str(capability_name),
+            result_status=str(result_status),
+            result_payload_json=str(result_payload_json),
+            summary_text=str(summary_text),
+            useful_for_recall_hint=int(useful_for_recall_hint),
+            recall_decision=-1,
+            recall_decided_at=None,
+            created_at=int(now_system_ts),
+        )
+    )
+    # --- world_model_items が source_result_id(FK) を参照するため、親行を先に永続化する ---
+    db.flush()
+
+    # --- world_model_items へ集約（対象外 capability は no-op） ---
+    _upsert_world_model_item_from_action_result(
+        db=db,
+        source_event_id=int(result_event.event_id),
+        source_result_id=str(result_id),
+        capability_name=str(capability_name),
+        result_status=str(result_status),
+        summary_text=str(summary_text),
+        result_payload_json=str(result_payload_json),
+        now_system_ts=int(now_system_ts),
+        now_domain_ts=int(now_domain_ts),
+    )
+
+    # --- intent 状態を終端へ遷移 ---
+    if str(result_status) == "failed":
+        db.execute(
+            text(
+                """
+                UPDATE intents
+                   SET status='dropped',
+                       dropped_reason=:dropped_reason,
+                       dropped_at=:dropped_at,
+                       last_result_status=:last_result_status,
+                       updated_at=:updated_at
+                 WHERE intent_id=:intent_id
+                """
+            ),
+            {
+                "dropped_reason": str(summary_text)[:1000],
+                "dropped_at": int(now_domain_ts),
+                "last_result_status": str(result_status),
+                "updated_at": int(now_system_ts),
+                "intent_id": str(intent.intent_id),
+            },
+        )
+    else:
+        db.execute(
+            text(
+                """
+                UPDATE intents
+                   SET status='done',
+                       last_result_status=:last_result_status,
+                       updated_at=:updated_at
+                 WHERE intent_id=:intent_id
+                """
+            ),
+            {
+                "last_result_status": str(result_status),
+                "updated_at": int(now_system_ts),
+                "intent_id": str(intent.intent_id),
+            },
+        )
+
+        # --- goal は成功/部分成功で完了に寄せる ---
+        goal_id_for_update = goal_id_hint
+        if goal_id_for_update is None and intent.goal_id is not None and str(intent.goal_id).strip():
+            goal_id_for_update = str(intent.goal_id)
+        if goal_id_for_update is not None and str(goal_id_for_update).strip():
+            db.execute(
+                text(
+                    """
+                    UPDATE goals
+                       SET status='done',
+                           updated_at=:updated_at
+                     WHERE goal_id=:goal_id
+                       AND status <> 'done'
+                       AND status <> 'dropped'
+                    """
+                ),
+                {
+                    "updated_at": int(now_system_ts),
+                    "goal_id": str(goal_id_for_update),
+                },
+            )
+
+    # --- next_trigger があれば投入 ---
+    if isinstance(next_trigger, dict) and bool(next_trigger.get("required")):
+        trigger_type = str(next_trigger.get("trigger_type") or "event")
+        trigger_key = str(next_trigger.get("trigger_key") or f"next:{str(result_id)}")
+        trigger_payload = next_trigger.get("payload") if isinstance(next_trigger.get("payload"), dict) else {}
+        trigger_scheduled_at_raw = next_trigger.get("scheduled_at")
+        trigger_scheduled_at = (
+            int(trigger_scheduled_at_raw) if trigger_scheduled_at_raw is not None else int(now_domain_ts)
+        )
+        db.execute(
+            text(
+                """
+                INSERT OR IGNORE INTO autonomy_triggers(
+                    trigger_id,
+                    trigger_type,
+                    trigger_key,
+                    source_event_id,
+                    payload_json,
+                    status,
+                    scheduled_at,
+                    claim_token,
+                    claimed_at,
+                    attempts,
+                    last_error,
+                    dropped_reason,
+                    dropped_at,
+                    created_at,
+                    updated_at
+                )
+                VALUES(
+                    :trigger_id,
+                    :trigger_type,
+                    :trigger_key,
+                    :source_event_id,
+                    :payload_json,
+                    'queued',
+                    :scheduled_at,
+                    NULL,
+                    NULL,
+                    0,
+                    NULL,
+                    '',
+                    NULL,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "trigger_id": str(uuid.uuid4()),
+                "trigger_type": str(trigger_type),
+                "trigger_key": str(trigger_key),
+                "source_event_id": int(result_event.event_id),
+                "payload_json": common_utils.json_dumps(trigger_payload),
+                "scheduled_at": int(trigger_scheduled_at),
+                "created_at": int(now_system_ts),
+                "updated_at": int(now_system_ts),
+            },
+        )
+
+    # --- 後続ジョブを投入 ---
+    _enqueue_standard_post_action_jobs(
+        db=db,
+        event_id=int(result_event.event_id),
+        result_id=str(result_id),
+        now_system_ts=int(now_system_ts),
+    )
+    return str(result_id)
+
+
 def _collect_deliberation_input(
     db,
     *,
@@ -486,6 +737,11 @@ def _collect_deliberation_input(
             {
                 "capability": "mobility_move",
                 "action_types": ["move_to"],
+            },
+            {
+                "capability": "agent_delegate",
+                "action_types": ["agent_delegate"],
+                "backends": ["codex"],
             },
         ],
     }
@@ -940,6 +1196,7 @@ def _handle_execute_intent(
                             SELECT COUNT(*)
                               FROM intents AS i2
                              WHERE i2.status='running'
+                               AND i2.action_type <> 'agent_delegate'
                        ) < :max_parallel
                     """
                 ),
@@ -987,6 +1244,7 @@ def _handle_execute_intent(
             intent_payload = dict(intent_payload_raw) if isinstance(intent_payload_raw, dict) else {}
 
         # --- Phase 2: capability 実行（DBロックを持たない） ---
+        is_agent_delegate = False
         if str(claimed_action_type) == "web_research":
             result = execute_web_research(
                 llm_client=llm_client,
@@ -1018,6 +1276,17 @@ def _handle_execute_intent(
                 action_payload=intent_payload,
             )
             capability_name = "mobility_move"
+        elif str(claimed_action_type) == "agent_delegate":
+            # --- 汎用委譲は callback 完了時に ActionResult を保存するため、ここでは job 作成だけ行う ---
+            backend = str(intent_payload.get("backend") or "").strip()
+            task_instruction = str(intent_payload.get("task_instruction") or "").strip()
+            if not backend:
+                raise RuntimeError("agent_delegate requires action_payload.backend")
+            if not task_instruction:
+                raise RuntimeError("agent_delegate requires action_payload.task_instruction")
+            capability_name = "agent_delegate"
+            is_agent_delegate = True
+            result = None
         else:
             capability_name = "unknown"
             result = CapabilityExecutionResult(
@@ -1044,215 +1313,52 @@ def _handle_execute_intent(
             if str(intent.status) != "running":
                 return
 
-            # --- event: action_result（既定 searchable=0） ---
-            result_event = Event(
-                created_at=int(now_domain_ts),
-                updated_at=int(now_domain_ts),
-                searchable=0,
-                client_id=None,
-                source="action_result",
-                user_text=str(result.summary),
-                assistant_text=None,
-                entities_json="[]",
-                client_context_json=common_utils.json_dumps(
-                    {
-                        "intent_id": str(intent_id),
-                        "decision_id": str(claimed_decision_id),
-                        "action_type": str(claimed_action_type),
-                        "capability": str(capability_name),
-                        "result_status": str(result.result_status),
-                    }
-                ),
-            )
-            db.add(result_event)
-            db.flush()
+            if bool(is_agent_delegate):
+                # --- agent_delegate は別プロセス runner 向け job を作成し、Intent は running のまま維持 ---
+                existing_agent_job = db.query(AgentJob).filter(AgentJob.intent_id == str(intent_id)).one_or_none()
+                if existing_agent_job is None:
+                    db.add(
+                        AgentJob(
+                            job_id=str(uuid.uuid4()),
+                            intent_id=str(intent_id),
+                            decision_id=str(claimed_decision_id),
+                            backend=str(intent_payload.get("backend") or ""),
+                            task_instruction=str(intent_payload.get("task_instruction") or ""),
+                            status="queued",
+                            claim_token=None,
+                            runner_id=None,
+                            attempts=0,
+                            heartbeat_at=None,
+                            result_status=None,
+                            result_summary_text=None,
+                            result_details_json="{}",
+                            error_code=None,
+                            error_message=None,
+                            created_at=int(now_system_ts),
+                            started_at=None,
+                            finished_at=None,
+                            updated_at=int(now_system_ts),
+                        )
+                    )
+                return
 
-            # --- action_results に保存 ---
-            result_id = str(uuid.uuid4())
-            db.add(
-                ActionResult(
-                    result_id=str(result_id),
-                    event_id=int(result_event.event_id),
-                    intent_id=str(intent_id),
-                    decision_id=str(claimed_decision_id),
-                    capability_name=str(capability_name),
-                    result_status=str(result.result_status),
-                    result_payload_json=str(result.result_payload_json),
-                    summary_text=str(result.summary),
-                    useful_for_recall_hint=int(result.useful_for_recall_hint),
-                    recall_decision=-1,
-                    recall_decided_at=None,
-                    created_at=int(now_system_ts),
-                )
-            )
-            # --- world_model_items が source_result_id(FK) を参照するため、親行を先に永続化する ---
-            db.flush()
+            if not isinstance(result, CapabilityExecutionResult):
+                raise RuntimeError("execute_intent internal error: capability result missing")
 
-            # --- world_model_items へ集約（Capability 本体ではなく Worker が担当） ---
-            _upsert_world_model_item_from_action_result(
+            _finalize_intent_and_save_action_result(
                 db=db,
-                source_event_id=int(result_event.event_id),
-                source_result_id=str(result_id),
+                intent=intent,
+                decision_id=str(claimed_decision_id),
+                action_type=str(claimed_action_type),
                 capability_name=str(capability_name),
                 result_status=str(result.result_status),
                 summary_text=str(result.summary),
                 result_payload_json=str(result.result_payload_json),
+                useful_for_recall_hint=int(result.useful_for_recall_hint),
                 now_system_ts=int(now_system_ts),
                 now_domain_ts=int(now_domain_ts),
-            )
-
-            # --- intent 状態を終端へ遷移 ---
-            if str(result.result_status) == "failed":
-                db.execute(
-                    text(
-                        """
-                        UPDATE intents
-                           SET status='dropped',
-                               dropped_reason=:dropped_reason,
-                               dropped_at=:dropped_at,
-                               last_result_status=:last_result_status,
-                               updated_at=:updated_at
-                         WHERE intent_id=:intent_id
-                        """
-                    ),
-                    {
-                        "dropped_reason": str(result.summary)[:1000],
-                        "dropped_at": int(now_domain_ts),
-                        "last_result_status": str(result.result_status),
-                        "updated_at": int(now_system_ts),
-                        "intent_id": str(intent_id),
-                    },
-                )
-            else:
-                db.execute(
-                    text(
-                        """
-                        UPDATE intents
-                           SET status='done',
-                               last_result_status=:last_result_status,
-                               updated_at=:updated_at
-                         WHERE intent_id=:intent_id
-                        """
-                    ),
-                    {
-                        "last_result_status": str(result.result_status),
-                        "updated_at": int(now_system_ts),
-                        "intent_id": str(intent_id),
-                    },
-                )
-
-                # --- goal は成功/部分成功で完了に寄せる ---
-                goal_id_for_update = claimed_goal_id
-                if goal_id_for_update is None and intent.goal_id is not None and str(intent.goal_id).strip():
-                    goal_id_for_update = str(intent.goal_id)
-                if goal_id_for_update is not None and str(goal_id_for_update).strip():
-                    db.execute(
-                        text(
-                            """
-                            UPDATE goals
-                               SET status='done',
-                                   updated_at=:updated_at
-                             WHERE goal_id=:goal_id
-                               AND status <> 'done'
-                               AND status <> 'dropped'
-                            """
-                        ),
-                        {
-                            "updated_at": int(now_system_ts),
-                            "goal_id": str(goal_id_for_update),
-                        },
-                    )
-
-            # --- next_trigger があれば投入 ---
-            if isinstance(result.next_trigger, dict) and bool(result.next_trigger.get("required")):
-                trigger_type = str(result.next_trigger.get("trigger_type") or "event")
-                trigger_key = str(result.next_trigger.get("trigger_key") or f"next:{str(result_id)}")
-                trigger_payload = (
-                    result.next_trigger.get("payload") if isinstance(result.next_trigger.get("payload"), dict) else {}
-                )
-                trigger_scheduled_at_raw = result.next_trigger.get("scheduled_at")
-                trigger_scheduled_at = (
-                    int(trigger_scheduled_at_raw)
-                    if trigger_scheduled_at_raw is not None
-                    else int(now_domain_ts)
-                )
-                db.execute(
-                    text(
-                        """
-                        INSERT OR IGNORE INTO autonomy_triggers(
-                            trigger_id,
-                            trigger_type,
-                            trigger_key,
-                            source_event_id,
-                            payload_json,
-                            status,
-                            scheduled_at,
-                            claim_token,
-                            claimed_at,
-                            attempts,
-                            last_error,
-                            dropped_reason,
-                            dropped_at,
-                            created_at,
-                            updated_at
-                        )
-                        VALUES(
-                            :trigger_id,
-                            :trigger_type,
-                            :trigger_key,
-                            :source_event_id,
-                            :payload_json,
-                            'queued',
-                            :scheduled_at,
-                            NULL,
-                            NULL,
-                            0,
-                            NULL,
-                            '',
-                            NULL,
-                            :created_at,
-                            :updated_at
-                        )
-                        """
-                    ),
-                    {
-                        "trigger_id": str(uuid.uuid4()),
-                        "trigger_type": str(trigger_type),
-                        "trigger_key": str(trigger_key),
-                        "source_event_id": int(result_event.event_id),
-                        "payload_json": common_utils.json_dumps(trigger_payload),
-                        "scheduled_at": int(trigger_scheduled_at),
-                        "created_at": int(now_system_ts),
-                        "updated_at": int(now_system_ts),
-                    },
-                )
-
-            # --- recall判定ジョブを投入 ---
-            db.add(
-                Job(
-                    kind="promote_action_result_to_searchable",
-                    payload_json=common_utils.json_dumps({"result_id": str(result_id)}),
-                    status=int(_JOB_PENDING),
-                    run_after=int(now_system_ts),
-                    tries=0,
-                    last_error=None,
-                    created_at=int(now_system_ts),
-                    updated_at=int(now_system_ts),
-                )
-            )
-
-            # --- 記憶更新（WritePlan）ジョブを投入 ---
-            db.add(
-                Job(
-                    kind="generate_write_plan",
-                    payload_json=common_utils.json_dumps({"event_id": int(result_event.event_id)}),
-                    status=int(_JOB_PENDING),
-                    run_after=int(now_system_ts),
-                    tries=0,
-                    last_error=None,
-                    created_at=int(now_system_ts),
-                    updated_at=int(now_system_ts),
-                )
+                goal_id_hint=(str(claimed_goal_id) if claimed_goal_id is not None else None),
+                next_trigger=result.next_trigger,
             )
     except Exception as exc:  # noqa: BLE001
         # --- 途中失敗時は running intent の取り残しを防ぐ ---
@@ -1285,6 +1391,201 @@ def _handle_execute_intent(
         except Exception:  # noqa: BLE001
             logger.exception("execute_intent cleanup failed intent_id=%s", str(intent_id))
         raise
+
+def complete_agent_job_from_runner(
+    *,
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    job_id: str,
+    claim_token: str,
+    runner_id: str,
+    result_status: str,
+    summary_text: str,
+    details_json_obj: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    agent_runner の complete callback を処理し、ActionResult/Event/Intent を終端化する。
+    """
+
+    # --- 入力を正規化 ---
+    job_id_norm = str(job_id or "").strip()
+    token_norm = str(claim_token or "").strip()
+    runner_id_norm = str(runner_id or "").strip()
+    result_status_norm = str(result_status or "").strip()
+    summary_norm = str(summary_text or "").strip()
+    details_obj = dict(details_json_obj or {})
+    if not job_id_norm or not token_norm or not runner_id_norm:
+        raise RuntimeError("job_id / claim_token / runner_id are required")
+    if result_status_norm not in {"success", "partial", "no_effect"}:
+        raise RuntimeError("result_status must be success/partial/no_effect for complete")
+    if not summary_norm:
+        summary_norm = "agent job completed"
+
+    now_system_ts = _now_utc_ts()
+    now_domain_ts = _now_domain_utc_ts()
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        # --- callback 対象 job を検証 ---
+        job = db.query(AgentJob).filter(AgentJob.job_id == str(job_id_norm)).one_or_none()
+        if job is None:
+            raise RuntimeError("agent_job not found")
+        if str(job.claim_token or "") != str(token_norm):
+            raise RuntimeError("agent_job claim_token mismatch")
+        if str(job.runner_id or "") != str(runner_id_norm):
+            raise RuntimeError("agent_job runner_id mismatch")
+        if str(job.status) in {"completed", "failed", "cancelled", "timed_out"}:
+            return {
+                "job_id": str(job.job_id),
+                "status": str(job.status),
+                "intent_id": str(job.intent_id),
+                "backend": str(job.backend),
+            }
+        if str(job.status) not in {"claimed", "running"}:
+            raise RuntimeError(f"agent_job status is not claimable for completion: {str(job.status)}")
+
+        # --- 対応 intent を検証（running のまま維持されている前提） ---
+        intent = db.query(Intent).filter(Intent.intent_id == str(job.intent_id)).one_or_none()
+        if intent is None:
+            raise RuntimeError("intent not found for agent_job")
+        if str(intent.status) != "running":
+            raise RuntimeError(f"intent status is not running: {str(intent.status)}")
+
+        # --- job を completed に更新 ---
+        job.status = "completed"
+        job.result_status = str(result_status_norm)
+        job.result_summary_text = str(summary_norm)
+        job.result_details_json = common_utils.json_dumps(details_obj)
+        job.error_code = None
+        job.error_message = None
+        job.started_at = int(job.started_at or now_system_ts)
+        job.finished_at = int(now_system_ts)
+        job.heartbeat_at = int(now_system_ts)
+        job.updated_at = int(now_system_ts)
+
+        # --- result payload は agent job 文脈付きで保存する ---
+        result_payload_obj = {
+            "agent_job_id": str(job.job_id),
+            "backend": str(job.backend),
+            "task_instruction": str(job.task_instruction),
+            "details": details_obj,
+        }
+        useful_hint = 1 if str(result_status_norm) in {"success", "partial"} and bool(summary_norm) else 0
+
+        _finalize_intent_and_save_action_result(
+            db=db,
+            intent=intent,
+            decision_id=str(job.decision_id),
+            action_type="agent_delegate",
+            capability_name="agent_delegate",
+            result_status=str(result_status_norm),
+            summary_text=str(summary_norm),
+            result_payload_json=common_utils.json_dumps(result_payload_obj),
+            useful_for_recall_hint=int(useful_hint),
+            now_system_ts=int(now_system_ts),
+            now_domain_ts=int(now_domain_ts),
+            goal_id_hint=None,
+            next_trigger=None,
+        )
+        return {
+            "job_id": str(job.job_id),
+            "status": str(job.status),
+            "intent_id": str(job.intent_id),
+            "backend": str(job.backend),
+        }
+
+
+def fail_agent_job_from_runner(
+    *,
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    job_id: str,
+    claim_token: str,
+    runner_id: str,
+    error_code: str | None,
+    error_message: str,
+) -> dict[str, Any]:
+    """
+    agent_runner の fail callback を処理し、ActionResult/Event/Intent を失敗終端化する。
+    """
+
+    # --- 入力を正規化 ---
+    job_id_norm = str(job_id or "").strip()
+    token_norm = str(claim_token or "").strip()
+    runner_id_norm = str(runner_id or "").strip()
+    error_code_norm = str(error_code or "").strip() or "agent_job_failed"
+    error_message_norm = str(error_message or "").strip() or "agent job failed"
+    if len(error_message_norm) > 1000:
+        error_message_norm = error_message_norm[:1000]
+    if not job_id_norm or not token_norm or not runner_id_norm:
+        raise RuntimeError("job_id / claim_token / runner_id are required")
+
+    now_system_ts = _now_utc_ts()
+    now_domain_ts = _now_domain_utc_ts()
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        # --- callback 対象 job を検証 ---
+        job = db.query(AgentJob).filter(AgentJob.job_id == str(job_id_norm)).one_or_none()
+        if job is None:
+            raise RuntimeError("agent_job not found")
+        if str(job.claim_token or "") != str(token_norm):
+            raise RuntimeError("agent_job claim_token mismatch")
+        if str(job.runner_id or "") != str(runner_id_norm):
+            raise RuntimeError("agent_job runner_id mismatch")
+        if str(job.status) in {"completed", "failed", "cancelled", "timed_out"}:
+            return {
+                "job_id": str(job.job_id),
+                "status": str(job.status),
+                "intent_id": str(job.intent_id),
+                "backend": str(job.backend),
+            }
+        if str(job.status) not in {"claimed", "running"}:
+            raise RuntimeError(f"agent_job status is not claimable for failure: {str(job.status)}")
+
+        # --- 対応 intent を検証 ---
+        intent = db.query(Intent).filter(Intent.intent_id == str(job.intent_id)).one_or_none()
+        if intent is None:
+            raise RuntimeError("intent not found for agent_job")
+        if str(intent.status) != "running":
+            raise RuntimeError(f"intent status is not running: {str(intent.status)}")
+
+        # --- job を failed に更新 ---
+        job.status = "failed"
+        job.result_status = "failed"
+        job.result_summary_text = str(error_message_norm)
+        job.result_details_json = common_utils.json_dumps(
+            {
+                "agent_job_id": str(job.job_id),
+                "backend": str(job.backend),
+                "error_code": str(error_code_norm),
+                "error_message": str(error_message_norm),
+            }
+        )
+        job.error_code = str(error_code_norm)
+        job.error_message = str(error_message_norm)
+        job.started_at = int(job.started_at or now_system_ts)
+        job.finished_at = int(now_system_ts)
+        job.heartbeat_at = int(now_system_ts)
+        job.updated_at = int(now_system_ts)
+
+        _finalize_intent_and_save_action_result(
+            db=db,
+            intent=intent,
+            decision_id=str(job.decision_id),
+            action_type="agent_delegate",
+            capability_name="agent_delegate",
+            result_status="failed",
+            summary_text=str(error_message_norm),
+            result_payload_json=str(job.result_details_json),
+            useful_for_recall_hint=0,
+            now_system_ts=int(now_system_ts),
+            now_domain_ts=int(now_domain_ts),
+            goal_id_hint=None,
+            next_trigger=None,
+        )
+        return {
+            "job_id": str(job.job_id),
+            "status": str(job.status),
+            "intent_id": str(job.intent_id),
+            "backend": str(job.backend),
+        }
 
 
 def _handle_promote_action_result_to_searchable(
