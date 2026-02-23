@@ -16,6 +16,8 @@ from cocoro_ghost import common_utils
 
 _DECISION_OUTCOMES = {"do_action", "skip", "defer"}
 _RESULT_STATUSES = {"success", "partial", "failed", "no_effect"}
+_PERSONA_PREFERRED_DIRECTIONS = {"observe", "support", "wait", "avoid", "explore"}
+_THRESHOLD_BIASES = {"higher", "neutral", "lower"}
 
 
 def _normalize_string_list(value: Any, *, field_name: str, min_items: int = 0) -> list[str]:
@@ -38,6 +40,26 @@ def _normalize_string_list(value: Any, *, field_name: str, min_items: int = 0) -
     return out
 
 
+def _normalize_enum_text(
+    value: Any,
+    *,
+    field_name: str,
+    allowed: set[str],
+) -> str:
+    """
+    列挙値（文字列）を正規化して返す。
+
+    方針:
+        - 自然文の意味判定は行わない。
+        - 事前定義した構造列挙だけを許可する。
+    """
+    text = str(value or "").strip()
+    if text not in allowed:
+        allowed_text = "/".join(sorted(str(x) for x in allowed))
+        raise ValueError(f"{field_name} must be one of {allowed_text}")
+    return str(text)
+
+
 def _parse_persona_influence(value: Any) -> dict[str, Any]:
     """
     persona_influence を検証して正規化する。
@@ -52,10 +74,18 @@ def _parse_persona_influence(value: Any) -> dict[str, Any]:
     if not summary:
         raise ValueError("persona_influence.summary is required")
     traits = _normalize_string_list(value.get("traits"), field_name="persona_influence.traits", min_items=1)
+    preferred_direction = _normalize_enum_text(
+        value.get("preferred_direction"),
+        field_name="persona_influence.preferred_direction",
+        allowed=_PERSONA_PREFERRED_DIRECTIONS,
+    )
+    concerns = _normalize_string_list(value.get("concerns"), field_name="persona_influence.concerns", min_items=0)
 
     out = dict(value)
     out["summary"] = str(summary)
     out["traits"] = list(traits)
+    out["preferred_direction"] = str(preferred_direction)
+    out["concerns"] = list(concerns)
     return out
 
 
@@ -86,6 +116,16 @@ def _parse_mood_influence(value: Any) -> dict[str, Any]:
     out = dict(value)
     out["summary"] = str(summary)
     out["vad"] = {"v": float(v), "a": float(a), "d": float(d)}
+    out["action_threshold_bias"] = _normalize_enum_text(
+        value.get("action_threshold_bias"),
+        field_name="mood_influence.action_threshold_bias",
+        allowed=_THRESHOLD_BIASES,
+    )
+    out["defer_bias"] = _normalize_enum_text(
+        value.get("defer_bias"),
+        field_name="mood_influence.defer_bias",
+        allowed=_THRESHOLD_BIASES,
+    )
     return out
 
 
