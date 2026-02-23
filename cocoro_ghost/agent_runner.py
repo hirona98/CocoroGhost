@@ -76,7 +76,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--backend",
         action="append",
         default=[],
-        help="backend name to claim (repeatable). example: --backend gmini",
+        help="backend name to claim (repeatable). example: --backend cli_agent",
     )
 
     # --- ポーリング/タイムアウト設定 ---
@@ -271,12 +271,12 @@ def _fetch_backend_command_argv_from_settings(
 ) -> list[str]:
     """Ghost の /api/settings から backend 実行コマンドを取得して argv に変換する。"""
 
-    # --- 現在は backend=gmini のみ設定DBから取得する ---
+    # --- 現在は backend=cli_agent のみ設定DBから取得する ---
     backend_norm = str(backend or "").strip()
-    if backend_norm != "gmini":
+    if backend_norm != "cli_agent":
         raise RuntimeError(f"unsupported backend: {backend_norm}")
 
-    # --- 全設定を取得し、gmini 実行コマンドを読む ---
+    # --- 全設定を取得し、cli_agent 実行CLIコマンドを読む ---
     resp = client.get(
         f"{str(base_url).rstrip('/')}/api/settings",
         headers=_auth_headers(token),
@@ -286,7 +286,7 @@ def _fetch_backend_command_argv_from_settings(
     if not isinstance(data, dict):
         raise RuntimeError("settings response is not an object")
 
-    command_text = str(data.get("agent_backend_gmini_command") or "").strip()
+    command_text = str(data.get("agent_backend_cli_agent_command") or "").strip()
     return _parse_command_argv(backend=backend_norm, command_text=command_text)
 
 

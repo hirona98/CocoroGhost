@@ -124,7 +124,9 @@ def get_settings(
         autonomy_max_parallel_intents=max(1, int(getattr(global_settings, "autonomy_max_parallel_intents", 2))),
         camera_watch_enabled=bool(getattr(global_settings, "camera_watch_enabled", False)),
         camera_watch_interval_seconds=max(1, int(getattr(global_settings, "camera_watch_interval_seconds", 15))),
-        agent_backend_gmini_command=str(getattr(global_settings, "agent_backend_gmini_command", "gemini.exe -p") or "").strip(),
+        agent_backend_cli_agent_command=str(
+            getattr(global_settings, "agent_backend_cli_agent_command", "gemini.exe -p") or ""
+        ).strip(),
         active_llm_preset_id=global_settings.active_llm_preset_id,
         active_embedding_preset_id=global_settings.active_embedding_preset_id,
         active_persona_preset_id=global_settings.active_persona_preset_id,
@@ -185,8 +187,8 @@ def commit_settings(
     global_settings.autonomy_max_parallel_intents = max(1, int(request.autonomy_max_parallel_intents))
     global_settings.camera_watch_enabled = bool(request.camera_watch_enabled)
     global_settings.camera_watch_interval_seconds = max(1, int(request.camera_watch_interval_seconds))
-    # --- agent_runner backend=gmini 実行コマンド（task_instruction は末尾引数で渡される） ---
-    global_settings.agent_backend_gmini_command = str(request.agent_backend_gmini_command or "").strip()
+    # --- agent_runner backend=cli_agent 実行CLIコマンド（task_instruction は末尾引数で渡される） ---
+    global_settings.agent_backend_cli_agent_command = str(request.agent_backend_cli_agent_command or "").strip()
 
     # LLMプリセットの更新（複数件 / 全置換 + アーカイブ）
     llm_existing = db.query(models.LlmPreset).order_by(models.LlmPreset.id.asc()).all()

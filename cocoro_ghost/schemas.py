@@ -552,7 +552,7 @@ class FullSettingsResponse(BaseModel):
     autonomy_max_parallel_intents: int
     camera_watch_enabled: bool
     camera_watch_interval_seconds: int
-    agent_backend_gmini_command: str
+    agent_backend_cli_agent_command: str
 
     # アクティブなプリセットID
     active_llm_preset_id: Optional[str] = None
@@ -632,7 +632,7 @@ class FullSettingsUpdateRequest(BaseModel):
     autonomy_max_parallel_intents: int
     camera_watch_enabled: bool
     camera_watch_interval_seconds: int
-    agent_backend_gmini_command: str
+    agent_backend_cli_agent_command: str
     active_llm_preset_id: str
     active_embedding_preset_id: str
     active_persona_preset_id: str

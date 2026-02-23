@@ -132,7 +132,7 @@ def _migrate_settings_db_v5_to_v6(engine, logger: logging.Logger) -> None:
     """設定DBを v5 から v6 へ移行する。"""
 
     with engine.connect() as conn:
-        # --- global_settings に gmini backend 実行コマンド列を追加 ---
+        # --- global_settings に gmini backend 実行コマンド列を追加（旧命名） ---
         gs_columns = _get_table_columns(conn, "global_settings")
         if "agent_backend_gmini_command" not in gs_columns:
             conn.execute(
@@ -147,6 +147,39 @@ def _migrate_settings_db_v5_to_v6(engine, logger: logging.Logger) -> None:
         conn.commit()
 
     logger.info("settings DB migrated: user_version 5 -> 6")
+
+
+def _migrate_settings_db_v6_to_v7(engine, logger: logging.Logger) -> None:
+    """設定DBを v6 から v7 へ移行する。"""
+
+    with engine.connect() as conn:
+        # --- global_settings に cli_agent backend のCLIコマンド列を追加 ---
+        gs_columns = _get_table_columns(conn, "global_settings")
+        if "agent_backend_cli_agent_command" not in gs_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE global_settings "
+                    "ADD COLUMN agent_backend_cli_agent_command TEXT NOT NULL DEFAULT 'gemini.exe -p'"
+                )
+            )
+
+        # --- 旧 gmini 列があり、新列が空のときは値を引き継ぐ ---
+        gs_columns_after = _get_table_columns(conn, "global_settings")
+        if "agent_backend_gmini_command" in gs_columns_after and "agent_backend_cli_agent_command" in gs_columns_after:
+            conn.execute(
+                text(
+                    "UPDATE global_settings "
+                    "SET agent_backend_cli_agent_command = agent_backend_gmini_command "
+                    "WHERE length(trim(COALESCE(agent_backend_cli_agent_command,''))) = 0 "
+                    "AND length(trim(COALESCE(agent_backend_gmini_command,''))) > 0"
+                )
+            )
+
+        # --- スキーマバージョンを更新 ---
+        conn.execute(text("PRAGMA user_version=7"))
+        conn.commit()
+
+    logger.info("settings DB migrated: user_version 6 -> 7")
 
 
 def migrate_settings_db_if_needed(*, engine, target_user_version: int, logger: logging.Logger) -> None:
@@ -168,6 +201,9 @@ def migrate_settings_db_if_needed(*, engine, target_user_version: int, logger: l
             continue
         if current == 5 and int(target_user_version) >= 6:
             _migrate_settings_db_v5_to_v6(engine, logger)
+            continue
+        if current == 6 and int(target_user_version) >= 7:
+            _migrate_settings_db_v6_to_v7(engine, logger)
             continue
         break
 
