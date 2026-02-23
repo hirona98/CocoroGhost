@@ -613,8 +613,7 @@ def _handle_deliberate_once(
                 system_prompt=system_prompt,
                 input_text=common_utils.json_dumps(deliberation_input),
                 purpose=LlmRequestPurpose.ASYNC_AUTONOMY_DELIBERATION,
-                max_tokens=int(cfg.deliberation_max_tokens),
-                model_override=str(cfg.deliberation_model),
+                max_tokens=int(cfg.max_tokens),
             )
             # --- LLM出力不正（JSON崩れ/契約違反）は業務エラーとして drop 扱いにする ---
             try:

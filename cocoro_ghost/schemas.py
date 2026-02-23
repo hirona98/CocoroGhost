@@ -465,8 +465,6 @@ class LlmPresetSettings(BaseModel):
     llm_model: str
     reasoning_effort: Optional[str] = None
     reply_web_search_enabled: bool
-    deliberation_model: str
-    deliberation_max_tokens: int
     llm_base_url: Optional[str] = None
     max_turns_window: int
     max_tokens: int

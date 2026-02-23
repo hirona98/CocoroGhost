@@ -51,7 +51,7 @@ _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
 _MEMORY_DB_USER_VERSION = 10
-_SETTINGS_DB_USER_VERSION = 4
+_SETTINGS_DB_USER_VERSION = 5
 
 
 def get_db_dir() -> Path:
@@ -590,8 +590,6 @@ def _verify_settings_db_user_version(engine) -> None:
             columns = _get_table_columns(conn, "llm_presets")
             required_llm_columns = {
                 "reply_web_search_enabled",
-                "deliberation_model",
-                "deliberation_max_tokens",
             }
             missing_llm = sorted(required_llm_columns - columns)
             if missing_llm:
@@ -965,19 +963,12 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             llm_api_key="",
             llm_model="openai/gpt-5-mini",
             reply_web_search_enabled=True,
-            deliberation_model="openai/gpt-5-mini",
-            deliberation_max_tokens=4096,
             max_turns_window=50,
             image_model="openai/gpt-5-mini",
             image_timeout_seconds=60,
         )
         session.add(llm_preset)
         session.flush()
-    # --- Deliberation 設定の最小整合を補完 ---
-    if not str(getattr(llm_preset, "deliberation_model", "") or "").strip():
-        llm_preset.deliberation_model = str(llm_preset.llm_model)
-    if int(getattr(llm_preset, "deliberation_max_tokens", 0) or 0) <= 0:
-        llm_preset.deliberation_max_tokens = 4096
 
     if active_llm_id is None or str(llm_preset.id) != str(active_llm_id):
         global_settings.active_llm_preset_id = str(llm_preset.id)
