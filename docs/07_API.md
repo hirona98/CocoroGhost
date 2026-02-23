@@ -327,8 +327,6 @@ UI向けの「全設定」取得/更新。
       "llm_model": "string",
       "reasoning_effort": "optional",
       "reply_web_search_enabled": true,
-      "deliberation_model": "openai/gpt-5-mini",
-      "deliberation_max_tokens": 2048,
       "llm_base_url": "optional",
       "max_turns_window": 10,
       "max_tokens": 2048,
