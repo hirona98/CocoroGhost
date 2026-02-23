@@ -126,6 +126,79 @@ def _response_to_dict(resp: Any) -> Dict[str, Any]:
     return dict(resp) if isinstance(resp, dict) else {"raw": str(resp)}
 
 
+def _response_rate_limit_hint_from_dict(resp_dict: Any) -> Optional[str]:
+    """
+    LLMレスポンスdictから「上流429レート制限」の手掛かりを抽出する。
+
+    目的:
+    - OpenRouter 経由で Google 429 が SSE に注入された場合、表面上は JSON異常に見えるため、
+      warning ログで「レート制限起因」と分かるようにする。
+    """
+    # --- choices[0].provider_specific_fields.error を優先して参照する ---
+    try:
+        if not isinstance(resp_dict, dict):
+            return None
+        choices = resp_dict.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            return None
+        provider_fields = choices[0].get("provider_specific_fields")
+        if not isinstance(provider_fields, dict):
+            return None
+        err_obj = provider_fields.get("error")
+        if not isinstance(err_obj, dict):
+            return None
+
+        # --- 中継エラー本体（OpenRouter 側） ---
+        relay_code = str(err_obj.get("code") or "")
+        relay_message = str(err_obj.get("message") or "")
+
+        # --- 上流エラー（Google 等）は metadata.raw に JSON文字列で入ることがある ---
+        provider_name = ""
+        upstream_code: Optional[int] = None
+        upstream_status = ""
+        metadata = err_obj.get("metadata")
+        metadata_raw = ""
+        if isinstance(metadata, dict):
+            provider_name = str(metadata.get("provider_name") or "")
+            metadata_raw = str(metadata.get("raw") or "")
+            if metadata_raw:
+                try:
+                    upstream_obj = json.loads(metadata_raw)
+                except Exception:  # noqa: BLE001
+                    upstream_obj = None
+                if isinstance(upstream_obj, dict):
+                    upstream_err = upstream_obj.get("error")
+                    if isinstance(upstream_err, dict):
+                        try:
+                            upstream_code = int(upstream_err.get("code"))
+                        except Exception:  # noqa: BLE001
+                            upstream_code = None
+                        upstream_status = str(upstream_err.get("status") or "")
+
+        # --- 429 / RESOURCE_EXHAUSTED をレート制限として扱う ---
+        is_rate_limited = False
+        if relay_code == "429":
+            is_rate_limited = True
+        if upstream_code == 429:
+            is_rate_limited = True
+        if "RESOURCE_EXHAUSTED" in str(upstream_status or "").upper():
+            is_rate_limited = True
+        if "RESOURCE_EXHAUSTED" in str(metadata_raw or "").upper():
+            is_rate_limited = True
+        if "RATE LIMIT" in str(relay_message or "").upper():
+            is_rate_limited = True
+
+        if not is_rate_limited:
+            return None
+
+        provider_label = str(provider_name).strip() or "upstream"
+        if upstream_status:
+            return f"上流429レート制限（{provider_label} / {upstream_status}）"
+        return f"上流429レート制限（{provider_label}）"
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _first_choice_content(resp: Any) -> str:
     """
     choices[0].message.contentを取り出すユーティリティ。
@@ -1170,20 +1243,17 @@ class LlmClient:
                 str(model_for_request),
                 int(requested_max_tokens),
             )
-        # --- 調査用: JSON応答が空文字のときだけ、生レスポンス構造を追加で記録する ---
+        # --- JSON応答が空文字のときは、レート制限起因かどうか分かるようにする ---
         if not str(content or "").strip():
+            rate_limit_hint = self.response_rate_limit_hint(resp)
             self._log_llm_warning(
-                "LLM JSON応答の本文が空です %s finish_reason=%s chars=%s ms=%s model=%s",
+                "LLM JSON応答の本文が空です %s finish_reason=%s chars=%s ms=%s model=%s%s",
                 purpose_label,
                 finish_reason,
                 0,
                 elapsed_ms,
                 str(model_for_request),
-            )
-            self._log_llm_payload(
-                "LLM response (json, empty-content raw)",
-                _sanitize_for_llm_log(_response_to_dict(resp)),
-                llm_log_level=llm_log_level,
+                (f" cause={rate_limit_hint}" if rate_limit_hint else ""),
             )
         return resp
 
@@ -1757,6 +1827,10 @@ class LlmClient:
         """Responseオブジェクトをログ/デバッグ用のdictに変換する。"""
         return _response_to_dict(resp)
 
+    def response_rate_limit_hint(self, resp: Any) -> str | None:
+        """レスポンスに上流429レート制限の痕跡がある場合、説明文を返す。"""
+        return _response_rate_limit_hint_from_dict(_response_to_dict(resp))
+
     def response_content(self, resp: Any) -> str:
         """Responseから本文（choices[0].message.content）を取り出す。"""
         return _first_choice_content(resp)
@@ -1787,6 +1861,14 @@ class LlmClient:
                 return parsed
             except json.JSONDecodeError as exc:
                 # 失敗時はデバッグ用に内容を残す
+                rate_limit_hint = self.response_rate_limit_hint(resp)
+                self.logger.warning(
+                    "LLM JSONパースに失敗しました（修復後も失敗） finish_reason=%s chars=%s error=%s%s",
+                    _finish_reason(resp),
+                    len(content or ""),
+                    exc,
+                    (f" cause={rate_limit_hint}" if rate_limit_hint else ""),
+                )
                 self.logger.debug("response_json parse failed: %s", exc)
                 self.logger.debug("response_json content (raw): %s", truncate_for_log(content, self._DEBUG_PREVIEW_CHARS))
                 self.logger.debug("response_json candidate: %s", truncate_for_log(candidate, self._DEBUG_PREVIEW_CHARS))

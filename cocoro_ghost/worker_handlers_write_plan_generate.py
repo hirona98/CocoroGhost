@@ -8,6 +8,7 @@ Workerジョブハンドラ（WritePlan生成）
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from cocoro_ghost import common_utils, prompt_builders
@@ -17,6 +18,32 @@ from cocoro_ghost.memory_models import ActionDecision, ActionResult, Event, Job,
 from cocoro_ghost.time_utils import format_iso8601_local
 from cocoro_ghost.worker_constants import JOB_PENDING as _JOB_PENDING
 from cocoro_ghost.worker_handlers_common import _now_utc_ts
+
+
+logger = logging.getLogger(__name__)
+
+
+def _response_finish_reason(resp: Any) -> str:
+    """
+    LLMレスポンスから finish_reason を取り出す。
+
+    調査ログで「length / stop」を判別するために使う。
+    """
+
+    # --- オブジェクト形式を優先して読む ---
+    try:
+        choice = resp.choices[0]
+        value = getattr(choice, "finish_reason", None) or choice.get("finish_reason")
+        return str(value or "")
+    except Exception:  # noqa: BLE001
+        pass
+
+    # --- dict形式でも読む ---
+    try:
+        value = resp["choices"][0].get("finish_reason")
+        return str(value or "")
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _handle_generate_write_plan(
@@ -320,7 +347,25 @@ def _handle_generate_write_plan(
             content = str(resp.choices[0].message.content or "")
         except Exception:  # noqa: BLE001
             content = ""
-    plan_obj = common_utils.parse_first_json_object_or_raise(content)
+    # --- JSON抽出失敗時は、レート制限起因かどうかを warning に明示する ---
+    try:
+        plan_obj = common_utils.parse_first_json_object_or_raise(content)
+    except Exception as exc:  # noqa: BLE001
+        finish_reason = _response_finish_reason(resp)
+        content_text = str(content or "")
+        rate_limit_hint = llm_client.response_rate_limit_hint(resp)
+        logger.warning(
+            (
+                "generate_write_plan JSON parse failed "
+                "(event_id=%s, finish_reason=%s, chars=%s, error=%s)%s"
+            ),
+            int(event_id),
+            str(finish_reason),
+            int(len(content_text)),
+            str(exc),
+            (f" cause={str(rate_limit_hint)}" if rate_limit_hint else ""),
+        )
+        raise
 
     # --- deterministic: world_model 昇格を state_updates へ合成 ---
     if world_model_state_promotions:
