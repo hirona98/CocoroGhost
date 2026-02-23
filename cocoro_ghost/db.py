@@ -21,6 +21,8 @@ from sqlalchemy import create_engine, event, func, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
+from cocoro_ghost import db_migrations
+
 logger = logging.getLogger(__name__)
 
 # sqlite-vec 仮想テーブル名（検索用ベクトルインデックス）
@@ -335,7 +337,7 @@ def _create_memory_indexes(engine) -> None:
         conn.commit()
 
 
-# --- 記憶DB: 形状チェック（マイグレーションしない） ---
+# --- 記憶DB: 形状チェック（既知の新スキーマ差分は事前マイグレーション後に検証） ---
 
 
 def _assert_memory_db_is_new_schema(engine) -> None:
@@ -515,18 +517,12 @@ def _migrate_settings_db_v3_to_v4(engine) -> None:
 
 def _migrate_settings_db_if_needed(engine) -> None:
     """設定DBに必要なマイグレーションを適用する。"""
-    # --- 既知版を順に進める（飛び番を許可しない） ---
-    while True:
-        with engine.connect() as conn:
-            current = _get_settings_db_user_version(conn)
-
-        if current == 2 and _SETTINGS_DB_USER_VERSION >= 3:
-            _migrate_settings_db_v2_to_v3(engine)
-            continue
-        if current == 3 and _SETTINGS_DB_USER_VERSION >= 4:
-            _migrate_settings_db_v3_to_v4(engine)
-            continue
-        break
+    # --- マイグレーション実装は別ファイルに集約し、ここでは委譲する ---
+    db_migrations.migrate_settings_db_if_needed(
+        engine=engine,
+        target_user_version=int(_SETTINGS_DB_USER_VERSION),
+        logger=logger,
+    )
 
 
 def _verify_settings_db_user_version(engine) -> None:
@@ -689,7 +685,14 @@ def init_memory_db(embedding_preset_id: str, embedding_dimension: int) -> sessio
     # パフォーマンス設定を適用
     _apply_memory_pragmas(engine)
 
-    # --- 旧スキーマを拒否する（運用前のためマイグレーションしない） ---
+    # --- 記憶DBの既知マイグレーションを適用 ---
+    db_migrations.migrate_memory_db_if_needed(
+        engine=engine,
+        target_user_version=int(_MEMORY_DB_USER_VERSION),
+        logger=logger,
+    )
+
+    # --- 旧スキーマを拒否する（未知版/旧系統は引き続き対象外） ---
     _assert_memory_db_is_new_schema(engine)
 
     # --- 記憶用テーブルを作成（events/state中心） ---
