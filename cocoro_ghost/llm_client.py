@@ -555,6 +555,12 @@ class LlmClient:
         if self._is_log_file_enabled():
             self.io_file_logger.info(message, *args)
 
+    def _log_llm_warning(self, message: str, *args: Any) -> None:
+        """LLM送受信のWARNINGログを出力する。"""
+        self.io_console_logger.warning(message, *args)
+        if self._is_log_file_enabled():
+            self.io_file_logger.warning(message, *args)
+
     def _log_llm_error(self, message: str, *args: Any, **kwargs: Any) -> None:
         """LLM送受信のERRORログを出力する。"""
         self.io_console_logger.error(message, *args, **kwargs)
@@ -1151,6 +1157,34 @@ class LlmClient:
             _sanitize_for_llm_log({"finish_reason": finish_reason, "content": content}),
             llm_log_level=llm_log_level,
         )
+        # --- JSON用途で max_tokens 到達が起きたら、運用者向けに調整指針を出す ---
+        if str(finish_reason) == "length":
+            self._log_llm_warning(
+                (
+                    "LLM JSON応答が max_tokens に到達しました %s finish_reason=length chars=%s ms=%s "
+                    "model=%s max_tokens=%s。このJSON処理の max_tokens を増やしてください。"
+                ),
+                purpose_label,
+                int(len(content or "")),
+                elapsed_ms,
+                str(model_for_request),
+                int(requested_max_tokens),
+            )
+        # --- 調査用: JSON応答が空文字のときだけ、生レスポンス構造を追加で記録する ---
+        if not str(content or "").strip():
+            self._log_llm_warning(
+                "LLM JSON応答の本文が空です %s finish_reason=%s chars=%s ms=%s model=%s",
+                purpose_label,
+                finish_reason,
+                0,
+                elapsed_ms,
+                str(model_for_request),
+            )
+            self._log_llm_payload(
+                "LLM response (json, empty-content raw)",
+                _sanitize_for_llm_log(_response_to_dict(resp)),
+                llm_log_level=llm_log_level,
+            )
         return resp
 
     def generate_reply_response_with_web_search(
