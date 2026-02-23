@@ -1832,7 +1832,7 @@ def _handle_snapshot_runtime(
 
         # --- agent_jobs stale 回収ジョブを重複なく投入 ---
         existing_sweep = (
-            db.query(Job.job_id)
+            db.query(Job.id)
             .filter(Job.kind == "sweep_agent_jobs")
             .filter(Job.status.in_([int(_JOB_PENDING), int(_JOB_RUNNING)]))
             .first()
