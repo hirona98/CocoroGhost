@@ -53,7 +53,7 @@ _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
 _MEMORY_DB_USER_VERSION = 11
-_SETTINGS_DB_USER_VERSION = 5
+_SETTINGS_DB_USER_VERSION = 6
 
 
 def get_db_dir() -> Path:
@@ -461,6 +461,7 @@ def _verify_settings_db_user_version(engine) -> None:
                 "autonomy_max_parallel_intents",
                 "camera_watch_enabled",
                 "camera_watch_interval_seconds",
+                "agent_backend_gmini_command",
             }
             missing_global = sorted(required_global_columns - gs_columns)
             if missing_global:
@@ -835,6 +836,8 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             # 視覚（Vision）: カメラ監視（初期は無効）
             camera_watch_enabled=False,
             camera_watch_interval_seconds=15,
+            # 汎用エージェント委譲 backend（gmini）
+            agent_backend_gmini_command="gemini.exe -p",
         )
         session.add(global_settings)
         session.flush()
@@ -847,6 +850,9 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         global_settings.autonomy_max_parallel_intents = 2
     if int(getattr(global_settings, "camera_watch_interval_seconds", 0) or 0) <= 0:
         global_settings.camera_watch_interval_seconds = 15
+    # --- gmini backend 実行コマンドは未設定(None)のときだけ初期値を補完する ---
+    if getattr(global_settings, "agent_backend_gmini_command", None) is None:
+        global_settings.agent_backend_gmini_command = "gemini.exe -p"
 
     # LlmPresetの用意（存在しない/アクティブでない場合は空のdefaultを作成）
     llm_preset = None

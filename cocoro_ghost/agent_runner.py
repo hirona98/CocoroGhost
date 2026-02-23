@@ -8,7 +8,8 @@
 
 注意:
     - 権限境界やフォールバック制御は持たない（設計方針）。
-    - backend 実行結果は JSON 契約で返す（厳格）。
+    - backend 実行は「固定コマンド + task_instruction を末尾引数で渡す」方式。
+    - backend の標準出力はプレーンテキストとして扱う。
 """
 
 from __future__ import annotations
@@ -26,9 +27,6 @@ import httpx
 
 
 logger = logging.getLogger(__name__)
-
-
-_COMPLETE_RESULT_STATUSES = {"success", "partial", "no_effect"}
 
 
 @dataclass(frozen=True)
@@ -69,7 +67,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # --- CocoroGhost 接続設定 ---
     parser.add_argument("--base-url", required=True, help="CocoroGhost base URL (e.g. https://127.0.0.1:55601)")
-    parser.add_argument("--token", required=True, help="Bearer token for /api/control/*")
+    parser.add_argument("--token", required=True, help="Bearer token for /api/control/* and /api/settings")
     parser.add_argument("--insecure", action="store_true", help="disable TLS certificate verification")
 
     # --- runner 識別と claim 条件 ---
@@ -78,15 +76,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--backend",
         action="append",
         default=[],
-        help="backend name to claim (repeatable). example: --backend codex",
-    )
-
-    # --- backend 実行コマンド定義（name=command string） ---
-    parser.add_argument(
-        "--backend-command",
-        action="append",
-        default=[],
-        help='backend command mapping in "name=command ..." format (repeatable)',
+        help="backend name to claim (repeatable). example: --backend gmini",
     )
 
     # --- ポーリング/タイムアウト設定 ---
@@ -98,32 +88,6 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- ログ設定 ---
     parser.add_argument("--log-level", default="INFO", help="logging level (DEBUG/INFO/WARNING/ERROR)")
     return parser
-
-
-def _parse_backend_commands(items: list[str]) -> dict[str, list[str]]:
-    """--backend-command の繰り返し引数を dict[name] = argv に変換する。"""
-
-    # --- マッピングを構築 ---
-    out: dict[str, list[str]] = {}
-    for raw in list(items or []):
-        text = str(raw or "").strip()
-        if not text:
-            continue
-        if "=" not in text:
-            raise ValueError(f"backend-command must be name=command format: {text}")
-        name, command_text = text.split("=", 1)
-        backend_name = str(name or "").strip()
-        command_norm = str(command_text or "").strip()
-        if not backend_name:
-            raise ValueError(f"backend-command backend name is empty: {text}")
-        if not command_norm:
-            raise ValueError(f"backend-command command is empty for backend={backend_name}")
-        argv = shlex.split(command_norm)
-        if not argv:
-            raise ValueError(f"backend-command command parse failed for backend={backend_name}")
-        out[str(backend_name)] = list(argv)
-    return out
-
 
 def _auth_headers(token: str) -> dict[str, str]:
     """Bearer 認証ヘッダを返す。"""
@@ -285,36 +249,59 @@ def _execute_mock_backend(job: _ClaimedAgentJob) -> _BackendExecutionSuccess:
     )
 
 
-def _parse_backend_stdout_json(*, stdout_text: str) -> _BackendExecutionSuccess:
-    """backend subprocess の stdout JSON を厳格に検証して成功結果へ変換する。"""
+def _parse_command_argv(*, backend: str, command_text: str) -> list[str]:
+    """DB設定のコマンド文字列を argv に変換する。"""
 
-    # --- stdout を JSON として読む ---
-    try:
-        obj = json.loads(str(stdout_text or ""))
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("backend stdout is not valid JSON") from exc
-    if not isinstance(obj, dict):
-        raise RuntimeError("backend stdout JSON must be an object")
+    # --- コマンド文字列を検証して分割する ---
+    command_norm = str(command_text or "").strip()
+    if not command_norm:
+        raise RuntimeError(f"backend command is empty for backend={str(backend)}")
+    argv = shlex.split(command_norm)
+    if not argv:
+        raise RuntimeError(f"backend command parse failed for backend={str(backend)}")
+    return [str(x) for x in list(argv)]
 
-    # --- 成功系の必須項目を検証 ---
-    result_status = str(obj.get("result_status") or "").strip()
-    if result_status not in _COMPLETE_RESULT_STATUSES:
-        raise RuntimeError("backend stdout JSON.result_status must be success/partial/no_effect")
-    summary_text = str(obj.get("summary_text") or "").strip()
+
+def _fetch_backend_command_argv_from_settings(
+    *,
+    client: httpx.Client,
+    base_url: str,
+    token: str,
+    backend: str,
+) -> list[str]:
+    """Ghost の /api/settings から backend 実行コマンドを取得して argv に変換する。"""
+
+    # --- 現在は backend=gmini のみ設定DBから取得する ---
+    backend_norm = str(backend or "").strip()
+    if backend_norm != "gmini":
+        raise RuntimeError(f"unsupported backend: {backend_norm}")
+
+    # --- 全設定を取得し、gmini 実行コマンドを読む ---
+    resp = client.get(
+        f"{str(base_url).rstrip('/')}/api/settings",
+        headers=_auth_headers(token),
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not isinstance(data, dict):
+        raise RuntimeError("settings response is not an object")
+
+    command_text = str(data.get("agent_backend_gmini_command") or "").strip()
+    return _parse_command_argv(backend=backend_norm, command_text=command_text)
+
+
+def _build_backend_success_from_stdout_text(*, stdout_text: str) -> _BackendExecutionSuccess:
+    """backend subprocess の標準出力テキストを success 結果へ変換する。"""
+
+    # --- 標準出力テキストを成功結果として扱う（空はエラー） ---
+    summary_text = str(stdout_text or "").strip()
     if not summary_text:
-        raise RuntimeError("backend stdout JSON.summary_text is required")
-    details_json = obj.get("details_json")
-    if details_json is None:
-        details_json_obj: dict[str, Any] = {}
-    elif isinstance(details_json, dict):
-        details_json_obj = dict(details_json)
-    else:
-        raise RuntimeError("backend stdout JSON.details_json must be an object")
+        raise RuntimeError("backend stdout is empty")
 
     return _BackendExecutionSuccess(
-        result_status=str(result_status),
+        result_status="success",
         summary_text=str(summary_text),
-        details_json=details_json_obj,
+        details_json={},
     )
 
 
@@ -328,22 +315,15 @@ def _execute_backend_subprocess(
 ) -> _BackendExecutionSuccess | _BackendExecutionFailure:
     """backend subprocess を実行し、完了または失敗を返す。"""
 
-    # --- backend 入力 JSON を作る（自由文指示はそのまま渡す） ---
-    input_obj = {
-        "job_id": str(job.job_id),
-        "backend": str(job.backend),
-        "task_instruction": str(job.task_instruction),
-        "intent_id": str(job.intent_id),
-        "decision_id": str(job.decision_id),
-        "created_at": int(job.created_at),
-    }
-    input_json = json.dumps(input_obj, ensure_ascii=False)
+    # --- 実行argvを構築（task_instruction は末尾引数として渡す） ---
+    argv = [str(x) for x in list(command_argv or [])]
+    argv.append(str(job.task_instruction))
 
     # --- subprocess を起動 ---
     try:
         proc = subprocess.Popen(
-            list(command_argv),
-            stdin=subprocess.PIPE,
+            argv,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -351,19 +331,7 @@ def _execute_backend_subprocess(
     except Exception as exc:  # noqa: BLE001
         return _BackendExecutionFailure(error_code="backend_spawn_failed", error_message=str(exc))
 
-    # --- 入力JSONを1回だけ stdin に流し込む ---
-    try:
-        if proc.stdin is not None:
-            proc.stdin.write(str(input_json))
-            proc.stdin.close()
-    except Exception as exc:  # noqa: BLE001
-        try:
-            proc.kill()
-        except Exception:  # noqa: BLE001
-            pass
-        return _BackendExecutionFailure(error_code="backend_stdin_failed", error_message=str(exc))
-
-    # --- 入力を渡しつつ、heartbeat 間隔で待つ ---
+    # --- 実行中は heartbeat 間隔で待つ ---
     started_monotonic = float(time.monotonic())
     stdout_text = ""
     stderr_text = ""
@@ -406,17 +374,19 @@ def _execute_backend_subprocess(
             err_text = err_text[:1000]
         return _BackendExecutionFailure(error_code="backend_nonzero_exit", error_message=str(err_text))
 
-    # --- stdout JSON を厳格検証 ---
+    # --- stdout テキストを成功結果へ変換 ---
     try:
-        return _parse_backend_stdout_json(stdout_text=str(stdout_text or ""))
+        return _build_backend_success_from_stdout_text(stdout_text=str(stdout_text or ""))
     except Exception as exc:  # noqa: BLE001
         return _BackendExecutionFailure(error_code="backend_invalid_output", error_message=str(exc))
 
 
 def _execute_backend(
     *,
+    client: httpx.Client,
+    base_url: str,
+    token: str,
     job: _ClaimedAgentJob,
-    backend_commands: dict[str, list[str]],
     heartbeat_interval_seconds: float,
     task_timeout_seconds: float,
     on_heartbeat: callable,
@@ -427,13 +397,16 @@ def _execute_backend(
     if str(job.backend) == "mock":
         return _execute_mock_backend(job)
 
-    # --- 外部コマンド backend を解決 ---
-    command_argv = backend_commands.get(str(job.backend))
-    if not command_argv:
-        return _BackendExecutionFailure(
-            error_code="unsupported_backend",
-            error_message=f"unsupported backend: {str(job.backend)}",
+    # --- 設定DBから backend 実行コマンドを解決 ---
+    try:
+        command_argv = _fetch_backend_command_argv_from_settings(
+            client=client,
+            base_url=base_url,
+            token=token,
+            backend=str(job.backend),
         )
+    except Exception as exc:  # noqa: BLE001
+        return _BackendExecutionFailure(error_code="backend_not_configured", error_message=str(exc))
 
     # --- subprocess backend を実行 ---
     return _execute_backend_subprocess(
@@ -452,7 +425,6 @@ def _run_one_job(
     token: str,
     runner_id: str,
     job: _ClaimedAgentJob,
-    backend_commands: dict[str, list[str]],
     heartbeat_interval_seconds: float,
     task_timeout_seconds: float,
 ) -> None:
@@ -489,8 +461,10 @@ def _run_one_job(
 
     # --- backend 実行を行う ---
     result = _execute_backend(
+        client=client,
+        base_url=base_url,
+        token=token,
         job=job,
-        backend_commands=backend_commands,
         heartbeat_interval_seconds=float(heartbeat_interval_seconds),
         task_timeout_seconds=float(task_timeout_seconds),
         on_heartbeat=_heartbeat,
@@ -537,7 +511,6 @@ def run_forever(
     token: str,
     runner_id: str,
     backends: list[str],
-    backend_commands: dict[str, list[str]],
     poll_interval_seconds: float,
     http_timeout_seconds: float,
     heartbeat_interval_seconds: float,
@@ -576,7 +549,6 @@ def run_forever(
                         token=token,
                         runner_id=runner_id,
                         job=job,
-                        backend_commands=backend_commands,
                         heartbeat_interval_seconds=float(heartbeat_interval_seconds),
                         task_timeout_seconds=float(task_timeout_seconds),
                     )
@@ -605,13 +577,6 @@ def main() -> None:
     if not backends:
         parser.error("--backend は最低1つ必要です")
 
-    # --- backend コマンドマップを読む ---
-    try:
-        backend_commands = _parse_backend_commands(list(args.backend_command or []))
-    except ValueError as exc:
-        parser.error(str(exc))
-        return
-
     # --- 起動ログ ---
     logger.info(
         "agent_runner start runner_id=%s backends=%s base_url=%s verify_tls=%s",
@@ -627,7 +592,6 @@ def main() -> None:
         token=str(args.token),
         runner_id=str(args.runner_id),
         backends=backends,
-        backend_commands=backend_commands,
         poll_interval_seconds=float(args.poll_interval_seconds),
         http_timeout_seconds=float(args.http_timeout_seconds),
         heartbeat_interval_seconds=float(args.heartbeat_interval_seconds),

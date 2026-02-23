@@ -70,6 +70,10 @@ class GlobalSettings(Base):
     # カメラ監視間隔（秒）
     camera_watch_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
 
+    # --- 自発行動（Autonomy）: 汎用エージェント委譲 backend 設定 ---
+    # backend="gmini" 実行時に task_instruction を末尾引数として渡すコマンド（例: gemini.exe -p）
+    agent_backend_gmini_command: Mapped[str] = mapped_column(Text, nullable=False, default="gemini.exe -p")
+
     # アクティブなプリセットへの外部キー
     active_llm_preset_id: Mapped[Optional[str]] = mapped_column(String(_UUID_STR_LEN), ForeignKey("llm_presets.id"))
     active_embedding_preset_id: Mapped[Optional[str]] = mapped_column(

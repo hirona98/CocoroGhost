@@ -128,6 +128,27 @@ def _migrate_settings_db_v4_to_v5(engine, logger: logging.Logger) -> None:
     logger.info("settings DB migrated: user_version 4 -> 5")
 
 
+def _migrate_settings_db_v5_to_v6(engine, logger: logging.Logger) -> None:
+    """設定DBを v5 から v6 へ移行する。"""
+
+    with engine.connect() as conn:
+        # --- global_settings に gmini backend 実行コマンド列を追加 ---
+        gs_columns = _get_table_columns(conn, "global_settings")
+        if "agent_backend_gmini_command" not in gs_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE global_settings "
+                    "ADD COLUMN agent_backend_gmini_command TEXT NOT NULL DEFAULT 'gemini.exe -p'"
+                )
+            )
+
+        # --- スキーマバージョンを更新 ---
+        conn.execute(text("PRAGMA user_version=6"))
+        conn.commit()
+
+    logger.info("settings DB migrated: user_version 5 -> 6")
+
+
 def migrate_settings_db_if_needed(*, engine, target_user_version: int, logger: logging.Logger) -> None:
     """設定DBに必要なマイグレーションを適用する。"""
 
@@ -144,6 +165,9 @@ def migrate_settings_db_if_needed(*, engine, target_user_version: int, logger: l
             continue
         if current == 4 and int(target_user_version) >= 5:
             _migrate_settings_db_v4_to_v5(engine, logger)
+            continue
+        if current == 5 and int(target_user_version) >= 6:
+            _migrate_settings_db_v5_to_v6(engine, logger)
             continue
         break
 
