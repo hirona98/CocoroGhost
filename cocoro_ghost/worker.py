@@ -409,7 +409,7 @@ def _recover_stale_running_jobs(
 
     方針:
         - in_flight（現在このプロセスで実行中）の job_id は対象外にする。
-        - stale と判定したものは tries を進め、再試行上限超過時は dead-letter に送る。
+        - stale と判定したものは tries を進め、failed（スキップ）へ遷移する。
 
     Returns:
         (requeued_count, dead_lettered_count)
@@ -433,33 +433,16 @@ def _recover_stale_running_jobs(
         if not rows:
             return (0, 0)
 
-        # --- stale running を pending へ戻す（上限超過は dead-letter） ---
+        # --- stale running は再試行せず failed（スキップ）へ遷移 ---
         for job in rows:
             old_tries = int(job.tries or 0)
             next_tries = int(old_tries) + 1
-            if int(next_tries) >= int(_JOB_MAX_RETRIES):
-                job.status = int(_JOB_FAILED)
-                job.tries = int(next_tries)
-                job.updated_at = int(now_ts)
-                job.last_error = (
-                    f"dead-letter: stale running timeout exceeded retry limit "
-                    f"tries={next_tries}/{int(_JOB_MAX_RETRIES)}"
-                )
-                db.add(job)
-                dead_lettered += 1
-                continue
-
-            delay_seconds = _compute_retry_delay_seconds(failed_tries=int(next_tries))
-            job.status = int(_JOB_PENDING)
+            job.status = int(_JOB_FAILED)
             job.tries = int(next_tries)
-            job.run_after = int(now_ts) + int(delay_seconds)
             job.updated_at = int(now_ts)
-            job.last_error = (
-                f"stale running recovered; retry in {int(delay_seconds)}s "
-                f"tries={next_tries}/{int(_JOB_MAX_RETRIES)}"
-            )
+            job.last_error = f"stale running skipped on recovery tries={next_tries}"
             db.add(job)
-            requeued += 1
+            dead_lettered += 1
 
     return (int(requeued), int(dead_lettered))
 
@@ -514,7 +497,7 @@ def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_clie
             extra={"embedding_preset_id": str(embedding_preset_id), "embedding_dimension": int(embedding_dimension)},
         )
     except Exception as exc:  # noqa: BLE001
-        # --- 失敗時は指数バックオフで再試行（上限超過のみ dead-letter） ---
+        # --- 失敗時は即スキップ（再試行しない） ---
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
             job2 = db.query(Job).filter(Job.id == int(job_id)).one_or_none()
             if job2 is None:
@@ -522,24 +505,13 @@ def _run_one_job(*, embedding_preset_id: str, embedding_dimension: int, llm_clie
             job2.updated_at = int(now_ts)
             next_tries = int(job2.tries or 0) + 1
             job2.tries = int(next_tries)
-            if int(next_tries) >= int(_JOB_MAX_RETRIES):
-                job2.status = int(_JOB_FAILED)
-                job2.last_error = (
-                    f"dead-letter: retries exhausted tries={next_tries}/{int(_JOB_MAX_RETRIES)} error={str(exc)}"
-                )
-            else:
-                delay_seconds = _compute_retry_delay_seconds(failed_tries=int(next_tries))
-                job2.status = int(_JOB_PENDING)
-                job2.run_after = int(now_ts) + int(delay_seconds)
-                job2.last_error = (
-                    f"retry in {int(delay_seconds)}s tries={next_tries}/{int(_JOB_MAX_RETRIES)} error={str(exc)}"
-                )
+            job2.status = int(_JOB_FAILED)
+            job2.last_error = f"skipped on failure tries={next_tries} error={str(exc)}"
             db.add(job2)
         logger.warning(
-            "job failed kind=%s job_id=%s tries=%s/%s error=%s",
+            "job failed (skipped) kind=%s job_id=%s tries=%s error=%s",
             kind,
             int(job_id),
             int(next_tries),
-            int(_JOB_MAX_RETRIES),
             str(exc),
         )
