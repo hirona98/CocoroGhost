@@ -15,6 +15,7 @@ from cocoro_ghost.worker_handlers_autonomy import (
     _handle_execute_intent,
     _handle_promote_action_result_to_searchable,
     _handle_snapshot_runtime,
+    _handle_sweep_agent_jobs,
 )
 from cocoro_ghost.worker_handlers_embeddings import (
     _handle_upsert_event_affect_embedding,
@@ -139,6 +140,14 @@ def run_job_kind(
 
     if kind == "snapshot_runtime":
         _handle_snapshot_runtime(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            payload=payload,
+        )
+        return
+
+    if kind == "sweep_agent_jobs":
+        _handle_sweep_agent_jobs(
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             payload=payload,

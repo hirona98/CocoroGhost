@@ -24,6 +24,12 @@ JOB_RUNNING_STALE_SECONDS = 120
 JOB_STALE_SWEEP_INTERVAL_SECONDS = 10
 
 
+# --- 汎用エージェント委譲ジョブ回収 ---
+# NOTE:
+# - agent_runner は長時間処理を想定するため、worker の通常ジョブより長めにする。
+AGENT_JOB_STALE_SECONDS = 300
+
+
 # --- 記憶整理（tidy_memory） ---
 TIDY_CHAT_TURNS_INTERVAL = 200
 TIDY_CHAT_TURNS_INTERVAL_FIRST = 10

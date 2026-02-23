@@ -6,6 +6,7 @@ Workerジョブハンドラ（autonomy）。
     - execute_intent: Capability を実行して ActionResult を保存する。
     - promote_action_result_to_searchable: recall可否を最終確定する。
     - snapshot_runtime: runtime snapshot を保存する。
+    - sweep_agent_jobs: stale な agent_jobs を timeout 終端する。
 """
 
 from __future__ import annotations
@@ -42,7 +43,9 @@ from cocoro_ghost.memory_models import (
     RuntimeSnapshot,
     State,
 )
+from cocoro_ghost.worker_constants import AGENT_JOB_STALE_SECONDS as _AGENT_JOB_STALE_SECONDS
 from cocoro_ghost.worker_constants import JOB_PENDING as _JOB_PENDING
+from cocoro_ghost.worker_constants import JOB_RUNNING as _JOB_RUNNING
 from cocoro_ghost.worker_handlers_common import _now_utc_ts
 
 
@@ -1639,6 +1642,121 @@ def _handle_promote_action_result_to_searchable(
             )
 
 
+def _handle_sweep_agent_jobs(
+    *,
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    payload: dict[str, Any],
+) -> None:
+    """stale な agent_jobs を timed_out/failed として終端化する。"""
+
+    # --- payload から閾値/上限を読む（未指定時は定数既定） ---
+    stale_seconds_raw = payload.get("stale_seconds")
+    sweep_limit_raw = payload.get("limit")
+    stale_seconds = max(
+        1,
+        int(stale_seconds_raw if stale_seconds_raw is not None else _AGENT_JOB_STALE_SECONDS),
+    )
+    sweep_limit = max(1, int(sweep_limit_raw if sweep_limit_raw is not None else 64))
+
+    # --- stale 判定基準時刻 ---
+    now_system_ts = _now_utc_ts()
+    now_domain_ts = _now_domain_utc_ts()
+    stale_before_ts = int(now_system_ts) - int(stale_seconds)
+
+    timed_out_jobs = 0
+    finalized_intents = 0
+    skipped_jobs = 0
+
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        # --- stale 候補（claimed/running）を古い heartbeat 順で取得 ---
+        rows = db.execute(
+            text(
+                """
+                SELECT job_id
+                  FROM agent_jobs
+                 WHERE status IN ('claimed','running')
+                   AND COALESCE(heartbeat_at, updated_at, created_at) <= :stale_before_ts
+                 ORDER BY COALESCE(heartbeat_at, updated_at, created_at) ASC, created_at ASC
+                 LIMIT :limit
+                """
+            ),
+            {
+                "stale_before_ts": int(stale_before_ts),
+                "limit": int(sweep_limit),
+            },
+        ).fetchall()
+
+        # --- 各 stale job を timeout 終端化 ---
+        for row in rows:
+            job_id = str((row[0] if row else "") or "").strip()
+            if not job_id:
+                continue
+
+            job = db.query(AgentJob).filter(AgentJob.job_id == str(job_id)).one_or_none()
+            if job is None:
+                continue
+            if str(job.status) not in {"claimed", "running"}:
+                continue
+
+            # --- job を timed_out に遷移 ---
+            timeout_message = (
+                f"agent runner heartbeat timeout (backend={str(job.backend)}, stale_seconds={int(stale_seconds)})"
+            )
+            timeout_details = {
+                "agent_job_id": str(job.job_id),
+                "backend": str(job.backend),
+                "error_code": "agent_job_timeout",
+                "error_message": str(timeout_message),
+                "stale_seconds": int(stale_seconds),
+                "runner_id": (str(job.runner_id) if job.runner_id is not None else None),
+                "last_heartbeat_at": (int(job.heartbeat_at) if job.heartbeat_at is not None else None),
+            }
+            job.status = "timed_out"
+            job.result_status = "failed"
+            job.result_summary_text = str(timeout_message)
+            job.result_details_json = common_utils.json_dumps(timeout_details)
+            job.error_code = "agent_job_timeout"
+            job.error_message = str(timeout_message)
+            job.started_at = int(job.started_at or now_system_ts)
+            job.finished_at = int(now_system_ts)
+            job.updated_at = int(now_system_ts)
+            timed_out_jobs += 1
+
+            # --- 対応 intent が running のときだけ ActionResult を保存して終端化 ---
+            intent = db.query(Intent).filter(Intent.intent_id == str(job.intent_id)).one_or_none()
+            if intent is None or str(intent.status) != "running":
+                skipped_jobs += 1
+                continue
+
+            _finalize_intent_and_save_action_result(
+                db=db,
+                intent=intent,
+                decision_id=str(job.decision_id),
+                action_type="agent_delegate",
+                capability_name="agent_delegate",
+                result_status="failed",
+                summary_text=str(timeout_message),
+                result_payload_json=str(job.result_details_json or "{}"),
+                useful_for_recall_hint=0,
+                now_system_ts=int(now_system_ts),
+                now_domain_ts=int(now_domain_ts),
+                goal_id_hint=None,
+                next_trigger=None,
+            )
+            finalized_intents += 1
+
+    # --- 実際に回収が発生したときだけ warning を出す ---
+    if int(timed_out_jobs) > 0:
+        logger.warning(
+            "sweep_agent_jobs timed out stale agent jobs timed_out=%s finalized_intents=%s skipped_jobs=%s stale_seconds=%s",
+            int(timed_out_jobs),
+            int(finalized_intents),
+            int(skipped_jobs),
+            int(stale_seconds),
+        )
+
+
 def _handle_snapshot_runtime(
     *,
     embedding_preset_id: str,
@@ -1711,3 +1829,30 @@ def _handle_snapshot_runtime(
                 created_at=int(now_system_ts),
             )
         )
+
+        # --- agent_jobs stale 回収ジョブを重複なく投入 ---
+        existing_sweep = (
+            db.query(Job.job_id)
+            .filter(Job.kind == "sweep_agent_jobs")
+            .filter(Job.status.in_([int(_JOB_PENDING), int(_JOB_RUNNING)]))
+            .first()
+        )
+        if existing_sweep is None:
+            db.add(
+                Job(
+                    kind="sweep_agent_jobs",
+                    payload_json=common_utils.json_dumps(
+                        {
+                            "source": "snapshot_runtime",
+                            "stale_seconds": int(_AGENT_JOB_STALE_SECONDS),
+                            "limit": 64,
+                        }
+                    ),
+                    status=int(_JOB_PENDING),
+                    run_after=int(now_system_ts),
+                    tries=0,
+                    last_error=None,
+                    created_at=int(now_system_ts),
+                    updated_at=int(now_system_ts),
+                )
+            )
