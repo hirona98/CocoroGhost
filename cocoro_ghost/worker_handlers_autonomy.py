@@ -1066,6 +1066,8 @@ def _handle_execute_intent(
                     created_at=int(now_system_ts),
                 )
             )
+            # --- world_model_items が source_result_id(FK) を参照するため、親行を先に永続化する ---
+            db.flush()
 
             # --- world_model_items へ集約（Capability 本体ではなく Worker が担当） ---
             _upsert_world_model_item_from_action_result(
