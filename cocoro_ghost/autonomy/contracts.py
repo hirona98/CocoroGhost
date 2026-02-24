@@ -18,6 +18,9 @@ _DECISION_OUTCOMES = {"do_action", "skip", "defer"}
 _RESULT_STATUSES = {"success", "partial", "failed", "no_effect"}
 _PERSONA_PREFERRED_DIRECTIONS = {"observe", "support", "wait", "avoid", "explore"}
 _THRESHOLD_BIASES = {"higher", "neutral", "lower"}
+_CONSOLE_DELIVERY_TERMINAL_MODES = {"silent", "activity_only", "notify", "chat"}
+_CONSOLE_DELIVERY_PROGRESS_MODES = {"silent", "activity_only"}
+_CONSOLE_MESSAGE_KINDS = {"report", "progress", "question", "error"}
 
 
 def _normalize_string_list(value: Any, *, field_name: str, min_items: int = 0) -> list[str]:
@@ -129,6 +132,41 @@ def _parse_mood_influence(value: Any) -> dict[str, Any]:
     return out
 
 
+def _parse_console_delivery(value: Any) -> dict[str, Any]:
+    """
+    console_delivery を検証して正規化する。
+
+    方針:
+        - 表示本文の意味判定はしない。
+        - Console 表示方針の構造列挙だけを検証する。
+    """
+    if not isinstance(value, dict):
+        raise ValueError("console_delivery must be an object")
+
+    out = dict(value)
+    out["on_complete"] = _normalize_enum_text(
+        value.get("on_complete"),
+        field_name="console_delivery.on_complete",
+        allowed=_CONSOLE_DELIVERY_TERMINAL_MODES,
+    )
+    out["on_fail"] = _normalize_enum_text(
+        value.get("on_fail"),
+        field_name="console_delivery.on_fail",
+        allowed=_CONSOLE_DELIVERY_TERMINAL_MODES,
+    )
+    out["on_progress"] = _normalize_enum_text(
+        value.get("on_progress"),
+        field_name="console_delivery.on_progress",
+        allowed=_CONSOLE_DELIVERY_PROGRESS_MODES,
+    )
+    out["message_kind"] = _normalize_enum_text(
+        value.get("message_kind"),
+        field_name="console_delivery.message_kind",
+        allowed=_CONSOLE_MESSAGE_KINDS,
+    )
+    return out
+
+
 @dataclass(frozen=True)
 class ParsedActionDecision:
     """
@@ -145,6 +183,7 @@ class ParsedActionDecision:
     next_deliberation_at: int | None
     persona_influence_json: str
     mood_influence_json: str
+    console_delivery_json: str
     evidence_event_ids_json: str
     evidence_state_ids_json: str
     evidence_goal_ids_json: str
@@ -219,8 +258,10 @@ def parse_action_decision(value: dict[str, Any]) -> ParsedActionDecision:
     # --- persona/mood 監査情報（判断で使った構造を必須化） ---
     persona_influence_obj = _parse_persona_influence(value.get("persona_influence"))
     mood_influence_obj = _parse_mood_influence(value.get("mood_influence"))
+    console_delivery_obj = _parse_console_delivery(value.get("console_delivery"))
     persona_influence_json = common_utils.json_dumps(persona_influence_obj)
     mood_influence_json = common_utils.json_dumps(mood_influence_obj)
+    console_delivery_json = common_utils.json_dumps(console_delivery_obj)
 
     # --- evidence を配列化 ---
     evidence = value.get("evidence") if isinstance(value.get("evidence"), dict) else {}
@@ -239,6 +280,7 @@ def parse_action_decision(value: dict[str, Any]) -> ParsedActionDecision:
         next_deliberation_at=(int(next_deliberation_at) if next_deliberation_at is not None else None),
         persona_influence_json=str(persona_influence_json),
         mood_influence_json=str(mood_influence_json),
+        console_delivery_json=str(console_delivery_json),
         evidence_event_ids_json=common_utils.json_dumps(evidence_event_ids),
         evidence_state_ids_json=common_utils.json_dumps(evidence_state_ids),
         evidence_goal_ids_json=common_utils.json_dumps(evidence_goal_ids),

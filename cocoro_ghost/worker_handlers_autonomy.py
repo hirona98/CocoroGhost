@@ -956,6 +956,7 @@ def _handle_deliberate_once(
                     ),
                     persona_influence_json=str(decision.persona_influence_json),
                     mood_influence_json=str(decision.mood_influence_json),
+                    console_delivery_json=str(decision.console_delivery_json),
                     evidence_event_ids_json=str(decision.evidence_event_ids_json),
                     evidence_state_ids_json=str(decision.evidence_state_ids_json),
                     evidence_goal_ids_json=str(decision.evidence_goal_ids_json),

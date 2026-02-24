@@ -268,15 +268,55 @@ def _migrate_memory_db_v10_to_v11(engine, logger: logging.Logger) -> None:
     logger.info("memory DB migrated: user_version 10 -> 11")
 
 
+def _migrate_memory_db_v11_to_v12(engine, logger: logging.Logger) -> None:
+    """記憶DBを v11 から v12 へ移行する（action_decisions.console_delivery_json 追加）。"""
+
+    default_console_delivery_json = (
+        '{"on_complete":"activity_only","on_fail":"activity_only","on_progress":"activity_only","message_kind":"report"}'
+    )
+
+    with engine.connect() as conn:
+        # --- action_decisions に Console 表示方針列を追加（既存行は既定値で埋める） ---
+        columns = _get_table_columns(conn, "action_decisions")
+        if "console_delivery_json" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE action_decisions "
+                    "ADD COLUMN console_delivery_json TEXT NOT NULL "
+                    "DEFAULT '{\"on_complete\":\"activity_only\",\"on_fail\":\"activity_only\","
+                    "\"on_progress\":\"activity_only\",\"message_kind\":\"report\"}'"
+                )
+            )
+
+        # --- 既存データの空値を正規既定値へ補正する ---
+        conn.execute(
+            text(
+                "UPDATE action_decisions "
+                "SET console_delivery_json = :default_json "
+                "WHERE length(trim(COALESCE(console_delivery_json,''))) = 0"
+            ),
+            {"default_json": str(default_console_delivery_json)},
+        )
+
+        # --- スキーマバージョンを更新 ---
+        conn.execute(text("PRAGMA user_version=12"))
+        conn.commit()
+
+    logger.info("memory DB migrated: user_version 11 -> 12")
+
+
 def migrate_memory_db_if_needed(*, engine, target_user_version: int, logger: logging.Logger) -> None:
     """記憶DBに必要なマイグレーションを適用する。"""
 
-    # --- 現時点では v10 -> v11 のみサポート ---
+    # --- 既知版を順送りで移行する ---
     while True:
         with engine.connect() as conn:
             current = _get_sqlite_user_version(conn)
 
         if current == 10 and int(target_user_version) >= 11:
             _migrate_memory_db_v10_to_v11(engine, logger)
+            continue
+        if current == 11 and int(target_user_version) >= 12:
+            _migrate_memory_db_v11_to_v12(engine, logger)
             continue
         break

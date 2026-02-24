@@ -14,6 +14,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from cocoro_ghost.db import MemoryBase
 
+_ACTION_DECISION_DEFAULT_CONSOLE_DELIVERY_JSON = (
+    '{"on_complete":"activity_only","on_fail":"activity_only","on_progress":"activity_only","message_kind":"report"}'
+)
+
 
 class Event(MemoryBase):
     """出来事ログ（追記ログ）。
@@ -473,6 +477,11 @@ class ActionDecision(MemoryBase):
     # --- 監査情報 ---
     persona_influence_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     mood_influence_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    console_delivery_json: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default=_ACTION_DECISION_DEFAULT_CONSOLE_DELIVERY_JSON,
+    )
     evidence_event_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     evidence_state_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     evidence_goal_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
