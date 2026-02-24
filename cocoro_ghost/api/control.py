@@ -40,6 +40,43 @@ def _get_autonomy_repo_from_active_config() -> AutonomyRepository:
     )
 
 
+def _publish_agent_job_activity_from_control(
+    *,
+    state: str,
+    job_id: str,
+    intent_id: str | None,
+    decision_id: str | None,
+    backend: str | None,
+    task_instruction: str | None,
+) -> None:
+    """
+    control API で観測できる agent_job 状態を autonomy.activity として配信する。
+
+    方針:
+        - claim は DB保存を伴わない WebSocket監視イベントなので event_id=0 を使う。
+        - payload は監視UI向けの構造に限定し、本文の意味判定はしない。
+    """
+    event_stream.publish(
+        type="autonomy.activity",
+        event_id=0,
+        data={
+            "phase": "agent_job",
+            "state": str(state or ""),
+            "action_type": "agent_delegate",
+            "capability": "agent_delegate",
+            "backend": (str(backend) if backend else None),
+            "result_status": None,
+            "summary_text": (str(task_instruction) if task_instruction else None),
+            "decision_id": (str(decision_id) if decision_id else None),
+            "intent_id": (str(intent_id) if intent_id else None),
+            "result_id": None,
+            "agent_job_id": (str(job_id) if job_id else None),
+            "goal_id": None,
+        },
+        target_client_id=None,
+    )
+
+
 def _request_process_shutdown(*, reason: Optional[str]) -> None:
     """
     CocoroGhost プロセスの終了を要求する。
@@ -278,6 +315,16 @@ def control_agent_jobs_claim(
         now_system_ts=int(now_system_ts),
         limit=int(request.limit),
     )
+    # --- claimed は監視用に events/stream へ配信する ---
+    for item in list(items):
+        _publish_agent_job_activity_from_control(
+            state="claimed",
+            job_id=str(item.get("job_id") or ""),
+            intent_id=(str(item.get("intent_id")) if item.get("intent_id") else None),
+            decision_id=(str(item.get("decision_id")) if item.get("decision_id") else None),
+            backend=(str(item.get("backend")) if item.get("backend") else None),
+            task_instruction=(str(item.get("task_instruction")) if item.get("task_instruction") else None),
+        )
     return schemas.ControlAgentJobClaimResponse(items=[schemas.ControlAgentJobClaimItem(**x) for x in items])
 
 

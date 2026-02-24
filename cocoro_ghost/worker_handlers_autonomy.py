@@ -18,13 +18,13 @@ from typing import Any
 
 from sqlalchemy import text
 
-from cocoro_ghost import common_utils, prompt_builders
+from cocoro_ghost import common_utils, event_stream, prompt_builders
 from cocoro_ghost.autonomy.capabilities.device_control import execute_device_control
 from cocoro_ghost.autonomy.capabilities.mobility_move import execute_mobility_move
 from cocoro_ghost.autonomy.capabilities.schedule_alarm import execute_schedule_alarm
 from cocoro_ghost.autonomy.capabilities.vision_perception import execute_vision_perception
 from cocoro_ghost.autonomy.capabilities.web_access import execute_web_research
-from cocoro_ghost.autonomy.contracts import CapabilityExecutionResult, parse_action_decision
+from cocoro_ghost.autonomy.contracts import CapabilityExecutionResult, parse_action_decision, parse_console_delivery
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.clock import get_clock_service
 from cocoro_ghost.config import get_config_store
@@ -65,6 +65,287 @@ class _DeliberationInvalidOutputError(RuntimeError):
 def _now_domain_utc_ts() -> int:
     """domain時刻（UTC UNIX秒）を返す。"""
     return int(get_clock_service().now_domain_utc_ts())
+
+
+def _enqueue_standard_post_event_jobs(
+    *,
+    db,
+    event_id: int,
+    now_system_ts: int,
+) -> None:
+    """
+    assistant発話イベント保存後の共通workerジョブを投入する。
+
+    方針:
+        - `autonomy.message` は AI人格の発話として events に残す。
+        - 後続会話の整合性を保つため、埋め込み/要約/WritePlan を通常イベントと同様に投入する。
+    """
+
+    # --- 埋め込み更新 ---
+    db.add(
+        Job(
+            kind="upsert_event_embedding",
+            payload_json=common_utils.json_dumps({"event_id": int(event_id)}),
+            status=int(_JOB_PENDING),
+            run_after=int(now_system_ts),
+            tries=0,
+            last_error=None,
+            created_at=int(now_system_ts),
+            updated_at=int(now_system_ts),
+        )
+    )
+
+    # --- assistant本文要約 ---
+    db.add(
+        Job(
+            kind="upsert_event_assistant_summary",
+            payload_json=common_utils.json_dumps({"event_id": int(event_id)}),
+            status=int(_JOB_PENDING),
+            run_after=int(now_system_ts),
+            tries=0,
+            last_error=None,
+            created_at=int(now_system_ts),
+            updated_at=int(now_system_ts),
+        )
+    )
+
+    # --- 記憶更新（WritePlan） ---
+    db.add(
+        Job(
+            kind="generate_write_plan",
+            payload_json=common_utils.json_dumps({"event_id": int(event_id)}),
+            status=int(_JOB_PENDING),
+            run_after=int(now_system_ts),
+            tries=0,
+            last_error=None,
+            created_at=int(now_system_ts),
+            updated_at=int(now_system_ts),
+        )
+    )
+
+
+def _publish_autonomy_activity(
+    *,
+    event_id: int,
+    phase: str,
+    state: str,
+    action_type: str | None,
+    capability: str | None,
+    backend: str | None,
+    result_status: str | None,
+    summary_text: str | None,
+    decision_id: str | None,
+    intent_id: str | None,
+    result_id: str | None,
+    agent_job_id: str | None,
+    goal_id: str | None,
+) -> None:
+    """
+    自発行動の監視用イベント（autonomy.activity）を Console 向けに配信する。
+
+    注意:
+        - これは監視用であり、会話履歴の正本にはしない。
+        - `event_id=0` は DB保存を伴わない状態変化（agent_job claim/heartbeat 等）で使う。
+    """
+
+    # --- 監視UI向けの構造化payloadを作る ---
+    payload = {
+        "phase": str(phase or ""),
+        "state": str(state or ""),
+        "action_type": (str(action_type) if action_type else None),
+        "capability": (str(capability) if capability else None),
+        "backend": (str(backend) if backend else None),
+        "result_status": (str(result_status) if result_status else None),
+        "summary_text": (str(summary_text) if summary_text else None),
+        "decision_id": (str(decision_id) if decision_id else None),
+        "intent_id": (str(intent_id) if intent_id else None),
+        "result_id": (str(result_id) if result_id else None),
+        "agent_job_id": (str(agent_job_id) if agent_job_id else None),
+        "goal_id": (str(goal_id) if goal_id else None),
+    }
+    event_stream.publish(
+        type="autonomy.activity",
+        event_id=int(event_id),
+        data=payload,
+        target_client_id=None,
+    )
+
+
+def _resolve_console_delivery_mode(
+    *,
+    console_delivery_obj: dict[str, Any],
+    result_status: str,
+) -> str:
+    """
+    結果種別から terminal時の Console 表示モードを決める。
+
+    方針:
+        - 失敗時は `on_fail`、それ以外は `on_complete` を使う。
+        - 文字列比較による意味推定は行わない。
+    """
+    if str(result_status) == "failed":
+        return str(console_delivery_obj.get("on_fail") or "")
+    return str(console_delivery_obj.get("on_complete") or "")
+
+
+def _emit_autonomy_console_events_for_action_result(
+    *,
+    embedding_preset_id: str,
+    embedding_dimension: int,
+    result_id: str,
+    activity_state_override: str | None = None,
+) -> None:
+    """
+    ActionResult を起点に autonomy.activity / autonomy.message を発行する。
+
+    方針:
+        - `autonomy.activity` は監視用イベントとして配信する。
+        - `autonomy.message` は AI人格の発話として events に保存してから配信する。
+        - publishした時点で発話成立とする。
+    """
+
+    # --- 参照IDを正規化 ---
+    result_id_norm = str(result_id or "").strip()
+    if not result_id_norm:
+        return
+
+    # --- publish用スナップショットをトランザクション内で組み立てる ---
+    activity_publish: dict[str, Any] | None = None
+    message_publish: dict[str, Any] | None = None
+    message_event_id: int | None = None
+
+    with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+        result = db.query(ActionResult).filter(ActionResult.result_id == str(result_id_norm)).one_or_none()
+        if result is None:
+            return
+
+        intent = db.query(Intent).filter(Intent.intent_id == str(result.intent_id)).one_or_none()
+        decision = db.query(ActionDecision).filter(ActionDecision.decision_id == str(result.decision_id)).one_or_none()
+        if intent is None or decision is None:
+            return
+
+        # --- console_delivery を厳格に読む（不正データは設計不整合として例外化） ---
+        console_delivery_raw = common_utils.json_loads_maybe(str(decision.console_delivery_json or ""))
+        console_delivery_obj = parse_console_delivery(console_delivery_raw)
+
+        # --- agent_delegate 結果なら payload から backend / agent_job_id を拾う ---
+        result_payload_obj = common_utils.json_loads_maybe(str(result.result_payload_json or ""))
+        result_payload = result_payload_obj if isinstance(result_payload_obj, dict) else {}
+        agent_job_id = None
+        backend = None
+        if str(intent.action_type or "") == "agent_delegate":
+            agent_job_id = str(result_payload.get("agent_job_id") or "").strip() or None
+            backend = str(result_payload.get("backend") or "").strip() or None
+
+        # --- 最終状態の activity を配信するか判定 ---
+        terminal_mode = _resolve_console_delivery_mode(
+            console_delivery_obj=console_delivery_obj,
+            result_status=str(result.result_status),
+        )
+        if str(terminal_mode) != "silent":
+            activity_publish = {
+                "event_id": int(result.event_id),
+                "phase": "execution",
+                "state": (str(activity_state_override) if activity_state_override else "completed"),
+                "action_type": (str(intent.action_type) if intent.action_type is not None else None),
+                "capability": (str(result.capability_name) if result.capability_name is not None else None),
+                "backend": backend,
+                "result_status": str(result.result_status),
+                "summary_text": (str(result.summary_text) if result.summary_text is not None else None),
+                "decision_id": str(decision.decision_id),
+                "intent_id": str(intent.intent_id),
+                "result_id": str(result.result_id),
+                "agent_job_id": agent_job_id,
+                "goal_id": (str(intent.goal_id) if intent.goal_id is not None else None),
+            }
+
+        # --- autonomy.message は notify/chat のときだけ発話として保存して配信する ---
+        if str(terminal_mode) in {"notify", "chat"}:
+            message_text = str(result.summary_text or "").strip() or str(result.result_status)
+            message_kind = (
+                "error"
+                if str(result.result_status) == "failed"
+                else str(console_delivery_obj.get("message_kind") or "report")
+            )
+            message_event = Event(
+                created_at=int(_now_domain_utc_ts()),
+                updated_at=int(_now_domain_utc_ts()),
+                searchable=1,
+                client_id=None,
+                source="autonomy_message",
+                user_text=None,
+                assistant_text=str(message_text),
+                entities_json="[]",
+                client_context_json=common_utils.json_dumps(
+                    {
+                        "decision_id": str(decision.decision_id),
+                        "intent_id": str(intent.intent_id),
+                        "result_id": str(result.result_id),
+                        "action_type": (str(intent.action_type) if intent.action_type is not None else None),
+                        "capability": (str(result.capability_name) if result.capability_name is not None else None),
+                        "backend": backend,
+                        "agent_job_id": agent_job_id,
+                        "message_kind": str(message_kind),
+                        "delivery_mode": str(terminal_mode),
+                    }
+                ),
+            )
+            db.add(message_event)
+            db.flush()
+            message_event_id = int(message_event.event_id)
+
+            # --- 発話イベントも通常イベント同様に後続処理へ流す ---
+            _enqueue_standard_post_event_jobs(
+                db=db,
+                event_id=int(message_event_id),
+                now_system_ts=int(_now_utc_ts()),
+            )
+
+            # --- Console配信用payloadを作る ---
+            message_publish = {
+                "event_id": int(message_event_id),
+                "delivery_mode": str(terminal_mode),
+                "data": {
+                    "message": str(message_text),
+                    "message_kind": str(message_kind),
+                    "action_type": (str(intent.action_type) if intent.action_type is not None else None),
+                    "capability": (str(result.capability_name) if result.capability_name is not None else None),
+                    "backend": backend,
+                    "decision_id": str(decision.decision_id),
+                    "intent_id": str(intent.intent_id),
+                    "result_id": str(result.result_id),
+                    "agent_job_id": agent_job_id,
+                },
+            }
+
+    # --- DB確定後に監視イベントを配信 ---
+    if isinstance(activity_publish, dict):
+        _publish_autonomy_activity(
+            event_id=int(activity_publish.get("event_id") or 0),
+            phase=str(activity_publish.get("phase") or "execution"),
+            state=str(activity_publish.get("state") or "completed"),
+            action_type=(str(activity_publish.get("action_type")) if activity_publish.get("action_type") else None),
+            capability=(str(activity_publish.get("capability")) if activity_publish.get("capability") else None),
+            backend=(str(activity_publish.get("backend")) if activity_publish.get("backend") else None),
+            result_status=(str(activity_publish.get("result_status")) if activity_publish.get("result_status") else None),
+            summary_text=(str(activity_publish.get("summary_text")) if activity_publish.get("summary_text") else None),
+            decision_id=(str(activity_publish.get("decision_id")) if activity_publish.get("decision_id") else None),
+            intent_id=(str(activity_publish.get("intent_id")) if activity_publish.get("intent_id") else None),
+            result_id=(str(activity_publish.get("result_id")) if activity_publish.get("result_id") else None),
+            agent_job_id=(str(activity_publish.get("agent_job_id")) if activity_publish.get("agent_job_id") else None),
+            goal_id=(str(activity_publish.get("goal_id")) if activity_publish.get("goal_id") else None),
+        )
+
+    # --- 発話イベントは保存済みevent_idを使って publish する（これを発話成立とみなす） ---
+    if isinstance(message_publish, dict) and message_event_id is not None:
+        message_data = dict(message_publish.get("data") or {})
+        message_data["delivery_mode"] = str(message_publish.get("delivery_mode") or "chat")
+        event_stream.publish(
+            type="autonomy.message",
+            event_id=int(message_event_id),
+            data=message_data,
+            target_client_id=None,
+        )
 
 
 def _load_recent_mood_snapshot(db) -> dict[str, Any]:
@@ -1180,7 +1461,11 @@ def _handle_execute_intent(
     claimed_action_type = ""
     claimed_decision_id = ""
     claimed_goal_id: str | None = None
+    claimed_console_delivery_json = ""
     intent_payload: dict[str, Any] = {}
+    action_result_id_for_publish: str | None = None
+    action_result_activity_state_override: str | None = None
+    agent_job_activity_to_publish: dict[str, Any] | None = None
 
     try:
         # --- Phase 1: queued -> running claim と読み取り（短いDBトランザクション） ---
@@ -1244,6 +1529,7 @@ def _handle_execute_intent(
             claimed_action_type = str(intent.action_type or "")
             claimed_decision_id = str(decision.decision_id)
             claimed_goal_id = (str(intent.goal_id) if intent.goal_id is not None and str(intent.goal_id).strip() else None)
+            claimed_console_delivery_json = str(decision.console_delivery_json or "")
             intent_payload_raw = common_utils.json_loads_maybe(str(intent.action_payload_json or ""))
             intent_payload = dict(intent_payload_raw) if isinstance(intent_payload_raw, dict) else {}
 
@@ -1321,9 +1607,10 @@ def _handle_execute_intent(
                 # --- agent_delegate は別プロセス runner 向け job を作成し、Intent は running のまま維持 ---
                 existing_agent_job = db.query(AgentJob).filter(AgentJob.intent_id == str(intent_id)).one_or_none()
                 if existing_agent_job is None:
+                    new_agent_job_id = str(uuid.uuid4())
                     db.add(
                         AgentJob(
-                            job_id=str(uuid.uuid4()),
+                            job_id=str(new_agent_job_id),
                             intent_id=str(intent_id),
                             decision_id=str(claimed_decision_id),
                             backend=str(intent_payload.get("backend") or ""),
@@ -1344,26 +1631,84 @@ def _handle_execute_intent(
                             updated_at=int(now_system_ts),
                         )
                     )
-                return
+                    db.flush()
 
-            if not isinstance(result, CapabilityExecutionResult):
-                raise RuntimeError("execute_intent internal error: capability result missing")
+                    # --- on_progress が silent 以外なら queued activity を出す ---
+                    console_delivery_obj = parse_console_delivery(
+                        common_utils.json_loads_maybe(str(claimed_console_delivery_json or ""))
+                    )
+                    if str(console_delivery_obj.get("on_progress") or "") != "silent":
+                        agent_job_activity_to_publish = {
+                            "event_id": 0,
+                            "phase": "agent_job",
+                            "state": "queued",
+                            "action_type": "agent_delegate",
+                            "capability": "agent_delegate",
+                            "backend": str(intent_payload.get("backend") or ""),
+                            "result_status": None,
+                            "summary_text": str(intent_payload.get("task_instruction") or ""),
+                            "decision_id": str(claimed_decision_id),
+                            "intent_id": str(intent_id),
+                            "result_id": None,
+                            "agent_job_id": str(new_agent_job_id),
+                            "goal_id": (str(claimed_goal_id) if claimed_goal_id is not None else None),
+                        }
 
-            _finalize_intent_and_save_action_result(
-                db=db,
-                intent=intent,
-                decision_id=str(claimed_decision_id),
-                action_type=str(claimed_action_type),
-                capability_name=str(capability_name),
-                result_status=str(result.result_status),
-                summary_text=str(result.summary),
-                result_payload_json=str(result.result_payload_json),
-                useful_for_recall_hint=int(result.useful_for_recall_hint),
-                now_system_ts=int(now_system_ts),
-                now_domain_ts=int(now_domain_ts),
-                goal_id_hint=(str(claimed_goal_id) if claimed_goal_id is not None else None),
-                next_trigger=result.next_trigger,
-            )
+                # --- DBコミット後に publish するため、with を抜けてから return する ---
+                pass
+            else:
+                if not isinstance(result, CapabilityExecutionResult):
+                    raise RuntimeError("execute_intent internal error: capability result missing")
+
+                action_result_id_for_publish = _finalize_intent_and_save_action_result(
+                    db=db,
+                    intent=intent,
+                    decision_id=str(claimed_decision_id),
+                    action_type=str(claimed_action_type),
+                    capability_name=str(capability_name),
+                    result_status=str(result.result_status),
+                    summary_text=str(result.summary),
+                    result_payload_json=str(result.result_payload_json),
+                    useful_for_recall_hint=int(result.useful_for_recall_hint),
+                    now_system_ts=int(now_system_ts),
+                    now_domain_ts=int(now_domain_ts),
+                    goal_id_hint=(str(claimed_goal_id) if claimed_goal_id is not None else None),
+                    next_trigger=result.next_trigger,
+                )
+                action_result_activity_state_override = None
+
+        # --- Phase 4: Console向けイベント配信（DBコミット後） ---
+        if isinstance(agent_job_activity_to_publish, dict):
+            try:
+                _publish_autonomy_activity(
+                    event_id=int(agent_job_activity_to_publish.get("event_id") or 0),
+                    phase=str(agent_job_activity_to_publish.get("phase") or "agent_job"),
+                    state=str(agent_job_activity_to_publish.get("state") or "queued"),
+                    action_type=(str(agent_job_activity_to_publish.get("action_type")) if agent_job_activity_to_publish.get("action_type") else None),
+                    capability=(str(agent_job_activity_to_publish.get("capability")) if agent_job_activity_to_publish.get("capability") else None),
+                    backend=(str(agent_job_activity_to_publish.get("backend")) if agent_job_activity_to_publish.get("backend") else None),
+                    result_status=(str(agent_job_activity_to_publish.get("result_status")) if agent_job_activity_to_publish.get("result_status") else None),
+                    summary_text=(str(agent_job_activity_to_publish.get("summary_text")) if agent_job_activity_to_publish.get("summary_text") else None),
+                    decision_id=(str(agent_job_activity_to_publish.get("decision_id")) if agent_job_activity_to_publish.get("decision_id") else None),
+                    intent_id=(str(agent_job_activity_to_publish.get("intent_id")) if agent_job_activity_to_publish.get("intent_id") else None),
+                    result_id=(str(agent_job_activity_to_publish.get("result_id")) if agent_job_activity_to_publish.get("result_id") else None),
+                    agent_job_id=(str(agent_job_activity_to_publish.get("agent_job_id")) if agent_job_activity_to_publish.get("agent_job_id") else None),
+                    goal_id=(str(agent_job_activity_to_publish.get("goal_id")) if agent_job_activity_to_publish.get("goal_id") else None),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("autonomy activity publish failed intent_id=%s", str(intent_id))
+            return
+
+        if action_result_id_for_publish is not None and str(action_result_id_for_publish).strip():
+            try:
+                _emit_autonomy_console_events_for_action_result(
+                    embedding_preset_id=str(embedding_preset_id),
+                    embedding_dimension=int(embedding_dimension),
+                    result_id=str(action_result_id_for_publish),
+                    activity_state_override=action_result_activity_state_override,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("autonomy console publish failed result_id=%s", str(action_result_id_for_publish))
     except Exception as exc:  # noqa: BLE001
         # --- 途中失敗時は running intent の取り残しを防ぐ ---
         fail_reason = str(exc or "").strip() or "execute_intent_failed"
@@ -1427,6 +1772,7 @@ def complete_agent_job_from_runner(
 
     now_system_ts = _now_utc_ts()
     now_domain_ts = _now_domain_utc_ts()
+    result_id_for_publish: str | None = None
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         # --- callback 対象 job を検証 ---
         job = db.query(AgentJob).filter(AgentJob.job_id == str(job_id_norm)).one_or_none()
@@ -1474,7 +1820,7 @@ def complete_agent_job_from_runner(
         }
         useful_hint = 1 if str(result_status_norm) in {"success", "partial"} and bool(summary_norm) else 0
 
-        _finalize_intent_and_save_action_result(
+        result_id_for_publish = _finalize_intent_and_save_action_result(
             db=db,
             intent=intent,
             decision_id=str(job.decision_id),
@@ -1489,12 +1835,43 @@ def complete_agent_job_from_runner(
             goal_id_hint=None,
             next_trigger=None,
         )
-        return {
+        out = {
             "job_id": str(job.job_id),
             "status": str(job.status),
             "intent_id": str(job.intent_id),
             "backend": str(job.backend),
         }
+    # --- DBコミット後に Console 向けイベントを配信する ---
+    if result_id_for_publish is not None and str(result_id_for_publish).strip():
+        try:
+            _emit_autonomy_console_events_for_action_result(
+                embedding_preset_id=str(embedding_preset_id),
+                embedding_dimension=int(embedding_dimension),
+                result_id=str(result_id_for_publish),
+                activity_state_override="completed",
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("autonomy console publish failed result_id=%s", str(result_id_for_publish))
+    # --- agent_job 完了状態は監視向けに常に通知する ---
+    try:
+        _publish_autonomy_activity(
+            event_id=0,
+            phase="agent_job",
+            state="completed",
+            action_type="agent_delegate",
+            capability="agent_delegate",
+            backend=str(out.get("backend") or ""),
+            result_status=str(result_status_norm),
+            summary_text=str(summary_norm),
+            decision_id=None,
+            intent_id=str(out.get("intent_id") or ""),
+            result_id=(str(result_id_for_publish) if result_id_for_publish else None),
+            agent_job_id=str(out.get("job_id") or ""),
+            goal_id=None,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("autonomy activity publish failed agent_job_id=%s", str(out.get("job_id") or ""))
+    return out
 
 
 def fail_agent_job_from_runner(
@@ -1524,6 +1901,7 @@ def fail_agent_job_from_runner(
 
     now_system_ts = _now_utc_ts()
     now_domain_ts = _now_domain_utc_ts()
+    result_id_for_publish: str | None = None
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         # --- callback 対象 job を検証 ---
         job = db.query(AgentJob).filter(AgentJob.job_id == str(job_id_norm)).one_or_none()
@@ -1569,7 +1947,7 @@ def fail_agent_job_from_runner(
         job.heartbeat_at = int(now_system_ts)
         job.updated_at = int(now_system_ts)
 
-        _finalize_intent_and_save_action_result(
+        result_id_for_publish = _finalize_intent_and_save_action_result(
             db=db,
             intent=intent,
             decision_id=str(job.decision_id),
@@ -1584,12 +1962,43 @@ def fail_agent_job_from_runner(
             goal_id_hint=None,
             next_trigger=None,
         )
-        return {
+        out = {
             "job_id": str(job.job_id),
             "status": str(job.status),
             "intent_id": str(job.intent_id),
             "backend": str(job.backend),
         }
+    # --- DBコミット後に Console 向けイベントを配信する ---
+    if result_id_for_publish is not None and str(result_id_for_publish).strip():
+        try:
+            _emit_autonomy_console_events_for_action_result(
+                embedding_preset_id=str(embedding_preset_id),
+                embedding_dimension=int(embedding_dimension),
+                result_id=str(result_id_for_publish),
+                activity_state_override="failed",
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("autonomy console publish failed result_id=%s", str(result_id_for_publish))
+    # --- agent_job 失敗状態は監視向けに常に通知する ---
+    try:
+        _publish_autonomy_activity(
+            event_id=0,
+            phase="agent_job",
+            state="failed",
+            action_type="agent_delegate",
+            capability="agent_delegate",
+            backend=str(out.get("backend") or ""),
+            result_status="failed",
+            summary_text=str(error_message_norm),
+            decision_id=None,
+            intent_id=str(out.get("intent_id") or ""),
+            result_id=(str(result_id_for_publish) if result_id_for_publish else None),
+            agent_job_id=str(out.get("job_id") or ""),
+            goal_id=None,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("autonomy activity publish failed agent_job_id=%s", str(out.get("job_id") or ""))
+    return out
 
 
 def _handle_promote_action_result_to_searchable(
@@ -1668,6 +2077,8 @@ def _handle_sweep_agent_jobs(
     timed_out_jobs = 0
     finalized_intents = 0
     skipped_jobs = 0
+    finalized_result_ids_for_publish: list[str] = []
+    timed_out_job_activity_rows: list[dict[str, Any]] = []
 
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         # --- stale 候補（claimed/running）を古い heartbeat 順で取得 ---
@@ -1723,6 +2134,14 @@ def _handle_sweep_agent_jobs(
             job.finished_at = int(now_system_ts)
             job.updated_at = int(now_system_ts)
             timed_out_jobs += 1
+            timed_out_job_activity_rows.append(
+                {
+                    "job_id": str(job.job_id),
+                    "intent_id": str(job.intent_id),
+                    "backend": str(job.backend),
+                    "summary_text": str(timeout_message),
+                }
+            )
 
             # --- 対応 intent が running のときだけ ActionResult を保存して終端化 ---
             intent = db.query(Intent).filter(Intent.intent_id == str(job.intent_id)).one_or_none()
@@ -1730,7 +2149,7 @@ def _handle_sweep_agent_jobs(
                 skipped_jobs += 1
                 continue
 
-            _finalize_intent_and_save_action_result(
+            result_id = _finalize_intent_and_save_action_result(
                 db=db,
                 intent=intent,
                 decision_id=str(job.decision_id),
@@ -1745,7 +2164,39 @@ def _handle_sweep_agent_jobs(
                 goal_id_hint=None,
                 next_trigger=None,
             )
+            finalized_result_ids_for_publish.append(str(result_id))
             finalized_intents += 1
+
+    # --- DBコミット後に Console 向けイベントを配信する ---
+    for result_id in list(finalized_result_ids_for_publish):
+        try:
+            _emit_autonomy_console_events_for_action_result(
+                embedding_preset_id=str(embedding_preset_id),
+                embedding_dimension=int(embedding_dimension),
+                result_id=str(result_id),
+                activity_state_override="timed_out",
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("autonomy console publish failed result_id=%s", str(result_id))
+    for row in list(timed_out_job_activity_rows):
+        try:
+            _publish_autonomy_activity(
+                event_id=0,
+                phase="agent_job",
+                state="timed_out",
+                action_type="agent_delegate",
+                capability="agent_delegate",
+                backend=str(row.get("backend") or ""),
+                result_status="failed",
+                summary_text=str(row.get("summary_text") or ""),
+                decision_id=None,
+                intent_id=str(row.get("intent_id") or ""),
+                result_id=None,
+                agent_job_id=str(row.get("job_id") or ""),
+                goal_id=None,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("autonomy activity publish failed agent_job_id=%s", str(row.get("job_id") or ""))
 
     # --- 実際に回収が発生したときだけ warning を出す ---
     if int(timed_out_jobs) > 0:

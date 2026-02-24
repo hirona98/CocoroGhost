@@ -167,6 +167,15 @@ def _parse_console_delivery(value: Any) -> dict[str, Any]:
     return out
 
 
+def parse_console_delivery(value: Any) -> dict[str, Any]:
+    """
+    Console 表示方針（console_delivery）を検証して正規化する。
+
+    Deliberation 出力だけでなく、DB保存済み `console_delivery_json` の再利用にも使う。
+    """
+    return _parse_console_delivery(value)
+
+
 @dataclass(frozen=True)
 class ParsedActionDecision:
     """
