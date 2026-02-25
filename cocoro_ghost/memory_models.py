@@ -14,6 +14,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from cocoro_ghost.db import MemoryBase
 
+_ACTION_DECISION_DEFAULT_CONSOLE_DELIVERY_JSON = (
+    '{"on_complete":"activity_only","on_fail":"activity_only","on_progress":"activity_only","message_kind":"report"}'
+)
+
 
 class Event(MemoryBase):
     """出来事ログ（追記ログ）。
@@ -71,7 +75,6 @@ class EventEntity(MemoryBase):
           参照テーブルとして `event_entities` を持つ。
 
     注意:
-        - 運用前のためマイグレーションは扱わない（DB作り直し前提）。
         - entity_name_raw は表示/診断用。検索は entity_name_norm を正にする。
     """
 
@@ -105,9 +108,6 @@ class StateEntity(MemoryBase):
         - stateは「育つ」ため、本文の近くにあるエンティティを索引化しておくと、
           seed→entity→関連state の展開が安定する。
         - 現行は WritePlan に entity が含まれるため、まずは「イベント由来の entity を state へ付与」する。
-
-    注意:
-        - 運用前のためマイグレーションは扱わない（DB作り直し前提）。
     """
 
     __tablename__ = "state_entities"
@@ -213,7 +213,6 @@ class EventAssistantSummary(MemoryBase):
     方針:
         - 1イベントにつき1件（event_id を主キー）として保持する。
         - events.updated_at の値を一緒に保存し、元本文が更新された場合は作り直せるようにする。
-        - 運用前のためマイグレーションは扱わない（DBを作り直す前提）。
     """
 
     __tablename__ = "event_assistant_summaries"
@@ -478,6 +477,11 @@ class ActionDecision(MemoryBase):
     # --- 監査情報 ---
     persona_influence_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     mood_influence_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    console_delivery_json: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default=_ACTION_DECISION_DEFAULT_CONSOLE_DELIVERY_JSON,
+    )
     evidence_event_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     evidence_state_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     evidence_goal_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
@@ -554,6 +558,64 @@ class Intent(MemoryBase):
 
     # --- タイムスタンプ ---
     created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class AgentJob(MemoryBase):
+    """汎用エージェント委譲ジョブ（別プロセス runner 連携用）。"""
+
+    __tablename__ = "agent_jobs"
+    __table_args__ = (
+        UniqueConstraint("intent_id", name="uq_agent_jobs_intent_id"),
+        CheckConstraint(
+            "status IN ('queued','claimed','running','completed','failed','cancelled','timed_out')",
+            name="ck_agent_jobs_status",
+        ),
+        CheckConstraint(
+            "status <> 'failed' OR length(trim(COALESCE(error_message,''))) > 0",
+            name="ck_agent_jobs_failed_error_message",
+        ),
+        CheckConstraint(
+            "result_status IS NULL OR result_status IN ('success','partial','failed','no_effect')",
+            name="ck_agent_jobs_result_status",
+        ),
+        CheckConstraint(
+            "length(trim(backend)) > 0",
+            name="ck_agent_jobs_backend_non_empty",
+        ),
+        CheckConstraint(
+            "length(trim(task_instruction)) > 0",
+            name="ck_agent_jobs_task_instruction_non_empty",
+        ),
+    )
+
+    # --- 主キー/参照 ---
+    job_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    intent_id: Mapped[str] = mapped_column(ForeignKey("intents.intent_id", ondelete="CASCADE"), nullable=False)
+    decision_id: Mapped[str] = mapped_column(ForeignKey("action_decisions.decision_id", ondelete="CASCADE"), nullable=False)
+
+    # --- 委譲実行定義 ---
+    backend: Mapped[str] = mapped_column(Text, nullable=False)
+    task_instruction: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # --- claim/running 管理 ---
+    claim_token: Mapped[Optional[str]] = mapped_column(Text)
+    runner_id: Mapped[Optional[str]] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    heartbeat_at: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # --- 実行結果 ---
+    result_status: Mapped[Optional[str]] = mapped_column(Text)
+    result_summary_text: Mapped[Optional[str]] = mapped_column(Text)
+    result_details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_code: Mapped[Optional[str]] = mapped_column(Text)
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[Optional[int]] = mapped_column(Integer)
+    finished_at: Mapped[Optional[int]] = mapped_column(Integer)
     updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
@@ -692,6 +754,9 @@ Index(
 # --- 主要参照用インデックス（SQLAlchemy create_all 時に作成） ---
 Index("idx_action_decisions_created_at", ActionDecision.created_at)
 Index("idx_intents_status_scheduled_at", Intent.status, Intent.scheduled_at)
+Index("idx_agent_jobs_status_created_at", AgentJob.status, AgentJob.created_at)
+Index("idx_agent_jobs_backend_status", AgentJob.backend, AgentJob.status)
+Index("idx_agent_jobs_heartbeat_at", AgentJob.heartbeat_at)
 Index("idx_action_results_created_at", ActionResult.created_at)
 Index("idx_world_model_items_freshness_at", WorldModelItem.freshness_at)
 Index("idx_world_model_items_active_confidence", WorldModelItem.active, WorldModelItem.confidence)

@@ -21,6 +21,8 @@ from sqlalchemy import create_engine, event, func, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
+from cocoro_ghost import db_migrations
+
 logger = logging.getLogger(__name__)
 
 # sqlite-vec 仮想テーブル名（検索用ベクトルインデックス）
@@ -50,8 +52,8 @@ class _MemorySessionEntry:
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
-_MEMORY_DB_USER_VERSION = 10
-_SETTINGS_DB_USER_VERSION = 5
+_MEMORY_DB_USER_VERSION = 12
+_SETTINGS_DB_USER_VERSION = 7
 
 
 def get_db_dir() -> Path:
@@ -335,7 +337,7 @@ def _create_memory_indexes(engine) -> None:
         conn.commit()
 
 
-# --- 記憶DB: 形状チェック（マイグレーションしない） ---
+# --- 記憶DB: 形状チェック（既知の新スキーマ差分は事前マイグレーション後に検証） ---
 
 
 def _assert_memory_db_is_new_schema(engine) -> None:
@@ -416,119 +418,6 @@ def _get_table_columns(conn, table_name: str) -> set[str]:
     return {str(r[1]) for r in rows}
 
 
-def _migrate_settings_db_v2_to_v3(engine) -> None:
-    """設定DBを v2 から v3 へ移行する。"""
-    with engine.connect() as conn:
-        # --- v2 では llm_presets が存在する前提 ---
-        llm_table_exists = (
-            conn.execute(
-                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_presets'")
-            ).fetchone()
-            is not None
-        )
-        if not llm_table_exists:
-            raise RuntimeError(
-                "settings DB migration failed: llm_presets table missing in user_version=2 database."
-            )
-
-        # --- 最終応答Web検索フラグ列を追加（既存行は既定値1） ---
-        columns = _get_table_columns(conn, "llm_presets")
-        if "reply_web_search_enabled" not in columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE llm_presets "
-                    "ADD COLUMN reply_web_search_enabled INTEGER NOT NULL DEFAULT 1"
-                )
-            )
-
-        # --- スキーマバージョンを更新 ---
-        conn.execute(text("PRAGMA user_version=3"))
-        conn.commit()
-
-    logger.info("settings DB migrated: user_version 2 -> 3")
-
-
-def _migrate_settings_db_v3_to_v4(engine) -> None:
-    """設定DBを v3 から v4 へ移行する。"""
-    with engine.connect() as conn:
-        # --- global_settings へ autonomy/camera 設定列を追加 ---
-        gs_columns = _get_table_columns(conn, "global_settings")
-        if "autonomy_enabled" not in gs_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE global_settings "
-                    "ADD COLUMN autonomy_enabled INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-        if "autonomy_heartbeat_seconds" not in gs_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE global_settings "
-                    "ADD COLUMN autonomy_heartbeat_seconds INTEGER NOT NULL DEFAULT 30"
-                )
-            )
-        if "autonomy_max_parallel_intents" not in gs_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE global_settings "
-                    "ADD COLUMN autonomy_max_parallel_intents INTEGER NOT NULL DEFAULT 2"
-                )
-            )
-        if "camera_watch_enabled" not in gs_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE global_settings "
-                    "ADD COLUMN camera_watch_enabled INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-        if "camera_watch_interval_seconds" not in gs_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE global_settings "
-                    "ADD COLUMN camera_watch_interval_seconds INTEGER NOT NULL DEFAULT 15"
-                )
-            )
-
-        # --- llm_presets へ Deliberation 設定列を追加 ---
-        llm_columns = _get_table_columns(conn, "llm_presets")
-        if "deliberation_model" not in llm_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE llm_presets "
-                    "ADD COLUMN deliberation_model TEXT NOT NULL DEFAULT 'openai/gpt-5-mini'"
-                )
-            )
-        if "deliberation_max_tokens" not in llm_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE llm_presets "
-                    "ADD COLUMN deliberation_max_tokens INTEGER NOT NULL DEFAULT 4096"
-                )
-            )
-
-        # --- スキーマバージョンを更新 ---
-        conn.execute(text(f"PRAGMA user_version={_SETTINGS_DB_USER_VERSION}"))
-        conn.commit()
-
-    logger.info("settings DB migrated: user_version 3 -> 4")
-
-
-def _migrate_settings_db_if_needed(engine) -> None:
-    """設定DBに必要なマイグレーションを適用する。"""
-    # --- 既知版を順に進める（飛び番を許可しない） ---
-    while True:
-        with engine.connect() as conn:
-            current = _get_settings_db_user_version(conn)
-
-        if current == 2 and _SETTINGS_DB_USER_VERSION >= 3:
-            _migrate_settings_db_v2_to_v3(engine)
-            continue
-        if current == 3 and _SETTINGS_DB_USER_VERSION >= 4:
-            _migrate_settings_db_v3_to_v4(engine)
-            continue
-        break
-
-
 def _verify_settings_db_user_version(engine) -> None:
     """
     設定DBの user_version を検証する。
@@ -572,6 +461,7 @@ def _verify_settings_db_user_version(engine) -> None:
                 "autonomy_max_parallel_intents",
                 "camera_watch_enabled",
                 "camera_watch_interval_seconds",
+                "agent_backend_cli_agent_command",
             }
             missing_global = sorted(required_global_columns - gs_columns)
             if missing_global:
@@ -620,7 +510,11 @@ def init_settings_db() -> None:
     SettingsSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
     # --- 既知の設定DBマイグレーションを適用 ---
-    _migrate_settings_db_if_needed(engine)
+    db_migrations.migrate_settings_db_if_needed(
+        engine=engine,
+        target_user_version=int(_SETTINGS_DB_USER_VERSION),
+        logger=logger,
+    )
 
     # --- user_version / スキーマを検証 ---
     _verify_settings_db_user_version(engine)
@@ -689,7 +583,14 @@ def init_memory_db(embedding_preset_id: str, embedding_dimension: int) -> sessio
     # パフォーマンス設定を適用
     _apply_memory_pragmas(engine)
 
-    # --- 旧スキーマを拒否する（運用前のためマイグレーションしない） ---
+    # --- 記憶DBの既知マイグレーションを適用 ---
+    db_migrations.migrate_memory_db_if_needed(
+        engine=engine,
+        target_user_version=int(_MEMORY_DB_USER_VERSION),
+        logger=logger,
+    )
+
+    # --- 旧スキーマを拒否する（未知版/旧系統は引き続き対象外） ---
     _assert_memory_db_is_new_schema(engine)
 
     # --- 記憶用テーブルを作成（events/state中心） ---
@@ -935,6 +836,8 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             # 視覚（Vision）: カメラ監視（初期は無効）
             camera_watch_enabled=False,
             camera_watch_interval_seconds=15,
+            # 汎用エージェント委譲 backend（cli_agent）
+            agent_backend_cli_agent_command="gemini.exe -p",
         )
         session.add(global_settings)
         session.flush()
@@ -947,6 +850,9 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         global_settings.autonomy_max_parallel_intents = 2
     if int(getattr(global_settings, "camera_watch_interval_seconds", 0) or 0) <= 0:
         global_settings.camera_watch_interval_seconds = 15
+    # --- cli_agent backend 実行CLIコマンドは未設定(None)のときだけ初期値を補完する ---
+    if getattr(global_settings, "agent_backend_cli_agent_command", None) is None:
+        global_settings.agent_backend_cli_agent_command = "gemini.exe -p"
 
     # LlmPresetの用意（存在しない/アクティブでない場合は空のdefaultを作成）
     llm_preset = None

@@ -29,7 +29,6 @@
 ## 方針
 
 - `settings.db` は起動時に既知のスキーマ移行を適用する（現行は `user_version=2 -> 3` のみ）
-- `reminders.db` / `memory_<embedding_preset_id>.db` は運用前方針のためマイグレーションを扱わない（作り直し前提）
 - 埋め込み次元が変わる場合は、`embedding_preset_id` を変えて別DBにする
 
 ## テーブル概要（概念）
@@ -82,7 +81,6 @@
 
 - WritePlan の `event_annotations.entities` を正規化し、`event_entities` を event_id 単位で作り直す（delete→insert）
 - WritePlan の `state_updates[*].entities` を正規化し、`state_entities` を state_id 単位で作り直す（delete→insert）
-- 運用前のためマイグレーションは扱わない（DB作り直し前提）
 
 主要カラム（概念）:
 
@@ -106,7 +104,6 @@
 
 - `events.assistant_text` の要約を **派生情報**として保持する（本文の代替にはしない）
 - `events.updated_at` と突き合わせて整合性を取る（本文が更新されたら作り直す）
-- 運用前のためマイグレーションは扱わない（作り直し前提）
 
 主要カラム:
 
@@ -248,7 +245,6 @@
 - 1本のリンクは「向き付き」（from_state_id → to_state_id）で保存する
 - 同期検索では両方向を辿る前提（対称関係は2本張ってもよい）
   - 現行は `relates_to` / `contradicts` を対称関係として扱い、生成時に逆向きも保存する
-- 運用前のためマイグレーションは扱わない（作り直し前提）
 
 主要カラム（概念）:
 

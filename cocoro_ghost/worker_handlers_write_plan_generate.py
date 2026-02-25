@@ -329,7 +329,8 @@ def _handle_generate_write_plan(
         "recent_states": recent_state_snapshots,
     }
 
-    # --- LLMでWritePlanを作る ---
+    # --- LLMでWritePlanを作る（会話用 max_tokens 設定を共用） ---
+    shared_json_max_tokens = max(1, int(getattr(llm_client, "max_tokens", 0) or 1))
     resp = llm_client.generate_json_response(
         system_prompt=prompt_builders.write_plan_system_prompt(
             persona_text=persona_text,
@@ -337,7 +338,7 @@ def _handle_generate_write_plan(
         ),
         input_text=common_utils.json_dumps(input_obj),
         purpose=LlmRequestPurpose.ASYNC_WRITE_PLAN,
-        max_tokens=2000,
+        max_tokens=int(shared_json_max_tokens),
     )
     content = ""
     try:
