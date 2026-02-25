@@ -42,6 +42,7 @@ from cocoro_ghost.memory_models import (
     Goal,
     RuntimeSnapshot,
     State,
+    UserPreference,
 )
 from cocoro_ghost.worker_constants import AGENT_JOB_STALE_SECONDS as _AGENT_JOB_STALE_SECONDS
 from cocoro_ghost.worker_constants import JOB_PENDING as _JOB_PENDING
@@ -545,6 +546,66 @@ def _load_recent_mood_snapshot(db) -> dict[str, Any]:
         "long_mood_state": long_mood_payload,
         "recent_vad_average": {"v": float(v), "a": float(a), "d": float(d)},
     }
+
+
+def _load_confirmed_preferences_snapshot_for_deliberation(db) -> dict[str, Any]:
+    """
+    Deliberation入力用の confirmed preferences スナップショットを返す。
+
+    方針:
+        - 文字列比較で意味推定しない。
+        - 構造化済みの confirmed preference を短い形で渡す。
+    """
+
+    # --- 返却形は固定（欠損時も同じ構造） ---
+    out: dict[str, Any] = {
+        "food": {"like": [], "dislike": []},
+        "topic": {"like": [], "dislike": []},
+        "style": {"like": [], "dislike": []},
+    }
+
+    # --- DBから confirmed のみ取得（新しい順） ---
+    rows = (
+        db.query(
+            UserPreference.domain,
+            UserPreference.polarity,
+            UserPreference.subject_raw,
+            UserPreference.note,
+            UserPreference.confirmed_at,
+            UserPreference.last_seen_at,
+            UserPreference.id,
+        )
+        .filter(UserPreference.status == "confirmed")
+        .order_by(UserPreference.confirmed_at.desc(), UserPreference.last_seen_at.desc(), UserPreference.id.desc())
+        .all()
+    )
+
+    # --- domain/polarity ごとに少数へ圧縮 ---
+    cap_per_bucket = 6
+    counts: dict[tuple[str, str], int] = {}
+    for r in list(rows or []):
+        domain = str(r[0] or "").strip()
+        polarity = str(r[1] or "").strip()
+        subject = str(r[2] or "").strip()
+        note = str(r[3] or "").strip()
+        if domain not in {"food", "topic", "style"}:
+            continue
+        if polarity not in {"like", "dislike"}:
+            continue
+        if not subject:
+            continue
+        key = (domain, polarity)
+        if int(counts.get(key, 0)) >= int(cap_per_bucket):
+            continue
+        out[domain][polarity].append(
+            {
+                "subject": str(subject[:120]),
+                "note": (str(note[:240]) if note else None),
+            }
+        )
+        counts[key] = int(counts.get(key, 0)) + 1
+
+    return out
 
 
 def _maybe_create_goal_from_decision(
@@ -1141,6 +1202,12 @@ def _collect_deliberation_input(
     if not isinstance(trigger_payload, dict):
         trigger_payload = {}
 
+    # --- 人格判断の材料（構造化済みの好み/短期ランタイム状態） ---
+    confirmed_preferences = _load_confirmed_preferences_snapshot_for_deliberation(db)
+    runtime_blackboard_snapshot = get_runtime_blackboard().snapshot()
+    if not isinstance(runtime_blackboard_snapshot, dict):
+        runtime_blackboard_snapshot = {}
+
     # --- Deliberation入力には内部追跡用UUIDを出さない（evidence IDsとの混同を防ぐ） ---
     pt = str(persona_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     at = str(addon_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
@@ -1163,6 +1230,8 @@ def _collect_deliberation_input(
         "goals": goals,
         "intents": intents,
         "mood": _load_recent_mood_snapshot(db),
+        "confirmed_preferences": confirmed_preferences,
+        "runtime_blackboard": runtime_blackboard_snapshot,
         "capabilities": [
             {
                 "capability": "vision_perception",
@@ -1187,7 +1256,7 @@ def _collect_deliberation_input(
             {
                 "capability": "agent_delegate",
                 "action_types": ["agent_delegate"],
-                "backends": ["codex"],
+                "backends": ["cli_agent"],
             },
         ],
     }
