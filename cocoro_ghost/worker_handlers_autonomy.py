@@ -663,16 +663,42 @@ def _build_persona_deliberation_focus(
             attention_targets.append(dict(item))
 
     priority_state_kinds: list[str] = []
+    priority_goal_ids: list[str] = []
+    priority_action_types: list[str] = []
+    priority_capabilities: list[str] = []
+    priority_event_sources: list[str] = []
     for item in attention_targets:
         t = str(item.get("type") or "").strip()
         v = str(item.get("value") or "").strip()
-        if t not in {"state_kind", "kind"}:
+        if not v:
             continue
-        if not v or v in priority_state_kinds:
+        if t in {"state_kind", "kind"}:
+            if v in priority_state_kinds:
+                continue
+            priority_state_kinds.append(v)
+            if len(priority_state_kinds) >= 6:
+                continue
             continue
-        priority_state_kinds.append(v)
-        if len(priority_state_kinds) >= 6:
-            break
+        if t == "goal_id":
+            if v in priority_goal_ids:
+                continue
+            priority_goal_ids.append(v)
+            continue
+        if t == "action_type":
+            if v in priority_action_types:
+                continue
+            priority_action_types.append(v)
+            continue
+        if t == "capability":
+            if v in priority_capabilities:
+                continue
+            priority_capabilities.append(v)
+            continue
+        if t == "event_source":
+            if v in priority_event_sources:
+                continue
+            priority_event_sources.append(v)
+            continue
 
     # --- mood の構造値（VAD平均） ---
     recent_vad = mood_snapshot.get("recent_vad_average")
@@ -734,6 +760,10 @@ def _build_persona_deliberation_focus(
         "active_intent_ids": list(active_intent_ids),
         "active_goal_ids": list(active_goal_ids),
         "priority_state_kinds": list(priority_state_kinds),
+        "priority_goal_ids": list(priority_goal_ids),
+        "priority_action_types": list(priority_action_types),
+        "priority_capabilities": list(priority_capabilities),
+        "priority_event_sources": list(priority_event_sources),
         "preferences_bias": {
             "topic_like_count": int(topic_like_count),
             "topic_dislike_count": int(topic_dislike_count),
@@ -758,16 +788,19 @@ def _reorder_deliberation_intents(intents: list[dict[str, Any]], *, focus: dict[
 
     # --- active intent を先頭へ寄せる ---
     active_intent_ids = {str(x) for x in list(focus.get("active_intent_ids") or [])}
+    priority_action_types = {str(x) for x in list(focus.get("priority_action_types") or []) if str(x or "").strip()}
     status_rank = {"running": 0, "queued": 1, "blocked": 2}
 
-    def _sort_key(it: dict[str, Any]) -> tuple[int, int, int, str]:
+    def _sort_key(it: dict[str, Any]) -> tuple[int, int, int, int, str]:
         iid = str(it.get("intent_id") or "")
         status = str(it.get("status") or "")
+        action_type = str(it.get("action_type") or "")
         priority = int(it.get("priority") or 0)
         scheduled_at = it.get("scheduled_at")
         scheduled_rank = int(scheduled_at) if scheduled_at is not None else 2**31 - 1
         return (
             0 if iid in active_intent_ids else 1,
+            0 if action_type in priority_action_types else 1,
             int(status_rank.get(status, 9)),
             -int(priority),
             f"{scheduled_rank:010d}",
@@ -783,11 +816,17 @@ def _reorder_deliberation_goals(goals: list[dict[str, Any]], *, focus: dict[str,
 
     # --- active intents が参照中の goal を優先 ---
     active_goal_ids = {str(x) for x in list(focus.get("active_goal_ids") or []) if str(x or "").strip()}
+    priority_goal_ids = {str(x) for x in list(focus.get("priority_goal_ids") or []) if str(x or "").strip()}
 
-    def _sort_key(g: dict[str, Any]) -> tuple[int, int, str]:
+    def _sort_key(g: dict[str, Any]) -> tuple[int, int, int, str]:
         gid = str(g.get("goal_id") or "")
         prio = int(g.get("priority") or 0)
-        return (0 if gid in active_goal_ids else 1, -int(prio), gid)
+        return (
+            0 if gid in active_goal_ids else 1,
+            0 if gid in priority_goal_ids else 1,
+            -int(prio),
+            gid,
+        )
 
     return list(sorted(list(goals or []), key=_sort_key))
 
@@ -823,13 +862,14 @@ def _reorder_deliberation_events(
 
     # --- トリガ起点イベントを最優先し、継続中は自発行動の結果/発話を少し優先 ---
     continuity_bias = str(focus.get("continuity_bias") or "medium")
+    priority_event_sources = {str(x) for x in list(focus.get("priority_event_sources") or []) if str(x or "").strip()}
     source_rank_when_continuity = {
         "autonomy_message": 0,
         "action_result": 1,
         "vision_capture_response": 2,
     }
 
-    def _sort_key(e: dict[str, Any]) -> tuple[int, int, int]:
+    def _sort_key(e: dict[str, Any]) -> tuple[int, int, int, int]:
         event_id = int(e.get("event_id") or 0)
         source = str(e.get("source") or "")
         created_at = int(e.get("created_at") or 0)
@@ -837,7 +877,8 @@ def _reorder_deliberation_events(
         continuity_rank = 9
         if continuity_bias == "high":
             continuity_rank = int(source_rank_when_continuity.get(source, 9))
-        return (trigger_match, continuity_rank, -int(created_at or event_id))
+        focus_source_rank = 0 if source in priority_event_sources else 1
+        return (trigger_match, focus_source_rank, continuity_rank, -int(created_at or event_id))
 
     return list(sorted(list(events or []), key=_sort_key))
 
@@ -870,6 +911,70 @@ def _trim_deliberation_materials(
         list(state_rows or [])[:state_limit],
         list(goals or [])[:goal_limit],
         list(intents or [])[:intent_limit],
+    )
+
+
+def _update_runtime_attention_targets_from_action_result(
+    *,
+    intent: Intent,
+    action_type: str,
+    capability_name: str,
+    result_status: str,
+    goal_id_hint: str | None,
+    now_system_ts: int,
+) -> None:
+    """
+    ActionResult 確定を短期ランタイム状態（attention_targets）へ反映する。
+
+    方針:
+        - 自然言語本文は使わない。
+        - action_type / capability / goal_id / result_status の構造情報だけ使う。
+    """
+
+    # --- 失敗でも「何に注意が向いていたか」の痕跡として残す ---
+    items: list[dict[str, Any]] = []
+    action_type_norm = str(action_type or "").strip()
+    capability_norm = str(capability_name or "").strip()
+    result_status_norm = str(result_status or "").strip()
+    goal_id_norm = str(goal_id_hint or "").strip() or (str(intent.goal_id).strip() if intent.goal_id else "")
+
+    if action_type_norm:
+        items.append(
+            {
+                "type": "action_type",
+                "value": str(action_type_norm),
+                "weight": 0.95 if result_status_norm != "failed" else 0.75,
+            }
+        )
+    if capability_norm:
+        items.append(
+            {
+                "type": "capability",
+                "value": str(capability_norm),
+                "weight": 0.8 if result_status_norm != "failed" else 0.6,
+            }
+        )
+    if goal_id_norm:
+        items.append(
+            {
+                "type": "goal_id",
+                "value": str(goal_id_norm),
+                "weight": 1.0 if result_status_norm != "failed" else 0.7,
+            }
+        )
+
+    # --- event source の型も短期的な連続性ヒントとして持つ ---
+    items.append(
+        {
+            "type": "event_source",
+            "value": "action_result",
+            "weight": 0.4,
+        }
+    )
+
+    get_runtime_blackboard().merge_attention_targets(
+        items=items,
+        now_system_ts=int(now_system_ts),
     )
 
 
@@ -1295,6 +1400,16 @@ def _finalize_intent_and_save_action_result(
                     "goal_id": str(goal_id_for_update),
                 },
             )
+
+    # --- 短期ランタイム状態へ attention_targets を反映（次回 Deliberation の材料選別用） ---
+    _update_runtime_attention_targets_from_action_result(
+        intent=intent,
+        action_type=str(action_type),
+        capability_name=str(capability_name),
+        result_status=str(result_status),
+        goal_id_hint=goal_id_hint,
+        now_system_ts=int(now_system_ts),
+    )
 
     # --- next_trigger があれば投入 ---
     if isinstance(next_trigger, dict) and bool(next_trigger.get("required")):
@@ -2790,8 +2905,13 @@ def _handle_snapshot_runtime(
         ).fetchone()
 
         snapshot_kind = str(payload.get("snapshot_kind") or "periodic")
+        runtime_bb_snapshot = get_runtime_blackboard().snapshot()
+        attention_targets = []
+        if isinstance(runtime_bb_snapshot, dict) and isinstance(runtime_bb_snapshot.get("attention_targets"), list):
+            attention_targets = list(runtime_bb_snapshot.get("attention_targets") or [])
         snapshot_payload = {
             "active_intent_ids": active_intent_ids,
+            "attention_targets": attention_targets,
             "trigger_counts": {
                 "queued": int((trigger_counts[0] if trigger_counts and trigger_counts[0] is not None else 0) or 0),
                 "claimed": int((trigger_counts[1] if trigger_counts and trigger_counts[1] is not None else 0) or 0),
