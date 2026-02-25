@@ -25,6 +25,7 @@
 - 自発行動/Capability設計: `docs/03_自発行動アーキテクチャ方針.md` と `cocoro_ghost/autonomy/orchestrator.py` / `cocoro_ghost/autonomy/repository.py` / `cocoro_ghost/autonomy/runtime_blackboard.py` / `cocoro_ghost/autonomy/policies/` / `cocoro_ghost/autonomy/capabilities/` / `cocoro_ghost/worker_handlers_autonomy.py` / `cocoro_ghost/desktop_watch.py` / `cocoro_ghost/camera_watch.py` / `cocoro_ghost/reminders_service.py` / `cocoro_ghost/event_stream.py` / `cocoro_ghost/worker.py`
 - 自発行動の詳細設計: `docs/18_自発行動アーキテクチャ詳細設計.md`（実装順序/データ/ジョブ/API/責務分割の実装契約）
 - 自発行動の汎用エージェント委譲（実装前設計）: `docs/19_汎用エージェント委譲設計.md`（`agent_delegate` / `agent_jobs` / `agent_runner` / control API）
+- 人格中心化（会話と自発行動の実装前設計）: `docs/20_人格中心化（会話と自発行動）実装設計.md`（`autonomy.message` の人格発話化 / 会話選別・Deliberation材料選別の人格化 / interest state 構想）
 - 検索（思い出す）: `docs/04_検索（思い出す）.md` と `cocoro_ghost/memory/_chat_search_mixin.py`
 - 記憶更新（育てる）: `docs/05_記憶更新（育てる）.md` と `cocoro_ghost/worker.py` / `cocoro_ghost/worker_handlers.py` / `cocoro_ghost/worker_handlers_*.py`
 - DB/ストレージ（SQLite）: `docs/06_ストレージ（SQLite）.md` と `cocoro_ghost/db.py`
@@ -49,7 +50,7 @@
 - Web検索（インターネット）の**現行実装**は `/api/chat` の最終応答生成（L3）でのみ有効化可能（`llm_preset.reply_web_search_enabled`）: `docs/10_実行フロー.md` / `cocoro_ghost/llm_client.py`
 - 自発行動向けWeb検索は `/api/chat` と**別経路**で実装する（`web_access` Capability、混在禁止）: `docs/03_自発行動アーキテクチャ方針.md` / `docs/18_自発行動アーキテクチャ詳細設計.md`
 - token の正は `settings.db`（TOMLは初回の入口）: `docs/07_API.md`
-- `settings.db` は起動時に既知のスキーマ移行を行う（現行は `user_version=2 -> 3 -> 4`）: `cocoro_ghost/db.py`
+- `settings.db` / `memory DB` は起動時に既知のスキーマ移行を行う（版ごとの実装は `cocoro_ghost/db_migrations.py` を参照）: `cocoro_ghost/db.py`
 - `/api/chat` は単一ユーザー前提で **同時に1本**へ制限する: `cocoro_ghost/memory/_chat_mixin.py`
 - `state` は `events` からの非同期更新（WritePlan）で育てる（直接入力しない）: `docs/03_自発行動アーキテクチャ方針.md` / `docs/05_記憶更新（育てる）.md`
 - `config/setting.toml` は **未知キーを許可しない**（起動時に弾く）: `cocoro_ghost/config.py`
