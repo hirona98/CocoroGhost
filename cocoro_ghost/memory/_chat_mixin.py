@@ -258,6 +258,7 @@ def _build_rule_based_retrieval_plan(
     *,
     user_input: str,
     max_candidates: int,
+    persona_focus_hint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     ルールベースでRetrievalPlan（SearchPlan互換のdict）を作る。
@@ -322,7 +323,73 @@ def _build_rule_based_retrieval_plan(
         "diversify": {"by": ["life_stage", "about_year_bucket"], "per_bucket": 5},
         "limits": {"max_candidates": int(max_candidates), "max_selected": 12},
     }
+    # --- 人格の関心軸ヒント（ルールベース計画のまま補助情報として載せる） ---
+    if isinstance(persona_focus_hint, dict) and persona_focus_hint:
+        plan_obj["persona_focus_hint"] = dict(persona_focus_hint)
     return plan_obj
+
+
+def _build_persona_focus_hint(
+    *,
+    confirmed_preferences_snapshot: dict[str, Any] | None,
+    long_mood_state_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    RetrievalPlan/選別向けの PersonaFocusHint を作る。
+
+    方針:
+        - 文字列比較で persona 文を解析しない。
+        - 構造化済みの confirmed preferences / mood snapshot を使う。
+    """
+
+    # --- confirmed preferences を安全に読む ---
+    prefs = confirmed_preferences_snapshot if isinstance(confirmed_preferences_snapshot, dict) else {}
+    topic_like = []
+    style_like = []
+    style_dislike = []
+    try:
+        topic_like = list((prefs.get("topic") or {}).get("like") or [])
+        style_like = list((prefs.get("style") or {}).get("like") or [])
+        style_dislike = list((prefs.get("style") or {}).get("dislike") or [])
+    except Exception:  # noqa: BLE001
+        topic_like = []
+        style_like = []
+        style_dislike = []
+
+    # --- ラベルだけを短い配列へ正規化（subject を優先） ---
+    def _subjects(rows: list[Any], *, cap: int = 6) -> list[str]:
+        out: list[str] = []
+        for row in list(rows or []):
+            if not isinstance(row, dict):
+                continue
+            subject = str(row.get("subject") or "").strip()
+            if not subject:
+                continue
+            out.append(subject[:80])
+            if len(out) >= int(cap):
+                break
+        return out
+
+    # --- mood は構造情報のまま補助ヒントに載せる（意味判定はしない） ---
+    mood_vad_hint = None
+    if isinstance(long_mood_state_snapshot, dict):
+        vad_obj = long_mood_state_snapshot.get("vad")
+        if isinstance(vad_obj, dict):
+            try:
+                mood_vad_hint = {
+                    "v": float(vad_obj.get("v")),
+                    "a": float(vad_obj.get("a")),
+                    "d": float(vad_obj.get("d")),
+                }
+            except Exception:  # noqa: BLE001
+                mood_vad_hint = None
+
+    return {
+        "topic_bias": _subjects(topic_like),
+        "style_bias": _subjects(style_like),
+        "avoid_bias": _subjects(style_dislike),
+        "mood_vad_hint": mood_vad_hint,
+    }
 
 
 def _build_compact_candidates_for_selection(
@@ -1195,10 +1262,25 @@ class _ChatMemoryMixin:
         # - SearchPlan（LLM）を毎ターン呼ぶと、SSE開始前の同期待ちが増えるため廃止する。
         # - 代わりに、ユーザー入力から年/学生区分などの「明示ヒント」だけを軽く抽出して plan を作る。
         # - 上限（max_candidates）はTOML値を基準とし、実装側でも強制される。
+        # --- 会話選別/返答で共通に使う人格スナップショットを先に取得する ---
+        long_mood_state_snapshot = self._load_long_mood_state_snapshot(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            now_ts=int(now_ts),
+        )
+        confirmed_preferences_snapshot = self._load_confirmed_preferences_snapshot(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+        )
+        persona_focus_hint = _build_persona_focus_hint(
+            confirmed_preferences_snapshot=confirmed_preferences_snapshot,
+            long_mood_state_snapshot=long_mood_state_snapshot,
+        )
         toml_max_candidates = int(self.config_store.toml_config.retrieval_max_candidates)
         plan_obj = _build_rule_based_retrieval_plan(
             user_input=str(input_text or ""),
             max_candidates=int(toml_max_candidates),
+            persona_focus_hint=dict(persona_focus_hint or {}),
         )
 
         # --- 5) 候補収集（取りこぼし防止優先・可能なものは並列） ---
@@ -1229,6 +1311,14 @@ class _ChatMemoryMixin:
                     "user_input": input_text,
                     "image_summaries": list(non_empty_summaries),
                     "plan": plan_obj,
+                    "persona_selection_context": {
+                        "second_person_label": str(cfg.second_person_label or "").strip() or "あなた",
+                        "persona_text": str(cfg.persona_text or ""),
+                        "addon_text": str(cfg.addon_text or ""),
+                        "long_mood_state": long_mood_state_snapshot,
+                        "confirmed_preferences": confirmed_preferences_snapshot,
+                        "interest_state": None,
+                    },
                     "candidates": compact_candidates,
                 }
             )
@@ -1299,15 +1389,8 @@ class _ChatMemoryMixin:
                     ),
                     "gap_text": gap_text,
                 },
-                "LongMoodState": self._load_long_mood_state_snapshot(
-                    embedding_preset_id=embedding_preset_id,
-                    embedding_dimension=embedding_dimension,
-                    now_ts=int(now_ts),
-                ),
-                "ConfirmedPreferences": self._load_confirmed_preferences_snapshot(
-                    embedding_preset_id=embedding_preset_id,
-                    embedding_dimension=embedding_dimension,
-                ),
+                "LongMoodState": long_mood_state_snapshot,
+                "ConfirmedPreferences": confirmed_preferences_snapshot,
                 "SearchResultPack": self._inflate_search_result_pack(
                     embedding_preset_id=embedding_preset_id,
                     embedding_dimension=embedding_dimension,
