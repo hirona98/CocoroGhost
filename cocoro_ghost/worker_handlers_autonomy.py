@@ -608,6 +608,261 @@ def _load_confirmed_preferences_snapshot_for_deliberation(db) -> dict[str, Any]:
     return out
 
 
+def _build_persona_deliberation_focus(
+    *,
+    trigger: AutonomyTrigger,
+    mood_snapshot: dict[str, Any],
+    confirmed_preferences: dict[str, Any],
+    runtime_blackboard_snapshot: dict[str, Any],
+    active_goal_ids: list[str],
+) -> dict[str, Any]:
+    """
+    Deliberation 材料選別用のフォーカス情報を構築する。
+
+    方針:
+        - 自然言語本文の意味推定は行わない。
+        - 構造化済みの mood/preferences/runtime 情報だけで、並び順と件数のヒントを作る。
+    """
+
+    # --- runtime の短期継続状態 ---
+    active_intent_ids_raw = runtime_blackboard_snapshot.get("active_intent_ids")
+    active_intent_ids: list[str] = []
+    if isinstance(active_intent_ids_raw, list):
+        seen_intent_ids: set[str] = set()
+        for x in list(active_intent_ids_raw):
+            sid = str(x or "").strip()
+            if not sid or sid in seen_intent_ids:
+                continue
+            seen_intent_ids.add(sid)
+            active_intent_ids.append(sid)
+
+    trigger_counts = runtime_blackboard_snapshot.get("trigger_counts")
+    if not isinstance(trigger_counts, dict):
+        trigger_counts = {}
+    intent_counts = runtime_blackboard_snapshot.get("intent_counts")
+    if not isinstance(intent_counts, dict):
+        intent_counts = {}
+
+    # --- runtime attention_targets（存在すれば使う / 無ければ空） ---
+    attention_targets_raw = runtime_blackboard_snapshot.get("attention_targets")
+    attention_targets: list[dict[str, Any]] = []
+    if isinstance(attention_targets_raw, list):
+        for item in list(attention_targets_raw):
+            if not isinstance(item, dict):
+                continue
+            attention_targets.append(dict(item))
+
+    priority_state_kinds: list[str] = []
+    for item in attention_targets:
+        t = str(item.get("type") or "").strip()
+        v = str(item.get("value") or "").strip()
+        if t not in {"state_kind", "kind"}:
+            continue
+        if not v or v in priority_state_kinds:
+            continue
+        priority_state_kinds.append(v)
+        if len(priority_state_kinds) >= 6:
+            break
+
+    # --- mood の構造値（VAD平均） ---
+    recent_vad = mood_snapshot.get("recent_vad_average")
+    if not isinstance(recent_vad, dict):
+        recent_vad = {}
+    vad_v = float(recent_vad.get("v") or 0.0)
+    vad_a = float(recent_vad.get("a") or 0.0)
+    vad_d = float(recent_vad.get("d") or 0.0)
+
+    # --- preferences の構造量（意味推定せず件数だけ使う） ---
+    topic_like_count = len(list(((confirmed_preferences.get("topic") or {}).get("like") or []))) if isinstance(confirmed_preferences, dict) else 0
+    topic_dislike_count = len(list(((confirmed_preferences.get("topic") or {}).get("dislike") or []))) if isinstance(confirmed_preferences, dict) else 0
+    style_like_count = len(list(((confirmed_preferences.get("style") or {}).get("like") or []))) if isinstance(confirmed_preferences, dict) else 0
+
+    # --- interaction mode を構造値から推定（文言比較なし） ---
+    interaction_mode_hint = "observe"
+    if len(active_intent_ids) >= 2:
+        interaction_mode_hint = "support"
+    elif vad_a >= 0.45 and vad_v >= -0.2:
+        interaction_mode_hint = "explore"
+    elif vad_a <= -0.3 and vad_d <= -0.2:
+        interaction_mode_hint = "wait"
+
+    # --- 継続重視度 ---
+    continuity_bias = "high" if active_intent_ids else "medium"
+    if not active_intent_ids and str(trigger.trigger_type or "").strip() in {"heartbeat", "time_routine"}:
+        continuity_bias = "low"
+
+    # --- Deliberation 入力件数（収集後の最終件数） ---
+    limits = {
+        "events": 24,
+        "states": 24,
+        "goals": 8,
+        "intents": 8,
+    }
+    if continuity_bias == "high":
+        limits["events"] = 18
+        limits["states"] = 20
+        limits["goals"] = 10
+        limits["intents"] = 12
+    if interaction_mode_hint == "wait":
+        limits["events"] = min(int(limits["events"]), 16)
+        limits["states"] = min(int(limits["states"]), 20)
+    if interaction_mode_hint == "explore" and topic_like_count > 0:
+        limits["events"] = min(int(limits["events"]) + 4, 28)
+        limits["states"] = min(int(limits["states"]) + 2, 26)
+
+    # --- fetch件数（再並び替え用に少し多めに取る） ---
+    fetch_limits = {
+        "events": max(int(limits["events"]) + 12, 24),
+        "states": max(int(limits["states"]) + 12, 24),
+        "goals": max(int(limits["goals"]) + 4, 8),
+        "intents": max(int(limits["intents"]) + 4, 8),
+    }
+
+    return {
+        "interaction_mode_hint": str(interaction_mode_hint),
+        "continuity_bias": str(continuity_bias),
+        "active_intent_ids": list(active_intent_ids),
+        "active_goal_ids": list(active_goal_ids),
+        "priority_state_kinds": list(priority_state_kinds),
+        "preferences_bias": {
+            "topic_like_count": int(topic_like_count),
+            "topic_dislike_count": int(topic_dislike_count),
+            "style_like_count": int(style_like_count),
+        },
+        "mood_vad": {"v": float(vad_v), "a": float(vad_a), "d": float(vad_d)},
+        "runtime_counts": {
+            "trigger_counts": dict(trigger_counts),
+            "intent_counts": dict(intent_counts),
+        },
+        "limits": {
+            "final": dict(limits),
+            "fetch": dict(fetch_limits),
+        },
+    }
+
+
+def _reorder_deliberation_intents(intents: list[dict[str, Any]], *, focus: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Deliberation 用 intents を構造情報ベースで再整列する。
+    """
+
+    # --- active intent を先頭へ寄せる ---
+    active_intent_ids = {str(x) for x in list(focus.get("active_intent_ids") or [])}
+    status_rank = {"running": 0, "queued": 1, "blocked": 2}
+
+    def _sort_key(it: dict[str, Any]) -> tuple[int, int, int, str]:
+        iid = str(it.get("intent_id") or "")
+        status = str(it.get("status") or "")
+        priority = int(it.get("priority") or 0)
+        scheduled_at = it.get("scheduled_at")
+        scheduled_rank = int(scheduled_at) if scheduled_at is not None else 2**31 - 1
+        return (
+            0 if iid in active_intent_ids else 1,
+            int(status_rank.get(status, 9)),
+            -int(priority),
+            f"{scheduled_rank:010d}",
+        )
+
+    return list(sorted(list(intents or []), key=_sort_key))
+
+
+def _reorder_deliberation_goals(goals: list[dict[str, Any]], *, focus: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Deliberation 用 goals を構造情報ベースで再整列する。
+    """
+
+    # --- active intents が参照中の goal を優先 ---
+    active_goal_ids = {str(x) for x in list(focus.get("active_goal_ids") or []) if str(x or "").strip()}
+
+    def _sort_key(g: dict[str, Any]) -> tuple[int, int, str]:
+        gid = str(g.get("goal_id") or "")
+        prio = int(g.get("priority") or 0)
+        return (0 if gid in active_goal_ids else 1, -int(prio), gid)
+
+    return list(sorted(list(goals or []), key=_sort_key))
+
+
+def _reorder_deliberation_states(states: list[dict[str, Any]], *, focus: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Deliberation 用 states を構造情報ベースで再整列する。
+    """
+
+    # --- runtime attention_targets による state.kind 優先と、mood重複回避 ---
+    priority_state_kinds = {str(x) for x in list(focus.get("priority_state_kinds") or []) if str(x or "").strip()}
+
+    def _sort_key(s: dict[str, Any]) -> tuple[int, int, int]:
+        kind = str(s.get("kind") or "")
+        last_confirmed_at = int(s.get("last_confirmed_at") or 0)
+        state_id = int(s.get("state_id") or 0)
+        is_mood_dup = 1 if kind == "long_mood_state" else 0
+        is_priority_kind = 0 if kind in priority_state_kinds else 1
+        return (is_mood_dup, is_priority_kind, -int(last_confirmed_at or state_id))
+
+    return list(sorted(list(states or []), key=_sort_key))
+
+
+def _reorder_deliberation_events(
+    events: list[dict[str, Any]],
+    *,
+    trigger_source_event_id: int | None,
+    focus: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """
+    Deliberation 用 events を構造情報ベースで再整列する。
+    """
+
+    # --- トリガ起点イベントを最優先し、継続中は自発行動の結果/発話を少し優先 ---
+    continuity_bias = str(focus.get("continuity_bias") or "medium")
+    source_rank_when_continuity = {
+        "autonomy_message": 0,
+        "action_result": 1,
+        "vision_capture_response": 2,
+    }
+
+    def _sort_key(e: dict[str, Any]) -> tuple[int, int, int]:
+        event_id = int(e.get("event_id") or 0)
+        source = str(e.get("source") or "")
+        created_at = int(e.get("created_at") or 0)
+        trigger_match = 0 if (trigger_source_event_id is not None and int(event_id) == int(trigger_source_event_id)) else 1
+        continuity_rank = 9
+        if continuity_bias == "high":
+            continuity_rank = int(source_rank_when_continuity.get(source, 9))
+        return (trigger_match, continuity_rank, -int(created_at or event_id))
+
+    return list(sorted(list(events or []), key=_sort_key))
+
+
+def _trim_deliberation_materials(
+    *,
+    event_rows: list[dict[str, Any]],
+    state_rows: list[dict[str, Any]],
+    goals: list[dict[str, Any]],
+    intents: list[dict[str, Any]],
+    focus: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    focus の最終件数に合わせて Deliberation 材料を切り詰める。
+    """
+
+    # --- final 件数は focus で決める（構造情報ベース） ---
+    limits = focus.get("limits") if isinstance(focus, dict) else {}
+    final_limits = limits.get("final") if isinstance(limits, dict) else {}
+    if not isinstance(final_limits, dict):
+        final_limits = {}
+
+    event_limit = int(final_limits.get("events") or 24)
+    state_limit = int(final_limits.get("states") or 24)
+    goal_limit = int(final_limits.get("goals") or 8)
+    intent_limit = int(final_limits.get("intents") or 8)
+
+    return (
+        list(event_rows or [])[:event_limit],
+        list(state_rows or [])[:state_limit],
+        list(goals or [])[:goal_limit],
+        list(intents or [])[:intent_limit],
+    )
+
+
 def _maybe_create_goal_from_decision(
     *,
     db,
@@ -1111,13 +1366,68 @@ def _collect_deliberation_input(
 ) -> dict[str, Any]:
     """DeliberationContextPack 相当の入力を構築する。"""
 
+    # --- trigger payload（早めに読む: focus構築にも使う） ---
+    trigger_payload = common_utils.json_loads_maybe(str(trigger.payload_json or ""))
+    if not isinstance(trigger_payload, dict):
+        trigger_payload = {}
+
+    # --- 人格判断の材料（構造化済みの好み/気分/短期ランタイム状態） ---
+    mood_snapshot = _load_recent_mood_snapshot(db)
+    confirmed_preferences = _load_confirmed_preferences_snapshot_for_deliberation(db)
+    runtime_blackboard_snapshot = get_runtime_blackboard().snapshot()
+    if not isinstance(runtime_blackboard_snapshot, dict):
+        runtime_blackboard_snapshot = {}
+
+    # --- intents は goals優先順にも使うので先に取得しておく ---
+    intent_rows = (
+        db.query(Intent)
+        .filter(Intent.status.in_(["queued", "running", "blocked"]))
+        .order_by(Intent.updated_at.desc(), Intent.created_at.desc())
+        .limit(16)
+        .all()
+    )
+    intents = [
+        {
+            "intent_id": str(x.intent_id),
+            "decision_id": str(x.decision_id),
+            "goal_id": (str(x.goal_id) if x.goal_id is not None else None),
+            "action_type": str(x.action_type),
+            "status": str(x.status),
+            "priority": int(x.priority),
+            "scheduled_at": (int(x.scheduled_at) if x.scheduled_at is not None else None),
+            "blocked_reason": (str(x.blocked_reason) if x.blocked_reason is not None else None),
+        }
+        for x in intent_rows
+    ]
+    active_goal_ids = []
+    for it in list(intents or []):
+        gid = str(it.get("goal_id") or "").strip()
+        if gid and gid not in active_goal_ids:
+            active_goal_ids.append(gid)
+
+    # --- Deliberation 材料選別用の focus（構造情報ベース） ---
+    persona_deliberation_focus = _build_persona_deliberation_focus(
+        trigger=trigger,
+        mood_snapshot=mood_snapshot,
+        confirmed_preferences=confirmed_preferences,
+        runtime_blackboard_snapshot=runtime_blackboard_snapshot,
+        active_goal_ids=active_goal_ids,
+    )
+    focus_limits = persona_deliberation_focus.get("limits") if isinstance(persona_deliberation_focus, dict) else {}
+    fetch_limits = focus_limits.get("fetch") if isinstance(focus_limits, dict) else {}
+    if not isinstance(fetch_limits, dict):
+        fetch_limits = {}
+    fetch_events_limit = int(fetch_limits.get("events") or 24)
+    fetch_states_limit = int(fetch_limits.get("states") or 24)
+    fetch_goals_limit = int(fetch_limits.get("goals") or 8)
+
     # --- events（会話想起ノイズ制御: deliberation_decision は常時除外） ---
     recent_events = (
         db.query(Event)
         .filter(Event.searchable == 1)
         .filter(Event.source != "deliberation_decision")
         .order_by(Event.event_id.desc())
-        .limit(24)
+        .limit(fetch_events_limit)
         .all()
     )
     event_rows = [
@@ -1136,7 +1446,7 @@ def _collect_deliberation_input(
         db.query(State)
         .filter(State.searchable == 1)
         .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
-        .limit(24)
+        .limit(fetch_states_limit)
         .all()
     )
     state_rows = [
@@ -1156,12 +1466,13 @@ def _collect_deliberation_input(
         text(
             """
             SELECT goal_id, title, goal_type, status, priority, target_condition_json, horizon
-              FROM goals
+             FROM goals
              WHERE status = 'active'
              ORDER BY priority DESC, updated_at DESC
-             LIMIT 8
+             LIMIT :row_limit
             """
-        )
+        ),
+        {"row_limit": int(fetch_goals_limit)},
     ).fetchall()
     goals = [
         {
@@ -1175,38 +1486,22 @@ def _collect_deliberation_input(
         }
         for r in goals_rows
     ]
-
-    # --- intents ---
-    intent_rows = (
-        db.query(Intent)
-        .filter(Intent.status.in_(["queued", "running", "blocked"]))
-        .order_by(Intent.updated_at.desc(), Intent.created_at.desc())
-        .limit(8)
-        .all()
+    # --- 材料を構造情報ベースで再整列して最終件数へ絞る ---
+    event_rows = _reorder_deliberation_events(
+        event_rows,
+        trigger_source_event_id=(int(trigger.source_event_id) if trigger.source_event_id is not None else None),
+        focus=persona_deliberation_focus,
     )
-    intents = [
-        {
-            "intent_id": str(x.intent_id),
-            "decision_id": str(x.decision_id),
-            "action_type": str(x.action_type),
-            "status": str(x.status),
-            "priority": int(x.priority),
-            "scheduled_at": (int(x.scheduled_at) if x.scheduled_at is not None else None),
-            "blocked_reason": (str(x.blocked_reason) if x.blocked_reason is not None else None),
-        }
-        for x in intent_rows
-    ]
-
-    # --- trigger payload ---
-    trigger_payload = common_utils.json_loads_maybe(str(trigger.payload_json or ""))
-    if not isinstance(trigger_payload, dict):
-        trigger_payload = {}
-
-    # --- 人格判断の材料（構造化済みの好み/短期ランタイム状態） ---
-    confirmed_preferences = _load_confirmed_preferences_snapshot_for_deliberation(db)
-    runtime_blackboard_snapshot = get_runtime_blackboard().snapshot()
-    if not isinstance(runtime_blackboard_snapshot, dict):
-        runtime_blackboard_snapshot = {}
+    state_rows = _reorder_deliberation_states(state_rows, focus=persona_deliberation_focus)
+    goals = _reorder_deliberation_goals(goals, focus=persona_deliberation_focus)
+    intents = _reorder_deliberation_intents(intents, focus=persona_deliberation_focus)
+    event_rows, state_rows, goals, intents = _trim_deliberation_materials(
+        event_rows=event_rows,
+        state_rows=state_rows,
+        goals=goals,
+        intents=intents,
+        focus=persona_deliberation_focus,
+    )
 
     # --- Deliberation入力には内部追跡用UUIDを出さない（evidence IDsとの混同を防ぐ） ---
     pt = str(persona_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
@@ -1229,9 +1524,10 @@ def _collect_deliberation_input(
         "states": state_rows,
         "goals": goals,
         "intents": intents,
-        "mood": _load_recent_mood_snapshot(db),
+        "mood": mood_snapshot,
         "confirmed_preferences": confirmed_preferences,
         "runtime_blackboard": runtime_blackboard_snapshot,
+        "persona_deliberation_focus": persona_deliberation_focus,
         "capabilities": [
             {
                 "capability": "vision_perception",
