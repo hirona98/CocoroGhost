@@ -13,13 +13,14 @@ from typing import Any
 from cocoro_ghost.common_utils import json_dumps
 
 
-def write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> str:
+def write_plan_system_prompt(*, persona_text: str, addon_text: str, second_person_label: str) -> str:
     """
     WritePlan生成用のsystem promptを返す（ペルソナ注入あり）。
 
     Args:
         persona_text: ペルソナ本文（ユーザー編集対象）。
-            NOTE: addon_text は会話本文向けの追加指示なので、WritePlan（内部JSON生成）には注入しない。
+        addon_text: 追加プロンプト（ユーザー編集対象）。
+            NOTE: WritePlan（内部JSON生成）でも、関心軸/価値観の影響を受けるため参照する。
         second_person_label: 二人称の呼称（例: マスター / あなた / 君 / ◯◯さん）。
     """
 
@@ -31,6 +32,7 @@ def write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> 
     # - WritePlanは内部用のJSONだが、state_updates / event_affect の文章は人格の口調に揃える。
     # - 行末（CRLF/LF）の揺れは暗黙的キャッシュの阻害になり得るため、ここで正規化する。
     pt = str(persona_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    at = str(addon_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
 
     # --- ベースプロンプト（スキーマ＋品質要件） ---
     base = "\n".join(
@@ -144,17 +146,21 @@ def write_plan_system_prompt(*, persona_text: str, second_person_label: str) -> 
 
     # --- ペルソナ注入 ---
     # NOTE:
-    # - WritePlan はユーザーに見せないが、人格の「考え方/口調」を揃えるため、ペルソナ本文を最優先で参照させる。
+    # - WritePlan はユーザーに見せないが、人格の「考え方/口調/関心」を揃えるため、persona/addon を最優先で参照させる。
     persona = "\n".join(
         [
             "",
             "人格設定（最優先）:",
-            "- 以下の persona_text は、文章の口調・語彙・価値観の参考として使う。",
+            "- 以下の persona_text / addon_text は、文章の口調・語彙・価値観・関心の参考として使う。",
             "- ただし、会話用の装飾タグ（例: [face:Joy]）や会話の文字数制限などは WritePlan には適用しない。",
             "- persona_text に口調指定が無い場合は、自然な日本語の一人称で書く。",
             "",
             "<<<PERSONA_TEXT>>>",
             pt,
+            "<<<END>>>",
+            "",
+            "<<<ADDON_TEXT>>>",
+            at,
             "<<<END>>>",
             "",
         ]

@@ -62,11 +62,11 @@ def _handle_generate_write_plan(
 
     # --- ランタイム設定（ペルソナ/呼称）を取得する ---
     # NOTE:
-    # - WritePlan は内部用だが、記憶（state_updates / event_affect）に残る文章は人格の口調に揃える。
-    # - 初期化順や例外の影響を避けるため、取れない場合は最小の既定値へフォールバックする。
+    # - WritePlan は内部用だが、記憶（state_updates / event_affect）に残る文章は人格の考え方/口調に揃える。
+    # - 無人格フォールバックは入れない。設定が読めない場合はそのまま失敗扱いにする。
     persona_text = ""
     addon_text = ""
-    second_person_label = "あなた"
+    second_person_label = ""
     try:
         from cocoro_ghost.config import get_config_store
 
@@ -74,10 +74,12 @@ def _handle_generate_write_plan(
         persona_text = str(getattr(cfg, "persona_text", "") or "")
         addon_text = str(getattr(cfg, "addon_text", "") or "")
         second_person_label = str(getattr(cfg, "second_person_label", "") or "").strip() or "あなた"
-    except Exception:  # noqa: BLE001
-        persona_text = ""
-        addon_text = ""
-        second_person_label = "あなた"
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"write_plan persona settings load failed: {e}") from e
+
+    # --- 人格設定が空なら、無人格で続行しない ---
+    if not str(persona_text).strip() and not str(addon_text).strip():
+        raise RuntimeError("write_plan persona settings are empty")
 
     # --- event + 周辺コンテキストを集める（過剰に重くしない） ---
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
@@ -334,6 +336,7 @@ def _handle_generate_write_plan(
     resp = llm_client.generate_json_response(
         system_prompt=prompt_builders.write_plan_system_prompt(
             persona_text=persona_text,
+            addon_text=addon_text,
             second_person_label=second_person_label,
         ),
         input_text=common_utils.json_dumps(input_obj),
