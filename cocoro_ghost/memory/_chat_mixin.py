@@ -333,6 +333,7 @@ def _build_persona_focus_hint(
     *,
     confirmed_preferences_snapshot: dict[str, Any] | None,
     long_mood_state_snapshot: dict[str, Any] | None,
+    persona_interest_state_snapshot: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """
     RetrievalPlan/選別向けの PersonaFocusHint を作る。
@@ -384,11 +385,32 @@ def _build_persona_focus_hint(
             except Exception:  # noqa: BLE001
                 mood_vad_hint = None
 
+    # --- persona_interest_state は「現在の関心ターゲット」として補助ヒントに載せる ---
+    interest_mode = None
+    interest_targets: list[str] = []
+    if isinstance(persona_interest_state_snapshot, dict):
+        interest_mode_raw = str(persona_interest_state_snapshot.get("interaction_mode") or "").strip()
+        interest_mode = str(interest_mode_raw) if interest_mode_raw else None
+        targets_raw = persona_interest_state_snapshot.get("attention_targets")
+        if isinstance(targets_raw, list):
+            for t in list(targets_raw):
+                if not isinstance(t, dict):
+                    continue
+                tt = str(t.get("type") or "").strip()
+                tv = str(t.get("value") or "").strip()
+                if not tt or not tv:
+                    continue
+                interest_targets.append(f"{tt}:{tv}"[:120])
+                if len(interest_targets) >= 8:
+                    break
+
     return {
         "topic_bias": _subjects(topic_like),
         "style_bias": _subjects(style_like),
         "avoid_bias": _subjects(style_dislike),
         "mood_vad_hint": mood_vad_hint,
+        "interest_mode_hint": interest_mode,
+        "interest_targets_hint": interest_targets,
     }
 
 
@@ -967,6 +989,75 @@ class _ChatMemoryMixin:
 
         return out
 
+    def _load_persona_interest_state_snapshot(
+        self, *, embedding_preset_id: str, embedding_dimension: int
+    ) -> dict[str, Any] | None:
+        """
+        persona_interest_state の最新スナップショットを返す。
+
+        目的:
+            - 会話の選別/返答で、現在の関心・注目の継続状態を参照できるようにする。
+            - 文字列比較ではなく構造化 payload を正として扱う。
+        """
+
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            st = (
+                db.query(State)
+                .filter(State.kind == "persona_interest_state")
+                .filter(State.searchable == 1)
+                .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+                .first()
+            )
+            if st is None:
+                return None
+
+            payload_obj = common_utils.json_loads_maybe(str(st.payload_json or ""))
+            if not isinstance(payload_obj, dict):
+                payload_obj = {}
+
+            attention_targets_out: list[dict[str, Any]] = []
+            attention_targets_raw = payload_obj.get("attention_targets")
+            if isinstance(attention_targets_raw, list):
+                for item in list(attention_targets_raw):
+                    if not isinstance(item, dict):
+                        continue
+                    target_type = str(item.get("type") or "").strip()
+                    value = str(item.get("value") or "").strip()
+                    if not target_type or not value:
+                        continue
+                    attention_targets_out.append(
+                        {
+                            "type": str(target_type),
+                            "value": str(value),
+                            "weight": float(item.get("weight") or 0.0),
+                            "updated_at": (
+                                format_iso8601_local(int(item.get("updated_at")))
+                                if item.get("updated_at") is not None and int(item.get("updated_at") or 0) > 0
+                                else None
+                            ),
+                        }
+                    )
+                    if len(attention_targets_out) >= 24:
+                        break
+
+            updated_from_event_ids = payload_obj.get("updated_from_event_ids")
+            if not isinstance(updated_from_event_ids, list):
+                updated_from_event_ids = []
+
+            return {
+                "state_id": int(st.state_id),
+                "kind": str(st.kind),
+                "body_text": str(st.body_text or ""),
+                "interaction_mode": str(payload_obj.get("interaction_mode") or "").strip() or None,
+                "attention_targets": attention_targets_out,
+                "updated_from_event_ids": [
+                    int(x) for x in list(updated_from_event_ids) if isinstance(x, (int, float)) and int(x) > 0
+                ][:20],
+                "updated_from": (payload_obj.get("updated_from") if isinstance(payload_obj.get("updated_from"), dict) else None),
+                "confidence": float(st.confidence),
+                "last_confirmed_at": format_iso8601_local(int(st.last_confirmed_at)),
+            }
+
     def _llm_io_loggers(self) -> tuple[logging.Logger, logging.Logger]:
         """LLM I/O ログの出力先ロガー（console/file）を返す。"""
         return (logging.getLogger("cocoro_ghost.llm_io.console"), logging.getLogger("cocoro_ghost.llm_io.file"))
@@ -1272,9 +1363,14 @@ class _ChatMemoryMixin:
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
         )
+        persona_interest_state_snapshot = self._load_persona_interest_state_snapshot(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+        )
         persona_focus_hint = _build_persona_focus_hint(
             confirmed_preferences_snapshot=confirmed_preferences_snapshot,
             long_mood_state_snapshot=long_mood_state_snapshot,
+            persona_interest_state_snapshot=persona_interest_state_snapshot,
         )
         toml_max_candidates = int(self.config_store.toml_config.retrieval_max_candidates)
         plan_obj = _build_rule_based_retrieval_plan(
@@ -1317,7 +1413,7 @@ class _ChatMemoryMixin:
                         "addon_text": str(cfg.addon_text or ""),
                         "long_mood_state": long_mood_state_snapshot,
                         "confirmed_preferences": confirmed_preferences_snapshot,
-                        "interest_state": None,
+                        "interest_state": persona_interest_state_snapshot,
                     },
                     "candidates": compact_candidates,
                 }
@@ -1391,6 +1487,7 @@ class _ChatMemoryMixin:
                 },
                 "LongMoodState": long_mood_state_snapshot,
                 "ConfirmedPreferences": confirmed_preferences_snapshot,
+                "PersonaInterestState": persona_interest_state_snapshot,
                 "SearchResultPack": self._inflate_search_result_pack(
                     embedding_preset_id=embedding_preset_id,
                     embedding_dimension=embedding_dimension,

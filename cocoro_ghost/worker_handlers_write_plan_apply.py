@@ -15,6 +15,7 @@ from sqlalchemy import func
 from cocoro_ghost import affect
 from cocoro_ghost import common_utils
 from cocoro_ghost import entity_utils
+from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.memory_models import (
     Event,
@@ -69,6 +70,8 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         moment_conf: float = 0.0
         moment_note: str | None = None
         baseline_text_candidate: str | None = None
+        persona_interest_pref_targets: list[dict[str, Any]] = []
+        persona_interest_updated_state_kinds: set[str] = set()
 
         ev = db.query(Event).filter(Event.event_id == int(event_id)).one_or_none()
         if ev is None:
@@ -278,6 +281,22 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             # NOTE: どの更新も現在の event_id を含める前提。欠けていてもここで補正する。
             if int(event_id) not in set(evidence_ids_norm):
                 evidence_ids_norm.append(int(event_id))
+
+            # --- persona_interest_state 用の注目ターゲット候補（構造情報のみ） ---
+            pref_target_weight = 0.55
+            if op == "confirm":
+                pref_target_weight = 0.95
+            elif op == "upsert_candidate":
+                pref_target_weight = 0.65
+            elif op == "revoke":
+                pref_target_weight = 0.40
+            persona_interest_pref_targets.append(
+                {
+                    "type": f"preference_{str(domain)}_{str(polarity)}",
+                    "value": str(subject_raw)[:120],
+                    "weight": float(pref_target_weight),
+                }
+            )
 
             # --- 対象行を取得（1行=現在状態。履歴は revisions） ---
             row = (
@@ -761,6 +780,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
 
                     # --- state entity索引（後で一括で付与） ---
                     if int(changed_state_id) > 0:
+                        persona_interest_updated_state_kinds.add(str(kind))
                         # --- state単位のentitiesを付与（delete→insert） ---
                         replace_state_entities(
                             state_id_in=int(changed_state_id),
@@ -801,6 +821,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         reason=str(reason),
                         evidence_event_ids=evidence_ids,
                     )
+                    persona_interest_updated_state_kinds.add(str(st.kind))
                     # --- state entity索引（後で一括で付与） ---
                     if str(st.kind) != "long_mood_state":
                         replace_state_entities(
@@ -842,6 +863,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         reason=str(reason),
                         evidence_event_ids=evidence_ids,
                     )
+                    persona_interest_updated_state_kinds.add(str(st.kind))
                     # --- state entity索引（後で一括で付与） ---
                     if str(st.kind) != "long_mood_state":
                         replace_state_entities(
@@ -958,6 +980,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
 
             # --- embedding job（long_mood_state も更新で育つので反映しておく） ---
             if int(changed_state_id) > 0:
+                persona_interest_updated_state_kinds.add("long_mood_state")
                 db.add(
                     Job(
                         kind="upsert_state_embedding",
@@ -970,6 +993,283 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         updated_at=int(now_ts),
                     )
                 )
+
+        # --- persona_interest_state の単一更新（構造情報ベース） ---
+        # NOTE:
+        # - 文字列比較で「意味」を推定しない。
+        # - event/entities/preferences/state更新/client_context の構造情報だけで関心ターゲットを組み立てる。
+        # - long_mood_state と同様に単一stateとして育てる。
+        persona_interest_targets: list[dict[str, Any]] = []
+
+        # --- event source は常に軽く残す（直近の関心流れを見るため） ---
+        persona_interest_targets.append(
+            {
+                "type": "event_source",
+                "value": str(ev.source or ""),
+                "weight": 0.40,
+            }
+        )
+
+        # --- event annotations の entities を関心ターゲットへ反映 ---
+        for ent in list(entities_norm or []):
+            ent_type = str(ent.get("type") or "").strip()
+            ent_name = str(ent.get("name") or "").strip()
+            if not ent_type or not ent_name:
+                continue
+            ent_conf = float(ent.get("confidence") or 0.0)
+            persona_interest_targets.append(
+                {
+                    "type": f"entity_{ent_type}",
+                    "value": str(ent_name)[:120],
+                    "weight": float(max(0.35, min(1.0, 0.55 + 0.35 * ent_conf))),
+                }
+            )
+
+        # --- preference 更新の注目ターゲット（confirm/candidate/revoke を構造で区別） ---
+        for item in list(persona_interest_pref_targets or []):
+            if not isinstance(item, dict):
+                continue
+            persona_interest_targets.append(
+                {
+                    "type": str(item.get("type") or ""),
+                    "value": str(item.get("value") or "")[:120],
+                    "weight": float(item.get("weight") or 0.0),
+                }
+            )
+
+        # --- 今回更新した state.kind を注目ターゲットへ反映 ---
+        for state_kind in sorted({str(x or "").strip() for x in list(persona_interest_updated_state_kinds or set()) if str(x or "").strip()}):
+            persona_interest_targets.append(
+                {
+                    "type": "state_kind",
+                    "value": str(state_kind),
+                    "weight": 0.50 if str(state_kind) != "long_mood_state" else 0.35,
+                }
+            )
+
+        # --- action_result 系イベントは client_context の構造情報を追加で使う ---
+        client_ctx_obj = common_utils.json_loads_maybe(str(ev.client_context_json or ""))
+        if isinstance(client_ctx_obj, dict):
+            action_type_ctx = str(client_ctx_obj.get("action_type") or "").strip()
+            capability_ctx = str(client_ctx_obj.get("capability") or "").strip()
+            result_status_ctx = str(client_ctx_obj.get("result_status") or "").strip()
+            if action_type_ctx:
+                persona_interest_targets.append(
+                    {
+                        "type": "action_type",
+                        "value": str(action_type_ctx),
+                        "weight": 0.75 if result_status_ctx != "failed" else 0.55,
+                    }
+                )
+            if capability_ctx:
+                persona_interest_targets.append(
+                    {
+                        "type": "capability",
+                        "value": str(capability_ctx),
+                        "weight": 0.65 if result_status_ctx != "failed" else 0.45,
+                    }
+                )
+
+        # --- ターゲットを dedupe + weight 集約して上位へ圧縮 ---
+        persona_interest_map: dict[tuple[str, str], dict[str, Any]] = {}
+        for item in list(persona_interest_targets or []):
+            if not isinstance(item, dict):
+                continue
+            target_type = str(item.get("type") or "").strip()
+            target_value = str(item.get("value") or "").strip()
+            if not target_type or not target_value:
+                continue
+            weight = float(item.get("weight") or 0.0)
+            key = (target_type, target_value)
+            prev = persona_interest_map.get(key)
+            if prev is None:
+                persona_interest_map[key] = {
+                    "type": str(target_type),
+                    "value": str(target_value),
+                    "weight": float(weight),
+                }
+            else:
+                prev["weight"] = float(max(float(prev.get("weight") or 0.0), float(weight)))
+
+        attention_targets_sorted = list(persona_interest_map.values())
+        attention_targets_sorted.sort(
+            key=lambda x: (
+                -float(x.get("weight") or 0.0),
+                str(x.get("type") or ""),
+                str(x.get("value") or ""),
+            )
+        )
+        attention_targets_sorted = attention_targets_sorted[:24]
+
+        # --- interaction_mode を構造値から推定（自然言語意味推定なし） ---
+        interaction_mode = "observe"
+        if moment_vad is not None:
+            v = float(moment_vad.get("v") or 0.0)
+            a_val = float(moment_vad.get("a") or 0.0)
+            d_val = float(moment_vad.get("d") or 0.0)
+            if a_val >= 0.45 and v >= -0.2:
+                interaction_mode = "explore"
+            elif a_val <= -0.3 and d_val <= -0.2:
+                interaction_mode = "wait"
+        if any(str(t.get("type") or "") == "action_type" and str(t.get("value") or "") in {"web_research", "agent_delegate"} for t in attention_targets_sorted):
+            if interaction_mode == "observe":
+                interaction_mode = "explore"
+
+        # --- 既存 persona_interest_state を読む（単一前提） ---
+        persona_interest_state = (
+            db.query(State)
+            .filter(State.kind == "persona_interest_state")
+            .filter(State.searchable == 1)
+            .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+            .first()
+        )
+
+        prev_interest_payload = (
+            common_utils.json_loads_maybe(str(persona_interest_state.payload_json or ""))
+            if persona_interest_state is not None
+            else None
+        )
+        prev_updated_from_event_ids = []
+        if isinstance(prev_interest_payload, dict) and isinstance(prev_interest_payload.get("updated_from_event_ids"), list):
+            prev_updated_from_event_ids = [int(x) for x in list(prev_interest_payload.get("updated_from_event_ids") or []) if isinstance(x, (int, float)) and int(x) > 0]
+        merged_updated_from_event_ids = []
+        seen_event_ids: set[int] = set()
+        for x in list(prev_updated_from_event_ids) + [int(event_id)]:
+            i = int(x or 0)
+            if i <= 0 or i in seen_event_ids:
+                continue
+            seen_event_ids.add(i)
+            merged_updated_from_event_ids.append(i)
+        merged_updated_from_event_ids = merged_updated_from_event_ids[-20:]
+
+        persona_interest_payload = {
+            "attention_targets": [
+                {
+                    "type": str(t.get("type") or ""),
+                    "value": str(t.get("value") or ""),
+                    "weight": float(t.get("weight") or 0.0),
+                    "updated_at": int(now_ts),
+                }
+                for t in list(attention_targets_sorted)
+            ],
+            "interaction_mode": str(interaction_mode),
+            "updated_from_event_ids": [int(x) for x in merged_updated_from_event_ids],
+            "updated_from": {
+                "event_id": int(event_id),
+                "event_source": str(ev.source or ""),
+                "action_type": (
+                    str(client_ctx_obj.get("action_type") or "").strip()
+                    if isinstance(client_ctx_obj, dict)
+                    else ""
+                ),
+                "capability": (
+                    str(client_ctx_obj.get("capability") or "").strip()
+                    if isinstance(client_ctx_obj, dict)
+                    else ""
+                ),
+                "result_status": (
+                    str(client_ctx_obj.get("result_status") or "").strip()
+                    if isinstance(client_ctx_obj, dict)
+                    else ""
+                ),
+            },
+        }
+
+        # --- body_text は検索/人間可読の最低限（意味推定ではなく構造の要約） ---
+        top_labels = [
+            f"{str(t.get('type') or '')}:{str(t.get('value') or '')}"
+            for t in list(attention_targets_sorted[:5])
+            if str(t.get("type") or "").strip() and str(t.get("value") or "").strip()
+        ]
+        persona_interest_body_text = (
+            f"現在の関心状態（{str(interaction_mode)}）: "
+            + (", ".join(top_labels) if top_labels else "（ターゲットなし）")
+        )[:800]
+
+        persona_interest_payload_json = common_utils.json_dumps(persona_interest_payload)
+        persona_interest_changed_state_id = 0
+        if persona_interest_state is None:
+            st_interest = State(
+                kind="persona_interest_state",
+                body_text=str(persona_interest_body_text),
+                payload_json=str(persona_interest_payload_json),
+                last_confirmed_at=int(base_ts),
+                confidence=0.85,
+                searchable=1,
+                valid_from_ts=None,
+                valid_to_ts=None,
+                created_at=int(base_ts),
+                updated_at=int(now_ts),
+            )
+            db.add(st_interest)
+            db.flush()
+            add_revision(
+                entity_type="state",
+                entity_id=int(st_interest.state_id),
+                before=None,
+                after=_state_row_to_json(st_interest),
+                reason="persona_interest_state を更新した",
+                evidence_event_ids=[int(event_id)],
+            )
+            persona_interest_changed_state_id = int(st_interest.state_id)
+        else:
+            before = _state_row_to_json(persona_interest_state)
+            same_payload = str(persona_interest_state.payload_json or "") == str(persona_interest_payload_json)
+            same_body = str(persona_interest_state.body_text or "") == str(persona_interest_body_text)
+            same_lca = int(persona_interest_state.last_confirmed_at or 0) == int(base_ts)
+            if not (same_payload and same_body and same_lca):
+                persona_interest_state.kind = "persona_interest_state"
+                persona_interest_state.body_text = str(persona_interest_body_text)
+                persona_interest_state.payload_json = str(persona_interest_payload_json)
+                persona_interest_state.last_confirmed_at = int(base_ts)
+                persona_interest_state.confidence = 0.85
+                persona_interest_state.valid_from_ts = None
+                persona_interest_state.valid_to_ts = None
+                persona_interest_state.searchable = 1
+                persona_interest_state.updated_at = int(now_ts)
+                db.add(persona_interest_state)
+                db.flush()
+                add_revision(
+                    entity_type="state",
+                    entity_id=int(persona_interest_state.state_id),
+                    before=before,
+                    after=_state_row_to_json(persona_interest_state),
+                    reason="persona_interest_state を更新した",
+                    evidence_event_ids=[int(event_id)],
+                )
+                persona_interest_changed_state_id = int(persona_interest_state.state_id)
+
+        # --- entity 索引は今回 event の entities を再利用（内部状態の関心文脈検索用） ---
+        if int(persona_interest_changed_state_id) > 0:
+            replace_state_entities(
+                state_id_in=int(persona_interest_changed_state_id),
+                entities_norm_in=list(entities_norm),
+            )
+            db.add(
+                Job(
+                    kind="upsert_state_embedding",
+                    payload_json=common_utils.json_dumps({"state_id": int(persona_interest_changed_state_id)}),
+                    status=int(_JOB_PENDING),
+                    run_after=int(now_ts),
+                    tries=0,
+                    last_error=None,
+                    created_at=int(now_ts),
+                    updated_at=int(now_ts),
+                )
+            )
+
+        # --- RAM blackboard の短期注目状態へも反映（次回 Deliberation の材料選別へ即時反映） ---
+        get_runtime_blackboard().merge_attention_targets(
+            items=[
+                {
+                    "type": str(t.get("type") or ""),
+                    "value": str(t.get("value") or ""),
+                    "weight": float(t.get("weight") or 0.0),
+                }
+                for t in list(attention_targets_sorted[:16])
+            ],
+            now_system_ts=int(now_ts),
+        )
 
         # NOTE:
         # - state_entities は各 state_update の entities を正にして即時反映している。
@@ -1051,5 +1351,3 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         reason="chat_turn_interval",
                         watermark_event_id=int(watermark_event_id),
                     )
-
-
