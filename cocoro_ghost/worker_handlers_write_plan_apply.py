@@ -28,6 +28,7 @@ from cocoro_ghost.memory_models import (
     State,
     StateEntity,
     UserPreference,
+    WorldModelItem,
 )
 from cocoro_ghost.time_utils import parse_iso8601_to_utc_ts
 from cocoro_ghost.worker_constants import (
@@ -999,6 +1000,14 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         # - 文字列比較で「意味」を推定しない。
         # - event/entities/preferences/state更新/client_context の構造情報だけで関心ターゲットを組み立てる。
         # - long_mood_state と同様に単一stateとして育てる。
+        # - world_model_items（観測集約）も構造フィールドだけ使って関心状態へ反映する。
+        recent_world_items = (
+            db.query(WorldModelItem)
+            .filter(WorldModelItem.active == 1)
+            .order_by(WorldModelItem.freshness_at.desc(), WorldModelItem.updated_at.desc())
+            .limit(12)
+            .all()
+        )
         persona_interest_targets: list[dict[str, Any]] = []
 
         # --- event source は常に軽く残す（直近の関心流れを見るため） ---
@@ -1069,6 +1078,91 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         "weight": 0.65 if result_status_ctx != "failed" else 0.45,
                     }
                 )
+
+        # --- world_model_items（観測集約）から構造ターゲットを追加 ---
+        # NOTE:
+        # - affordance.findings など自然言語本文の意味推定はしない。
+        # - entity/relation/location の構造フィールドだけ使う。
+        for w in list(recent_world_items or []):
+            observation_class = str(w.observation_class or "").strip()
+            if not observation_class:
+                continue
+
+            entity_obj = common_utils.json_loads_maybe(str(w.entity_json or "{}"))
+            relation_obj = common_utils.json_loads_maybe(str(w.relation_json or "{}"))
+            location_obj = common_utils.json_loads_maybe(str(w.location_json or "{}"))
+            if not isinstance(entity_obj, dict):
+                entity_obj = {}
+            if not isinstance(relation_obj, dict):
+                relation_obj = {}
+            if not isinstance(location_obj, dict):
+                location_obj = {}
+
+            # --- 重み: confidence をベースに、今回 event に紐づく観測を少し上げる ---
+            w_conf = float(max(0.0, min(1.0, float(w.confidence or 0.0))))
+            base_weight = 0.35 + 0.50 * w_conf
+            if int(w.source_event_id or 0) == int(event_id):
+                base_weight += 0.15
+            base_weight = float(max(0.0, min(1.0, base_weight)))
+
+            persona_interest_targets.append(
+                {
+                    "type": "world_observation_class",
+                    "value": str(observation_class),
+                    "weight": float(base_weight),
+                }
+            )
+
+            location_space = str(location_obj.get("space") or "").strip()
+            if location_space:
+                persona_interest_targets.append(
+                    {
+                        "type": "world_space",
+                        "value": str(location_space),
+                        "weight": float(max(0.2, base_weight - 0.15)),
+                    }
+                )
+
+            capability_name_world = str(relation_obj.get("capability_name") or "").strip()
+            if capability_name_world:
+                persona_interest_targets.append(
+                    {
+                        "type": "world_capability",
+                        "value": str(capability_name_world),
+                        "weight": float(max(0.25, base_weight - 0.10)),
+                    }
+                )
+
+            entity_kind = str(entity_obj.get("kind") or "").strip()
+            if entity_kind:
+                persona_interest_targets.append(
+                    {
+                        "type": "world_entity_kind",
+                        "value": str(entity_kind),
+                        "weight": float(max(0.25, base_weight - 0.10)),
+                    }
+                )
+
+            # --- web_research_query は query/goal が構造フィールドとして存在する ---
+            if entity_kind == "web_research_query":
+                query_text = str(entity_obj.get("query") or "").strip()
+                goal_text = str(entity_obj.get("goal") or "").strip()
+                if query_text:
+                    persona_interest_targets.append(
+                        {
+                            "type": "world_query",
+                            "value": str(query_text)[:120],
+                            "weight": float(base_weight),
+                        }
+                    )
+                if goal_text:
+                    persona_interest_targets.append(
+                        {
+                            "type": "world_goal",
+                            "value": str(goal_text)[:120],
+                            "weight": float(max(0.25, base_weight - 0.05)),
+                        }
+                    )
 
         # --- ターゲットを dedupe + weight 集約して上位へ圧縮 ---
         persona_interest_map: dict[tuple[str, str], dict[str, Any]] = {}
