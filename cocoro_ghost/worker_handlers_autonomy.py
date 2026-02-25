@@ -737,43 +737,111 @@ def _build_persona_deliberation_focus(
             continue
         attention_targets.append(dict(item))
 
+    # --- 重み付き優先度マップ（interest_state / runtime の attention_targets を実際の選別に使う） ---
+    priority_state_kind_scores: dict[str, float] = {}
+    priority_goal_id_scores: dict[str, float] = {}
+    priority_action_type_scores: dict[str, float] = {}
+    priority_capability_scores: dict[str, float] = {}
+    priority_event_source_scores: dict[str, float] = {}
+    priority_goal_type_scores: dict[str, float] = {}
+
+    # --- 後方互換/デバッグ用に、最終的な優先リストも維持する ---
     priority_state_kinds: list[str] = []
     priority_goal_ids: list[str] = []
     priority_action_types: list[str] = []
     priority_capabilities: list[str] = []
     priority_event_sources: list[str] = []
+    priority_goal_types: list[str] = []
+
+    # --- capability と action_type の構造対応表 ---
+    capability_to_action_types = {
+        "web_access": ["web_research"],
+        "vision_perception": ["observe_screen", "observe_camera"],
+        "schedule_alarm": ["schedule_action"],
+        "device_control": ["device_action"],
+        "mobility_move": ["move_to"],
+        "agent_delegate": ["agent_delegate"],
+    }
+
+    # --- 重みを安全に読む（構造値のみ使用） ---
+    def _target_weight(item_obj: dict[str, Any]) -> float:
+        try:
+            return float(max(0.0, min(1.0, float(item_obj.get("weight") or 0.0))))
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    # --- スコアへ加算してから、最終的に優先リスト化する ---
+    def _add_score(dst: dict[str, float], key: str, weight: float) -> None:
+        k = str(key or "").strip()
+        if not k:
+            return
+        dst[k] = float(max(float(dst.get(k, 0.0)), float(weight)))
+
     for item in attention_targets:
         t = str(item.get("type") or "").strip()
         v = str(item.get("value") or "").strip()
+        w = _target_weight(item)
         if not v:
             continue
         if t in {"state_kind", "kind"}:
-            if v in priority_state_kinds:
-                continue
-            priority_state_kinds.append(v)
-            if len(priority_state_kinds) >= 6:
-                continue
+            _add_score(priority_state_kind_scores, v, w)
             continue
         if t == "goal_id":
-            if v in priority_goal_ids:
-                continue
-            priority_goal_ids.append(v)
+            _add_score(priority_goal_id_scores, v, w)
             continue
         if t == "action_type":
-            if v in priority_action_types:
-                continue
-            priority_action_types.append(v)
+            _add_score(priority_action_type_scores, v, w)
             continue
         if t == "capability":
-            if v in priority_capabilities:
-                continue
-            priority_capabilities.append(v)
+            _add_score(priority_capability_scores, v, w)
             continue
         if t == "event_source":
-            if v in priority_event_sources:
-                continue
-            priority_event_sources.append(v)
+            _add_score(priority_event_source_scores, v, w)
             continue
+
+        # --- world_model_items 由来ターゲットを Deliberation 選別へ橋渡しする ---
+        if t == "world_capability":
+            _add_score(priority_capability_scores, v, w)
+            for at in list(capability_to_action_types.get(v, []) or []):
+                _add_score(priority_action_type_scores, str(at), float(max(0.0, w - 0.05)))
+            if v == "web_access":
+                _add_score(priority_goal_type_scores, "research", w)
+            continue
+
+        if t == "world_entity_kind":
+            # --- web_research_query は構造的に research/web_research へ寄せられる ---
+            if v == "web_research_query":
+                _add_score(priority_action_type_scores, "web_research", w)
+                _add_score(priority_capability_scores, "web_access", w)
+                _add_score(priority_goal_type_scores, "research", w)
+            continue
+
+        if t == "world_query":
+            # --- query文字列の意味推定はしない。検索系関心がある事実だけ使う。 ---
+            _add_score(priority_action_type_scores, "web_research", w)
+            _add_score(priority_capability_scores, "web_access", w)
+            _add_score(priority_goal_type_scores, "research", w)
+            continue
+
+        if t == "world_goal":
+            # --- goal本文の意味推定はしない。research継続の構造ヒントとして扱う。 ---
+            _add_score(priority_goal_type_scores, "research", w)
+            continue
+
+    # --- スコア上位順に優先リスト化（既存の再並び替え関数互換） ---
+    def _top_keys(score_map: dict[str, float], *, cap: int) -> list[str]:
+        ordered = sorted(
+            [(str(k), float(v)) for k, v in dict(score_map or {}).items() if str(k or "").strip()],
+            key=lambda x: (-float(x[1]), str(x[0])),
+        )
+        return [str(k) for k, _ in ordered[: int(cap)]]
+
+    priority_state_kinds = _top_keys(priority_state_kind_scores, cap=6)
+    priority_goal_ids = _top_keys(priority_goal_id_scores, cap=8)
+    priority_action_types = _top_keys(priority_action_type_scores, cap=8)
+    priority_capabilities = _top_keys(priority_capability_scores, cap=8)
+    priority_event_sources = _top_keys(priority_event_source_scores, cap=8)
+    priority_goal_types = _top_keys(priority_goal_type_scores, cap=4)
 
     # --- mood の構造値（VAD平均） ---
     recent_vad = mood_snapshot.get("recent_vad_average")
@@ -789,13 +857,20 @@ def _build_persona_deliberation_focus(
     style_like_count = len(list(((confirmed_preferences.get("style") or {}).get("like") or []))) if isinstance(confirmed_preferences, dict) else 0
 
     # --- interaction mode を構造値から推定（文言比較なし） ---
-    interaction_mode_hint = "observe"
-    if len(active_intent_ids) >= 2:
-        interaction_mode_hint = "support"
-    elif vad_a >= 0.45 and vad_v >= -0.2:
-        interaction_mode_hint = "explore"
-    elif vad_a <= -0.3 and vad_d <= -0.2:
-        interaction_mode_hint = "wait"
+    # --- interest_state.interaction_mode を最優先ヒントとして使う（構造値のみ） ---
+    interaction_mode_hint = ""
+    if isinstance(persona_interest_state_snapshot, dict):
+        interest_mode_raw = str(persona_interest_state_snapshot.get("interaction_mode") or "").strip()
+        if interest_mode_raw in {"observe", "support", "explore", "wait"}:
+            interaction_mode_hint = str(interest_mode_raw)
+    if not interaction_mode_hint:
+        interaction_mode_hint = "observe"
+        if len(active_intent_ids) >= 2:
+            interaction_mode_hint = "support"
+        elif vad_a >= 0.45 and vad_v >= -0.2:
+            interaction_mode_hint = "explore"
+        elif vad_a <= -0.3 and vad_d <= -0.2:
+            interaction_mode_hint = "wait"
 
     # --- 継続重視度 ---
     continuity_bias = "high" if active_intent_ids else "medium"
@@ -817,7 +892,9 @@ def _build_persona_deliberation_focus(
     if interaction_mode_hint == "wait":
         limits["events"] = min(int(limits["events"]), 16)
         limits["states"] = min(int(limits["states"]), 20)
-    if interaction_mode_hint == "explore" and topic_like_count > 0:
+    # --- interest_state 由来の検索/調査関心でも explore 枠を少し広げる ---
+    has_research_interest = bool(priority_goal_types) and ("research" in {str(x) for x in list(priority_goal_types or [])})
+    if interaction_mode_hint == "explore" and (topic_like_count > 0 or has_research_interest):
         limits["events"] = min(int(limits["events"]) + 4, 28)
         limits["states"] = min(int(limits["states"]) + 2, 26)
 
@@ -839,6 +916,15 @@ def _build_persona_deliberation_focus(
         "priority_action_types": list(priority_action_types),
         "priority_capabilities": list(priority_capabilities),
         "priority_event_sources": list(priority_event_sources),
+        "priority_goal_types": list(priority_goal_types),
+        "priority_scores": {
+            "state_kind": dict(priority_state_kind_scores),
+            "goal_id": dict(priority_goal_id_scores),
+            "action_type": dict(priority_action_type_scores),
+            "capability": dict(priority_capability_scores),
+            "event_source": dict(priority_event_source_scores),
+            "goal_type": dict(priority_goal_type_scores),
+        },
         "preferences_bias": {
             "topic_like_count": int(topic_like_count),
             "topic_dislike_count": int(topic_dislike_count),
@@ -864,18 +950,45 @@ def _reorder_deliberation_intents(intents: list[dict[str, Any]], *, focus: dict[
     # --- active intent を先頭へ寄せる ---
     active_intent_ids = {str(x) for x in list(focus.get("active_intent_ids") or [])}
     priority_action_types = {str(x) for x in list(focus.get("priority_action_types") or []) if str(x or "").strip()}
+    priority_capabilities = {str(x) for x in list(focus.get("priority_capabilities") or []) if str(x or "").strip()}
+    priority_scores = focus.get("priority_scores") if isinstance(focus, dict) else {}
+    if not isinstance(priority_scores, dict):
+        priority_scores = {}
+    action_type_scores = priority_scores.get("action_type")
+    capability_scores = priority_scores.get("capability")
+    if not isinstance(action_type_scores, dict):
+        action_type_scores = {}
+    if not isinstance(capability_scores, dict):
+        capability_scores = {}
     status_rank = {"running": 0, "queued": 1, "blocked": 2}
 
-    def _sort_key(it: dict[str, Any]) -> tuple[int, int, int, int, str]:
+    # --- action_type から capability を構造的に対応付ける ---
+    action_type_to_capability = {
+        "web_research": "web_access",
+        "observe_screen": "vision_perception",
+        "observe_camera": "vision_perception",
+        "schedule_action": "schedule_alarm",
+        "device_action": "device_control",
+        "move_to": "mobility_move",
+        "agent_delegate": "agent_delegate",
+    }
+
+    def _sort_key(it: dict[str, Any]) -> tuple[int, int, int, float, float, int, str]:
         iid = str(it.get("intent_id") or "")
         status = str(it.get("status") or "")
         action_type = str(it.get("action_type") or "")
+        capability = str(action_type_to_capability.get(action_type, ""))
         priority = int(it.get("priority") or 0)
         scheduled_at = it.get("scheduled_at")
         scheduled_rank = int(scheduled_at) if scheduled_at is not None else 2**31 - 1
+        action_score = float(action_type_scores.get(action_type) or 0.0)
+        capability_score = float(capability_scores.get(capability) or 0.0)
         return (
             0 if iid in active_intent_ids else 1,
             0 if action_type in priority_action_types else 1,
+            0 if (capability and capability in priority_capabilities) else 1,
+            -float(action_score),
+            -float(capability_score),
             int(status_rank.get(status, 9)),
             -int(priority),
             f"{scheduled_rank:010d}",
@@ -892,13 +1005,29 @@ def _reorder_deliberation_goals(goals: list[dict[str, Any]], *, focus: dict[str,
     # --- active intents が参照中の goal を優先 ---
     active_goal_ids = {str(x) for x in list(focus.get("active_goal_ids") or []) if str(x or "").strip()}
     priority_goal_ids = {str(x) for x in list(focus.get("priority_goal_ids") or []) if str(x or "").strip()}
+    priority_goal_types = {str(x) for x in list(focus.get("priority_goal_types") or []) if str(x or "").strip()}
+    priority_scores = focus.get("priority_scores") if isinstance(focus, dict) else {}
+    if not isinstance(priority_scores, dict):
+        priority_scores = {}
+    goal_id_scores = priority_scores.get("goal_id")
+    goal_type_scores = priority_scores.get("goal_type")
+    if not isinstance(goal_id_scores, dict):
+        goal_id_scores = {}
+    if not isinstance(goal_type_scores, dict):
+        goal_type_scores = {}
 
-    def _sort_key(g: dict[str, Any]) -> tuple[int, int, int, str]:
+    def _sort_key(g: dict[str, Any]) -> tuple[int, int, int, float, float, int, str]:
         gid = str(g.get("goal_id") or "")
+        goal_type = str(g.get("goal_type") or "")
         prio = int(g.get("priority") or 0)
+        gid_score = float(goal_id_scores.get(gid) or 0.0)
+        goal_type_score = float(goal_type_scores.get(goal_type) or 0.0)
         return (
             0 if gid in active_goal_ids else 1,
             0 if gid in priority_goal_ids else 1,
+            0 if goal_type in priority_goal_types else 1,
+            -float(gid_score),
+            -float(goal_type_score),
             -int(prio),
             gid,
         )
