@@ -197,6 +197,7 @@ def _build_autonomy_message_render_input(
     mood_snapshot: dict[str, Any],
     confirmed_preferences: dict[str, Any],
     runtime_blackboard_snapshot: dict[str, Any],
+    interest_state_snapshot: dict[str, Any] | None,
     decision: ActionDecision,
     console_delivery_obj: dict[str, Any],
     message_kind: str,
@@ -252,6 +253,7 @@ def _build_autonomy_message_render_input(
         "mood": dict(mood_snapshot or {}),
         "confirmed_preferences": dict(confirmed_preferences or {}),
         "runtime_blackboard": dict(runtime_blackboard_snapshot or {}),
+        "interest_state": (dict(interest_state_snapshot) if isinstance(interest_state_snapshot, dict) else None),
         "delivery": {
             "mode": str(delivery_mode),
             "message_kind": str(message_kind),
@@ -394,6 +396,7 @@ def _emit_autonomy_console_events_for_action_result(
             cfg = get_config_store().config
             mood_snapshot = _load_recent_mood_snapshot(db)
             confirmed_preferences_snapshot = _load_confirmed_preferences_snapshot_for_deliberation(db)
+            persona_interest_state_snapshot = _load_persona_interest_state_snapshot_for_deliberation(db)
             runtime_blackboard_snapshot = get_runtime_blackboard().snapshot()
             if not isinstance(runtime_blackboard_snapshot, dict):
                 runtime_blackboard_snapshot = {}
@@ -404,6 +407,11 @@ def _emit_autonomy_console_events_for_action_result(
                 mood_snapshot=dict(mood_snapshot or {}),
                 confirmed_preferences=dict(confirmed_preferences_snapshot or {}),
                 runtime_blackboard_snapshot=dict(runtime_blackboard_snapshot or {}),
+                interest_state_snapshot=(
+                    dict(persona_interest_state_snapshot)
+                    if isinstance(persona_interest_state_snapshot, dict)
+                    else None
+                ),
                 decision=decision,
                 console_delivery_obj=dict(console_delivery_obj),
                 message_kind=str(message_kind),
@@ -618,12 +626,76 @@ def _load_confirmed_preferences_snapshot_for_deliberation(db) -> dict[str, Any]:
     return out
 
 
+def _load_persona_interest_state_snapshot_for_deliberation(db) -> dict[str, Any] | None:
+    """
+    Deliberation / autonomy.message 再生成用の persona_interest_state スナップショットを返す。
+
+    方針:
+        - 構造化 payload を正として扱う。
+        - 文字列比較で意味推定しない。
+    """
+
+    st = (
+        db.query(State)
+        .filter(State.searchable == 1)
+        .filter(State.kind == "persona_interest_state")
+        .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+        .first()
+    )
+    if st is None:
+        return None
+
+    payload_obj = common_utils.json_loads_maybe(str(st.payload_json or ""))
+    if not isinstance(payload_obj, dict):
+        payload_obj = {}
+
+    attention_targets_out: list[dict[str, Any]] = []
+    attention_targets_raw = payload_obj.get("attention_targets")
+    if isinstance(attention_targets_raw, list):
+        for item in list(attention_targets_raw):
+            if not isinstance(item, dict):
+                continue
+            target_type = str(item.get("type") or "").strip()
+            value = str(item.get("value") or "").strip()
+            if not target_type or not value:
+                continue
+            attention_targets_out.append(
+                {
+                    "type": str(target_type),
+                    "value": str(value),
+                    "weight": float(item.get("weight") or 0.0),
+                    "updated_at": (int(item.get("updated_at")) if item.get("updated_at") is not None else None),
+                }
+            )
+            if len(attention_targets_out) >= 24:
+                break
+
+    updated_from_event_ids = payload_obj.get("updated_from_event_ids")
+    if not isinstance(updated_from_event_ids, list):
+        updated_from_event_ids = []
+
+    return {
+        "state_id": int(st.state_id),
+        "kind": str(st.kind),
+        "body_text": str(st.body_text or ""),
+        "interaction_mode": str(payload_obj.get("interaction_mode") or "").strip() or None,
+        "attention_targets": attention_targets_out,
+        "updated_from_event_ids": [
+            int(x) for x in list(updated_from_event_ids) if isinstance(x, (int, float)) and int(x) > 0
+        ][:20],
+        "updated_from": (payload_obj.get("updated_from") if isinstance(payload_obj.get("updated_from"), dict) else None),
+        "confidence": float(st.confidence),
+        "last_confirmed_at": int(st.last_confirmed_at),
+    }
+
+
 def _build_persona_deliberation_focus(
     *,
     trigger: AutonomyTrigger,
     mood_snapshot: dict[str, Any],
     confirmed_preferences: dict[str, Any],
     runtime_blackboard_snapshot: dict[str, Any],
+    persona_interest_state_snapshot: dict[str, Any] | None,
     active_goal_ids: list[str],
 ) -> dict[str, Any]:
     """
@@ -653,14 +725,17 @@ def _build_persona_deliberation_focus(
     if not isinstance(intent_counts, dict):
         intent_counts = {}
 
-    # --- runtime attention_targets（存在すれば使う / 無ければ空） ---
-    attention_targets_raw = runtime_blackboard_snapshot.get("attention_targets")
+    # --- runtime attention_targets + interest_state.attention_targets を使う ---
+    attention_targets_raw: list[Any] = []
+    if isinstance(runtime_blackboard_snapshot.get("attention_targets"), list):
+        attention_targets_raw.extend(list(runtime_blackboard_snapshot.get("attention_targets") or []))
+    if isinstance(persona_interest_state_snapshot, dict) and isinstance(persona_interest_state_snapshot.get("attention_targets"), list):
+        attention_targets_raw.extend(list(persona_interest_state_snapshot.get("attention_targets") or []))
     attention_targets: list[dict[str, Any]] = []
-    if isinstance(attention_targets_raw, list):
-        for item in list(attention_targets_raw):
-            if not isinstance(item, dict):
-                continue
-            attention_targets.append(dict(item))
+    for item in list(attention_targets_raw or []):
+        if not isinstance(item, dict):
+            continue
+        attention_targets.append(dict(item))
 
     priority_state_kinds: list[str] = []
     priority_goal_ids: list[str] = []
@@ -1499,6 +1574,7 @@ def _collect_deliberation_input(
     # --- 人格判断の材料（構造化済みの好み/気分/短期ランタイム状態） ---
     mood_snapshot = _load_recent_mood_snapshot(db)
     confirmed_preferences = _load_confirmed_preferences_snapshot_for_deliberation(db)
+    persona_interest_state_snapshot = _load_persona_interest_state_snapshot_for_deliberation(db)
     runtime_blackboard_snapshot = get_runtime_blackboard().snapshot()
     if not isinstance(runtime_blackboard_snapshot, dict):
         runtime_blackboard_snapshot = {}
@@ -1536,6 +1612,7 @@ def _collect_deliberation_input(
         mood_snapshot=mood_snapshot,
         confirmed_preferences=confirmed_preferences,
         runtime_blackboard_snapshot=runtime_blackboard_snapshot,
+        persona_interest_state_snapshot=persona_interest_state_snapshot,
         active_goal_ids=active_goal_ids,
     )
     focus_limits = persona_deliberation_focus.get("limits") if isinstance(persona_deliberation_focus, dict) else {}
@@ -1651,6 +1728,7 @@ def _collect_deliberation_input(
         "intents": intents,
         "mood": mood_snapshot,
         "confirmed_preferences": confirmed_preferences,
+        "interest_state": persona_interest_state_snapshot,
         "runtime_blackboard": runtime_blackboard_snapshot,
         "persona_deliberation_focus": persona_deliberation_focus,
         "capabilities": [
