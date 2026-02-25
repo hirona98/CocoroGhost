@@ -189,6 +189,280 @@ def _resolve_console_delivery_mode(
     return str(console_delivery_obj.get("on_complete") or "")
 
 
+def _build_autonomy_message_report_focus(
+    *,
+    action_type: str,
+    capability_name: str,
+    result_status: str,
+    backend: str | None,
+    result_payload_for_render: dict[str, Any],
+    runtime_blackboard_snapshot: dict[str, Any],
+    interest_state_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    autonomy.message 用の「報告焦点（report_focus）」を構造情報だけで作る。
+
+    方針:
+        - 自然言語本文の意味推定は行わない。
+        - result_payload / interest_state / runtime_blackboard の構造フィールドだけ使う。
+        - LLM には「何を先に伝えるか」の候補を渡し、summary_text 依存を下げる。
+    """
+
+    # --- 入力の正規化 ---
+    action_type_norm = str(action_type or "").strip()
+    capability_norm = str(capability_name or "").strip()
+    result_status_norm = str(result_status or "").strip()
+    backend_norm = str(backend or "").strip() or None
+    payload_obj = dict(result_payload_for_render or {})
+    runtime_bb = dict(runtime_blackboard_snapshot or {})
+    interest_state = dict(interest_state_snapshot or {}) if isinstance(interest_state_snapshot, dict) else {}
+
+    # --- attention_targets を集約（構造値のみ） ---
+    attention_targets_raw: list[Any] = []
+    if isinstance(runtime_bb.get("attention_targets"), list):
+        attention_targets_raw.extend(list(runtime_bb.get("attention_targets") or []))
+    if isinstance(interest_state.get("attention_targets"), list):
+        attention_targets_raw.extend(list(interest_state.get("attention_targets") or []))
+
+    attention_type_value_scores: dict[tuple[str, str], float] = {}
+
+    # --- 重みの正規化 ---
+    def _safe_weight(x: dict[str, Any]) -> float:
+        try:
+            return float(max(0.0, min(1.0, float(x.get("weight") or 0.0))))
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    # --- 同一(type, value) の最大重みを残す ---
+    for item in list(attention_targets_raw or []):
+        if not isinstance(item, dict):
+            continue
+        t = str(item.get("type") or "").strip()
+        v = str(item.get("value") or "").strip()
+        if not t or not v:
+            continue
+        key = (str(t), str(v))
+        attention_type_value_scores[key] = float(max(float(attention_type_value_scores.get(key, 0.0)), _safe_weight(item)))
+
+    # --- 型別の重みマップへ再配置（後続の構造照合用） ---
+    by_type_scores: dict[str, dict[str, float]] = {}
+    for (t, v), w in dict(attention_type_value_scores).items():
+        if t not in by_type_scores:
+            by_type_scores[t] = {}
+        by_type_scores[t][str(v)] = float(w)
+
+    # --- 代表的な構造関心を取り出す ---
+    interaction_mode = str(interest_state.get("interaction_mode") or "").strip()
+    if interaction_mode not in {"observe", "support", "explore", "wait"}:
+        interaction_mode = None
+    research_interest_score = max(
+        float((by_type_scores.get("world_capability") or {}).get("web_access") or 0.0),
+        float((by_type_scores.get("world_entity_kind") or {}).get("web_research_query") or 0.0),
+        float((by_type_scores.get("capability") or {}).get("web_access") or 0.0),
+        float((by_type_scores.get("action_type") or {}).get("web_research") or 0.0),
+    )
+    action_alignment_score = float((by_type_scores.get("action_type") or {}).get(str(action_type_norm), 0.0))
+    capability_alignment_score = float((by_type_scores.get("capability") or {}).get(str(capability_norm), 0.0))
+    if capability_norm == "web_access":
+        capability_alignment_score = max(
+            float(capability_alignment_score),
+            float((by_type_scores.get("world_capability") or {}).get("web_access") or 0.0),
+        )
+
+    # --- report_focus 候補の構造化（本文の意味推定はしない） ---
+    focus_candidates: list[dict[str, Any]] = []
+
+    # --- 候補を追加する共通処理 ---
+    def _append_focus_candidate(*, kind: str, value: str, weight: float, source: str) -> None:
+        v = str(value or "").strip()
+        if not v:
+            return
+        focus_candidates.append(
+            {
+                "kind": str(kind),
+                "value": str(v)[:240],
+                "weight": float(max(0.0, min(1.0, float(weight)))),
+                "source": str(source),
+            }
+        )
+
+    # --- web_access の構造結果を最優先候補にする ---
+    query_text = str(payload_obj.get("query") or "").strip()
+    goal_text = str(payload_obj.get("goal") or "").strip()
+    constraints_raw = payload_obj.get("constraints")
+    findings_raw = payload_obj.get("findings")
+    sources_raw = payload_obj.get("sources")
+    notes_text = str(payload_obj.get("notes") or "").strip()
+    if query_text:
+        _append_focus_candidate(
+            kind="query",
+            value=query_text,
+            weight=float(max(0.55, 0.70 + 0.20 * research_interest_score)),
+            source="result_payload.query",
+        )
+    if goal_text:
+        _append_focus_candidate(
+            kind="goal",
+            value=goal_text,
+            weight=float(max(0.50, 0.66 + 0.18 * research_interest_score)),
+            source="result_payload.goal",
+        )
+    if isinstance(findings_raw, list):
+        for idx, item in enumerate(list(findings_raw or [])[:3]):
+            _append_focus_candidate(
+                kind="finding",
+                value=str(item or ""),
+                weight=float(max(0.45, 0.72 - 0.08 * idx + 0.12 * research_interest_score)),
+                source="result_payload.findings",
+            )
+    if isinstance(sources_raw, list):
+        for idx, src_obj in enumerate(list(sources_raw or [])[:3]):
+            if not isinstance(src_obj, dict):
+                continue
+            title_text = str(src_obj.get("title") or "").strip()
+            if not title_text:
+                continue
+            _append_focus_candidate(
+                kind="source_title",
+                value=title_text,
+                weight=float(max(0.30, 0.52 - 0.06 * idx)),
+                source="result_payload.sources",
+            )
+    if notes_text:
+        _append_focus_candidate(
+            kind="notes",
+            value=notes_text,
+            weight=0.40,
+            source="result_payload.notes",
+        )
+
+    # --- agent_delegate / 汎用 backend の構造結果を候補にする ---
+    task_instruction_text = str(payload_obj.get("task_instruction") or "").strip()
+    if task_instruction_text:
+        _append_focus_candidate(
+            kind="task_instruction",
+            value=task_instruction_text,
+            weight=float(max(0.42, 0.58 + 0.12 * action_alignment_score)),
+            source="result_payload.task_instruction",
+        )
+
+    details_obj = payload_obj.get("details")
+    if isinstance(details_obj, dict):
+        if "needs_attention" in details_obj:
+            _append_focus_candidate(
+                kind="needs_attention",
+                value=("true" if bool(details_obj.get("needs_attention")) else "false"),
+                weight=0.75 if bool(details_obj.get("needs_attention")) else 0.35,
+                source="result_payload.details.needs_attention",
+            )
+        if "error_code" in details_obj:
+            _append_focus_candidate(
+                kind="error_code",
+                value=str(details_obj.get("error_code") or ""),
+                weight=0.85 if result_status_norm == "failed" else 0.40,
+                source="result_payload.details.error_code",
+            )
+        if "error_message" in details_obj:
+            _append_focus_candidate(
+                kind="error_message",
+                value=str(details_obj.get("error_message") or ""),
+                weight=0.82 if result_status_norm == "failed" else 0.38,
+                source="result_payload.details.error_message",
+            )
+        items_raw = details_obj.get("items")
+        if isinstance(items_raw, list):
+            for idx, row in enumerate(list(items_raw or [])[:4]):
+                if not isinstance(row, dict):
+                    continue
+                item_kind = str(row.get("kind") or "").strip()
+                item_priority = str(row.get("priority") or "").strip()
+                item_label = ""
+                for key in ["subject", "title", "label", "name"]:
+                    item_label = str(row.get(key) or "").strip()
+                    if item_label:
+                        break
+                if item_label:
+                    suffix = f" ({item_kind})" if item_kind else ""
+                    _append_focus_candidate(
+                        kind="detail_item",
+                        value=f"{item_label}{suffix}",
+                        weight=float(max(0.40, 0.68 - 0.08 * idx + (0.08 if item_priority == 'high' else 0.0))),
+                        source="result_payload.details.items",
+                    )
+
+    # --- capability/backend/action の構造情報も候補化（話題選択の足場） ---
+    if capability_norm:
+        _append_focus_candidate(
+            kind="capability",
+            value=capability_norm,
+            weight=float(max(0.25, 0.30 + 0.40 * capability_alignment_score)),
+            source="result.capability_name",
+        )
+    if action_type_norm:
+        _append_focus_candidate(
+            kind="action_type",
+            value=action_type_norm,
+            weight=float(max(0.25, 0.30 + 0.40 * action_alignment_score)),
+            source="decision.action_type",
+        )
+    if backend_norm:
+        _append_focus_candidate(
+            kind="backend",
+            value=backend_norm,
+            weight=0.20,
+            source="agent_job.backend",
+        )
+
+    # --- 重複をまとめて上位へ圧縮 ---
+    focus_map: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in list(focus_candidates or []):
+        kind = str(item.get("kind") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if not kind or not value:
+            continue
+        key = (str(kind), str(value))
+        prev = focus_map.get(key)
+        if prev is None:
+            focus_map[key] = dict(item)
+            continue
+        prev["weight"] = float(max(float(prev.get("weight") or 0.0), float(item.get("weight") or 0.0)))
+
+    focus_candidates_sorted = sorted(
+        list(focus_map.values()),
+        key=lambda x: (-float(x.get("weight") or 0.0), str(x.get("kind") or ""), str(x.get("value") or "")),
+    )[:8]
+
+    # --- 構造的なサマリ（本文生成器への優先ルール用） ---
+    fact_counts = {
+        "constraints": int(len(list(constraints_raw or []))) if isinstance(constraints_raw, list) else 0,
+        "findings": int(len(list(findings_raw or []))) if isinstance(findings_raw, list) else 0,
+        "sources": int(len(list(sources_raw or []))) if isinstance(sources_raw, list) else 0,
+    }
+
+    # --- report_focus を返す ---
+    return {
+        "interaction_mode_hint": interaction_mode,
+        "alignment": {
+            "action_type": float(action_alignment_score),
+            "capability": float(capability_alignment_score),
+            "research_interest": float(research_interest_score),
+        },
+        "fact_counts": fact_counts,
+        "focus_candidates": list(focus_candidates_sorted),
+        "attention_targets_hint": [
+            {
+                "type": str(t),
+                "value": str(v),
+                "weight": float(w),
+            }
+            for (t, v), w in sorted(
+                list(attention_type_value_scores.items()),
+                key=lambda x: (-float(x[1]), str(x[0][0]), str(x[0][1])),
+            )[:8]
+        ],
+    }
+
+
 def _build_autonomy_message_render_input(
     *,
     persona_text: str,
@@ -225,23 +499,38 @@ def _build_autonomy_message_render_input(
     if not isinstance(mood_influence_obj, dict):
         raise RuntimeError("decision.mood_influence_json is not an object")
 
-    # --- result_payload を複製し、過大になりやすい raw_output_text は入力サイズを抑える ---
+    # --- result_payload を複製し、backend 生出力は本文生成入力から除外する ---
     result_payload_for_render = dict(result_payload or {})
     details_obj = result_payload_for_render.get("details")
     if isinstance(details_obj, dict):
         details_for_render = dict(details_obj)
         raw_output_text = str(details_for_render.get("raw_output_text") or "").strip()
         if raw_output_text:
-            details_for_render["raw_output_text"] = raw_output_text[:4000]
+            details_for_render.pop("raw_output_text", None)
+            details_for_render["raw_output_text_meta"] = {
+                "present": True,
+                "chars": int(len(raw_output_text)),
+            }
         result_payload_for_render["details"] = details_for_render
 
-    # --- 長文フィールドを最小限に抑える（人格発話の短文生成が目的） ---
+    # --- 長文フィールドを最小限に抑える（summary は補助情報へ格下げする） ---
     summary_text = str(result.summary_text or "").strip()
-    if len(summary_text) > 1000:
-        summary_text = summary_text[:1000]
+    if len(summary_text) > 400:
+        summary_text = summary_text[:400]
     reason_text = str(decision.reason_text or "").strip()
     if len(reason_text) > 800:
         reason_text = reason_text[:800]
+
+    # --- 報告焦点（report_focus）を構造情報から抽出して、summary 依存を下げる ---
+    report_focus = _build_autonomy_message_report_focus(
+        action_type=(str(intent.action_type) if intent.action_type is not None else ""),
+        capability_name=(str(result.capability_name) if result.capability_name is not None else ""),
+        result_status=str(result.result_status or ""),
+        backend=(str(backend) if backend else None),
+        result_payload_for_render=dict(result_payload_for_render),
+        runtime_blackboard_snapshot=dict(runtime_blackboard_snapshot or {}),
+        interest_state_snapshot=(dict(interest_state_snapshot) if isinstance(interest_state_snapshot, dict) else None),
+    )
 
     # --- render 入力（構造化JSON） ---
     return {
@@ -259,6 +548,7 @@ def _build_autonomy_message_render_input(
             "message_kind": str(message_kind),
             "console_delivery": dict(console_delivery_obj or {}),
         },
+        "report_focus": dict(report_focus or {}),
         "decision": {
             "decision_id": str(decision.decision_id),
             "action_type": (str(intent.action_type) if intent.action_type is not None else None),

@@ -779,7 +779,8 @@ def autonomy_message_render_system_prompt(*, second_person_label: str) -> str:
             "出力は発話本文のプレーンテキストのみ。JSON/コードフェンス/箇条書き/Markdownリンクは禁止。",
             "",
             "前提:",
-            "- 入力JSONの result.summary_text は内部要約。本文へそのまま転記しない。",
+            "- 入力JSONの report_focus は、何を先に伝えるかの構造化ヒント。まずこれを使う。",
+            "- 入力JSONの result.summary_text は内部要約（補助情報）。report_focus / result_payload より優先しない。",
             "- 入力JSONの result.result_payload は内部結果。事実確認の材料として使う。",
             "- backend/Capability 固有の書式（Markdownリンク、機械的な列挙、\"報告終わり\" など）は真似しない。",
             "- Consoleに表示され、その後の会話で参照される前提で自然な一言にする。",
@@ -794,6 +795,8 @@ def autonomy_message_render_system_prompt(*, second_person_label: str) -> str:
             "- runtime_blackboard は短期の流れ（進行中意図や偏り）の補助情報として使う。",
             "",
             "内容ルール:",
+            "- まず report_focus.focus_candidates から、この人格が今言いたくなる要点を1〜2個選ぶ。",
+            "- report_focus.alignment / interaction_mode_hint / attention_targets_hint を、何を先に言うかの重み付けに使う。",
             "- 事実は result/result_payload にある内容を優先する。無い事実は作らない。",
             "- message_kind に応じてトーンを変える（report/progress/question/error）。",
             "- 長すぎる詳細列挙は避け、必要な要点だけ話す。",
@@ -821,6 +824,7 @@ def autonomy_message_render_user_prompt(*, render_input: dict[str, Any]) -> str:
         [
             "次の入力JSONに基づいて、Consoleに表示する短い発話を1つだけ作ってください。",
             "出力は発話本文のみ（プレーンテキスト）。",
+            "report_focus を優先して要点を選び、result.summary_text は補助情報としてのみ使ってください。",
             "",
             json_dumps(render_input),
         ]
