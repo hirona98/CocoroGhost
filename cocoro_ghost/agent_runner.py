@@ -294,14 +294,29 @@ def _build_backend_success_from_stdout_text(*, stdout_text: str) -> _BackendExec
     """backend subprocess の標準出力テキストを success 結果へ変換する。"""
 
     # --- 標準出力テキストを成功結果として扱う（空はエラー） ---
-    summary_text = str(stdout_text or "").strip()
-    if not summary_text:
+    raw_output_text = str(stdout_text or "").strip()
+    if not raw_output_text:
         raise RuntimeError("backend stdout is empty")
+
+    # --- summary_text は内部要約として短く保持し、生出力は details_json に残す ---
+    first_line = ""
+    for line in str(raw_output_text).splitlines():
+        line_norm = str(line or "").strip()
+        if line_norm:
+            first_line = line_norm
+            break
+    if len(first_line) > 160:
+        first_line = first_line[:160]
+    summary_text = f"cli_agent が結果テキストを返しました（{len(raw_output_text)}文字）"
+    if first_line:
+        summary_text = f"{summary_text}: {first_line}"
 
     return _BackendExecutionSuccess(
         result_status="success",
         summary_text=str(summary_text),
-        details_json={},
+        details_json={
+            "raw_output_text": str(raw_output_text),
+        },
     )
 
 
