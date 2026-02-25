@@ -526,6 +526,144 @@ def _build_compact_candidates_for_selection(
     return cleaned
 
 
+def _reorder_compact_candidates_for_persona_selection(
+    compact_candidates: list[dict[str, Any]],
+    *,
+    persona_interest_state_snapshot: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """
+    SearchResultPack 選別入力の候補順を、persona_interest_state の構造情報で調整する。
+
+    方針:
+        - 自然言語本文の意味推定は行わない。
+        - candidate の構造フィールド（t/src/k/hs）と interest_state の構造値だけ使う。
+        - LLM選別を置き換えず、入力順の重み付けだけ行う。
+    """
+
+    # --- 入力の正規化 ---
+    if not compact_candidates:
+        return []
+    if not isinstance(persona_interest_state_snapshot, dict):
+        return list(compact_candidates)
+
+    # --- interaction_mode（構造値） ---
+    interaction_mode = str(persona_interest_state_snapshot.get("interaction_mode") or "").strip()
+    if interaction_mode not in {"observe", "support", "explore", "wait"}:
+        interaction_mode = "observe"
+
+    # --- attention_targets の重みマップ化（構造フィールドのみ） ---
+    targets_raw = persona_interest_state_snapshot.get("attention_targets")
+    event_source_scores: dict[str, float] = {}
+    state_kind_scores: dict[str, float] = {}
+    world_capability_scores: dict[str, float] = {}
+    world_entity_kind_scores: dict[str, float] = {}
+
+    def _safe_weight(x: dict[str, Any]) -> float:
+        try:
+            return float(max(0.0, min(1.0, float(x.get("weight") or 0.0))))
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _merge_score(dst: dict[str, float], key: str, weight: float) -> None:
+        k = str(key or "").strip()
+        if not k:
+            return
+        dst[k] = float(max(float(dst.get(k, 0.0)), float(weight)))
+
+    if isinstance(targets_raw, list):
+        for item in list(targets_raw):
+            if not isinstance(item, dict):
+                continue
+            t = str(item.get("type") or "").strip()
+            v = str(item.get("value") or "").strip()
+            w = _safe_weight(item)
+            if not v:
+                continue
+            if t == "event_source":
+                _merge_score(event_source_scores, v, w)
+                continue
+            if t in {"state_kind", "kind"}:
+                _merge_score(state_kind_scores, v, w)
+                continue
+            if t == "world_capability":
+                _merge_score(world_capability_scores, v, w)
+                continue
+            if t == "world_entity_kind":
+                _merge_score(world_entity_kind_scores, v, w)
+                continue
+
+    # --- world_* の構造ターゲットを会話候補の型/ヒット経路へ橋渡しする ---
+    # NOTE:
+    # - 本文比較はしないため、ここでは「どの種類の候補を前に出すか」だけ決める。
+    research_interest_score = 0.0
+    research_interest_score = max(research_interest_score, float(world_capability_scores.get("web_access") or 0.0))
+    research_interest_score = max(
+        research_interest_score,
+        float(world_entity_kind_scores.get("web_research_query") or 0.0),
+    )
+    has_research_interest = research_interest_score > 0.0
+
+    # --- interaction_mode ごとの型/経路バイアス（構造値のみ） ---
+    def _candidate_score(c: dict[str, Any], original_index: int) -> tuple[float, int]:
+        t = str(c.get("t") or "")
+        src = str(c.get("src") or "")  # event 用
+        state_kind = str(c.get("k") or "")  # state 用
+        hs = [str(x or "").strip() for x in list(c.get("hs") or [])]
+
+        score = 0.0
+
+        # --- 明示ターゲット一致（event_source / state_kind） ---
+        if t == "e" and src:
+            score += float(event_source_scores.get(src) or 0.0) * 1.2
+        if t == "s" and state_kind:
+            score += float(state_kind_scores.get(state_kind) or 0.0) * 1.2
+
+        # --- interaction_mode による型/経路重み ---
+        if interaction_mode == "support":
+            if t == "s":
+                score += 0.25
+            if any(h in {"reply_chain", "context_threads", "context_links"} for h in hs):
+                score += 0.20
+            if t == "e":
+                score += 0.08
+        elif interaction_mode == "explore":
+            if t == "e":
+                score += 0.20
+            if any(h in {"vector_global", "vector_recent", "trigram_events", "about_time"} for h in hs):
+                score += 0.18
+        elif interaction_mode == "wait":
+            if t == "s":
+                score += 0.22
+            if any(h in {"recent_events", "reply_chain", "context_threads", "context_links"} for h in hs):
+                score += 0.12
+            if t == "a":
+                score -= 0.05
+        else:  # observe
+            if t == "e":
+                score += 0.10
+            if t == "s":
+                score += 0.10
+
+        # --- world_model_items 由来の research 関心は検索系経路/イベント候補を少し前へ ---
+        if has_research_interest:
+            if t == "e":
+                score += 0.10 * float(max(0.0, min(1.0, research_interest_score)))
+            if any(h in {"vector_global", "about_time", "trigram_events"} for h in hs):
+                score += 0.12 * float(max(0.0, min(1.0, research_interest_score)))
+
+        # --- 同点時は元の順序を維持（安定化） ---
+        return (float(score), int(original_index))
+
+    scored = []
+    for idx, item in enumerate(list(compact_candidates or [])):
+        if not isinstance(item, dict):
+            continue
+        scored.append((dict(item), _candidate_score(dict(item), idx)))
+
+    scored.sort(key=lambda x: (-float(x[1][0]), int(x[1][1])))
+    return [dict(x[0]) for x in scored]
+
+
 class _UserVisibleReplySanitizer:
     """ユーザーに見せる本文から、内部コンテキストの混入を除去する。"""
 
@@ -1401,6 +1539,11 @@ class _ChatMemoryMixin:
             )
             compact_candidates = _build_compact_candidates_for_selection(
                 candidates, event_id_to_summary=event_id_to_summary
+            )
+            # --- 選別入力順を人格の関心状態（構造値）で調整する ---
+            compact_candidates = _reorder_compact_candidates_for_persona_selection(
+                compact_candidates,
+                persona_interest_state_snapshot=persona_interest_state_snapshot,
             )
             selection_input = common_utils.json_dumps(
                 {
