@@ -785,6 +785,8 @@ def autonomy_message_render_system_prompt(*, second_person_label: str) -> str:
             f'- 二人称は「{sp}」を使う（別の呼び方へ勝手に変えない）。',
             "- persona_text / addon_text の価値観・関心・言い回しを優先する。",
             "- mood / persona_influence / mood_influence を、何を気にしてどう言うかに反映する。",
+            "- confirmed_preferences は、何を拾って報告したくなるか/避けたいかの参考にする。",
+            "- runtime_blackboard は短期の流れ（進行中意図や偏り）の補助情報として使う。",
             "",
             "内容ルール:",
             "- 事実は result/result_payload にある内容を優先する。無い事実は作らない。",

@@ -195,6 +195,8 @@ def _build_autonomy_message_render_input(
     addon_text: str,
     second_person_label: str,
     mood_snapshot: dict[str, Any],
+    confirmed_preferences: dict[str, Any],
+    runtime_blackboard_snapshot: dict[str, Any],
     decision: ActionDecision,
     console_delivery_obj: dict[str, Any],
     message_kind: str,
@@ -210,7 +212,7 @@ def _build_autonomy_message_render_input(
 
     方針:
         - 文字列比較で意味を推定しない。
-        - 事実（result/result_payload）と人格情報（persona/mood）を分けて渡す。
+        - 事実（result/result_payload）と人格情報（persona/mood/preferences/runtime）を分けて渡す。
         - backend 生出力はそのまま見せず、入力事実としてのみ渡す。
     """
 
@@ -248,6 +250,8 @@ def _build_autonomy_message_render_input(
             "addon_text": str(addon_text or "").strip(),
         },
         "mood": dict(mood_snapshot or {}),
+        "confirmed_preferences": dict(confirmed_preferences or {}),
+        "runtime_blackboard": dict(runtime_blackboard_snapshot or {}),
         "delivery": {
             "mode": str(delivery_mode),
             "message_kind": str(message_kind),
@@ -389,11 +393,17 @@ def _emit_autonomy_console_events_for_action_result(
             )
             cfg = get_config_store().config
             mood_snapshot = _load_recent_mood_snapshot(db)
+            confirmed_preferences_snapshot = _load_confirmed_preferences_snapshot_for_deliberation(db)
+            runtime_blackboard_snapshot = get_runtime_blackboard().snapshot()
+            if not isinstance(runtime_blackboard_snapshot, dict):
+                runtime_blackboard_snapshot = {}
             render_input = _build_autonomy_message_render_input(
                 persona_text=str(getattr(cfg, "persona_text", "") or ""),
                 addon_text=str(getattr(cfg, "addon_text", "") or ""),
                 second_person_label=str(getattr(cfg, "second_person_label", "") or ""),
                 mood_snapshot=dict(mood_snapshot or {}),
+                confirmed_preferences=dict(confirmed_preferences_snapshot or {}),
+                runtime_blackboard_snapshot=dict(runtime_blackboard_snapshot or {}),
                 decision=decision,
                 console_delivery_obj=dict(console_delivery_obj),
                 message_kind=str(message_kind),
