@@ -485,6 +485,7 @@ class LlmRequestPurpose:
     ASYNC_EVENT_ASSISTANT_SUMMARY = "【WORKER】＜＜ アシスタント本文要約（events） ＞＞"
     ASYNC_STATE_LINKS = "【WORKER】＜＜ 状態リンク生成（state_links） ＞＞"
     ASYNC_AUTONOMY_DELIBERATION = "【WORKER】＜＜ 自発行動の意思決定（Deliberation） ＞＞"
+    ASYNC_AUTONOMY_MESSAGE_RENDER = "【WORKER】＜＜ 自発行動の人格発話生成（autonomy.message） ＞＞"
     ASYNC_AUTONOMY_WEB_ACCESS = "【WORKER】＜＜ 自発行動のWeb調査（web_access） ＞＞"
 
 

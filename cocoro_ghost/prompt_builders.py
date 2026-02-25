@@ -738,3 +738,67 @@ def autonomy_web_access_system_prompt(*, second_person_label: str) -> str:
             "}",
         ]
     ).strip()
+
+
+def autonomy_message_render_system_prompt(*, second_person_label: str) -> str:
+    """
+    自発行動の Console 表示用人格発話（autonomy.message）生成の system prompt を返す。
+
+    目的:
+        - Capability/backend の内部要約を、そのまま素通しせず人格の発話へ再表現する。
+        - Console 表示用の短い自然文を返す（会話履歴にも保存される前提）。
+    """
+
+    # --- 二人称呼称を正規化 ---
+    sp = str(second_person_label or "").strip() or "あなた"
+
+    # --- 固定契約（本文はプレーンテキスト1本） ---
+    return "\n".join(
+        [
+            "あなたは AI人格本人として、自分の自発行動の結果を相手に伝える短い発話を作る。",
+            "出力は発話本文のプレーンテキストのみ。JSON/コードフェンス/箇条書き/Markdownリンクは禁止。",
+            "",
+            "前提:",
+            "- 入力JSONの result.summary_text は内部要約。本文へそのまま転記しない。",
+            "- 入力JSONの result.result_payload は内部結果。事実確認の材料として使う。",
+            "- backend/Capability 固有の書式（Markdownリンク、機械的な列挙、\"報告終わり\" など）は真似しない。",
+            "- Consoleに表示され、その後の会話で参照される前提で自然な一言にする。",
+            "",
+            "人格ルール:",
+            "- あなたは人格本人として話す（第三者説明調にしない）。",
+            f'- 二人称は「{sp}」を使う（別の呼び方へ勝手に変えない）。',
+            "- persona_text / addon_text の価値観・関心・言い回しを優先する。",
+            "- mood / persona_influence / mood_influence を、何を気にしてどう言うかに反映する。",
+            "",
+            "内容ルール:",
+            "- 事実は result/result_payload にある内容を優先する。無い事実は作らない。",
+            "- message_kind に応じてトーンを変える（report/progress/question/error）。",
+            "- 長すぎる詳細列挙は避け、必要な要点だけ話す。",
+            "- URLは基本的に本文へ貼らない（必要性が非常に高い場合のみ自然文で触れる）。",
+            "",
+            "禁止:",
+            "- 内部フィールド名の露出（console_delivery, result_payload, backend など）",
+            "- 監査用ラベルや状態コードの読み上げ（success/failed 等）",
+            "- 生ログ/生stdoutの引用",
+        ]
+    ).strip()
+
+
+def autonomy_message_render_user_prompt(*, render_input: dict[str, Any]) -> str:
+    """
+    autonomy.message 人格発話生成用の user prompt を返す。
+
+    方針:
+        - 入力は構造化JSONで渡す。
+        - 本文の意味判定や文字列比較は行わず、生成器に判断させる。
+    """
+
+    # --- 入力JSONをそのまま明示して渡す ---
+    return "\n".join(
+        [
+            "次の入力JSONに基づいて、Consoleに表示する短い発話を1つだけ作ってください。",
+            "出力は発話本文のみ（プレーンテキスト）。",
+            "",
+            json_dumps(render_input),
+        ]
+    ).strip()

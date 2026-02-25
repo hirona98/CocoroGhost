@@ -188,6 +188,127 @@ def _resolve_console_delivery_mode(
     return str(console_delivery_obj.get("on_complete") or "")
 
 
+def _build_autonomy_message_render_input(
+    *,
+    persona_text: str,
+    addon_text: str,
+    second_person_label: str,
+    mood_snapshot: dict[str, Any],
+    decision: ActionDecision,
+    console_delivery_obj: dict[str, Any],
+    message_kind: str,
+    delivery_mode: str,
+    intent: Intent,
+    result: ActionResult,
+    result_payload: dict[str, Any],
+    backend: str | None,
+    agent_job_id: str | None,
+) -> dict[str, Any]:
+    """
+    autonomy.message 人格発話生成用の構造化入力を作る。
+
+    方針:
+        - 文字列比較で意味を推定しない。
+        - 事実（result/result_payload）と人格情報（persona/mood）を分けて渡す。
+        - backend 生出力はそのまま見せず、入力事実としてのみ渡す。
+    """
+
+    # --- decision 内の監査JSONをdictへ戻す（不正なら空ではなくそのまま例外化したいので json_loads_maybe の結果を厳格に扱う） ---
+    persona_influence_obj = common_utils.json_loads_maybe(str(decision.persona_influence_json or "{}"))
+    if not isinstance(persona_influence_obj, dict):
+        raise RuntimeError("decision.persona_influence_json is not an object")
+    mood_influence_obj = common_utils.json_loads_maybe(str(decision.mood_influence_json or "{}"))
+    if not isinstance(mood_influence_obj, dict):
+        raise RuntimeError("decision.mood_influence_json is not an object")
+
+    # --- result_payload を複製し、過大になりやすい raw_output_text は入力サイズを抑える ---
+    result_payload_for_render = dict(result_payload or {})
+    details_obj = result_payload_for_render.get("details")
+    if isinstance(details_obj, dict):
+        details_for_render = dict(details_obj)
+        raw_output_text = str(details_for_render.get("raw_output_text") or "").strip()
+        if raw_output_text:
+            details_for_render["raw_output_text"] = raw_output_text[:4000]
+        result_payload_for_render["details"] = details_for_render
+
+    # --- 長文フィールドを最小限に抑える（人格発話の短文生成が目的） ---
+    summary_text = str(result.summary_text or "").strip()
+    if len(summary_text) > 1000:
+        summary_text = summary_text[:1000]
+    reason_text = str(decision.reason_text or "").strip()
+    if len(reason_text) > 800:
+        reason_text = reason_text[:800]
+
+    # --- render 入力（構造化JSON） ---
+    return {
+        "persona": {
+            "second_person_label": str(second_person_label or "").strip() or "あなた",
+            "persona_text": str(persona_text or "").strip(),
+            "addon_text": str(addon_text or "").strip(),
+        },
+        "mood": dict(mood_snapshot or {}),
+        "delivery": {
+            "mode": str(delivery_mode),
+            "message_kind": str(message_kind),
+            "console_delivery": dict(console_delivery_obj or {}),
+        },
+        "decision": {
+            "decision_id": str(decision.decision_id),
+            "action_type": (str(intent.action_type) if intent.action_type is not None else None),
+            "reason": str(reason_text),
+            "persona_influence": dict(persona_influence_obj),
+            "mood_influence": dict(mood_influence_obj),
+        },
+        "result": {
+            "result_id": str(result.result_id),
+            "result_status": str(result.result_status),
+            "capability_name": (str(result.capability_name) if result.capability_name is not None else None),
+            "summary_text": str(summary_text),
+            "result_payload": dict(result_payload_for_render),
+        },
+        "agent_job": {
+            "backend": (str(backend) if backend else None),
+            "job_id": (str(agent_job_id) if agent_job_id else None),
+        },
+    }
+
+
+def _render_autonomy_message_text(*, render_input: dict[str, Any]) -> str:
+    """
+    autonomy.message の人格発話本文を生成する。
+
+    方針:
+        - `ActionResult.summary_text` を素通ししない。
+        - 失敗時は呼び出し元で skip する（raw summary フォールバック禁止）。
+    """
+
+    # --- 現在設定から人格/LLM設定を取得し、worker 用 LLM client を生成 ---
+    from cocoro_ghost.deps import get_llm_client
+
+    cfg = get_config_store().config
+    llm_client = get_llm_client()
+
+    # --- 専用 prompt で人格発話を生成（Web検索はSYNC_CONVERSATION以外で無効） ---
+    system_prompt = prompt_builders.autonomy_message_render_system_prompt(
+        second_person_label=str(getattr(cfg, "second_person_label", "") or ""),
+    )
+    user_prompt = prompt_builders.autonomy_message_render_user_prompt(
+        render_input=dict(render_input or {}),
+    )
+    resp = llm_client.generate_reply_response(
+        system_prompt=system_prompt,
+        conversation=[{"role": "user", "content": str(user_prompt)}],
+        purpose=LlmRequestPurpose.ASYNC_AUTONOMY_MESSAGE_RENDER,
+        stream=False,
+    )
+
+    # --- 本文を取り出して返す（空は失敗扱い） ---
+    message_text = str(llm_client.response_content(resp) or "").strip()
+    if not message_text:
+        raise RuntimeError("autonomy.message render returned empty content")
+    return str(message_text)
+
+
 def _emit_autonomy_console_events_for_action_result(
     *,
     embedding_preset_id: str,
@@ -211,8 +332,7 @@ def _emit_autonomy_console_events_for_action_result(
 
     # --- publish用スナップショットをトランザクション内で組み立てる ---
     activity_publish: dict[str, Any] | None = None
-    message_publish: dict[str, Any] | None = None
-    message_event_id: int | None = None
+    message_emit_plan: dict[str, Any] | None = None
 
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
         result = db.query(ActionResult).filter(ActionResult.result_id == str(result_id_norm)).one_or_none()
@@ -259,63 +379,43 @@ def _emit_autonomy_console_events_for_action_result(
                 "goal_id": (str(intent.goal_id) if intent.goal_id is not None else None),
             }
 
-        # --- autonomy.message は notify/chat のときだけ発話として保存して配信する ---
+        # --- autonomy.message は notify/chat のときだけ人格発話生成の計画を作る ---
         if str(terminal_mode) in {"notify", "chat"}:
-            message_text = str(result.summary_text or "").strip() or str(result.result_status)
             message_kind = (
                 "error"
                 if str(result.result_status) == "failed"
                 else str(console_delivery_obj.get("message_kind") or "report")
             )
-            message_event = Event(
-                created_at=int(_now_domain_utc_ts()),
-                updated_at=int(_now_domain_utc_ts()),
-                searchable=1,
-                client_id=None,
-                source="autonomy_message",
-                user_text=None,
-                assistant_text=str(message_text),
-                entities_json="[]",
-                client_context_json=common_utils.json_dumps(
-                    {
-                        "decision_id": str(decision.decision_id),
-                        "intent_id": str(intent.intent_id),
-                        "result_id": str(result.result_id),
-                        "action_type": (str(intent.action_type) if intent.action_type is not None else None),
-                        "capability": (str(result.capability_name) if result.capability_name is not None else None),
-                        "backend": backend,
-                        "agent_job_id": agent_job_id,
-                        "message_kind": str(message_kind),
-                        "delivery_mode": str(terminal_mode),
-                    }
-                ),
-            )
-            db.add(message_event)
-            db.flush()
-            message_event_id = int(message_event.event_id)
-
-            # --- 発話イベントも通常イベント同様に後続処理へ流す ---
-            _enqueue_standard_post_event_jobs(
-                db=db,
-                event_id=int(message_event_id),
-                now_system_ts=int(_now_utc_ts()),
+            cfg = get_config_store().config
+            mood_snapshot = _load_recent_mood_snapshot(db)
+            render_input = _build_autonomy_message_render_input(
+                persona_text=str(getattr(cfg, "persona_text", "") or ""),
+                addon_text=str(getattr(cfg, "addon_text", "") or ""),
+                second_person_label=str(getattr(cfg, "second_person_label", "") or ""),
+                mood_snapshot=dict(mood_snapshot or {}),
+                decision=decision,
+                console_delivery_obj=dict(console_delivery_obj),
+                message_kind=str(message_kind),
+                delivery_mode=str(terminal_mode),
+                intent=intent,
+                result=result,
+                result_payload=dict(result_payload),
+                backend=backend,
+                agent_job_id=agent_job_id,
             )
 
-            # --- Console配信用payloadを作る ---
-            message_publish = {
-                "event_id": int(message_event_id),
+            # --- message 保存/配信のためのメタ情報だけ保持（本文生成はDB外で行う） ---
+            message_emit_plan = {
                 "delivery_mode": str(terminal_mode),
-                "data": {
-                    "message": str(message_text),
-                    "message_kind": str(message_kind),
-                    "action_type": (str(intent.action_type) if intent.action_type is not None else None),
-                    "capability": (str(result.capability_name) if result.capability_name is not None else None),
-                    "backend": backend,
-                    "decision_id": str(decision.decision_id),
-                    "intent_id": str(intent.intent_id),
-                    "result_id": str(result.result_id),
-                    "agent_job_id": agent_job_id,
-                },
+                "message_kind": str(message_kind),
+                "action_type": (str(intent.action_type) if intent.action_type is not None else None),
+                "capability": (str(result.capability_name) if result.capability_name is not None else None),
+                "backend": backend,
+                "decision_id": str(decision.decision_id),
+                "intent_id": str(intent.intent_id),
+                "result_id": str(result.result_id),
+                "agent_job_id": agent_job_id,
+                "render_input": render_input,
             }
 
     # --- DB確定後に監視イベントを配信 ---
@@ -336,16 +436,78 @@ def _emit_autonomy_console_events_for_action_result(
             goal_id=(str(activity_publish.get("goal_id")) if activity_publish.get("goal_id") else None),
         )
 
-    # --- 発話イベントは保存済みevent_idを使って publish する（これを発話成立とみなす） ---
-    if isinstance(message_publish, dict) and message_event_id is not None:
-        message_data = dict(message_publish.get("data") or {})
-        message_data["delivery_mode"] = str(message_publish.get("delivery_mode") or "chat")
-        event_stream.publish(
-            type="autonomy.message",
-            event_id=int(message_event_id),
-            data=message_data,
-            target_client_id=None,
-        )
+    # --- 発話イベントは DB外で生成 -> 保存 -> publish する（生成失敗時はフォールバックしない） ---
+    if isinstance(message_emit_plan, dict):
+        try:
+            render_input = dict(message_emit_plan.get("render_input") or {})
+            message_text = _render_autonomy_message_text(render_input=render_input).strip()
+            if not message_text:
+                raise RuntimeError("autonomy.message render returned empty content")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "autonomy.message render skipped result_id=%s error=%s",
+                str(message_emit_plan.get("result_id") or ""),
+                str(exc),
+            )
+            return
+
+        # --- 発話イベントを保存し、通常イベント同様に後続ジョブへ流す ---
+        now_domain_ts = _now_domain_utc_ts()
+        now_system_ts = _now_utc_ts()
+        message_event_id: int | None = None
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            message_event = Event(
+                created_at=int(now_domain_ts),
+                updated_at=int(now_domain_ts),
+                searchable=1,
+                client_id=None,
+                source="autonomy_message",
+                user_text=None,
+                assistant_text=str(message_text),
+                entities_json="[]",
+                client_context_json=common_utils.json_dumps(
+                    {
+                        "decision_id": str(message_emit_plan.get("decision_id") or ""),
+                        "intent_id": str(message_emit_plan.get("intent_id") or ""),
+                        "result_id": str(message_emit_plan.get("result_id") or ""),
+                        "action_type": (str(message_emit_plan.get("action_type")) if message_emit_plan.get("action_type") else None),
+                        "capability": (str(message_emit_plan.get("capability")) if message_emit_plan.get("capability") else None),
+                        "backend": (str(message_emit_plan.get("backend")) if message_emit_plan.get("backend") else None),
+                        "agent_job_id": (str(message_emit_plan.get("agent_job_id")) if message_emit_plan.get("agent_job_id") else None),
+                        "message_kind": str(message_emit_plan.get("message_kind") or "report"),
+                        "delivery_mode": str(message_emit_plan.get("delivery_mode") or "chat"),
+                    }
+                ),
+            )
+            db.add(message_event)
+            db.flush()
+            message_event_id = int(message_event.event_id)
+
+            _enqueue_standard_post_event_jobs(
+                db=db,
+                event_id=int(message_event_id),
+                now_system_ts=int(now_system_ts),
+            )
+
+        # --- 保存済みevent_idで publish（これを発話成立とみなす） ---
+        if message_event_id is not None:
+            event_stream.publish(
+                type="autonomy.message",
+                event_id=int(message_event_id),
+                data={
+                    "message": str(message_text),
+                    "message_kind": str(message_emit_plan.get("message_kind") or "report"),
+                    "delivery_mode": str(message_emit_plan.get("delivery_mode") or "chat"),
+                    "action_type": (str(message_emit_plan.get("action_type")) if message_emit_plan.get("action_type") else None),
+                    "capability": (str(message_emit_plan.get("capability")) if message_emit_plan.get("capability") else None),
+                    "backend": (str(message_emit_plan.get("backend")) if message_emit_plan.get("backend") else None),
+                    "decision_id": (str(message_emit_plan.get("decision_id")) if message_emit_plan.get("decision_id") else None),
+                    "intent_id": (str(message_emit_plan.get("intent_id")) if message_emit_plan.get("intent_id") else None),
+                    "result_id": (str(message_emit_plan.get("result_id")) if message_emit_plan.get("result_id") else None),
+                    "agent_job_id": (str(message_emit_plan.get("agent_job_id")) if message_emit_plan.get("agent_job_id") else None),
+                },
+                target_client_id=None,
+            )
 
 
 def _load_recent_mood_snapshot(db) -> dict[str, Any]:
