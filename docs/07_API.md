@@ -993,6 +993,7 @@ intent 一覧を返す（新しい順）。
 - 運用前のため互換は付けない
 - 感情（VAD + 本文 + payload）と「shock減衰込みの現在値」を、1回のAPIで確認できるようにする
 - 直近の瞬間感情（event_affects）を併せて返し、moodの揺れの原因追跡をしやすくする
+- バックグラウンド状態（自発行動 / worker / agent_jobs / runtime_blackboard）も併せて返し、感情変化と並行して観測できるようにする
 
 ### `GET /api/mood/debug`
 
@@ -1007,6 +1008,7 @@ intent 一覧を返す（新しい順）。
 - `shock_vad` は **読み出し時点（now）で時間減衰**させた値を返す
   - `dt_seconds = now_ts - last_confirmed_at` を用いる
 - `recent_affects` は `event_affects` を直近から固定件数返す（全source、ただし `events.searchable=1` のみ）
+- `background` は感情デバッグ窓向けの要約スナップショットであり、`/api/control/*` の完全代替ではない
 
 レスポンス（成功）:
 
@@ -1037,8 +1039,59 @@ intent 一覧を返す（新しい順）。
       "confidence": 0.0
     }
   ],
+  "background": {
+    "autonomy": {
+      "enabled": true,
+      "heartbeat_seconds": 120,
+      "max_parallel_intents": 2,
+      "now_domain": "2026-01-10T14:06:59+09:00",
+      "triggers": {"queued": 0, "claimed": 0, "due": 0},
+      "intents": {"queued": 0, "running": 1, "blocked": 0}
+    },
+    "worker": {
+      "pending_count": 3,
+      "due_pending_count": 1,
+      "running_count": 0,
+      "stale_running_count": 0,
+      "done_count": 120,
+      "failed_count": 2,
+      "stale_seconds": 60
+    },
+    "agent_jobs": {
+      "queued": 0,
+      "claimed": 0,
+      "running": 0,
+      "completed": 4,
+      "failed": 1,
+      "timed_out": 0,
+      "stale_claimed_or_running": 0,
+      "stale_seconds": 300
+    },
+    "runtime_blackboard": {
+      "active_intent_ids": [],
+      "attention_targets": [],
+      "trigger_counts": {},
+      "intent_counts": {},
+      "worker_now_system_utc": "2026-01-10T14:06:59+09:00",
+      "last_snapshot_kind": "runtime_snapshot",
+      "last_snapshot_created_at": "2026-01-10T14:06:00+09:00",
+      "last_recovered_source_snapshot_id": null,
+      "last_recovered_system_utc": null,
+      "last_recovered_domain_utc": null
+    },
+    "recent_intents": [],
+    "recent_agent_jobs": [],
+    "limits": {
+      "recent_intents_limit": 8,
+      "recent_agent_jobs_limit": 8,
+      "runtime_attention_targets_limit": 8
+    }
+  },
   "limits": {
-    "recent_affects_limit": 8
+    "recent_affects_limit": 8,
+    "recent_intents_limit": 8,
+    "recent_agent_jobs_limit": 8,
+    "runtime_attention_targets_limit": 8
   }
 }
 ```
@@ -1049,8 +1102,14 @@ intent 一覧を返す（新しい順）。
 {
   "mood": null,
   "recent_affects": [],
+  "background": {
+    "...": "..."
+  },
   "limits": {
-    "recent_affects_limit": 8
+    "recent_affects_limit": 8,
+    "recent_intents_limit": 8,
+    "recent_agent_jobs_limit": 8,
+    "runtime_attention_targets_limit": 8
   }
 }
 ```
