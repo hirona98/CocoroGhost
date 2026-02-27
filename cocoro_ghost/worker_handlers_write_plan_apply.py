@@ -18,6 +18,7 @@ from cocoro_ghost import entity_utils
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.memory_models import (
+    ActionResult,
     Event,
     EventAffect,
     EventEntity,
@@ -78,6 +79,46 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         if ev is None:
             return
         base_ts = int(ev.created_at)
+        event_source = str(ev.source or "").strip()
+
+        # --- source別の最終防御ポリシーを決める ---
+        # NOTE:
+        # - WritePlan の指示遵守だけに依存せず、適用層で更新可否を強制する。
+        # - deliberation_decision は内部判断イベントのため、感情/好み更新を禁止する。
+        # - action_result は構造化結果（result_status/useful_for_recall_hint）で感情更新可否を判定する。
+        action_result_status = ""
+        action_result_useful_for_recall = False
+        if event_source == "action_result":
+            action_result_row = (
+                db.query(ActionResult)
+                .filter(ActionResult.event_id == int(event_id))
+                .one_or_none()
+            )
+            if action_result_row is not None:
+                action_result_status = str(action_result_row.result_status or "").strip()
+                action_result_useful_for_recall = bool(int(action_result_row.useful_for_recall_hint or 0))
+
+        allow_preference_updates = True
+        allow_event_affect_update = True
+        allow_long_mood_update = True
+        if event_source == "deliberation_decision":
+            allow_preference_updates = False
+            allow_event_affect_update = False
+            allow_long_mood_update = False
+        elif event_source == "action_result":
+            allow_preference_updates = False
+            if action_result_status == "failed":
+                allow_event_affect_update = True
+                allow_long_mood_update = True
+            elif action_result_status == "partial":
+                allow_event_affect_update = True
+                allow_long_mood_update = bool(action_result_useful_for_recall)
+            elif action_result_status == "success":
+                allow_event_affect_update = False
+                allow_long_mood_update = bool(action_result_useful_for_recall)
+            else:
+                allow_event_affect_update = False
+                allow_long_mood_update = False
 
         # --- entity索引 更新ヘルパ（events/state） ---
         # NOTE:
@@ -182,6 +223,8 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         # - 断定してよい根拠は status=confirmed のみとし、会話生成側で参照する。
         pref_updates = plan.get("preference_updates") if isinstance(plan, dict) else None
         pref_updates = pref_updates if isinstance(pref_updates, list) else []
+        if not bool(allow_preference_updates):
+            pref_updates = []
 
         def _normalize_pref_domain(domain_in: Any) -> str | None:
             """domain を food/topic/style のいずれかへ正規化する。"""
@@ -466,7 +509,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
 
         # --- event_affect（瞬間的な感情） ---
         ea = plan.get("event_affect") if isinstance(plan, dict) else None
-        if isinstance(ea, dict):
+        if bool(allow_event_affect_update) and isinstance(ea, dict):
             moment_text = common_utils.strip_face_tags(str(ea.get("moment_affect_text") or "").strip())
             if moment_text:
                 score = ea.get("moment_affect_score_vad") if isinstance(ea.get("moment_affect_score_vad"), dict) else {}
@@ -707,7 +750,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     # - long_mood_state を LLM の本文で毎ターン差し替えると、短期すぎる背景になりやすい。
                     # - baseline/shock の数値モデルはサーバで決め、本文（baseline_text）は日スケールで更新する。
                     if str(kind) == "long_mood_state":
-                        if body_text:
+                        if bool(allow_long_mood_update) and body_text:
                             baseline_text_candidate = str(body_text)
                         # NOTE: ここでは upsert を続行せず、後段の「LongMoodState 統合更新」で扱う。
                         continue
@@ -890,7 +933,10 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         # - WritePlan の state_updates.long_mood_state は「本文案」として扱う。
         # - 数値（baseline/shock）は event_affect の moment_vad を入力として更新する。
         # - event_affect が無いターンでも、日付が変わった等で本文案があれば本文だけ反映できるようにする。
-        if (moment_vad is not None and moment_conf > 0.0) or (baseline_text_candidate is not None and str(baseline_text_candidate).strip()):
+        if bool(allow_long_mood_update) and (
+            (moment_vad is not None and moment_conf > 0.0)
+            or (baseline_text_candidate is not None and str(baseline_text_candidate).strip())
+        ):
             # --- 既存の long_mood_state を読む（単一前提） ---
             st = (
                 db.query(State)

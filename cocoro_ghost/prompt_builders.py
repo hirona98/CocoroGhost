@@ -54,6 +54,7 @@ def write_plan_system_prompt(*, persona_text: str, addon_text: str, second_perso
             "",
             "source別方針（最重要）:",
             "- 必ず input JSON の event.source を見て、以下を適用する。",
+            "- input JSON に event.update_policy がある場合は、その許可/禁止を最優先で守る（false の更新は出力しない）。",
             "- event.source=deliberation_decision の場合:",
             "  - event.user_text は内部の意思決定理由であり、ユーザー発話ではない。",
             "  - event_affect は null（瞬間感情を作らない）。",

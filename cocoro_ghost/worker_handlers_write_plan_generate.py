@@ -95,6 +95,61 @@ def _handle_generate_write_plan(
             and str(ev.source) not in {"deliberation_decision", "action_result"}
         ):
             return
+        event_source = str(ev.source or "").strip()
+
+        # --- source別の更新ポリシー（WritePlan入力へ明示） ---
+        # NOTE:
+        # - 最終防御は apply_write_plan 側に置くが、生成側でも方針を明示して逸脱を減らす。
+        # - deliberation_decision は内部判断イベントとして扱い、感情/好み更新を抑止する。
+        # - action_result は result_status と recall_hint で感情更新の可否を限定する。
+        decision_row: ActionDecision | None = None
+        result_row: ActionResult | None = None
+        action_result_status = ""
+        action_result_useful_for_recall = False
+        if event_source == "deliberation_decision":
+            decision_row = (
+                db.query(ActionDecision)
+                .filter(ActionDecision.event_id == int(ev.event_id))
+                .one_or_none()
+            )
+        elif event_source == "action_result":
+            result_row = (
+                db.query(ActionResult)
+                .filter(ActionResult.event_id == int(ev.event_id))
+                .one_or_none()
+            )
+            if result_row is not None:
+                action_result_status = str(result_row.result_status or "").strip()
+                action_result_useful_for_recall = bool(int(result_row.useful_for_recall_hint or 0))
+
+        write_plan_update_policy = {
+            "allow_preference_updates": True,
+            "allow_event_affect": True,
+            "allow_long_mood_state": True,
+        }
+        if event_source == "deliberation_decision":
+            write_plan_update_policy = {
+                "allow_preference_updates": False,
+                "allow_event_affect": False,
+                "allow_long_mood_state": False,
+            }
+        elif event_source == "action_result":
+            allow_event_affect = False
+            allow_long_mood_state = False
+            if action_result_status == "failed":
+                allow_event_affect = True
+                allow_long_mood_state = True
+            elif action_result_status == "partial":
+                allow_event_affect = True
+                allow_long_mood_state = bool(action_result_useful_for_recall)
+            elif action_result_status == "success":
+                allow_event_affect = False
+                allow_long_mood_state = bool(action_result_useful_for_recall)
+            write_plan_update_policy = {
+                "allow_preference_updates": False,
+                "allow_event_affect": bool(allow_event_affect),
+                "allow_long_mood_state": bool(allow_long_mood_state),
+            }
 
         # --- 画像要約（events.image_summaries_json）をlist[str]へ正規化する ---
         # NOTE:
@@ -142,22 +197,20 @@ def _handle_generate_write_plan(
         event_snapshot = {
             "event_id": int(ev.event_id),
             "created_at": format_iso8601_local(int(ev.created_at)),
-            "source": str(ev.source),
+            "source": str(event_source),
             "client_id": (str(ev.client_id) if ev.client_id is not None else None),
-            "user_text": str(ev.user_text or ""),
+            "user_text": ("" if event_source == "deliberation_decision" else str(ev.user_text or "")),
             "assistant_text": str(ev.assistant_text or ""),
             "image_summaries": _image_summaries_list(getattr(ev, "image_summaries_json", None)),
             "client_context": _client_context_dict(getattr(ev, "client_context_json", None)),
             "observation": observation_meta,
+            "update_policy": write_plan_update_policy,
         }
+        if event_source == "deliberation_decision":
+            event_snapshot["user_text_role"] = "internal_decision_reason"
 
         # --- source別の構造化参照（autonomy系） ---
-        if str(ev.source) == "deliberation_decision":
-            decision_row = (
-                db.query(ActionDecision)
-                .filter(ActionDecision.event_id == int(ev.event_id))
-                .one_or_none()
-            )
+        if event_source == "deliberation_decision":
             if decision_row is not None:
                 event_snapshot["deliberation_decision"] = {
                     "decision_id": str(decision_row.decision_id),
@@ -168,16 +221,10 @@ def _handle_generate_write_plan(
                     "action_payload_json": (
                         str(decision_row.action_payload_json) if decision_row.action_payload_json is not None else None
                     ),
-                    "reason_text": (str(decision_row.reason_text) if decision_row.reason_text is not None else None),
                     "confidence": float(decision_row.confidence),
                 }
         world_model_state_promotions: list[dict[str, Any]] = []
-        if str(ev.source) == "action_result":
-            result_row = (
-                db.query(ActionResult)
-                .filter(ActionResult.event_id == int(ev.event_id))
-                .one_or_none()
-            )
+        if event_source == "action_result":
             if result_row is not None:
                 event_snapshot["action_result"] = {
                     "result_id": str(result_row.result_id),
