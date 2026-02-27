@@ -26,9 +26,11 @@ from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.deps import get_clock_service_dep, get_config_store_dep
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
-from cocoro_ghost.memory_models import AgentJob, AutonomyTrigger, Event, EventAffect, Intent, State
+from cocoro_ghost.memory_models import ActionDecision, AgentJob, AutonomyTrigger, Event, EventAffect, Intent, Job, State
 from cocoro_ghost.time_utils import format_iso8601_local_with_tz
 from cocoro_ghost.worker_constants import AGENT_JOB_STALE_SECONDS as _AGENT_JOB_STALE_SECONDS
+from cocoro_ghost.worker_constants import JOB_PENDING as _JOB_PENDING
+from cocoro_ghost.worker_constants import JOB_RUNNING as _JOB_RUNNING
 
 
 router = APIRouter(prefix="/mood", tags=["mood"])
@@ -41,6 +43,7 @@ _RECENT_EVENT_AFFECTS_LIMIT = 8
 _RECENT_INTENTS_LIMIT = 8
 _RECENT_AGENT_JOBS_LIMIT = 8
 _RUNTIME_ATTENTION_TARGETS_LIMIT = 8
+_CURRENT_THOUGHT_TARGETS_LIMIT = 8
 
 
 def _fmt_ts_or_none(ts: int | None) -> str | None:
@@ -73,12 +76,17 @@ def _build_background_debug_snapshot(
     cfg = config_store.config
     embedding_preset_id = str(cfg.embedding_preset_id).strip()
     embedding_dimension = int(cfg.embedding_dimension)
+    autonomy_enabled = bool(getattr(cfg, "autonomy_enabled", False))
+    heartbeat_seconds = int(getattr(cfg, "autonomy_heartbeat_seconds", 30))
+    max_parallel_intents = max(1, int(getattr(cfg, "autonomy_max_parallel_intents", 2)))
+    trigger_claim_limit_per_tick = max(1, int(max_parallel_intents) * 2)
 
     # --- worker jobs の統計（memory jobs テーブル） ---
     worker_stats = worker.get_job_queue_stats(
         embedding_preset_id=str(embedding_preset_id),
         embedding_dimension=int(embedding_dimension),
     )
+    now_system_ts = int(time.time())
 
     # --- autonomy triggers/intents の滞留数（同一DBセッションで取得） ---
     triggers_queued = int(
@@ -105,9 +113,136 @@ def _build_background_debug_snapshot(
     intents_queued = int(db.query(func.count(Intent.intent_id)).filter(Intent.status == "queued").scalar() or 0)
     intents_running = int(db.query(func.count(Intent.intent_id)).filter(Intent.status == "running").scalar() or 0)
     intents_blocked = int(db.query(func.count(Intent.intent_id)).filter(Intent.status == "blocked").scalar() or 0)
+    intents_running_non_delegate = int(
+        db.query(func.count(Intent.intent_id))
+        .filter(Intent.status == "running")
+        .filter(Intent.action_type != "agent_delegate")
+        .scalar()
+        or 0
+    )
+
+    # --- deliberate_once / execute_intent の workerジョブ滞留 ---
+    deliberate_jobs_pending_due = int(
+        db.query(func.count(Job.id))
+        .filter(Job.kind == "deliberate_once")
+        .filter(Job.status == int(_JOB_PENDING))
+        .filter(Job.run_after <= int(now_system_ts))
+        .scalar()
+        or 0
+    )
+    deliberate_jobs_pending_future = int(
+        db.query(func.count(Job.id))
+        .filter(Job.kind == "deliberate_once")
+        .filter(Job.status == int(_JOB_PENDING))
+        .filter(Job.run_after > int(now_system_ts))
+        .scalar()
+        or 0
+    )
+    deliberate_jobs_running = int(
+        db.query(func.count(Job.id))
+        .filter(Job.kind == "deliberate_once")
+        .filter(Job.status == int(_JOB_RUNNING))
+        .scalar()
+        or 0
+    )
+    execute_jobs_pending_due = int(
+        db.query(func.count(Job.id))
+        .filter(Job.kind == "execute_intent")
+        .filter(Job.status == int(_JOB_PENDING))
+        .filter(Job.run_after <= int(now_system_ts))
+        .scalar()
+        or 0
+    )
+    execute_jobs_pending_future = int(
+        db.query(func.count(Job.id))
+        .filter(Job.kind == "execute_intent")
+        .filter(Job.status == int(_JOB_PENDING))
+        .filter(Job.run_after > int(now_system_ts))
+        .scalar()
+        or 0
+    )
+    execute_jobs_running = int(
+        db.query(func.count(Job.id))
+        .filter(Job.kind == "execute_intent")
+        .filter(Job.status == int(_JOB_RUNNING))
+        .scalar()
+        or 0
+    )
+
+    # --- 直近意思決定（do_action / skip / defer） ---
+    latest_decision_row = (
+        db.query(ActionDecision)
+        .order_by(ActionDecision.created_at.desc())
+        .limit(1)
+        .one_or_none()
+    )
+    latest_decision: dict[str, Any] | None = None
+    if latest_decision_row is not None:
+        reason_preview = str(latest_decision_row.reason_text or "").strip()
+        if len(reason_preview) > 160:
+            reason_preview = reason_preview[:160]
+        latest_decision = {
+            "decision_id": str(latest_decision_row.decision_id),
+            "decision_outcome": str(latest_decision_row.decision_outcome),
+            "trigger_type": str(latest_decision_row.trigger_type),
+            "action_type": (str(latest_decision_row.action_type) if latest_decision_row.action_type else None),
+            "reason_text_preview": (str(reason_preview) if reason_preview else None),
+            "defer_until": _fmt_ts_or_none(int(latest_decision_row.defer_until)) if latest_decision_row.defer_until is not None else None,
+            "next_deliberation_at": (
+                _fmt_ts_or_none(int(latest_decision_row.next_deliberation_at))
+                if latest_decision_row.next_deliberation_at is not None
+                else None
+            ),
+            "created_at": _fmt_ts_or_none(int(latest_decision_row.created_at)),
+        }
+
+    # --- 直近1時間の意思決定内訳 ---
+    decisions_since_ts = int(now_system_ts) - 3600
+    recent_decisions_1h = {
+        "do_action": 0,
+        "skip": 0,
+        "defer": 0,
+    }
+    recent_decision_rows = (
+        db.query(ActionDecision.decision_outcome, func.count(ActionDecision.decision_id))
+        .filter(ActionDecision.created_at >= int(decisions_since_ts))
+        .group_by(ActionDecision.decision_outcome)
+        .all()
+    )
+    for outcome, count_v in list(recent_decision_rows or []):
+        key = str(outcome or "").strip()
+        if key in {"do_action", "skip", "defer"}:
+            recent_decisions_1h[key] = int(count_v or 0)
+
+    # --- 判定フロー要約（どこで止まっているか） ---
+    execution_slots_remaining = max(0, int(max_parallel_intents) - int(intents_running_non_delegate))
+    can_start_execute_now = int(execution_slots_remaining) > 0
+    decision_stage = "idle"
+    decision_stage_reason = "no_due_work"
+    if not bool(autonomy_enabled):
+        decision_stage = "disabled"
+        decision_stage_reason = "autonomy_disabled"
+    elif (
+        int(deliberate_jobs_pending_due) > 0
+        or int(deliberate_jobs_running) > 0
+        or int(triggers_claimed) > 0
+    ):
+        decision_stage = "deliberating"
+        decision_stage_reason = "trigger_deliberation_in_progress"
+    elif int(triggers_due) > 0:
+        decision_stage = "waiting_deliberation_enqueue"
+        decision_stage_reason = "due_trigger_waiting_for_tick"
+    elif int(execute_jobs_pending_due) > 0 and not bool(can_start_execute_now):
+        decision_stage = "blocked_by_parallel_limit"
+        decision_stage_reason = "running_intents_reached_limit"
+    elif int(execute_jobs_pending_due) > 0:
+        decision_stage = "ready_to_execute"
+        decision_stage_reason = "execute_job_due"
+    elif int(execute_jobs_running) > 0:
+        decision_stage = "executing"
+        decision_stage_reason = "execute_job_running"
 
     # --- agent_jobs の滞留数 ---
-    now_system_ts = int(time.time())
     agent_stale_before_ts = int(now_system_ts) - int(_AGENT_JOB_STALE_SECONDS)
     agent_jobs_queued = int(db.query(func.count(AgentJob.job_id)).filter(AgentJob.status == "queued").scalar() or 0)
     agent_jobs_claimed = int(db.query(func.count(AgentJob.job_id)).filter(AgentJob.status == "claimed").scalar() or 0)
@@ -209,9 +344,9 @@ def _build_background_debug_snapshot(
     # --- 返却オブジェクト（感情デバッグ窓向けにまとめる） ---
     return {
         "autonomy": {
-            "enabled": bool(getattr(cfg, "autonomy_enabled", False)),
-            "heartbeat_seconds": int(getattr(cfg, "autonomy_heartbeat_seconds", 30)),
-            "max_parallel_intents": int(getattr(cfg, "autonomy_max_parallel_intents", 2)),
+            "enabled": bool(autonomy_enabled),
+            "heartbeat_seconds": int(heartbeat_seconds),
+            "max_parallel_intents": int(max_parallel_intents),
             "now_domain": _fmt_ts_or_none(int(now_domain_ts)),
             "triggers": {
                 "queued": int(triggers_queued),
@@ -223,6 +358,31 @@ def _build_background_debug_snapshot(
                 "running": int(intents_running),
                 "blocked": int(intents_blocked),
             },
+        },
+        "decision_flow": {
+            "autonomy_enabled": bool(autonomy_enabled),
+            "now_system_utc": _fmt_ts_or_none(int(now_system_ts)),
+            "trigger_claim_limit_per_tick": int(trigger_claim_limit_per_tick),
+            "triggers_due": int(triggers_due),
+            "triggers_claimed": int(triggers_claimed),
+            "deliberate_once_jobs": {
+                "pending_due": int(deliberate_jobs_pending_due),
+                "pending_future": int(deliberate_jobs_pending_future),
+                "running": int(deliberate_jobs_running),
+            },
+            "execute_intent_jobs": {
+                "pending_due": int(execute_jobs_pending_due),
+                "pending_future": int(execute_jobs_pending_future),
+                "running": int(execute_jobs_running),
+            },
+            "running_intents_non_delegate": int(intents_running_non_delegate),
+            "max_parallel_intents": int(max_parallel_intents),
+            "execution_slots_remaining": int(execution_slots_remaining),
+            "can_start_execute_now": bool(can_start_execute_now),
+            "stage": str(decision_stage),
+            "stage_reason": str(decision_stage_reason),
+            "recent_decisions_1h": dict(recent_decisions_1h),
+            "latest_decision": latest_decision,
         },
         "worker": {
             "pending_count": int(worker_stats.get("pending_count") or 0),
@@ -266,6 +426,132 @@ def _build_background_debug_snapshot(
             "recent_agent_jobs_limit": int(_RECENT_AGENT_JOBS_LIMIT),
             "runtime_attention_targets_limit": int(_RUNTIME_ATTENTION_TARGETS_LIMIT),
         },
+    }
+
+
+def _build_current_thought_snapshot(
+    *,
+    db,
+    now_domain_ts: int,
+) -> dict[str, Any] | None:
+    """
+    現在の思考（persona_interest_state）スナップショットを返す。
+
+    方針:
+        - 「今なにを気にしているか」を感情デバッグAPIで直接観測できるようにする。
+        - payload の構造情報を優先し、本文の意味推定は行わない。
+        - 更新元イベントの最小プレビューを含め、更新理由の追跡をしやすくする。
+    """
+
+    # --- 最新の persona_interest_state を取得 ---
+    row = (
+        db.query(State)
+        .filter(State.kind == "persona_interest_state")
+        .filter(State.searchable == 1)
+        .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+        .first()
+    )
+    if row is None:
+        return None
+
+    # --- payload を読む（壊れていても落とさない） ---
+    payload_obj = common_utils.json_loads_maybe(str(row.payload_json or ""))
+    if not isinstance(payload_obj, dict):
+        payload_obj = {}
+
+    # --- attention_targets（構造情報）を整形 ---
+    attention_targets_raw = payload_obj.get("attention_targets")
+    attention_targets: list[dict[str, Any]] = []
+    total_targets_count = 0
+    if isinstance(attention_targets_raw, list):
+        total_targets_count = int(len(attention_targets_raw))
+        for item in list(attention_targets_raw):
+            if not isinstance(item, dict):
+                continue
+            target_type = str(item.get("type") or "").strip()
+            target_value = str(item.get("value") or "").strip()
+            if not target_type or not target_value:
+                continue
+            updated_at_raw = item.get("updated_at")
+            updated_at_iso = None
+            if isinstance(updated_at_raw, (int, float)) and int(updated_at_raw) > 0:
+                updated_at_iso = _fmt_ts_or_none(int(updated_at_raw))
+            attention_targets.append(
+                {
+                    "type": str(target_type),
+                    "value": str(target_value)[:120],
+                    "weight": float(item.get("weight") or 0.0),
+                    "updated_at": updated_at_iso,
+                }
+            )
+            if len(attention_targets) >= int(_CURRENT_THOUGHT_TARGETS_LIMIT):
+                break
+
+    # --- updated_from（更新起点）を整形 ---
+    updated_from_obj = payload_obj.get("updated_from")
+    updated_from: dict[str, Any] | None = None
+    updated_from_event_id = 0
+    if isinstance(updated_from_obj, dict):
+        try:
+            updated_from_event_id = int(updated_from_obj.get("event_id") or 0)
+        except Exception:  # noqa: BLE001
+            updated_from_event_id = 0
+        updated_from = {
+            "event_id": (int(updated_from_event_id) if int(updated_from_event_id) > 0 else None),
+            "event_source": str(updated_from_obj.get("event_source") or "").strip() or None,
+            "action_type": str(updated_from_obj.get("action_type") or "").strip() or None,
+            "capability": str(updated_from_obj.get("capability") or "").strip() or None,
+            "result_status": str(updated_from_obj.get("result_status") or "").strip() or None,
+        }
+
+    # --- updated_from_event_ids を整形 ---
+    updated_from_event_ids_raw = payload_obj.get("updated_from_event_ids")
+    updated_from_event_ids: list[int] = []
+    if isinstance(updated_from_event_ids_raw, list):
+        for x in list(updated_from_event_ids_raw):
+            try:
+                event_id_i = int(x or 0)
+            except Exception:  # noqa: BLE001
+                continue
+            if event_id_i <= 0:
+                continue
+            updated_from_event_ids.append(int(event_id_i))
+        updated_from_event_ids = updated_from_event_ids[-20:]
+
+    # --- 更新元イベントのプレビュー（1件） ---
+    source_event_preview: dict[str, Any] | None = None
+    if int(updated_from_event_id) > 0:
+        source_event_row = db.query(Event).filter(Event.event_id == int(updated_from_event_id)).one_or_none()
+        if source_event_row is not None:
+            source_event_preview = {
+                "event_id": int(source_event_row.event_id),
+                "source": str(source_event_row.source or "").strip(),
+                "created_at": _fmt_ts_or_none(int(source_event_row.created_at)),
+                "user_text_preview": str(source_event_row.user_text or "").strip()[:200] or None,
+                "assistant_text_preview": str(source_event_row.assistant_text or "").strip()[:200] or None,
+            }
+
+    # --- 経過秒（now - last_confirmed_at） ---
+    try:
+        dt_seconds = int(now_domain_ts) - int(row.last_confirmed_at or 0)
+    except Exception:  # noqa: BLE001
+        dt_seconds = 0
+    if int(dt_seconds) < 0:
+        dt_seconds = 0
+
+    # --- 返却オブジェクト ---
+    return {
+        "state_id": int(row.state_id),
+        "body_text": str(row.body_text or ""),
+        "interaction_mode": str(payload_obj.get("interaction_mode") or "").strip() or None,
+        "attention_targets": list(attention_targets),
+        "attention_targets_total": int(total_targets_count),
+        "last_confirmed_at": _fmt_ts_or_none(int(row.last_confirmed_at) if row.last_confirmed_at is not None else None),
+        "updated_at": _fmt_ts_or_none(int(row.updated_at) if row.updated_at is not None else None),
+        "dt_seconds": int(dt_seconds),
+        "updated_from": updated_from,
+        "updated_from_event_ids": [int(x) for x in list(updated_from_event_ids)],
+        "updated_from_event_preview": source_event_preview,
     }
 
 
@@ -351,6 +637,11 @@ def get_mood_debug(
             config_store=config_store,
             now_domain_ts=int(now_ts),
         )
+        # --- 現在の思考（persona_interest_state）を取得 ---
+        current_thought_debug = _build_current_thought_snapshot(
+            db=db,
+            now_domain_ts=int(now_ts),
+        )
 
         st = (
             db.query(State)
@@ -364,6 +655,7 @@ def get_mood_debug(
         if st is None:
             return {
                 "mood": None,
+                "current_thought": current_thought_debug,
                 "recent_affects": list(recent_affects),
                 "background": dict(background_debug),
                 "limits": {
@@ -371,6 +663,7 @@ def get_mood_debug(
                     "recent_intents_limit": int(_RECENT_INTENTS_LIMIT),
                     "recent_agent_jobs_limit": int(_RECENT_AGENT_JOBS_LIMIT),
                     "runtime_attention_targets_limit": int(_RUNTIME_ATTENTION_TARGETS_LIMIT),
+                    "current_thought_targets_limit": int(_CURRENT_THOUGHT_TARGETS_LIMIT),
                 },
             }
 
@@ -427,6 +720,7 @@ def get_mood_debug(
                 "dt_seconds": int(dt_seconds),
                 "last_confirmed_at": format_iso8601_local_with_tz(int(st.last_confirmed_at)),
             },
+            "current_thought": current_thought_debug,
             "recent_affects": list(recent_affects),
             "background": dict(background_debug),
             "limits": {
@@ -434,5 +728,6 @@ def get_mood_debug(
                 "recent_intents_limit": int(_RECENT_INTENTS_LIMIT),
                 "recent_agent_jobs_limit": int(_RECENT_AGENT_JOBS_LIMIT),
                 "runtime_attention_targets_limit": int(_RUNTIME_ATTENTION_TARGETS_LIMIT),
+                "current_thought_targets_limit": int(_CURRENT_THOUGHT_TARGETS_LIMIT),
             },
         }
