@@ -97,38 +97,45 @@ def _parse_mood_influence(value: Any) -> dict[str, Any]:
     mood_influence を検証して正規化する。
 
     方針:
-        - mood の影響を説明する summary と VAD 数値の両方を必須にする。
-        - 意味の正しさではなく、構造の妥当性を検証する。
+        - 自発行動の意思決定では使わないため、互換メタデータとして中立値へ正規化する。
+        - 既存DB互換のため `mood_influence_json` は常に保存する。
     """
+    if value is None:
+        value = {}
     if not isinstance(value, dict):
         raise ValueError("mood_influence must be an object")
-    summary = str(value.get("summary") or "").strip()
-    if not summary:
-        raise ValueError("mood_influence.summary is required")
 
+    # --- 自発判断では使わないため、未指定時は中立説明へ寄せる ---
+    summary = str(value.get("summary") or "").strip() or "mood is not used for autonomy decision"
+
+    # --- VAD値は互換メタデータとしてのみ保持し、欠損時はゼロへ寄せる ---
     vad = value.get("vad")
     if not isinstance(vad, dict):
-        raise ValueError("mood_influence.vad must be an object")
-    try:
-        v = float(vad.get("v"))
-        a = float(vad.get("a"))
-        d = float(vad.get("d"))
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError("mood_influence.vad must contain numeric v/a/d") from exc
+        vad = {}
+
+    def _safe_float(raw: Any) -> float:
+        try:
+            return float(raw)
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    v = _safe_float(vad.get("v"))
+    a = _safe_float(vad.get("a"))
+    d = _safe_float(vad.get("d"))
+
+    # --- bias も互換用。無効値は中立へ寄せる ---
+    action_bias_raw = str(value.get("action_threshold_bias") or "").strip()
+    if action_bias_raw not in _THRESHOLD_BIASES:
+        action_bias_raw = "neutral"
+    defer_bias_raw = str(value.get("defer_bias") or "").strip()
+    if defer_bias_raw not in _THRESHOLD_BIASES:
+        defer_bias_raw = "neutral"
 
     out = dict(value)
     out["summary"] = str(summary)
     out["vad"] = {"v": float(v), "a": float(a), "d": float(d)}
-    out["action_threshold_bias"] = _normalize_enum_text(
-        value.get("action_threshold_bias"),
-        field_name="mood_influence.action_threshold_bias",
-        allowed=_THRESHOLD_BIASES,
-    )
-    out["defer_bias"] = _normalize_enum_text(
-        value.get("defer_bias"),
-        field_name="mood_influence.defer_bias",
-        allowed=_THRESHOLD_BIASES,
-    )
+    out["action_threshold_bias"] = str(action_bias_raw)
+    out["defer_bias"] = str(defer_bias_raw)
     return out
 
 
@@ -264,7 +271,7 @@ def parse_action_decision(value: dict[str, Any]) -> ParsedActionDecision:
     confidence = float(value.get("confidence") or 0.0)
     confidence = max(0.0, min(1.0, confidence))
 
-    # --- persona/mood 監査情報（判断で使った構造を必須化） ---
+    # --- persona は必須、mood は互換メタデータとして正規化する ---
     persona_influence_obj = _parse_persona_influence(value.get("persona_influence"))
     mood_influence_obj = _parse_mood_influence(value.get("mood_influence"))
     console_delivery_obj = _parse_console_delivery(value.get("console_delivery"))

@@ -982,7 +982,6 @@ def _load_persona_interest_state_snapshot_for_deliberation(db) -> dict[str, Any]
 def _build_persona_deliberation_focus(
     *,
     trigger: AutonomyTrigger,
-    mood_snapshot: dict[str, Any],
     confirmed_preferences: dict[str, Any],
     runtime_blackboard_snapshot: dict[str, Any],
     persona_interest_state_snapshot: dict[str, Any] | None,
@@ -993,7 +992,7 @@ def _build_persona_deliberation_focus(
 
     方針:
         - 自然言語本文の意味推定は行わない。
-        - 構造化済みの mood/preferences/runtime 情報だけで、並び順と件数のヒントを作る。
+        - 構造化済みの preferences/runtime/current_thought 情報だけで、並び順と件数のヒントを作る。
     """
 
     # --- runtime の短期継続状態 ---
@@ -1133,20 +1132,14 @@ def _build_persona_deliberation_focus(
     priority_event_sources = _top_keys(priority_event_source_scores, cap=8)
     priority_goal_types = _top_keys(priority_goal_type_scores, cap=4)
 
-    # --- mood の構造値（VAD平均） ---
-    recent_vad = mood_snapshot.get("recent_vad_average")
-    if not isinstance(recent_vad, dict):
-        recent_vad = {}
-    vad_v = float(recent_vad.get("v") or 0.0)
-    vad_a = float(recent_vad.get("a") or 0.0)
-    vad_d = float(recent_vad.get("d") or 0.0)
-
     # --- preferences の構造量（意味推定せず件数だけ使う） ---
     topic_like_count = len(list(((confirmed_preferences.get("topic") or {}).get("like") or []))) if isinstance(confirmed_preferences, dict) else 0
     topic_dislike_count = len(list(((confirmed_preferences.get("topic") or {}).get("dislike") or []))) if isinstance(confirmed_preferences, dict) else 0
     style_like_count = len(list(((confirmed_preferences.get("style") or {}).get("like") or []))) if isinstance(confirmed_preferences, dict) else 0
+    has_research_interest = bool(priority_goal_types) and ("research" in {str(x) for x in list(priority_goal_types or [])})
+    has_active_focus = bool(priority_action_types or priority_capabilities or priority_goal_types)
 
-    # --- interaction mode を構造値から推定（文言比較なし） ---
+    # --- interaction mode を構造値から推定（VADは使わない） ---
     # --- interest_state.interaction_mode を最優先ヒントとして使う（構造値のみ） ---
     interaction_mode_hint = ""
     if isinstance(persona_interest_state_snapshot, dict):
@@ -1157,9 +1150,9 @@ def _build_persona_deliberation_focus(
         interaction_mode_hint = "observe"
         if len(active_intent_ids) >= 2:
             interaction_mode_hint = "support"
-        elif vad_a >= 0.45 and vad_v >= -0.2:
+        elif bool(has_active_focus) or topic_like_count > 0:
             interaction_mode_hint = "explore"
-        elif vad_a <= -0.3 and vad_d <= -0.2:
+        elif not active_intent_ids and str(trigger.trigger_type or "").strip() in {"heartbeat", "time", "time_routine"}:
             interaction_mode_hint = "wait"
 
     # --- 継続重視度 ---
@@ -1183,7 +1176,6 @@ def _build_persona_deliberation_focus(
         limits["events"] = min(int(limits["events"]), 16)
         limits["states"] = min(int(limits["states"]), 20)
     # --- interest_state 由来の検索/調査関心でも explore 枠を少し広げる ---
-    has_research_interest = bool(priority_goal_types) and ("research" in {str(x) for x in list(priority_goal_types or [])})
     if interaction_mode_hint == "explore" and (topic_like_count > 0 or has_research_interest):
         limits["events"] = min(int(limits["events"]) + 4, 28)
         limits["states"] = min(int(limits["states"]) + 2, 26)
@@ -1220,7 +1212,6 @@ def _build_persona_deliberation_focus(
             "topic_dislike_count": int(topic_dislike_count),
             "style_like_count": int(style_like_count),
         },
-        "mood_vad": {"v": float(vad_v), "a": float(vad_a), "d": float(vad_d)},
         "runtime_counts": {
             "trigger_counts": dict(trigger_counts),
             "intent_counts": dict(intent_counts),
@@ -1990,8 +1981,7 @@ def _collect_deliberation_input(
     if not isinstance(trigger_payload, dict):
         trigger_payload = {}
 
-    # --- 人格判断の材料（構造化済みの好み/気分/短期ランタイム状態） ---
-    mood_snapshot = _load_recent_mood_snapshot(db)
+    # --- 人格判断の材料（構造化済みの好み/短期ランタイム状態） ---
     confirmed_preferences = _load_confirmed_preferences_snapshot_for_deliberation(db)
     persona_interest_state_snapshot = _load_persona_interest_state_snapshot_for_deliberation(db)
     runtime_blackboard_snapshot = get_runtime_blackboard().snapshot()
@@ -2028,7 +2018,6 @@ def _collect_deliberation_input(
     # --- Deliberation 材料選別用の focus（構造情報ベース） ---
     persona_deliberation_focus = _build_persona_deliberation_focus(
         trigger=trigger,
-        mood_snapshot=mood_snapshot,
         confirmed_preferences=confirmed_preferences,
         runtime_blackboard_snapshot=runtime_blackboard_snapshot,
         persona_interest_state_snapshot=persona_interest_state_snapshot,
@@ -2145,7 +2134,6 @@ def _collect_deliberation_input(
         "states": state_rows,
         "goals": goals,
         "intents": intents,
-        "mood": mood_snapshot,
         "confirmed_preferences": confirmed_preferences,
         "interest_state": persona_interest_state_snapshot,
         "runtime_blackboard": runtime_blackboard_snapshot,
