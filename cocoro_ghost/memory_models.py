@@ -464,6 +464,7 @@ class ActionDecision(MemoryBase):
     # --- トリガ起点 ---
     trigger_type: Mapped[str] = mapped_column(Text, nullable=False)
     trigger_ref: Mapped[Optional[str]] = mapped_column(Text)
+    agenda_thread_id: Mapped[Optional[str]] = mapped_column(Text)
 
     # --- 判断本体 ---
     decision_outcome: Mapped[str] = mapped_column(Text, nullable=False)

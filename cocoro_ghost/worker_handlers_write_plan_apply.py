@@ -21,7 +21,9 @@ from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.memory_models import (
     AgendaThread,
+    ActionDecision,
     ActionResult,
+    AutonomyTrigger,
     Event,
     EventAffect,
     EventEntity,
@@ -50,6 +52,118 @@ from cocoro_ghost.worker_handlers_common import (
     _state_row_to_json,
     _thread_row_to_json,
 )
+
+
+def _resolve_agenda_thread_id_from_action_result(*, db, action_result_row: ActionResult | None) -> str | None:
+    """ActionResult から対象 agenda_thread_id を解決する。"""
+
+    # --- action_result が無ければ対象 thread も無い ---
+    if action_result_row is None:
+        return None
+
+    # --- decision に保存済みの agenda_thread_id を最優先で使う ---
+    decision_id = str(action_result_row.decision_id or "").strip()
+    if not decision_id:
+        return None
+    decision_row = db.query(ActionDecision).filter(ActionDecision.decision_id == str(decision_id)).one_or_none()
+    if decision_row is None:
+        return None
+    agenda_thread_id = str(decision_row.agenda_thread_id or "").strip()
+    if agenda_thread_id:
+        return str(agenda_thread_id)
+
+    # --- 旧データだけ trigger payload の agenda_thread_id を読む ---
+    trigger_ref = str(decision_row.trigger_ref or "").strip()
+    if not trigger_ref:
+        return None
+    trigger_row = db.query(AutonomyTrigger).filter(AutonomyTrigger.trigger_id == str(trigger_ref)).one_or_none()
+    if trigger_row is None:
+        return None
+    trigger_payload_obj = common_utils.json_loads_maybe(str(trigger_row.payload_json or "{}"))
+    if not isinstance(trigger_payload_obj, dict):
+        raise RuntimeError("autonomy_trigger.payload_json is not an object")
+    trigger_thread_id = str(trigger_payload_obj.get("agenda_thread_id") or "").strip()
+    if not trigger_thread_id:
+        return None
+    return str(trigger_thread_id)
+
+
+def _interaction_mode_to_label(value: str) -> str:
+    """interaction_mode を人間向けラベルへ変換する。"""
+
+    # --- 内部 enum をそのまま見せない ---
+    labels = {
+        "observe": "観察",
+        "explore": "探索",
+        "support": "支援",
+        "wait": "待機",
+        "idle": "待機",
+        "tracking": "追跡",
+    }
+    key = str(value or "").strip()
+    return str(labels.get(key, key or "不明"))
+
+
+def _action_type_to_label(value: str) -> str:
+    """action_type を人間向けラベルへ変換する。"""
+
+    # --- 現在の思考本文では内部 enum を避ける ---
+    labels = {
+        "observe_screen": "画面観察",
+        "observe_camera": "カメラ観察",
+        "web_research": "Web調査",
+        "schedule_action": "予定登録",
+        "device_action": "デバイス操作",
+        "move_to": "移動",
+        "agent_delegate": "委譲",
+    }
+    key = str(value or "").strip()
+    return str(labels.get(key, key or ""))
+
+
+def _agenda_focus_to_text(*, agenda_kind: str, topic: str) -> str:
+    """agenda kind/topic を人間向けの短い要約へ変換する。"""
+
+    # --- current_thought は人間向け要約に寄せる ---
+    kind_labels = {
+        "research": "調べもの",
+        "observation": "観察中",
+        "reminder": "予定",
+        "followup": "継続中",
+        "support": "支援中",
+    }
+    topic_text = str(topic or "").strip()
+    if not topic_text:
+        return ""
+    kind_label = str(kind_labels.get(str(agenda_kind or "").strip(), "注目中"))
+    return f"{kind_label}: {topic_text}"
+
+
+def _attention_target_to_text(*, target_type: str, target_value: str) -> str:
+    """attention target を人間向けの短い要約へ変換する。"""
+
+    # --- current_thought 本文では type:value の内部表記を避ける ---
+    target_type_norm = str(target_type or "").strip()
+    target_value_norm = str(target_value or "").strip()
+    if not target_type_norm or not target_value_norm:
+        return ""
+
+    prefix_map = {
+        "world_query": "調べもの",
+        "world_goal": "目標",
+        "world_space": "場所",
+        "world_observation_class": "観察対象",
+        "world_entity_kind": "対象種別",
+        "action_type": "動作候補",
+        "capability": "能力",
+        "world_capability": "能力",
+        "event_source": "イベント種別",
+        "state_kind": "状態種別",
+    }
+    if target_type_norm.startswith("entity_"):
+        return str(target_value_norm)
+    prefix = str(prefix_map.get(target_type_norm, "注目"))
+    return f"{prefix}: {target_value_norm}"
 
 
 def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: int, payload: dict[str, Any]) -> None:
@@ -93,6 +207,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         action_result_useful_for_recall = False
         action_result_row: ActionResult | None = None
         action_result_payload_obj: dict[str, Any] | None = None
+        action_result_agenda_thread_id: str | None = None
         if event_source == "action_result":
             action_result_row = (
                 db.query(ActionResult)
@@ -106,6 +221,10 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 if not isinstance(payload_obj, dict):
                     raise RuntimeError("action_result.result_payload_json is not an object")
                 action_result_payload_obj = dict(payload_obj)
+                action_result_agenda_thread_id = _resolve_agenda_thread_id_from_action_result(
+                    db=db,
+                    action_result_row=action_result_row,
+                )
 
         allow_preference_updates = True
         allow_event_affect_update = True
@@ -1362,6 +1481,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
 
         # --- agenda_threads を upsert し、active thread を1本に絞る。 ---
         current_result_id = (str(action_result_row.result_id) if action_result_row is not None else None)
+        result_target_thread_id = (
+            str(action_result_agenda_thread_id)
+            if action_result_agenda_thread_id
+            else None
+        )
         active_thread_id: str | None = None
         next_candidate_action: dict[str, Any] | None = None
         agenda_threads_debug_rows: list[dict[str, Any]] = []
@@ -1377,7 +1501,21 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 .filter(AgendaThread.thread_key == str(thread_key))
                 .one_or_none()
             )
-            resolved_thread_status = "active" if idx == 0 else "open"
+            existing_report_candidate_level = (
+                str(thread_row.report_candidate_level)
+                if thread_row is not None and str(thread_row.report_candidate_level or "").strip()
+                else "none"
+            )
+            existing_report_candidate_reason = (
+                str(thread_row.report_candidate_reason)
+                if thread_row is not None and str(thread_row.report_candidate_reason or "").strip()
+                else None
+            )
+            is_result_target = (
+                bool(result_target_thread_id)
+                and str(thread_id) == str(result_target_thread_id)
+            )
+            resolved_thread_status = "open"
             next_action_type = str(seed.get("next_action_type") or "").strip() or None
             next_action_payload = (
                 dict(seed.get("next_action_payload") or {})
@@ -1387,20 +1525,20 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             followup_due_at = int(base_ts) if next_action_type else None
             report_candidate_level = (
                 str(talk_candidate_level)
-                if idx == 0 and str(talk_candidate_level) != "none"
-                else "none"
+                if bool(is_result_target) and str(talk_candidate_level) != "none"
+                else str(existing_report_candidate_level)
             )
             report_candidate_reason = (
                 str(talk_candidate_reason)
-                if idx == 0 and str(talk_candidate_reason)
-                else None
+                if bool(is_result_target) and str(talk_candidate_reason)
+                else existing_report_candidate_reason
             )
 
             # --- action_result で thread の状態を明示遷移させる ---
             # NOTE:
-            # - action_result 後に active へ戻すと、heartbeat が同じ thread を即再実行しやすい。
-            # - ここで terminal / waiting 状態へ落とし、followup_due_at も制御する。
-            if event_source == "action_result" and idx == 0:
+            # - 実際に実行した thread だけを終端/待機へ遷移させる。
+            # - 先頭 seed 固定にすると、別 thread の結果で正本を壊してしまう。
+            if event_source == "action_result" and bool(is_result_target):
                 if action_result_status == "failed":
                     resolved_thread_status = "blocked"
                     followup_due_at = None
@@ -1417,6 +1555,21 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     followup_due_at = None
                     next_action_type = None
                     next_action_payload = {}
+
+            # --- 今回のフォーカス thread を1本だけ決める ---
+            # NOTE:
+            # - action_result では、完了した thread が終端なら次の open thread にフォーカスを移す。
+            # - partial/blocked は、その thread 自体を current_thought の主対象として残す。
+            if event_source != "action_result":
+                if idx == 0:
+                    resolved_thread_status = "active"
+                    active_thread_id = str(thread_id)
+            else:
+                if bool(is_result_target) and str(resolved_thread_status) in {"open", "blocked"} and not active_thread_id:
+                    active_thread_id = str(thread_id)
+                elif (not bool(is_result_target)) and not active_thread_id and str(resolved_thread_status) in {"open", "blocked"}:
+                    resolved_thread_status = "active"
+                    active_thread_id = str(thread_id)
 
             priority = int(max(1, min(100, round(40 + float(seed.get("weight") or 0.0) * 60.0))))
             metadata_obj = {
@@ -1435,7 +1588,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     thread_id=str(thread_id),
                     thread_key=str(thread_key),
                     source_event_id=int(event_id),
-                    source_result_id=(str(current_result_id) if current_result_id else None),
+                    source_result_id=(
+                        str(current_result_id)
+                        if bool(is_result_target) and current_result_id
+                        else None
+                    ),
                     kind=str(seed.get("agenda_kind") or ""),
                     topic=str(seed.get("target_value") or ""),
                     goal=(
@@ -1449,7 +1606,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     next_action_payload_json=common_utils.json_dumps(next_action_payload),
                     followup_due_at=(int(followup_due_at) if followup_due_at is not None else None),
                     last_progress_at=int(now_ts),
-                    last_result_status=(str(action_result_status) if action_result_status else None),
+                    last_result_status=(
+                        str(action_result_status)
+                        if bool(is_result_target) and action_result_status
+                        else None
+                    ),
                     report_candidate_level=str(report_candidate_level),
                     report_candidate_reason=(str(report_candidate_reason) if report_candidate_reason else None),
                     metadata_json=common_utils.json_dumps(metadata_obj),
@@ -1458,7 +1619,8 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 )
             else:
                 thread_row.source_event_id = int(event_id)
-                thread_row.source_result_id = (str(current_result_id) if current_result_id else None)
+                if bool(is_result_target):
+                    thread_row.source_result_id = (str(current_result_id) if current_result_id else None)
                 thread_row.kind = str(seed.get("agenda_kind") or "")
                 thread_row.topic = str(seed.get("target_value") or "")
                 thread_row.goal = (
@@ -1472,15 +1634,15 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 thread_row.next_action_payload_json = common_utils.json_dumps(next_action_payload)
                 thread_row.followup_due_at = (int(followup_due_at) if followup_due_at is not None else None)
                 thread_row.last_progress_at = int(now_ts)
-                thread_row.last_result_status = (str(action_result_status) if action_result_status else None)
+                if bool(is_result_target):
+                    thread_row.last_result_status = (str(action_result_status) if action_result_status else None)
                 thread_row.report_candidate_level = str(report_candidate_level)
                 thread_row.report_candidate_reason = (str(report_candidate_reason) if report_candidate_reason else None)
                 thread_row.metadata_json = common_utils.json_dumps(metadata_obj)
                 thread_row.updated_at = int(now_ts)
             db.add(thread_row)
 
-            if idx == 0 and str(resolved_thread_status) in {"active", "open", "blocked"}:
-                active_thread_id = str(thread_id)
+            if str(active_thread_id or "") == str(thread_id) and str(resolved_thread_status) in {"active", "open", "blocked"}:
                 if next_action_type and followup_due_at is not None:
                     next_candidate_action = {
                         "action_type": str(next_action_type),
@@ -1540,17 +1702,24 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         merged_updated_from_event_ids = merged_updated_from_event_ids[-20:]
 
         focus_summary = ""
+        focus_row_for_summary: dict[str, Any] | None = None
         if active_thread_id and agenda_threads_debug_rows:
-            top_agenda_row = dict(agenda_threads_debug_rows[0])
-            focus_summary = (
-                f"{str(top_agenda_row.get('kind') or '')}:"
-                f"{str(top_agenda_row.get('topic') or '')}"
+            for item in list(agenda_threads_debug_rows or []):
+                if str(item.get("thread_id") or "").strip() == str(active_thread_id):
+                    focus_row_for_summary = dict(item)
+                    break
+        if focus_row_for_summary is None and agenda_threads_debug_rows:
+            focus_row_for_summary = dict(agenda_threads_debug_rows[0])
+        if isinstance(focus_row_for_summary, dict):
+            focus_summary = _agenda_focus_to_text(
+                agenda_kind=str(focus_row_for_summary.get("kind") or ""),
+                topic=str(focus_row_for_summary.get("topic") or ""),
             )
         elif attention_targets_sorted:
             top_target = dict(attention_targets_sorted[0])
-            focus_summary = (
-                f"{str(top_target.get('type') or '')}:"
-                f"{str(top_target.get('value') or '')}"
+            focus_summary = _attention_target_to_text(
+                target_type=str(top_target.get("type") or ""),
+                target_value=str(top_target.get("value") or ""),
             )
 
         current_thought_payload = {
@@ -1572,7 +1741,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 "reason": (str(talk_candidate_reason) if talk_candidate_reason else None),
             },
             "agenda_threads": list(agenda_threads_debug_rows),
-            "updated_reason": "event_structure_refresh",
+            "updated_reason": "構造更新",
             "updated_from_event_ids": [int(x) for x in merged_updated_from_event_ids],
             "updated_from": {
                 "event_id": int(event_id),
@@ -1597,14 +1766,17 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
 
         # --- body_text は検索/人間可読の最低限（構造の要約のみ） ---
         top_labels = [
-            f"{str(t.get('type') or '')}:{str(t.get('value') or '')}"
+            _attention_target_to_text(
+                target_type=str(t.get("type") or ""),
+                target_value=str(t.get("value") or ""),
+            )
             for t in list(attention_targets_sorted[:4])
             if str(t.get("type") or "").strip() and str(t.get("value") or "").strip()
         ]
         next_action_label = ""
         if isinstance(next_candidate_action, dict):
-            next_action_label = str(next_candidate_action.get("action_type") or "").strip()
-        current_thought_body_text = f"現在の思考（{str(interaction_mode)}）"
+            next_action_label = _action_type_to_label(str(next_candidate_action.get("action_type") or "").strip())
+        current_thought_body_text = f"現在の思考（{_interaction_mode_to_label(str(interaction_mode))}）"
         if focus_summary:
             current_thought_body_text += f": {str(focus_summary)}"
         elif top_labels:

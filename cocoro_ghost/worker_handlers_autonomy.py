@@ -189,9 +189,15 @@ def _resolve_agenda_thread_id_for_decision(
     ActionDecision から、対象 agenda_thread_id を解決する。
 
     方針:
-        - 自発行動の thread 追跡は trigger payload の `agenda_thread_id` を正本にする。
+        - 新規実装では action_decisions.agenda_thread_id を正本にする。
+        - 旧データだけ trigger payload の `agenda_thread_id` を後方互換で読む。
         - action_payload や summary_text からの意味推定はしない。
     """
+    # --- 新列が埋まっていれば、それを最優先で使う ---
+    agenda_thread_id_from_decision = str(decision.agenda_thread_id or "").strip()
+    if agenda_thread_id_from_decision:
+        return str(agenda_thread_id_from_decision)
+
     trigger_ref = str(decision.trigger_ref or "").strip()
     if not trigger_ref:
         return None
@@ -207,6 +213,92 @@ def _resolve_agenda_thread_id_for_decision(
     if not agenda_thread_id:
         return None
     return str(agenda_thread_id)
+
+
+def _select_agenda_thread_id_for_new_decision(
+    *,
+    trigger: AutonomyTrigger,
+    deliberation_input: dict[str, Any],
+    decision,
+) -> str | None:
+    """
+    新規 ActionDecision 保存時に、対象 agenda_thread_id を解決する。
+
+    方針:
+        - trigger payload に `agenda_thread_id` があれば、それを最優先で採用する。
+        - それが無い場合だけ、current_thought / agenda_threads の構造情報から選ぶ。
+        - 意味推定はせず、active thread と next_action_type の一致だけを見る。
+    """
+
+    # --- do_action 以外は対象 thread を持たない ---
+    if str(getattr(decision, "decision_outcome", "") or "") != "do_action":
+        return None
+
+    # --- trigger payload の明示指定があれば、その thread を使う ---
+    trigger_payload_obj = common_utils.json_loads_maybe(str(trigger.payload_json or "{}"))
+    if not isinstance(trigger_payload_obj, dict):
+        raise RuntimeError("autonomy_trigger.payload_json is not an object")
+    trigger_thread_id = str(trigger_payload_obj.get("agenda_thread_id") or "").strip()
+    if trigger_thread_id:
+        return str(trigger_thread_id)
+
+    # --- current_thought / agenda_threads は deliberation 入力から読む ---
+    current_thought_snapshot = deliberation_input.get("current_thought")
+    if not isinstance(current_thought_snapshot, dict):
+        current_thought_snapshot = {}
+    agenda_threads_snapshot = deliberation_input.get("agenda_threads")
+    if not isinstance(agenda_threads_snapshot, list):
+        agenda_threads_snapshot = []
+
+    # --- action_type が無い場合は特定できない ---
+    action_type = str(getattr(decision, "action_type", "") or "").strip()
+    if not action_type:
+        return None
+
+    # --- active thread を引いて、suggested / next_action の一致を優先する ---
+    active_thread_id = str(current_thought_snapshot.get("active_thread_id") or "").strip()
+    trigger_suggested_action_type = str(trigger_payload_obj.get("suggested_action_type") or "").strip()
+    active_thread_row: dict[str, Any] | None = None
+    ordered_threads = [dict(x) for x in list(agenda_threads_snapshot or []) if isinstance(x, dict)]
+    if active_thread_id:
+        for item in list(ordered_threads or []):
+            if str(item.get("thread_id") or "").strip() == str(active_thread_id):
+                active_thread_row = dict(item)
+                break
+    if isinstance(active_thread_row, dict):
+        active_status = str(active_thread_row.get("status") or "").strip()
+        active_next_action_type = str(active_thread_row.get("next_action_type") or "").strip()
+        if active_status in {"active", "open", "blocked"}:
+            if active_next_action_type and active_next_action_type == str(action_type):
+                return str(active_thread_id)
+            if trigger_suggested_action_type and trigger_suggested_action_type == str(action_type):
+                return str(active_thread_id)
+
+    # --- next_action_type が一意に一致する thread が1本だけなら採用する ---
+    matching_thread_ids: list[str] = []
+    seen_thread_ids: set[str] = set()
+    for item in list(ordered_threads or []):
+        thread_id = str(item.get("thread_id") or "").strip()
+        thread_status = str(item.get("status") or "").strip()
+        next_action_type = str(item.get("next_action_type") or "").strip()
+        if not thread_id or thread_id in seen_thread_ids:
+            continue
+        if thread_status not in {"active", "open", "blocked"}:
+            continue
+        if next_action_type != str(action_type):
+            continue
+        seen_thread_ids.add(thread_id)
+        matching_thread_ids.append(str(thread_id))
+    if len(matching_thread_ids) == 1:
+        return str(matching_thread_ids[0])
+
+    # --- 最後に、現在フォーカス中 thread だけは明示的に引き継ぐ ---
+    if isinstance(active_thread_row, dict):
+        active_status = str(active_thread_row.get("status") or "").strip()
+        if active_status in {"active", "open", "blocked"}:
+            return str(active_thread_id)
+
+    return None
 
 
 def _sync_agenda_thread_after_action_result(
@@ -284,14 +376,14 @@ def _build_autonomy_message_report_focus(
     backend: str | None,
     result_payload_for_render: dict[str, Any],
     runtime_blackboard_snapshot: dict[str, Any],
-    interest_state_snapshot: dict[str, Any] | None,
+    current_thought_snapshot: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """
     autonomy.message 用の「報告焦点（report_focus）」を構造情報だけで作る。
 
     方針:
         - 自然言語本文の意味推定は行わない。
-        - result_payload / interest_state / runtime_blackboard の構造フィールドだけ使う。
+        - result_payload / current_thought / runtime_blackboard の構造フィールドだけ使う。
         - LLM には「何を先に伝えるか」の候補を渡し、summary_text 依存を下げる。
     """
 
@@ -302,14 +394,18 @@ def _build_autonomy_message_report_focus(
     backend_norm = str(backend or "").strip() or None
     payload_obj = dict(result_payload_for_render or {})
     runtime_bb = dict(runtime_blackboard_snapshot or {})
-    interest_state = dict(interest_state_snapshot or {}) if isinstance(interest_state_snapshot, dict) else {}
+    current_thought = (
+        dict(current_thought_snapshot or {})
+        if isinstance(current_thought_snapshot, dict)
+        else {}
+    )
 
     # --- attention_targets を集約（構造値のみ） ---
     attention_targets_raw: list[Any] = []
     if isinstance(runtime_bb.get("attention_targets"), list):
         attention_targets_raw.extend(list(runtime_bb.get("attention_targets") or []))
-    if isinstance(interest_state.get("attention_targets"), list):
-        attention_targets_raw.extend(list(interest_state.get("attention_targets") or []))
+    if isinstance(current_thought.get("attention_targets"), list):
+        attention_targets_raw.extend(list(current_thought.get("attention_targets") or []))
 
     attention_type_value_scores: dict[tuple[str, str], float] = {}
 
@@ -339,7 +435,7 @@ def _build_autonomy_message_report_focus(
         by_type_scores[t][str(v)] = float(w)
 
     # --- 代表的な構造関心を取り出す ---
-    interaction_mode = str(interest_state.get("interaction_mode") or "").strip()
+    interaction_mode = str(current_thought.get("interaction_mode") or "").strip()
     if interaction_mode not in {"observe", "support", "explore", "wait"}:
         interaction_mode = None
     research_interest_score = max(
@@ -558,7 +654,7 @@ def _build_autonomy_message_render_input(
     mood_snapshot: dict[str, Any],
     confirmed_preferences: dict[str, Any],
     runtime_blackboard_snapshot: dict[str, Any],
-    interest_state_snapshot: dict[str, Any] | None,
+    current_thought_snapshot: dict[str, Any] | None,
     decision: ActionDecision,
     console_delivery_obj: dict[str, Any],
     message_kind: str,
@@ -616,7 +712,11 @@ def _build_autonomy_message_render_input(
         backend=(str(backend) if backend else None),
         result_payload_for_render=dict(result_payload_for_render),
         runtime_blackboard_snapshot=dict(runtime_blackboard_snapshot or {}),
-        interest_state_snapshot=(dict(interest_state_snapshot) if isinstance(interest_state_snapshot, dict) else None),
+        current_thought_snapshot=(
+            dict(current_thought_snapshot)
+            if isinstance(current_thought_snapshot, dict)
+            else None
+        ),
     )
 
     # --- render 入力（構造化JSON） ---
@@ -629,7 +729,11 @@ def _build_autonomy_message_render_input(
         "mood": dict(mood_snapshot or {}),
         "confirmed_preferences": dict(confirmed_preferences or {}),
         "runtime_blackboard": dict(runtime_blackboard_snapshot or {}),
-        "current_thought": (dict(interest_state_snapshot) if isinstance(interest_state_snapshot, dict) else None),
+        "current_thought": (
+            dict(current_thought_snapshot)
+            if isinstance(current_thought_snapshot, dict)
+            else None
+        ),
         "delivery": {
             "mode": str(delivery_mode),
             "message_kind": str(message_kind),
@@ -778,7 +882,7 @@ def _emit_autonomy_console_events_for_action_result(
             cfg = get_config_store().config
             mood_snapshot = _load_recent_mood_snapshot(db)
             confirmed_preferences_snapshot = _load_confirmed_preferences_snapshot_for_deliberation(db)
-            persona_interest_state_snapshot = _load_persona_interest_state_snapshot_for_deliberation(db)
+            current_thought_snapshot = _load_current_thought_snapshot_for_deliberation(db)
             runtime_blackboard_snapshot = get_runtime_blackboard().snapshot()
             if not isinstance(runtime_blackboard_snapshot, dict):
                 runtime_blackboard_snapshot = {}
@@ -789,9 +893,9 @@ def _emit_autonomy_console_events_for_action_result(
                 mood_snapshot=dict(mood_snapshot or {}),
                 confirmed_preferences=dict(confirmed_preferences_snapshot or {}),
                 runtime_blackboard_snapshot=dict(runtime_blackboard_snapshot or {}),
-                interest_state_snapshot=(
-                    dict(persona_interest_state_snapshot)
-                    if isinstance(persona_interest_state_snapshot, dict)
+                current_thought_snapshot=(
+                    dict(current_thought_snapshot)
+                    if isinstance(current_thought_snapshot, dict)
                     else None
                 ),
                 decision=decision,
@@ -1008,7 +1112,7 @@ def _load_confirmed_preferences_snapshot_for_deliberation(db) -> dict[str, Any]:
     return out
 
 
-def _load_persona_interest_state_snapshot_for_deliberation(db) -> dict[str, Any] | None:
+def _load_current_thought_snapshot_for_deliberation(db) -> dict[str, Any] | None:
     """
     Deliberation / autonomy.message 再生成用の current_thought_state スナップショットを返す。
 
@@ -1138,7 +1242,7 @@ def _build_persona_deliberation_focus(
     trigger: AutonomyTrigger,
     confirmed_preferences: dict[str, Any],
     runtime_blackboard_snapshot: dict[str, Any],
-    persona_interest_state_snapshot: dict[str, Any] | None,
+    current_thought_snapshot: dict[str, Any] | None,
     agenda_threads_snapshot: list[dict[str, Any]],
     active_goal_ids: list[str],
 ) -> dict[str, Any]:
@@ -1169,19 +1273,19 @@ def _build_persona_deliberation_focus(
     if not isinstance(intent_counts, dict):
         intent_counts = {}
 
-    # --- runtime attention_targets + interest_state.attention_targets を使う ---
+    # --- runtime attention_targets + current_thought.attention_targets を使う ---
     attention_targets_raw: list[Any] = []
     if isinstance(runtime_blackboard_snapshot.get("attention_targets"), list):
         attention_targets_raw.extend(list(runtime_blackboard_snapshot.get("attention_targets") or []))
-    if isinstance(persona_interest_state_snapshot, dict) and isinstance(persona_interest_state_snapshot.get("attention_targets"), list):
-        attention_targets_raw.extend(list(persona_interest_state_snapshot.get("attention_targets") or []))
+    if isinstance(current_thought_snapshot, dict) and isinstance(current_thought_snapshot.get("attention_targets"), list):
+        attention_targets_raw.extend(list(current_thought_snapshot.get("attention_targets") or []))
     attention_targets: list[dict[str, Any]] = []
     for item in list(attention_targets_raw or []):
         if not isinstance(item, dict):
             continue
         attention_targets.append(dict(item))
 
-    # --- 重み付き優先度マップ（interest_state / runtime の attention_targets を実際の選別に使う） ---
+    # --- 重み付き優先度マップ（current_thought / runtime の attention_targets を実際の選別に使う） ---
     priority_state_kind_scores: dict[str, float] = {}
     priority_goal_id_scores: dict[str, float] = {}
     priority_action_type_scores: dict[str, float] = {}
@@ -1318,10 +1422,10 @@ def _build_persona_deliberation_focus(
     has_active_focus = bool(priority_action_types or priority_capabilities or priority_goal_types or has_active_agenda)
 
     # --- interaction mode を構造値から推定（VADは使わない） ---
-    # --- interest_state.interaction_mode を最優先ヒントとして使う（構造値のみ） ---
+    # --- current_thought.interaction_mode を最優先ヒントとして使う（構造値のみ） ---
     interaction_mode_hint = ""
-    if isinstance(persona_interest_state_snapshot, dict):
-        interest_mode_raw = str(persona_interest_state_snapshot.get("interaction_mode") or "").strip()
+    if isinstance(current_thought_snapshot, dict):
+        interest_mode_raw = str(current_thought_snapshot.get("interaction_mode") or "").strip()
         if interest_mode_raw in {"observe", "support", "explore", "wait"}:
             interaction_mode_hint = str(interest_mode_raw)
     if not interaction_mode_hint:
@@ -1353,7 +1457,7 @@ def _build_persona_deliberation_focus(
     if interaction_mode_hint == "wait":
         limits["events"] = min(int(limits["events"]), 16)
         limits["states"] = min(int(limits["states"]), 20)
-    # --- interest_state 由来の検索/調査関心でも explore 枠を少し広げる ---
+    # --- current_thought 由来の検索/調査関心でも explore 枠を少し広げる ---
     if interaction_mode_hint == "explore" and (topic_like_count > 0 or has_research_interest):
         limits["events"] = min(int(limits["events"]) + 4, 28)
         limits["states"] = min(int(limits["states"]) + 2, 26)
@@ -2176,7 +2280,7 @@ def _collect_deliberation_input(
 
     # --- 人格判断の材料（構造化済みの好み/短期ランタイム状態） ---
     confirmed_preferences = _load_confirmed_preferences_snapshot_for_deliberation(db)
-    persona_interest_state_snapshot = _load_persona_interest_state_snapshot_for_deliberation(db)
+    current_thought_snapshot = _load_current_thought_snapshot_for_deliberation(db)
     agenda_threads_snapshot = _load_agenda_threads_snapshot_for_deliberation(db)
     runtime_blackboard_snapshot = get_runtime_blackboard().snapshot()
     if not isinstance(runtime_blackboard_snapshot, dict):
@@ -2214,7 +2318,7 @@ def _collect_deliberation_input(
         trigger=trigger,
         confirmed_preferences=confirmed_preferences,
         runtime_blackboard_snapshot=runtime_blackboard_snapshot,
-        persona_interest_state_snapshot=persona_interest_state_snapshot,
+        current_thought_snapshot=current_thought_snapshot,
         agenda_threads_snapshot=agenda_threads_snapshot,
         active_goal_ids=active_goal_ids,
     )
@@ -2250,6 +2354,7 @@ def _collect_deliberation_input(
     recent_states = (
         db.query(State)
         .filter(State.searchable == 1)
+        .filter(State.kind != "current_thought_state")
         .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
         .limit(fetch_states_limit)
         .all()
@@ -2330,7 +2435,7 @@ def _collect_deliberation_input(
         "goals": goals,
         "intents": intents,
         "confirmed_preferences": confirmed_preferences,
-        "current_thought": persona_interest_state_snapshot,
+        "current_thought": current_thought_snapshot,
         "agenda_threads": agenda_threads_snapshot,
         "runtime_blackboard": runtime_blackboard_snapshot,
         "persona_deliberation_focus": persona_deliberation_focus,
@@ -2529,6 +2634,13 @@ def _handle_deliberate_once(
                     detail=str(exc),
                 ) from exc
 
+            # --- 実行対象の agenda thread を決めておく（後続 ActionResult の正本更新に使う） ---
+            decision_agenda_thread_id = _select_agenda_thread_id_for_new_decision(
+                trigger=trigger,
+                deliberation_input=dict(deliberation_input or {}),
+                decision=decision,
+            )
+
             # --- event: deliberation_decision（常時 searchable=0） ---
             decision_event = Event(
                 created_at=int(now_domain_ts),
@@ -2559,6 +2671,7 @@ def _handle_deliberate_once(
                     event_id=int(decision_event.event_id),
                     trigger_type=str(trigger.trigger_type),
                     trigger_ref=str(trigger.trigger_id),
+                    agenda_thread_id=(str(decision_agenda_thread_id) if decision_agenda_thread_id else None),
                     decision_outcome=str(decision.decision_outcome),
                     action_type=(str(decision.action_type) if decision.action_type else None),
                     action_payload_json=(str(decision.action_payload_json) if decision.action_payload_json else None),

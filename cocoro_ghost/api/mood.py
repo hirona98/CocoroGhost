@@ -74,6 +74,32 @@ def _fmt_ts_or_none(ts: int | None) -> str | None:
     return format_iso8601_local_with_tz(int(ts))
 
 
+def _build_success_delivery_expectation_for_action_type(*, action_type: str) -> dict[str, Any]:
+    """intent の成功時配信見込みを返す。"""
+
+    # --- web_research は result_payload の量で notify/chat が分かれる ---
+    action_type_norm = str(action_type or "").strip()
+    if action_type_norm == "web_research":
+        return {
+            "report_candidate_level": None,
+            "delivery_mode": None,
+            "note": "result_payload_dependent",
+        }
+
+    # --- それ以外は構造値だけで決められる ---
+    report_candidate = derive_report_candidate_for_action_result(
+        action_type=str(action_type_norm),
+        result_status="success",
+    )
+    return {
+        "report_candidate_level": str(report_candidate["level"]),
+        "delivery_mode": resolve_delivery_mode_from_report_candidate_level(
+            str(report_candidate["level"]),
+        ),
+        "note": None,
+    }
+
+
 def _build_background_debug_snapshot(
     *,
     db,
@@ -325,9 +351,8 @@ def _build_background_debug_snapshot(
     recent_intents: list[dict[str, Any]] = []
     for row in list(recent_intents_rows or []):
         # --- intent 単位で、成功時/失敗時の完了配信を先に計算する ---
-        success_report_candidate = derive_report_candidate_for_action_result(
+        success_expectation = _build_success_delivery_expectation_for_action_type(
             action_type=str(row.action_type),
-            result_status="success",
         )
         failure_report_candidate = derive_report_candidate_for_action_result(
             action_type=str(row.action_type),
@@ -373,10 +398,9 @@ def _build_background_debug_snapshot(
                 "scheduled_at": _fmt_ts_or_none(int(row.scheduled_at) if row.scheduled_at is not None else None),
                 "updated_at": _fmt_ts_or_none(int(row.updated_at)),
                 "last_result_status": last_result_status,
-                "success_report_candidate_level": str(success_report_candidate["level"]),
-                "success_delivery_mode": resolve_delivery_mode_from_report_candidate_level(
-                    str(success_report_candidate["level"])
-                ),
+                "success_report_candidate_level": success_expectation.get("report_candidate_level"),
+                "success_delivery_mode": success_expectation.get("delivery_mode"),
+                "success_delivery_note": success_expectation.get("note"),
                 "failure_report_candidate_level": str(failure_report_candidate["level"]),
                 "failure_delivery_mode": resolve_delivery_mode_from_report_candidate_level(
                     str(failure_report_candidate["level"])

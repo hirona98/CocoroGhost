@@ -52,7 +52,7 @@ class _MemorySessionEntry:
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
-_MEMORY_DB_USER_VERSION = 13
+_MEMORY_DB_USER_VERSION = 14
 _SETTINGS_DB_USER_VERSION = 7
 
 

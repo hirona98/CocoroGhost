@@ -386,6 +386,27 @@ def _migrate_memory_db_v12_to_v13(engine, logger: logging.Logger) -> None:
     logger.info("memory DB migrated: user_version 12 -> 13")
 
 
+def _migrate_memory_db_v13_to_v14(engine, logger: logging.Logger) -> None:
+    """記憶DBを v13 から v14 へ移行する（action_decisions.agenda_thread_id 追加）。"""
+
+    with engine.connect() as conn:
+        # --- action_decisions に対象 agenda thread 列を追加する ---
+        columns = _get_table_columns(conn, "action_decisions")
+        if "agenda_thread_id" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE action_decisions "
+                    "ADD COLUMN agenda_thread_id TEXT"
+                )
+            )
+
+        # --- スキーマバージョンを更新 ---
+        conn.execute(text("PRAGMA user_version=14"))
+        conn.commit()
+
+    logger.info("memory DB migrated: user_version 13 -> 14")
+
+
 def migrate_memory_db_if_needed(*, engine, target_user_version: int, logger: logging.Logger) -> None:
     """記憶DBに必要なマイグレーションを適用する。"""
 
@@ -402,5 +423,8 @@ def migrate_memory_db_if_needed(*, engine, target_user_version: int, logger: log
             continue
         if current == 12 and int(target_user_version) >= 13:
             _migrate_memory_db_v12_to_v13(engine, logger)
+            continue
+        if current == 13 and int(target_user_version) >= 14:
+            _migrate_memory_db_v13_to_v14(engine, logger)
             continue
         break
