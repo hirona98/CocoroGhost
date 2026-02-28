@@ -384,8 +384,12 @@ class AutonomyOrchestrator:
         """
 
         # --- active/open/blocked の中から、次アクションがある due thread だけを見る。 ---
+        # NOTE:
+        # - ORM行を session 外へ持ち出すと DetachedInstanceError になり得る。
+        # - ここでは session 内で必要なスカラー値だけへ落としてから返す。
+        rows: list[dict[str, Any]] = []
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
-            rows = (
+            db_rows = (
                 db.query(AgendaThread)
                 .filter(AgendaThread.status.in_(["active", "open", "blocked"]))
                 .filter(AgendaThread.followup_due_at.isnot(None))
@@ -395,6 +399,19 @@ class AutonomyOrchestrator:
                 .limit(16)
                 .all()
             )
+            for row in list(db_rows or []):
+                rows.append(
+                    {
+                        "thread_id": str(row.thread_id),
+                        "topic": str(row.topic),
+                        "status": str(row.status),
+                        "priority": int(row.priority or 0),
+                        "followup_due_at": (int(row.followup_due_at) if row.followup_due_at is not None else 0),
+                        "updated_at": int(row.updated_at or 0),
+                        "next_action_type": (str(row.next_action_type) if row.next_action_type else ""),
+                        "next_action_payload_json": str(row.next_action_payload_json or "{}"),
+                    }
+                )
 
         # --- active を優先しつつ、priority と due 時刻で安定並びにする。 ---
         status_rank = {
@@ -405,26 +422,26 @@ class AutonomyOrchestrator:
         ordered_rows = sorted(
             list(rows or []),
             key=lambda row: (
-                int(status_rank.get(str(row.status or ""), 9)),
-                -int(row.priority or 0),
-                int(row.followup_due_at or 0),
-                -int(row.updated_at or 0),
-                str(row.thread_id or ""),
+                int(status_rank.get(str(row.get("status") or ""), 9)),
+                -int(row.get("priority") or 0),
+                int(row.get("followup_due_at") or 0),
+                -int(row.get("updated_at") or 0),
+                str(row.get("thread_id") or ""),
             ),
         )[:8]
 
         out: list[dict[str, Any]] = []
         for row in list(ordered_rows or []):
-            if not str(row.next_action_type or "").strip():
+            if not str(row.get("next_action_type") or "").strip():
                 continue
-            payload_obj = json.loads(str(row.next_action_payload_json or "{}"))
+            payload_obj = json.loads(str(row.get("next_action_payload_json") or "{}"))
             if not isinstance(payload_obj, dict):
                 raise RuntimeError("agenda_threads.next_action_payload_json is not an object")
             out.append(
                 {
-                    "thread_id": str(row.thread_id),
-                    "topic": str(row.topic),
-                    "next_action_type": str(row.next_action_type),
+                    "thread_id": str(row.get("thread_id") or ""),
+                    "topic": str(row.get("topic") or ""),
+                    "next_action_type": str(row.get("next_action_type") or ""),
                     "next_action_payload": dict(payload_obj),
                 }
             )
