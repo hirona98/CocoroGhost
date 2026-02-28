@@ -10,7 +10,7 @@
 - 全体初期化の流れ（設定DB→プリセット→記憶DB→ルータ登録）: `cocoro_ghost/main.py` の `create_app()` と `cocoro_ghost/app_bootstrap/config_bootstrap.py` / `cocoro_ghost/app_bootstrap/routers.py` / `cocoro_ghost/app_bootstrap/lifecycle.py`
 - 同期/非同期の境界（SSE開始前に検索確定）: `docs/10_実行フロー.md`
 - API（HTTPS必須/認証/主要エンドポイント）: `docs/07_API.md`
-- 時刻基盤（system/domain二層）: `cocoro_ghost/clock.py` と `cocoro_ghost/api/control.py`（`/api/control/time*`）
+- 時刻基盤（system/domain二層）: `cocoro_ghost/clock.py` と `cocoro_ghost/api/control.py` / `cocoro_ghost/api/services/control_service.py`（`/api/control/time*`）
 - 記憶処理の入口（mixin構成）: `cocoro_ghost/memory/manager.py`
 - 非同期ジョブ（WritePlan/索引/整理など）: `cocoro_ghost/worker.py`（スケジューラ）/ `cocoro_ghost/jobs/registry.py`（ディスパッチ）/ `cocoro_ghost/worker_handlers_*.py`（実処理）/ `cocoro_ghost/worker_handlers_write_plan_generate.py` / `cocoro_ghost/worker_handlers_write_plan_apply.py`（WritePlan分割）/ `cocoro_ghost/worker_handlers_common.py`（共通ヘルパ）/ `cocoro_ghost/worker_constants.py`（共通定数）/ `cocoro_ghost/internal_worker.py`
 - 確定プロフィール（好み/苦手: ConfirmedPreferences）: `cocoro_ghost/memory/_chat_mixin.py` と `cocoro_ghost/worker_handlers_write_plan.py`
