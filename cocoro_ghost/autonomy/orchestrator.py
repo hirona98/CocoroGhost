@@ -8,6 +8,8 @@ autonomy オーケストレータ。
 
 from __future__ import annotations
 
+import json
+import hashlib
 import logging
 import threading
 from typing import Any
@@ -16,7 +18,8 @@ from cocoro_ghost.autonomy.repository import AutonomyRepository
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.clock import get_clock_service
 from cocoro_ghost.config import get_config_store
-from cocoro_ghost.db import settings_session_scope
+from cocoro_ghost.db import memory_session_scope, settings_session_scope
+from cocoro_ghost.memory_models import AgendaThread
 from cocoro_ghost.models import GlobalSettings
 
 
@@ -29,7 +32,7 @@ class AutonomyOrchestrator:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._running = False
-        self._last_heartbeat_bucket: int | None = None
+        self._last_heartbeat_trigger_key: str | None = None
         self._last_snapshot_bucket: int | None = None
         self._runtime_recovered_once = False
 
@@ -88,19 +91,52 @@ class AutonomyOrchestrator:
                     int(recovered.get("reenqueued_execute_jobs") or 0),
                 )
 
-            # --- heartbeat trigger を投入 ---
+            # --- heartbeat trigger は due な agenda_threads がある時だけ投入する ---
             heartbeat_seconds = int(settings["autonomy_heartbeat_seconds"])
-            heartbeat_bucket = int(now_domain_ts // max(1, int(heartbeat_seconds)))
-            if self._last_heartbeat_bucket != int(heartbeat_bucket):
-                self._last_heartbeat_bucket = int(heartbeat_bucket)
-                repo.enqueue_trigger(
-                    trigger_type="heartbeat",
-                    trigger_key=f"heartbeat:{int(heartbeat_bucket)}",
-                    payload={"heartbeat_bucket": int(heartbeat_bucket)},
-                    now_system_ts=int(now_system_ts),
-                    scheduled_at=int(now_domain_ts),
-                    source_event_id=None,
-                )
+            due_agenda_threads = self._list_due_agenda_threads(
+                embedding_preset_id=str(cfg.embedding_preset_id),
+                embedding_dimension=int(cfg.embedding_dimension),
+                now_domain_ts=int(now_domain_ts),
+            )
+            if due_agenda_threads:
+                heartbeat_bucket = int(now_domain_ts // max(1, int(heartbeat_seconds)))
+                signature_src = "|".join(str(x.get("thread_id") or "") for x in list(due_agenda_threads or []))
+                signature_hash = hashlib.sha1(signature_src.encode("utf-8")).hexdigest()[:12]
+                heartbeat_trigger_key = f"heartbeat:{int(heartbeat_bucket)}:{signature_hash}"
+                if self._last_heartbeat_trigger_key != str(heartbeat_trigger_key):
+                    self._last_heartbeat_trigger_key = str(heartbeat_trigger_key)
+                    heartbeat_payload: dict[str, Any] = {
+                        "heartbeat_bucket": int(heartbeat_bucket),
+                        "heartbeat_reason": "agenda_due",
+                        "due_agenda_thread_ids": [
+                            str(x.get("thread_id") or "")
+                            for x in list(due_agenda_threads or [])
+                            if str(x.get("thread_id") or "").strip()
+                        ],
+                        "due_agenda_count": int(len(due_agenda_threads)),
+                    }
+                    top_due = dict(due_agenda_threads[0])
+                    top_action_type = str(top_due.get("next_action_type") or "").strip()
+                    top_action_payload = (
+                        dict(top_due.get("next_action_payload") or {})
+                        if isinstance(top_due.get("next_action_payload"), dict)
+                        else {}
+                    )
+                    if top_action_type:
+                        heartbeat_payload["suggested_action_type"] = str(top_action_type)
+                        heartbeat_payload["suggested_action_payload"] = dict(top_action_payload)
+                        heartbeat_payload["agenda_thread_id"] = str(top_due.get("thread_id") or "")
+                        heartbeat_payload["agenda_topic"] = str(top_due.get("topic") or "")
+                    repo.enqueue_trigger(
+                        trigger_type="heartbeat",
+                        trigger_key=str(heartbeat_trigger_key),
+                        payload=heartbeat_payload,
+                        now_system_ts=int(now_system_ts),
+                        scheduled_at=int(now_domain_ts),
+                        source_event_id=None,
+                    )
+            else:
+                self._last_heartbeat_trigger_key = None
 
 
             # --- runtime snapshot ジョブ（30秒ごと）を投入 ---
@@ -335,6 +371,64 @@ class AutonomyOrchestrator:
                 "autonomy_heartbeat_seconds": max(1, int(getattr(row, "autonomy_heartbeat_seconds", 30))),
                 "autonomy_max_parallel_intents": max(1, int(getattr(row, "autonomy_max_parallel_intents", 2))),
             }
+
+    def _list_due_agenda_threads(
+        self,
+        *,
+        embedding_preset_id: str,
+        embedding_dimension: int,
+        now_domain_ts: int,
+    ) -> list[dict[str, Any]]:
+        """
+        次の一手が due になっている agenda_threads を返す。
+        """
+
+        # --- active/open/blocked の中から、次アクションがある due thread だけを見る。 ---
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            rows = (
+                db.query(AgendaThread)
+                .filter(AgendaThread.status.in_(["active", "open", "blocked"]))
+                .filter(AgendaThread.followup_due_at.isnot(None))
+                .filter(AgendaThread.followup_due_at <= int(now_domain_ts))
+                .filter(AgendaThread.next_action_type.isnot(None))
+                .order_by(AgendaThread.updated_at.desc())
+                .limit(16)
+                .all()
+            )
+
+        # --- active を優先しつつ、priority と due 時刻で安定並びにする。 ---
+        status_rank = {
+            "active": 0,
+            "open": 1,
+            "blocked": 2,
+        }
+        ordered_rows = sorted(
+            list(rows or []),
+            key=lambda row: (
+                int(status_rank.get(str(row.status or ""), 9)),
+                -int(row.priority or 0),
+                int(row.followup_due_at or 0),
+                -int(row.updated_at or 0),
+                str(row.thread_id or ""),
+            ),
+        )[:8]
+
+        out: list[dict[str, Any]] = []
+        for row in list(ordered_rows or []):
+            if not str(row.next_action_type or "").strip():
+                continue
+            payload_obj = json.loads(str(row.next_action_payload_json or "{}"))
+            if not isinstance(payload_obj, dict):
+                raise RuntimeError("agenda_threads.next_action_payload_json is not an object")
+            out.append(
+                {
+                    "thread_id": str(row.thread_id),
+                    "topic": str(row.topic),
+                    "next_action_type": str(row.next_action_type),
+                    "next_action_payload": dict(payload_obj),
+                }
+            )
+        return out
 
 
 _orchestrator = AutonomyOrchestrator()

@@ -1286,16 +1286,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         "constraints": [],
                     },
                 )
-            if target_type == "action_type" and target_value in {
-                "observe_screen",
-                "observe_camera",
-                "web_research",
-                "schedule_action",
-                "device_action",
-                "move_to",
-                "agent_delegate",
-            }:
-                return (str(target_value), {})
             return (None, None)
 
         # --- thread_id は thread_key から安定生成し、同一対象を継続扱いにする。 ---
