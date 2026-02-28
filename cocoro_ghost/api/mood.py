@@ -20,14 +20,29 @@ from sqlalchemy import func
 
 from cocoro_ghost import affect
 from cocoro_ghost import worker
-from cocoro_ghost.autonomy.contracts import resolve_delivery_mode_from_report_candidate_level
+from cocoro_ghost.autonomy.contracts import (
+    derive_report_candidate_for_action_result,
+    parse_console_delivery,
+    resolve_delivery_mode_from_report_candidate_level,
+)
 from cocoro_ghost.clock import ClockService
 from cocoro_ghost import common_utils
 from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.deps import get_clock_service_dep, get_config_store_dep
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
-from cocoro_ghost.memory_models import AgendaThread, ActionDecision, AgentJob, AutonomyTrigger, Event, EventAffect, Intent, Job, State
+from cocoro_ghost.memory_models import (
+    AgendaThread,
+    ActionDecision,
+    ActionResult,
+    AgentJob,
+    AutonomyTrigger,
+    Event,
+    EventAffect,
+    Intent,
+    Job,
+    State,
+)
 from cocoro_ghost.time_utils import format_iso8601_local_with_tz
 from cocoro_ghost.worker_constants import AGENT_JOB_STALE_SECONDS as _AGENT_JOB_STALE_SECONDS
 from cocoro_ghost.worker_constants import JOB_PENDING as _JOB_PENDING
@@ -180,6 +195,36 @@ def _build_background_debug_snapshot(
     )
     latest_decision: dict[str, Any] | None = None
     if latest_decision_row is not None:
+        # --- latest decision の progress 表示方針を読む ---
+        console_delivery_obj = parse_console_delivery(
+            common_utils.json_loads_maybe(str(latest_decision_row.console_delivery_json or "{}"))
+        )
+
+        # --- latest decision に対応する最新 action_result を引く ---
+        latest_result_row = (
+            db.query(ActionResult)
+            .filter(ActionResult.decision_id == str(latest_decision_row.decision_id))
+            .order_by(ActionResult.created_at.desc())
+            .limit(1)
+            .one_or_none()
+        )
+        completion_result_status = None
+        completion_report_candidate_level = None
+        completion_delivery_mode = None
+        completion_delivery_reason = None
+        if latest_result_row is not None:
+            completion_result_status = str(latest_result_row.result_status)
+            completion_report_candidate = derive_report_candidate_for_action_result(
+                action_type=(str(latest_decision_row.action_type) if latest_decision_row.action_type else ""),
+                result_status=str(latest_result_row.result_status),
+            )
+            completion_report_candidate_level = str(completion_report_candidate["level"])
+            completion_delivery_mode = resolve_delivery_mode_from_report_candidate_level(
+                completion_report_candidate_level,
+            )
+            completion_delivery_reason = str(completion_report_candidate["reason"] or "").strip() or None
+
+        # --- latest decision の理由本文はプレビューだけ返す ---
         reason_preview = str(latest_decision_row.reason_text or "").strip()
         if len(reason_preview) > 160:
             reason_preview = reason_preview[:160]
@@ -188,6 +233,12 @@ def _build_background_debug_snapshot(
             "decision_outcome": str(latest_decision_row.decision_outcome),
             "trigger_type": str(latest_decision_row.trigger_type),
             "action_type": (str(latest_decision_row.action_type) if latest_decision_row.action_type else None),
+            "progress_delivery_mode": str(console_delivery_obj.get("on_progress") or ""),
+            "progress_message_kind": str(console_delivery_obj.get("message_kind") or ""),
+            "result_status": completion_result_status,
+            "completion_report_candidate_level": completion_report_candidate_level,
+            "completion_delivery_mode": completion_delivery_mode,
+            "completion_delivery_reason": completion_delivery_reason,
             "reason_text_preview": (str(reason_preview) if reason_preview else None),
             "defer_until": _fmt_ts_or_none(int(latest_decision_row.defer_until)) if latest_decision_row.defer_until is not None else None,
             "next_deliberation_at": (
