@@ -184,14 +184,20 @@ def parse_console_delivery(value: Any) -> dict[str, Any]:
     return _parse_console_delivery(value)
 
 
-def derive_report_candidate_for_action_result(*, action_type: Any, result_status: Any) -> dict[str, str]:
+def derive_report_candidate_for_action_result(
+    *,
+    action_type: Any,
+    result_status: Any,
+    result_payload: Any | None = None,
+) -> dict[str, str]:
     """
     ActionResult から report candidate を決める。
 
     方針:
         - 完了時の共有可否は action_result 側で決める。
         - Deliberation の terminal console_delivery には依存しない。
-        - 構造値（action_type/result_status）のみ使う。
+        - 基本は構造値（action_type/result_status）で決める。
+        - `web_research` 成功時のみ result_payload の構造量で `notify/chat` を分ける。
     """
     action_type_norm = str(action_type or "").strip()
     result_status_norm = _normalize_enum_text(
@@ -199,6 +205,11 @@ def derive_report_candidate_for_action_result(*, action_type: Any, result_status
         field_name="result_status",
         allowed=_RESULT_STATUSES,
     )
+    result_payload_obj: dict[str, Any] | None = None
+    if result_payload is not None:
+        if not isinstance(result_payload, dict):
+            raise ValueError("result_payload must be an object")
+        result_payload_obj = dict(result_payload)
 
     # --- 失敗は即時通知対象にする ---
     if result_status_norm == "failed":
@@ -216,9 +227,34 @@ def derive_report_candidate_for_action_result(*, action_type: Any, result_status
 
     # --- 裏で調査して価値が出た結果だけ chat 候補に上げる ---
     if result_status_norm == "success" and action_type_norm == "web_research":
+        if result_payload_obj is None:
+            return {
+                "level": "notify",
+                "reason": "research_result_ready",
+            }
+
+        findings_raw = result_payload_obj.get("findings")
+        if findings_raw is not None and not isinstance(findings_raw, list):
+            raise ValueError("result_payload.findings must be a list")
+        sources_raw = result_payload_obj.get("sources")
+        if sources_raw is not None and not isinstance(sources_raw, list):
+            raise ValueError("result_payload.sources must be a list")
+        notes_raw = result_payload_obj.get("notes")
+        if notes_raw is not None and not isinstance(notes_raw, str):
+            raise ValueError("result_payload.notes must be a string")
+
+        findings_count = int(len(findings_raw or []))
+        sources_count = int(len(sources_raw or []))
+        notes_present = bool(str(notes_raw or "").strip())
+        report_units = int(findings_count * 2) + int(min(sources_count, 2)) + (1 if notes_present else 0)
+        if report_units >= 3:
+            return {
+                "level": "chat",
+                "reason": "research_result_rich",
+            }
         return {
-            "level": "chat",
-            "reason": "research_result_ready",
+            "level": "notify",
+            "reason": "research_result_brief",
         }
 
     # --- 委譲完了は通知候補にする ---

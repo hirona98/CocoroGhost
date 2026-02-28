@@ -217,6 +217,7 @@ def _sync_agenda_thread_after_action_result(
     result_id: str,
     action_type: str,
     result_status: str,
+    result_payload: dict[str, Any],
     now_system_ts: int,
 ) -> None:
     """
@@ -245,6 +246,7 @@ def _sync_agenda_thread_after_action_result(
     report_candidate = derive_report_candidate_for_action_result(
         action_type=str(action_type),
         result_status=str(result_status),
+        result_payload=dict(result_payload),
     )
     result_status_norm = str(result_status)
     if result_status_norm == "failed":
@@ -731,8 +733,10 @@ def _emit_autonomy_console_events_for_action_result(
         console_delivery_obj = parse_console_delivery(console_delivery_raw)
 
         # --- agent_delegate 結果なら payload から backend / agent_job_id を拾う ---
-        result_payload_obj = common_utils.json_loads_maybe(str(result.result_payload_json or ""))
-        result_payload = result_payload_obj if isinstance(result_payload_obj, dict) else {}
+        result_payload_obj = common_utils.json_loads_maybe(str(result.result_payload_json or "{}"))
+        if not isinstance(result_payload_obj, dict):
+            raise RuntimeError("action_result.result_payload_json is not an object")
+        result_payload = dict(result_payload_obj)
         agent_job_id = None
         backend = None
         if str(intent.action_type or "") == "agent_delegate":
@@ -760,6 +764,7 @@ def _emit_autonomy_console_events_for_action_result(
         report_candidate = derive_report_candidate_for_action_result(
             action_type=(str(intent.action_type) if intent.action_type is not None else ""),
             result_status=str(result.result_status),
+            result_payload=dict(result_payload),
         )
         terminal_mode = resolve_delivery_mode_from_report_candidate_level(
             report_candidate.get("level"),
@@ -1998,6 +2003,9 @@ def _finalize_intent_and_save_action_result(
     )
 
     # --- agenda thread の正本を即時同期し、完了時配信の根拠を先に揃える ---
+    result_payload_obj = common_utils.json_loads_maybe(str(result_payload_json or "{}"))
+    if not isinstance(result_payload_obj, dict):
+        raise RuntimeError("result_payload_json is not an object")
     _sync_agenda_thread_after_action_result(
         db=db,
         decision_id=str(decision_id),
@@ -2005,6 +2013,7 @@ def _finalize_intent_and_save_action_result(
         result_id=str(result_id),
         action_type=str(action_type),
         result_status=str(result_status),
+        result_payload=dict(result_payload_obj),
         now_system_ts=int(now_system_ts),
     )
 

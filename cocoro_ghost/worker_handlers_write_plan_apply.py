@@ -92,6 +92,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         action_result_status = ""
         action_result_useful_for_recall = False
         action_result_row: ActionResult | None = None
+        action_result_payload_obj: dict[str, Any] | None = None
         if event_source == "action_result":
             action_result_row = (
                 db.query(ActionResult)
@@ -101,6 +102,10 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             if action_result_row is not None:
                 action_result_status = str(action_result_row.result_status or "").strip()
                 action_result_useful_for_recall = bool(int(action_result_row.useful_for_recall_hint or 0))
+                payload_obj = common_utils.json_loads_maybe(str(action_result_row.result_payload_json or "{}"))
+                if not isinstance(payload_obj, dict):
+                    raise RuntimeError("action_result.result_payload_json is not an object")
+                action_result_payload_obj = dict(payload_obj)
 
         allow_preference_updates = True
         allow_event_affect_update = True
@@ -1350,6 +1355,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             report_candidate = derive_report_candidate_for_action_result(
                 action_type=str(action_type_ctx),
                 result_status=str(action_result_status),
+                result_payload=(dict(action_result_payload_obj) if action_result_payload_obj is not None else None),
             )
             talk_candidate_level = str(report_candidate["level"])
             talk_candidate_reason = str(report_candidate["reason"])

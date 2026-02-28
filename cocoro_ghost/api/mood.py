@@ -214,9 +214,13 @@ def _build_background_debug_snapshot(
         completion_delivery_reason = None
         if latest_result_row is not None:
             completion_result_status = str(latest_result_row.result_status)
+            completion_result_payload_obj = common_utils.json_loads_maybe(str(latest_result_row.result_payload_json or "{}"))
+            if not isinstance(completion_result_payload_obj, dict):
+                raise RuntimeError("action_result.result_payload_json is not an object")
             completion_report_candidate = derive_report_candidate_for_action_result(
                 action_type=(str(latest_decision_row.action_type) if latest_decision_row.action_type else ""),
                 result_status=str(latest_result_row.result_status),
+                result_payload=dict(completion_result_payload_obj),
             )
             completion_report_candidate_level = str(completion_report_candidate["level"])
             completion_delivery_mode = resolve_delivery_mode_from_report_candidate_level(
@@ -336,9 +340,22 @@ def _build_background_debug_snapshot(
         actual_completion_delivery_reason = None
         last_result_status = str(row.last_result_status or "").strip() or None
         if last_result_status is not None:
+            latest_result_row = (
+                db.query(ActionResult)
+                .filter(ActionResult.intent_id == str(row.intent_id))
+                .order_by(ActionResult.created_at.desc())
+                .limit(1)
+                .one_or_none()
+            )
+            if latest_result_row is None:
+                raise RuntimeError("intent.last_result_status is set but action_result row is missing")
+            actual_result_payload_obj = common_utils.json_loads_maybe(str(latest_result_row.result_payload_json or "{}"))
+            if not isinstance(actual_result_payload_obj, dict):
+                raise RuntimeError("action_result.result_payload_json is not an object")
             actual_report_candidate = derive_report_candidate_for_action_result(
                 action_type=str(row.action_type),
                 result_status=str(last_result_status),
+                result_payload=dict(actual_result_payload_obj),
             )
             actual_completion_report_candidate_level = str(actual_report_candidate["level"])
             actual_completion_delivery_mode = resolve_delivery_mode_from_report_candidate_level(
