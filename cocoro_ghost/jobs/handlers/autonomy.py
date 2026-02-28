@@ -1216,6 +1216,324 @@ def _load_agenda_threads_snapshot_for_deliberation(db) -> list[dict[str, Any]]:
     return out
 
 
+def _normalize_action_text(value: Any) -> str:
+    """
+    行動キー比較用に文字列を正規化する。
+
+    方針:
+        - 改行や余分な空白を畳み、比較ゆらぎを減らす。
+        - 英字は casefold して、大文字小文字差を吸収する。
+    """
+
+    # --- 空文字を正規化する ---
+    text_in = str(value or "").replace("\r", "\n").strip()
+    if not text_in:
+        return ""
+
+    # --- 連続空白を1つに畳む ---
+    compact = " ".join(text_in.split())
+    return str(compact).casefold()
+
+
+def _canonical_action_key(
+    *,
+    action_type: str,
+    action_payload: dict[str, Any] | None,
+) -> str:
+    """
+    同一行動を判定するための正規化キーを返す。
+
+    方針:
+        - 自然言語本文ではなく、構造化 payload だけで同一性を決める。
+        - query のような再実行しやすい行動は、入力値まで含めて識別する。
+    """
+
+    # --- 行動種別を正規化する ---
+    action_type_norm = str(action_type or "").strip()
+    payload_obj = dict(action_payload or {})
+    if not action_type_norm:
+        return ""
+
+    # --- web_research は query を主キーにする ---
+    if action_type_norm == "web_research":
+        query_norm = _normalize_action_text(payload_obj.get("query"))
+        if query_norm:
+            return f"web_research:{query_norm}"
+        goal_norm = _normalize_action_text(payload_obj.get("goal"))
+        if goal_norm:
+            return f"web_research_goal:{goal_norm}"
+        return "web_research"
+
+    # --- 観測系は target_client_id まで含める ---
+    if action_type_norm in {"observe_screen", "observe_camera"}:
+        target_client_id = _normalize_action_text(payload_obj.get("target_client_id"))
+        if target_client_id:
+            return f"{action_type_norm}:{target_client_id}"
+        return str(action_type_norm)
+
+    # --- それ以外は action_type 単位で扱う ---
+    return str(action_type_norm)
+
+
+def _build_action_result_content_fingerprint(
+    *,
+    action_type: str,
+    summary_text: str,
+    result_payload: dict[str, Any] | None,
+) -> str:
+    """
+    ActionResult の内容差分を判定するためのフィンガープリントを返す。
+
+    方針:
+        - 自然文の意味推定はせず、保存済みの構造値を安定JSON化して比較する。
+        - web_research は findings / sources を中心に比較し、同じ結果の連投を検出する。
+    """
+
+    # --- 入力を正規化する ---
+    action_type_norm = str(action_type or "").strip()
+    payload_obj = dict(result_payload or {})
+    summary_norm = str(summary_text or "").strip()[:1000]
+
+    # --- web_research は主要フィールドだけを比較対象へ絞る ---
+    if action_type_norm == "web_research":
+        findings_out: list[str] = []
+        findings_raw = payload_obj.get("findings")
+        if isinstance(findings_raw, list):
+            for item in list(findings_raw):
+                text_v = str(item or "").strip()
+                if not text_v:
+                    continue
+                findings_out.append(str(text_v)[:500])
+                if len(findings_out) >= 8:
+                    break
+
+        sources_out: list[dict[str, str]] = []
+        sources_raw = payload_obj.get("sources")
+        if isinstance(sources_raw, list):
+            for item in list(sources_raw):
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get("url") or "").strip()[:1000]
+                title = str(item.get("title") or "").strip()[:240]
+                if not url and not title:
+                    continue
+                sources_out.append({"url": str(url), "title": str(title)})
+                if len(sources_out) >= 8:
+                    break
+
+        fingerprint_obj = {
+            "summary": str(summary_norm),
+            "findings": list(findings_out),
+            "sources": list(sources_out),
+            "notes": str(payload_obj.get("notes") or "").strip()[:500],
+        }
+    else:
+        # --- 汎用行動は summary と payload 全体を比較する ---
+        fingerprint_obj = {
+            "summary": str(summary_norm),
+            "result_payload": dict(payload_obj),
+        }
+
+    return hashlib.sha1(common_utils.json_dumps(fingerprint_obj).encode("utf-8")).hexdigest()
+
+
+def _build_novelty_context_for_deliberation(
+    db,
+    *,
+    trigger: AutonomyTrigger,
+    current_thought_snapshot: dict[str, Any] | None,
+    agenda_threads_snapshot: list[dict[str, Any]],
+    now_domain_ts: int,
+) -> dict[str, Any]:
+    """
+    Deliberation 用の反復・新規性コンテキストを構築する。
+
+    方針:
+        - 同じ行動を直近で実行したか、新しい観測差分があるか、ユーザー反応があるかを構造で渡す。
+        - ここでは「止める」のではなく、最初から選びにくい判断材料を作る。
+    """
+
+    # --- 判定窓を固定する ---
+    recent_window_seconds = 30 * 60
+    repeat_cooldown_seconds = 10 * 60
+
+    # --- 候補アクションキーを集める ---
+    candidate_action_keys: list[str] = []
+    seen_candidate_keys: set[str] = set()
+    for item in list(agenda_threads_snapshot or []):
+        if not isinstance(item, dict):
+            continue
+        action_type_norm = str(item.get("next_action_type") or "").strip()
+        if not action_type_norm:
+            continue
+        action_key = _canonical_action_key(
+            action_type=str(action_type_norm),
+            action_payload=(
+                dict(item.get("next_action_payload") or {})
+                if isinstance(item.get("next_action_payload"), dict)
+                else {}
+            ),
+        )
+        if not action_key or action_key in seen_candidate_keys:
+            continue
+        seen_candidate_keys.add(action_key)
+        candidate_action_keys.append(str(action_key))
+
+    if isinstance(current_thought_snapshot, dict):
+        next_candidate_action = current_thought_snapshot.get("next_candidate_action")
+        if isinstance(next_candidate_action, dict):
+            next_action_type = str(next_candidate_action.get("action_type") or "").strip()
+            if next_action_type:
+                action_key = _canonical_action_key(
+                    action_type=str(next_action_type),
+                    action_payload=(
+                        dict(next_candidate_action.get("action_payload") or {})
+                        if isinstance(next_candidate_action.get("action_payload"), dict)
+                        else {}
+                    ),
+                )
+                if action_key and action_key not in seen_candidate_keys:
+                    seen_candidate_keys.add(action_key)
+                    candidate_action_keys.append(str(action_key))
+
+    # --- 直近のユーザー会話時刻を取る ---
+    last_chat_row = (
+        db.query(Event.event_id, Event.created_at)
+        .filter(Event.source == "chat")
+        .order_by(Event.event_id.desc())
+        .first()
+    )
+    last_chat_event_id = int(last_chat_row[0]) if last_chat_row is not None and int(last_chat_row[0] or 0) > 0 else None
+    last_chat_created_at = (
+        int(last_chat_row[1])
+        if last_chat_row is not None and last_chat_row[1] is not None
+        else None
+    )
+
+    # --- 直近の ActionResult を読む ---
+    result_rows = db.execute(
+        text(
+            """
+            SELECT
+                ar.result_id,
+                ar.result_status,
+                ar.summary_text,
+                ar.result_payload_json,
+                ar.event_id,
+                e.created_at,
+                ad.action_type,
+                ad.action_payload_json
+              FROM action_results AS ar
+              JOIN events AS e
+                ON e.event_id = ar.event_id
+              JOIN action_decisions AS ad
+                ON ad.decision_id = ar.decision_id
+             ORDER BY ar.created_at DESC, ar.event_id DESC
+             LIMIT 32
+            """
+        )
+    ).fetchall()
+
+    grouped_runs: dict[str, list[dict[str, Any]]] = {}
+    for row in list(result_rows or []):
+        action_type_norm = str(row[6] or "").strip()
+        action_payload_obj = common_utils.json_loads_maybe(str(row[7] or "{}"))
+        if not isinstance(action_payload_obj, dict):
+            action_payload_obj = {}
+
+        canonical_key = _canonical_action_key(
+            action_type=str(action_type_norm),
+            action_payload=dict(action_payload_obj),
+        )
+        if not canonical_key:
+            continue
+
+        event_created_at = int(row[5] or 0)
+        age_seconds = max(0, int(now_domain_ts) - int(event_created_at))
+        if age_seconds > int(recent_window_seconds):
+            continue
+
+        result_payload_obj = common_utils.json_loads_maybe(str(row[3] or "{}"))
+        if not isinstance(result_payload_obj, dict):
+            result_payload_obj = {}
+
+        run_info = {
+            "action_type": str(action_type_norm),
+            "result_status": str(row[1] or "").strip(),
+            "result_id": str(row[0] or "").strip(),
+            "event_id": int(row[4] or 0),
+            "event_created_at": int(event_created_at),
+            "age_seconds": int(age_seconds),
+            "content_fingerprint": _build_action_result_content_fingerprint(
+                action_type=str(action_type_norm),
+                summary_text=str(row[2] or ""),
+                result_payload=dict(result_payload_obj),
+            ),
+        }
+        runs = grouped_runs.get(str(canonical_key))
+        if runs is None:
+            runs = []
+            grouped_runs[str(canonical_key)] = runs
+        runs.append(run_info)
+
+    # --- 反復アラートを構築する ---
+    repetition_alerts: list[dict[str, Any]] = []
+    avoid_action_keys: list[str] = []
+    avoid_action_types: list[str] = []
+    for canonical_key in list(candidate_action_keys or grouped_runs.keys()):
+        runs = list(grouped_runs.get(str(canonical_key)) or [])
+        if not runs:
+            continue
+
+        latest_run = dict(runs[0])
+        previous_run = dict(runs[1]) if len(runs) >= 2 else None
+        action_type_norm = str(latest_run.get("action_type") or "").strip()
+        has_content_change = bool(
+            previous_run
+            and str(previous_run.get("content_fingerprint") or "") != str(latest_run.get("content_fingerprint") or "")
+        )
+        has_user_reaction = bool(
+            last_chat_event_id is not None
+            and int(last_chat_event_id) > int(latest_run.get("event_id") or 0)
+        )
+        should_defer = bool(
+            action_type_norm == "web_research"
+            and int(latest_run.get("age_seconds") or 0) < int(repeat_cooldown_seconds)
+            and not has_content_change
+            and not has_user_reaction
+        )
+
+        if should_defer:
+            avoid_action_keys.append(str(canonical_key))
+            if action_type_norm and action_type_norm not in avoid_action_types:
+                avoid_action_types.append(str(action_type_norm))
+
+        repetition_alerts.append(
+            {
+                "canonical_action_key": str(canonical_key),
+                "action_type": str(action_type_norm),
+                "recent_result_count": int(len(runs)),
+                "last_result_status": str(latest_run.get("result_status") or ""),
+                "last_result_age_seconds": int(latest_run.get("age_seconds") or 0),
+                "has_content_change": bool(has_content_change),
+                "has_user_reaction_after_last_result": bool(has_user_reaction),
+                "suggested_decision": ("defer" if should_defer else "recheck"),
+            }
+        )
+
+    return {
+        "trigger_type": str(trigger.trigger_type or ""),
+        "recent_window_seconds": int(recent_window_seconds),
+        "repeat_cooldown_seconds": int(repeat_cooldown_seconds),
+        "candidate_action_keys": list(candidate_action_keys),
+        "avoid_action_keys": list(avoid_action_keys),
+        "avoid_action_types": list(avoid_action_types),
+        "last_chat_event_id": last_chat_event_id,
+        "last_chat_created_at": last_chat_created_at,
+        "repetition_alerts": list(repetition_alerts),
+    }
+
+
 def _build_persona_deliberation_focus(
     *,
     trigger: AutonomyTrigger,
@@ -1224,6 +1542,7 @@ def _build_persona_deliberation_focus(
     current_thought_snapshot: dict[str, Any] | None,
     agenda_threads_snapshot: list[dict[str, Any]],
     active_goal_ids: list[str],
+    novelty_context: dict[str, Any],
 ) -> dict[str, Any]:
     """
     Deliberation 材料選別用のフォーカス情報を構築する。
@@ -1251,6 +1570,14 @@ def _build_persona_deliberation_focus(
     intent_counts = runtime_blackboard_snapshot.get("intent_counts")
     if not isinstance(intent_counts, dict):
         intent_counts = {}
+
+    # --- 直近反復のクールダウン対象を読む ---
+    avoid_action_keys_raw = novelty_context.get("avoid_action_keys")
+    avoid_action_keys = {
+        str(x or "").strip()
+        for x in list(avoid_action_keys_raw or [])
+        if str(x or "").strip()
+    }
 
     # --- runtime attention_targets + current_thought.attention_targets を使う ---
     attention_targets_raw: list[Any] = []
@@ -1345,6 +1672,12 @@ def _build_persona_deliberation_focus(
 
         if t == "world_query":
             # --- query文字列の意味推定はしない。検索系関心がある事実だけ使う。 ---
+            world_query_action_key = _canonical_action_key(
+                action_type="web_research",
+                action_payload={"query": str(v)},
+            )
+            if world_query_action_key and world_query_action_key in avoid_action_keys:
+                continue
             _add_score(priority_action_type_scores, "web_research", w)
             _add_score(priority_capability_scores, "web_access", w)
             _add_score(priority_goal_type_scores, "research", w)
@@ -1366,10 +1699,20 @@ def _build_persona_deliberation_focus(
         has_active_agenda = True
         status_weight = 1.0 if thread_status == "active" else (0.75 if thread_status == "open" else 0.55)
         next_action_type = str(item.get("next_action_type") or "").strip()
+        next_action_key = _canonical_action_key(
+            action_type=str(next_action_type),
+            action_payload=(
+                dict(item.get("next_action_payload") or {})
+                if isinstance(item.get("next_action_payload"), dict)
+                else {}
+            ),
+        )
+        next_action_on_cooldown = bool(next_action_key and next_action_key in avoid_action_keys)
         if next_action_type:
-            has_due_agenda_action = True
-            _add_score(priority_action_type_scores, next_action_type, status_weight)
-            if next_action_type == "web_research":
+            if not next_action_on_cooldown:
+                has_due_agenda_action = True
+                _add_score(priority_action_type_scores, next_action_type, status_weight)
+            if next_action_type == "web_research" and not next_action_on_cooldown:
                 _add_score(priority_capability_scores, "web_access", float(max(0.0, status_weight - 0.05)))
                 _add_score(priority_goal_type_scores, "research", status_weight)
         thread_kind = str(item.get("kind") or "").strip()
@@ -1476,6 +1819,14 @@ def _build_persona_deliberation_focus(
         "runtime_counts": {
             "trigger_counts": dict(trigger_counts),
             "intent_counts": dict(intent_counts),
+        },
+        "novelty_bias": {
+            "avoid_action_keys": sorted(list(avoid_action_keys)),
+            "repetition_alerts": [
+                dict(x)
+                for x in list(novelty_context.get("repetition_alerts") or [])
+                if isinstance(x, dict)
+            ],
         },
         "limits": {
             "final": dict(limits),
@@ -2264,6 +2615,13 @@ def _collect_deliberation_input(
     runtime_blackboard_snapshot = get_runtime_blackboard().snapshot()
     if not isinstance(runtime_blackboard_snapshot, dict):
         runtime_blackboard_snapshot = {}
+    novelty_context = _build_novelty_context_for_deliberation(
+        db,
+        trigger=trigger,
+        current_thought_snapshot=current_thought_snapshot,
+        agenda_threads_snapshot=agenda_threads_snapshot,
+        now_domain_ts=_now_domain_utc_ts(),
+    )
 
     # --- intents は goals優先順にも使うので先に取得しておく ---
     intent_rows = (
@@ -2300,6 +2658,7 @@ def _collect_deliberation_input(
         current_thought_snapshot=current_thought_snapshot,
         agenda_threads_snapshot=agenda_threads_snapshot,
         active_goal_ids=active_goal_ids,
+        novelty_context=novelty_context,
     )
     focus_limits = persona_deliberation_focus.get("limits") if isinstance(persona_deliberation_focus, dict) else {}
     fetch_limits = focus_limits.get("fetch") if isinstance(focus_limits, dict) else {}
@@ -2417,6 +2776,7 @@ def _collect_deliberation_input(
         "current_thought": current_thought_snapshot,
         "agenda_threads": agenda_threads_snapshot,
         "runtime_blackboard": runtime_blackboard_snapshot,
+        "novelty_context": novelty_context,
         "persona_deliberation_focus": persona_deliberation_focus,
         "capabilities": [
             {
