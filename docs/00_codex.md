@@ -12,7 +12,7 @@
 - API（HTTPS必須/認証/主要エンドポイント）: `docs/07_API.md`
 - 時刻基盤（system/domain二層）: `cocoro_ghost/clock.py` と `cocoro_ghost/api/control.py`（`/api/control/time*`）
 - 記憶処理の入口（mixin構成）: `cocoro_ghost/memory/manager.py`
-- 非同期ジョブ（WritePlan/索引/整理など）: `cocoro_ghost/worker.py`（スケジューラ）/ `cocoro_ghost/worker_handlers.py`（ディスパッチ）/ `cocoro_ghost/worker_handlers_*.py`（実処理）/ `cocoro_ghost/worker_handlers_write_plan_generate.py` / `cocoro_ghost/worker_handlers_write_plan_apply.py`（WritePlan分割）/ `cocoro_ghost/worker_handlers_common.py`（共通ヘルパ）/ `cocoro_ghost/worker_constants.py`（共通定数）/ `cocoro_ghost/internal_worker.py`
+- 非同期ジョブ（WritePlan/索引/整理など）: `cocoro_ghost/worker.py`（スケジューラ）/ `cocoro_ghost/jobs/registry.py`（ディスパッチ）/ `cocoro_ghost/worker_handlers_*.py`（実処理）/ `cocoro_ghost/worker_handlers_write_plan_generate.py` / `cocoro_ghost/worker_handlers_write_plan_apply.py`（WritePlan分割）/ `cocoro_ghost/worker_handlers_common.py`（共通ヘルパ）/ `cocoro_ghost/worker_constants.py`（共通定数）/ `cocoro_ghost/internal_worker.py`
 - 確定プロフィール（好み/苦手: ConfirmedPreferences）: `cocoro_ghost/memory/_chat_mixin.py` と `cocoro_ghost/worker_handlers_write_plan.py`
 - 保存先/パス（frozen/非frozen）: `cocoro_ghost/paths.py`
 - TOMLキー/検証（未知キーで起動失敗）: `cocoro_ghost/config.py` の `load_config()`
@@ -27,7 +27,7 @@
 - 自発行動の汎用エージェント委譲（実装前設計）: `docs/19_汎用エージェント委譲設計.md`（`agent_delegate` / `agent_jobs` / `agent_runner` / control API）
 - 人格中心化（会話と自発行動の実装前設計）: `docs/20_人格中心化（会話と自発行動）実装設計.md`（`autonomy.message` の人格発話化 / 会話選別・Deliberation材料選別の人格化 / `current_thought_state` + `agenda_threads` 構想）
 - 検索（思い出す）: `docs/04_検索（思い出す）.md` と `cocoro_ghost/memory/_chat_search_mixin.py`
-- 記憶更新（育てる）: `docs/05_記憶更新（育てる）.md` と `cocoro_ghost/worker.py` / `cocoro_ghost/worker_handlers.py` / `cocoro_ghost/worker_handlers_*.py`
+- 記憶更新（育てる）: `docs/05_記憶更新（育てる）.md` と `cocoro_ghost/worker.py` / `cocoro_ghost/jobs/registry.py` / `cocoro_ghost/worker_handlers_*.py`
 - DB/ストレージ（SQLite）: `docs/06_ストレージ（SQLite）.md` と `cocoro_ghost/db.py`
 - Web UI: `docs/13_WebブラウザUI.md` と `static/` と `cocoro_ghost/app_bootstrap/routers.py`（static mount）
 - 長期評価（会話/感情/時間前進）: `docs/15_長期会話評価計画.md` と `docs/16_長期会話シナリオ台帳.md`

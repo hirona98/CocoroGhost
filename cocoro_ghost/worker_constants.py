@@ -2,7 +2,7 @@
 Worker共通定数
 
 役割:
-- worker.py（スケジューラ）と worker_handlers.py（実処理）で共有する定数を一元管理する
+- worker.py（スケジューラ）と jobs/registry.py（ディスパッチ）および worker_handlers_*.py（実処理）で共有する定数を一元管理する
 """
 
 from __future__ import annotations

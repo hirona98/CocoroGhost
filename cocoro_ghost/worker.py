@@ -34,7 +34,7 @@ from cocoro_ghost.worker_constants import (
     JOB_STALE_SWEEP_INTERVAL_SECONDS as _JOB_STALE_SWEEP_INTERVAL_SECONDS,
 )
 from cocoro_ghost.memory_models import Job
-from cocoro_ghost.worker_handlers import run_job_kind
+from cocoro_ghost.jobs import run_job_kind
 
 
 logger = logging.getLogger(__name__)
