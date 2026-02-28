@@ -77,7 +77,7 @@ def _fmt_ts_or_none(ts: int | None) -> str | None:
 def _build_success_delivery_expectation_for_action_type(*, action_type: str) -> dict[str, Any]:
     """intent の成功時配信見込みを返す。"""
 
-    # --- web_research は result_payload の量で notify/chat が分かれる ---
+    # --- web_research は result_payload の量で共有優先度が変わる ---
     action_type_norm = str(action_type or "").strip()
     if action_type_norm == "web_research":
         return {
@@ -795,7 +795,7 @@ def _build_delivery_decision_snapshot(
     方針:
         - active thread の report candidate を最優先で表示する。
         - active thread が無ければ、共有候補を持つ先頭 thread を表示する。
-        - delivery mode は agenda thread の report_candidate_level から導出する。
+        - delivery mode は report_candidate_level から導出する即時発話可否を示す。
     """
 
     # --- active thread を起点に見る ---

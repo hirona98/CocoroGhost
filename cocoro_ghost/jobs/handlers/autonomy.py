@@ -870,8 +870,8 @@ def _emit_autonomy_console_events_for_action_result(
             report_candidate.get("level"),
         )
 
-        # --- autonomy.message は post-result delivery が notify/chat のときだけ作る ---
-        if str(terminal_mode) in {"notify", "chat"}:
+        # --- autonomy.message は「今すぐ話す」chat のときだけ作る ---
+        if str(terminal_mode) == "chat":
             message_kind = resolve_message_kind_for_action_result(
                 result_status=str(result.result_status),
             )

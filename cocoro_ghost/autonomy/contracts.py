@@ -18,7 +18,7 @@ _DECISION_OUTCOMES = {"do_action", "skip", "defer"}
 _RESULT_STATUSES = {"success", "partial", "failed", "no_effect"}
 _PERSONA_PREFERRED_DIRECTIONS = {"observe", "support", "wait", "avoid", "explore"}
 _THRESHOLD_BIASES = {"higher", "neutral", "lower"}
-_CONSOLE_DELIVERY_TERMINAL_MODES = {"silent", "activity_only", "notify", "chat"}
+_CONSOLE_DELIVERY_TERMINAL_MODES = {"silent", "activity_only", "chat"}
 _CONSOLE_DELIVERY_PROGRESS_MODES = {"silent", "activity_only"}
 _CONSOLE_MESSAGE_KINDS = {"report", "progress", "question", "error"}
 _REPORT_CANDIDATE_LEVELS = {"none", "mention", "notify", "chat"}
@@ -151,14 +151,22 @@ def _parse_console_delivery(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("console_delivery must be an object")
 
+    # --- 旧値互換: notify は通知UIではなく通常発話へ統合する ---
+    on_complete_raw = str(value.get("on_complete") or "").strip()
+    if on_complete_raw == "notify":
+        on_complete_raw = "chat"
+    on_fail_raw = str(value.get("on_fail") or "").strip()
+    if on_fail_raw == "notify":
+        on_fail_raw = "chat"
+
     out = dict(value)
     out["on_complete"] = _normalize_enum_text(
-        value.get("on_complete"),
+        on_complete_raw,
         field_name="console_delivery.on_complete",
         allowed=_CONSOLE_DELIVERY_TERMINAL_MODES,
     )
     out["on_fail"] = _normalize_enum_text(
-        value.get("on_fail"),
+        on_fail_raw,
         field_name="console_delivery.on_fail",
         allowed=_CONSOLE_DELIVERY_TERMINAL_MODES,
     )
@@ -276,8 +284,8 @@ def resolve_delivery_mode_from_report_candidate_level(value: Any) -> str:
     report candidate から最終 delivery mode を決める。
 
     方針:
-        - `mention` は軽い共有なので Console では `notify` に寄せる。
-        - `none` は `silent` に固定する。
+        - `mention` / `notify` は「共有したい強さ」であり、即時発話はしない。
+        - AI人格が今ここで自分から話すのは `chat` のときだけにする。
     """
     report_level = _normalize_enum_text(
         value,
@@ -287,9 +295,9 @@ def resolve_delivery_mode_from_report_candidate_level(value: Any) -> str:
     if report_level == "none":
         return "silent"
     if report_level == "mention":
-        return "notify"
+        return "silent"
     if report_level == "notify":
-        return "notify"
+        return "silent"
     if report_level == "chat":
         return "chat"
     raise ValueError(f"unsupported report_candidate_level: {report_level}")
