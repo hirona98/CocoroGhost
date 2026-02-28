@@ -20,6 +20,7 @@ from sqlalchemy import func
 
 from cocoro_ghost import affect
 from cocoro_ghost import worker
+from cocoro_ghost.autonomy.contracts import resolve_delivery_mode_from_report_candidate_level
 from cocoro_ghost.clock import ClockService
 from cocoro_ghost import common_utils
 from cocoro_ghost.config import ConfigStore
@@ -642,6 +643,7 @@ def _build_agenda_threads_snapshot(
                 "last_progress_at": _fmt_ts_or_none(int(row.last_progress_at)) if row.last_progress_at is not None else None,
                 "last_result_status": str(row.last_result_status or "").strip() or None,
                 "report_candidate_level": str(row.report_candidate_level),
+                "delivery_mode": resolve_delivery_mode_from_report_candidate_level(str(row.report_candidate_level)),
                 "report_candidate_reason": str(row.report_candidate_reason or "").strip() or None,
                 "updated_at": _fmt_ts_or_none(int(row.updated_at)),
                 "source_event_id": (int(row.source_event_id) if row.source_event_id is not None else None),
@@ -650,6 +652,61 @@ def _build_agenda_threads_snapshot(
             }
         )
     return out
+
+
+def _build_delivery_decision_snapshot(
+    *,
+    current_thought_snapshot: dict[str, Any] | None,
+    agenda_threads_snapshot: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """
+    現在の完了時 delivery_decision をデバッグ表示用に整形して返す。
+
+    方針:
+        - active thread の report candidate を最優先で表示する。
+        - active thread が無ければ、共有候補を持つ先頭 thread を表示する。
+        - delivery mode は agenda thread の report_candidate_level から導出する。
+    """
+
+    # --- active thread を起点に見る ---
+    active_thread_id = None
+    if isinstance(current_thought_snapshot, dict):
+        active_thread_id = str(current_thought_snapshot.get("active_thread_id") or "").strip() or None
+
+    selected_row: dict[str, Any] | None = None
+    if active_thread_id:
+        for row in list(agenda_threads_snapshot or []):
+            if str(row.get("thread_id") or "") == str(active_thread_id):
+                selected_row = dict(row)
+                break
+
+    # --- active が無ければ、共有候補を持つ先頭を採用する ---
+    if selected_row is None:
+        for row in list(agenda_threads_snapshot or []):
+            if str(row.get("report_candidate_level") or "") != "none":
+                selected_row = dict(row)
+                break
+
+    # --- 表示対象が無ければ、current_thought 未作成時のみ null を返す ---
+    if selected_row is None:
+        if current_thought_snapshot is None:
+            return None
+        return {
+            "thread_id": active_thread_id,
+            "topic": None,
+            "report_candidate_level": "none",
+            "delivery_mode": "silent",
+            "reason": None,
+        }
+
+    # --- 選ばれた thread から表示構造を作る ---
+    return {
+        "thread_id": str(selected_row.get("thread_id") or "").strip() or None,
+        "topic": str(selected_row.get("topic") or "").strip() or None,
+        "report_candidate_level": str(selected_row.get("report_candidate_level") or "none"),
+        "delivery_mode": str(selected_row.get("delivery_mode") or "silent"),
+        "reason": str(selected_row.get("report_candidate_reason") or "").strip() or None,
+    }
 
 
 @router.get("/debug")
@@ -742,6 +799,10 @@ def get_mood_debug(
         agenda_threads_debug = _build_agenda_threads_snapshot(
             db=db,
         )
+        delivery_decision_debug = _build_delivery_decision_snapshot(
+            current_thought_snapshot=current_thought_debug,
+            agenda_threads_snapshot=list(agenda_threads_debug),
+        )
 
         st = (
             db.query(State)
@@ -757,6 +818,7 @@ def get_mood_debug(
                 "mood": None,
                 "current_thought": current_thought_debug,
                 "agenda_threads": list(agenda_threads_debug),
+                "delivery_decision": delivery_decision_debug,
                 "recent_affects": list(recent_affects),
                 "background": dict(background_debug),
                 "limits": {
@@ -824,6 +886,7 @@ def get_mood_debug(
             },
             "current_thought": current_thought_debug,
             "agenda_threads": list(agenda_threads_debug),
+            "delivery_decision": delivery_decision_debug,
             "recent_affects": list(recent_affects),
             "background": dict(background_debug),
             "limits": {
