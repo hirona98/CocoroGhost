@@ -20,13 +20,14 @@ from sqlalchemy import text
 
 from cocoro_ghost import schemas
 from cocoro_ghost import affect
-from cocoro_ghost import common_utils, prompt_builders, vector_index
-from cocoro_ghost.db import memory_session_scope
+from cocoro_ghost import common_utils, prompt_builders
+from cocoro_ghost.storage import vector_index
+from cocoro_ghost.storage.db import memory_session_scope
 from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
 from cocoro_ghost.llm_client import LlmRequestPurpose
 from cocoro_ghost.memory._chat_search_mixin import _CandidateItem
 from cocoro_ghost.memory._image_mixin import default_input_text_when_images_only
-from cocoro_ghost.memory_models import Event, EventAssistantSummary, EventLink, RetrievalRun, State, UserPreference
+from cocoro_ghost.storage.memory_models import Event, EventAssistantSummary, EventLink, RetrievalRun, State, UserPreference
 from cocoro_ghost.memory._utils import now_utc_ts
 from cocoro_ghost.time_utils import format_iso8601_local
 
@@ -1441,7 +1442,7 @@ class _ChatMemoryMixin:
             )
             if prev is not None and int(prev[0] or 0) > 0:
                 # NOTE: 文脈グラフの本更新は非同期で行う。ここでは reply_to だけを即時に張る。
-                from cocoro_ghost.memory_models import EventLink  # noqa: PLC0415
+                from cocoro_ghost.storage.memory_models import EventLink  # noqa: PLC0415
 
                 reply_to_event_id = int(prev[0])
                 db.add(

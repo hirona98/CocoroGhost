@@ -29,7 +29,7 @@
 - 人格中心化（会話と自発行動の実装前設計）: `docs/20_人格中心化（会話と自発行動）実装設計.md`（`autonomy.message` の人格発話化 / 会話選別・Deliberation材料選別の人格化 / `current_thought_state` + `agenda_threads` 構想）
 - 検索（思い出す）: `docs/04_検索（思い出す）.md` と `cocoro_ghost/memory/_chat_search_mixin.py`
 - 記憶更新（育てる）: `docs/05_記憶更新（育てる）.md` と `cocoro_ghost/worker.py` / `cocoro_ghost/jobs/registry.py` / `cocoro_ghost/worker_handlers_*.py`
-- DB/ストレージ（SQLite）: `docs/06_ストレージ（SQLite）.md` と `cocoro_ghost/db.py`
+- DB/ストレージ（SQLite）: `docs/06_ストレージ（SQLite）.md` と `cocoro_ghost/storage/db.py`
 - Web UI: `docs/13_WebブラウザUI.md` と `static/` と `cocoro_ghost/app_bootstrap/routers.py`（static mount）
 - 長期評価（会話/感情/時間前進）: `docs/15_長期会話評価計画.md` と `docs/16_長期会話シナリオ台帳.md`
 - 感情境界 / heartbeat / 完了時共有判定: `docs/18_自発行動アーキテクチャ詳細設計.md`（自発行動の正本に統合済み）
@@ -52,7 +52,7 @@
 - Web検索（インターネット）の**現行実装**は `/api/chat` の最終応答生成（L3）でのみ有効化可能（`llm_preset.reply_web_search_enabled`）: `docs/10_実行フロー.md` / `cocoro_ghost/llm_client.py`
 - 自発行動向けWeb検索は `/api/chat` と**別経路**で実装する（`web_access` Capability、混在禁止）: `docs/03_自発行動アーキテクチャ方針.md` / `docs/18_自発行動アーキテクチャ詳細設計.md`
 - token の正は `settings.db`（TOMLは初回の入口）: `docs/07_API.md`
-- `settings.db` / `memory DB` は起動時に既知のスキーマ移行を行う（版ごとの実装は `cocoro_ghost/db_migrations.py` を参照）: `cocoro_ghost/db.py`
+- `settings.db` / `memory DB` は起動時に既知のスキーマ移行を行う（版ごとの実装は `cocoro_ghost/storage/db_migrations.py` を参照）: `cocoro_ghost/storage/db.py`
 - `/api/chat` は単一ユーザー前提で **同時に1本**へ制限する: `cocoro_ghost/memory/_chat_mixin.py`
 - `state` は `events` からの非同期更新（WritePlan）で育てる（直接入力しない）: `docs/03_自発行動アーキテクチャ方針.md` / `docs/05_記憶更新（育てる）.md`
 - `config/setting.toml` は **未知キーを許可しない**（起動時に弾く）: `cocoro_ghost/config.py`

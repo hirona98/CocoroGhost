@@ -12,10 +12,11 @@ from typing import Any
 
 from sqlalchemy import text
 
-from cocoro_ghost import common_utils, prompt_builders, vector_index
-from cocoro_ghost.db import memory_session_scope, upsert_vec_item
+from cocoro_ghost import common_utils, prompt_builders
+from cocoro_ghost.storage import vector_index
+from cocoro_ghost.storage.db import memory_session_scope, upsert_vec_item
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
-from cocoro_ghost.memory_models import Event, EventAffect, EventAssistantSummary, State
+from cocoro_ghost.storage.memory_models import Event, EventAffect, EventAssistantSummary, State
 from cocoro_ghost.worker_handlers_common import (
     _build_event_affect_embedding_text,
     _build_event_assistant_summary_input,

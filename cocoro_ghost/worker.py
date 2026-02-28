@@ -23,7 +23,7 @@ from typing import Any
 from sqlalchemy import func
 
 from cocoro_ghost import common_utils
-from cocoro_ghost.db import memory_session_scope
+from cocoro_ghost.storage.db import memory_session_scope
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.worker_constants import (
     JOB_DONE as _JOB_DONE,
@@ -33,7 +33,7 @@ from cocoro_ghost.worker_constants import (
     JOB_RUNNING_STALE_SECONDS as _JOB_RUNNING_STALE_SECONDS,
     JOB_STALE_SWEEP_INTERVAL_SECONDS as _JOB_STALE_SWEEP_INTERVAL_SECONDS,
 )
-from cocoro_ghost.memory_models import Job
+from cocoro_ghost.storage.memory_models import Job
 from cocoro_ghost.jobs import run_job_kind
 
 

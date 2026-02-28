@@ -13,11 +13,11 @@ import base64
 from fastapi import BackgroundTasks, HTTPException, status
 
 from cocoro_ghost import common_utils, prompt_builders, schemas
-from cocoro_ghost.db import memory_session_scope
+from cocoro_ghost.storage.db import memory_session_scope
 from cocoro_ghost.llm_client import LlmRequestPurpose
 from cocoro_ghost.memory._image_mixin import default_input_text_when_images_only
 from cocoro_ghost.memory._utils import now_utc_ts
-from cocoro_ghost.memory_models import Event
+from cocoro_ghost.storage.memory_models import Event
 from cocoro_ghost.runtime import event_stream
 from cocoro_ghost import vision_bridge
 

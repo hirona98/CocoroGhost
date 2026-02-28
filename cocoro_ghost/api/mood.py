@@ -28,10 +28,10 @@ from cocoro_ghost.autonomy.contracts import (
 from cocoro_ghost.clock import ClockService
 from cocoro_ghost import common_utils
 from cocoro_ghost.config import ConfigStore
-from cocoro_ghost.db import memory_session_scope
+from cocoro_ghost.storage.db import memory_session_scope
 from cocoro_ghost.app_bootstrap.dependencies import get_clock_service_dep, get_config_store_dep
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
-from cocoro_ghost.memory_models import (
+from cocoro_ghost.storage.memory_models import (
     AgendaThread,
     ActionDecision,
     ActionResult,

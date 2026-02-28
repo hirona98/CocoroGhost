@@ -18,7 +18,7 @@ import tomli
 from cocoro_ghost import paths
 
 if TYPE_CHECKING:
-    from cocoro_ghost.models import (
+    from cocoro_ghost.storage.models import (
         AddonPreset,
         EmbeddingPreset,
         GlobalSettings,

@@ -11,10 +11,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from cocoro_ghost import common_utils, prompt_builders, vector_index
-from cocoro_ghost.db import memory_session_scope, search_similar_item_ids
+from cocoro_ghost import common_utils, prompt_builders
+from cocoro_ghost.storage import vector_index
+from cocoro_ghost.storage.db import memory_session_scope, search_similar_item_ids
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
-from cocoro_ghost.memory_models import Event, Job, Revision, State, StateLink
+from cocoro_ghost.storage.memory_models import Event, Job, Revision, State, StateLink
 from cocoro_ghost.worker_constants import (
     JOB_PENDING as _JOB_PENDING,
     TIDY_ACTIVE_STATE_FETCH_LIMIT as _TIDY_ACTIVE_STATE_FETCH_LIMIT,

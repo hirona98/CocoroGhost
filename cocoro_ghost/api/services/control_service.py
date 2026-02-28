@@ -20,7 +20,7 @@ from cocoro_ghost.autonomy.orchestrator import get_autonomy_orchestrator
 from cocoro_ghost.autonomy.repository import AutonomyRepository
 from cocoro_ghost.clock import ClockService
 from cocoro_ghost.config import get_config_store
-from cocoro_ghost.db import load_global_settings, settings_session_scope
+from cocoro_ghost.storage.db import load_global_settings, settings_session_scope
 from cocoro_ghost.runtime import event_stream, log_stream
 from cocoro_ghost.time_utils import format_iso8601_local_with_tz
 from cocoro_ghost.worker_handlers_autonomy import complete_agent_job_from_runner, fail_agent_job_from_runner

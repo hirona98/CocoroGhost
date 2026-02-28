@@ -18,8 +18,8 @@ from cocoro_ghost import common_utils
 from cocoro_ghost import entity_utils
 from cocoro_ghost.autonomy.contracts import derive_report_candidate_for_action_result
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
-from cocoro_ghost.db import memory_session_scope
-from cocoro_ghost.memory_models import (
+from cocoro_ghost.storage.db import memory_session_scope
+from cocoro_ghost.storage.memory_models import (
     AgendaThread,
     ActionDecision,
     ActionResult,

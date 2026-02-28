@@ -15,7 +15,7 @@ from cocoro_ghost.config import (
     load_config,
     set_global_config_store,
 )
-from cocoro_ghost.db import (
+from cocoro_ghost.storage.db import (
     ensure_initial_settings,
     init_memory_db,
     init_settings_db,
