@@ -986,15 +986,15 @@ intent 一覧を返す（新しい順）。
 
 ## `/api/mood/debug`（管理/デバッグ）
 
-現在の「背景の気分（LongMoodState）」を、デバッグ観測向けに返す。
+現在の感情状態と、自発行動まわりの内部状態をまとめて返す。
 
 目的:
 
 - 運用前のため互換は付けない
-- 感情（VAD + 本文 + payload）と「shock減衰込みの現在値」を、1回のAPIで確認できるようにする
-- 現在の思考（`persona_interest_state`）を併せて返し、「今なにを気にしているか」を追跡しやすくする
-- 直近の瞬間感情（event_affects）を併せて返し、moodの揺れの原因追跡をしやすくする
-- バックグラウンド状態（自発行動 / worker / agent_jobs / runtime_blackboard）も併せて返し、感情変化と並行して観測できるようにする
+- `long_mood_state`（長期感情）と `event_affects`（瞬間感情）を1回で確認できるようにする
+- `current_thought_state` と `agenda_threads` を併せて返し、「今なにを追っているか」を追跡しやすくする
+- 完了時の共有見込み（`delivery_decision`）を返し、「裏で動く/話しかける」の差を見えるようにする
+- バックグラウンド状態（自発行動 / worker / agent_jobs / runtime_blackboard）も併せて返し、感情と並行して観測できるようにする
 
 ### `GET /api/mood/debug`
 
@@ -1004,47 +1004,103 @@ intent 一覧を返す（新しい順）。
 
 動作:
 
-- `embedding_preset_id` は **サーバのアクティブ設定**を使用する（クライアントからは受け取らない）
-- `long_mood_state` が存在しない場合は `mood: null` を返す（recent_affects は返す）
-- `persona_interest_state` が存在しない場合は `current_thought: null` を返す
-- `shock_vad` は **読み出し時点（now）で時間減衰**させた値を返す
-  - `dt_seconds = now_ts - last_confirmed_at` を用いる
-- `recent_affects` は `event_affects` を直近から固定件数返す（全source、ただし `events.searchable=1` のみ）
-- `current_thought.attention_targets` は `persona_interest_state.payload.attention_targets` の上位固定件数を返す
+- `embedding_preset_id` は **サーバのアクティブ設定**を使う（クライアント入力は受けない）
+- `long_mood_state` が存在しない場合は `mood: null` を返す
+- `current_thought_state` が存在しない場合は `current_thought: null` を返す
+- `agenda_threads` は常に返す（未作成時は空配列）
+- `delivery_decision` は、`agenda_threads` から見た「今の完了時共有候補」の要約を返す
+  - `current_thought.active_thread_id` の thread に共有候補がある場合はそれを優先する
+  - 無い場合は、共有候補（`report_candidate_level != "none"`）を持つ先頭 thread を返す
+- `shock_vad` は **読み出し時点（now）で時間減衰**した値を返す
+  - `dt_seconds = now_ts - last_confirmed_at` を使う
+- `recent_affects` は `event_affects` を直近から固定件数返す（全 source、ただし `events.searchable=1` のみ）
+- `current_thought.attention_targets` は `current_thought_state.payload.attention_targets` の上位固定件数を返す
 - `background` は感情デバッグ窓向けの要約スナップショットであり、`/api/control/*` の完全代替ではない
-- `background.decision_flow` は「自発行動を実行する/しない」の判定フロー要約を返す（段階・ジョブ滞留・直近判定）
 
-レスポンス（成功）:
+レスポンス構造（要約）:
+
+- `mood`
+  - `long_mood_state` の現在値
+  - `baseline_vad` / 減衰後 `shock_vad` / 合成 `vad` を返す
+- `current_thought`
+  - `current_thought_state` の人間向け要約
+  - `interaction_mode` / `active_thread_id` / `focus_summary`
+  - `next_candidate_action` / `talk_candidate`
+  - `updated_from` / `updated_from_event_preview`
+- `agenda_threads`
+  - 自発行動の実体である agenda 一覧
+  - `status` / `next_action_type` / `followup_due_at`
+  - `last_result_status`
+  - `report_candidate_level` / `delivery_mode` / `report_candidate_reason`
+- `delivery_decision`
+  - 現時点の完了時共有見込み
+  - `thread_id` / `topic` / `report_candidate_level` / `delivery_mode` / `reason`
+- `recent_affects`
+  - 直近の瞬間感情
+- `background`
+  - `autonomy`: 稼働状態
+  - `decision_flow`: 判定フロー要約
+  - `worker`: worker ジョブ状態
+  - `agent_jobs`: 委譲ジョブ状態
+  - `runtime_blackboard`: 短期RAM状態
+  - `recent_intents`: 最近の intent と完了時共有見込み
+  - `recent_agent_jobs`: 最近の委譲ジョブ
+- `limits`
+  - 固定件数上限
+
+`background.decision_flow.latest_decision` の主な項目:
+
+- `decision_outcome` / `trigger_type` / `action_type`
+- `progress_delivery_mode` / `progress_message_kind`
+- `result_status`
+- `completion_report_candidate_level`
+- `completion_delivery_mode`
+- `completion_delivery_reason`
+
+`background.recent_intents` の主な項目:
+
+- `success_report_candidate_level` / `success_delivery_mode`
+- `success_delivery_note`
+  - `web_research` は結果 payload の量で `notify/chat` が分かれるため、`result_payload_dependent` を返す
+- `failure_report_candidate_level` / `failure_delivery_mode`
+- `actual_completion_report_candidate_level`
+- `actual_completion_delivery_mode`
+- `actual_completion_delivery_reason`
+
+レスポンス（成功・例）:
 
 ```json
 {
   "mood": {
     "state_id": 123,
-    "body_text": "string",
-    "confidence": 0.0,
+    "body_text": "最近は少し落ち着いている",
+    "confidence": 0.84,
     "payload": {},
-    "baseline_vad": {"v": 0.0, "a": 0.0, "d": 0.0},
+    "baseline_vad": {"v": 0.1, "a": 0.0, "d": 0.1},
     "shock_vad": {"v": 0.0, "a": 0.0, "d": 0.0},
-    "vad": {"v": 0.0, "a": 0.0, "d": 0.0},
-    "now": "2026-01-10T14:06:59+09:00",
-    "dt_seconds": 1019,
-    "last_confirmed_at": "2026-01-10T13:50:00+09:00"
+    "vad": {"v": 0.1, "a": 0.0, "d": 0.1},
+    "now": "2026-02-28T12:00:00+09:00",
+    "dt_seconds": 120,
+    "last_confirmed_at": "2026-02-28T11:58:00+09:00"
   },
   "current_thought": {
     "state_id": 321,
-    "body_text": "現在の関心状態（explore）: action_type:web_research, entity_tool:Gemini ...",
+    "body_text": "現在の思考（探索）: 調べもの: 旅行先の候補 / 次候補: Web調査",
     "interaction_mode": "explore",
-    "attention_targets": [
-      {
-        "type": "action_type",
-        "value": "web_research",
-        "weight": 0.75,
-        "updated_at": "2026-01-10T14:06:59+09:00"
-      }
-    ],
-    "attention_targets_total": 6,
-    "last_confirmed_at": "2026-01-10T14:06:59+09:00",
-    "updated_at": "2026-01-10T14:06:59+09:00",
+    "active_thread_id": "thread-1",
+    "focus_summary": "調べもの: 旅行先の候補",
+    "next_candidate_action": {
+      "action_type": "web_research",
+      "payload": {"query": "春の旅行先 候補"}
+    },
+    "talk_candidate": {
+      "level": "chat",
+      "reason": "research_result_rich"
+    },
+    "attention_targets": [],
+    "attention_targets_total": 0,
+    "last_confirmed_at": "2026-02-28T12:00:00+09:00",
+    "updated_at": "2026-02-28T12:00:00+09:00",
     "dt_seconds": 0,
     "updated_from": {
       "event_id": 789,
@@ -1053,118 +1109,103 @@ intent 一覧を返す（新しい順）。
       "capability": "web_access",
       "result_status": "success"
     },
-    "updated_from_event_ids": [700, 745, 789],
+    "updated_from_event_ids": [745, 789],
     "updated_from_event_preview": {
       "event_id": 789,
       "source": "action_result",
-      "created_at": "2026-01-10T14:06:59+09:00",
+      "created_at": "2026-02-28T12:00:00+09:00",
       "user_text_preview": null,
       "assistant_text_preview": "調査結果を保存した。"
     }
   },
-  "recent_affects": [
+  "agenda_threads": [
     {
-      "affect_id": 1,
-      "event_id": 456,
-      "event_source": "chat",
-      "event_created_at": "2026-01-10T13:50:00+09:00",
-      "affect_created_at": "2026-01-10T13:50:00+09:00",
-      "moment_affect_text": "string",
-      "moment_affect_labels": ["string"],
-      "vad": {"v": 0.0, "a": 0.0, "d": 0.0},
-      "confidence": 0.0
+      "thread_id": "thread-1",
+      "thread_key": "research:travel",
+      "kind": "research",
+      "topic": "旅行先の候補",
+      "goal": null,
+      "status": "active",
+      "priority": 80,
+      "next_action_type": "web_research",
+      "next_action_payload": {"query": "春の旅行先 候補"},
+      "followup_due_at": "2026-02-28T12:05:00+09:00",
+      "last_progress_at": "2026-02-28T12:00:00+09:00",
+      "last_result_status": "success",
+      "report_candidate_level": "chat",
+      "delivery_mode": "chat",
+      "report_candidate_reason": "research_result_rich",
+      "updated_at": "2026-02-28T12:00:00+09:00",
+      "source_event_id": 789,
+      "source_result_id": "result-1",
+      "metadata": {}
     }
   ],
+  "delivery_decision": {
+    "thread_id": "thread-1",
+    "topic": "旅行先の候補",
+    "report_candidate_level": "chat",
+    "delivery_mode": "chat",
+    "reason": "research_result_rich"
+  },
+  "recent_affects": [],
   "background": {
     "autonomy": {
       "enabled": true,
       "heartbeat_seconds": 120,
       "max_parallel_intents": 2,
-      "now_domain": "2026-01-10T14:06:59+09:00",
+      "now_domain": "2026-02-28T12:00:00+09:00",
       "triggers": {"queued": 0, "claimed": 0, "due": 0},
       "intents": {"queued": 0, "running": 1, "blocked": 0}
     },
     "decision_flow": {
-      "autonomy_enabled": true,
-      "now_system_utc": "2026-01-10T14:06:59+09:00",
-      "trigger_claim_limit_per_tick": 4,
-      "triggers_due": 0,
-      "triggers_claimed": 0,
-      "deliberate_once_jobs": {"pending_due": 0, "pending_future": 0, "running": 0},
-      "execute_intent_jobs": {"pending_due": 0, "pending_future": 0, "running": 1},
-      "running_intents_non_delegate": 1,
-      "max_parallel_intents": 2,
-      "execution_slots_remaining": 1,
-      "can_start_execute_now": true,
-      "stage": "executing",
-      "stage_reason": "execute_job_running",
-      "recent_decisions_1h": {"do_action": 3, "skip": 2, "defer": 1},
       "latest_decision": {
-        "decision_id": "e84f5a67-4d70-4cd4-97a8-2f317468c1c0",
         "decision_outcome": "do_action",
         "trigger_type": "heartbeat",
         "action_type": "web_research",
-        "reason_text_preview": "調査の優先度が高いので実行する",
-        "defer_until": null,
-        "next_deliberation_at": null,
-        "created_at": "2026-01-10T14:06:40+09:00"
+        "progress_delivery_mode": "activity_only",
+        "progress_message_kind": "progress",
+        "result_status": "success",
+        "completion_report_candidate_level": "chat",
+        "completion_delivery_mode": "chat",
+        "completion_delivery_reason": "research_result_rich"
       }
     },
-    "worker": {
-      "pending_count": 3,
-      "due_pending_count": 1,
-      "running_count": 0,
-      "stale_running_count": 0,
-      "done_count": 120,
-      "failed_count": 2,
-      "stale_seconds": 60
-    },
-    "agent_jobs": {
-      "queued": 0,
-      "claimed": 0,
-      "running": 0,
-      "completed": 4,
-      "failed": 1,
-      "timed_out": 0,
-      "stale_claimed_or_running": 0,
-      "stale_seconds": 300
-    },
-    "runtime_blackboard": {
-      "active_intent_ids": [],
-      "attention_targets": [],
-      "trigger_counts": {},
-      "intent_counts": {},
-      "worker_now_system_utc": "2026-01-10T14:06:59+09:00",
-      "last_snapshot_kind": "runtime_snapshot",
-      "last_snapshot_created_at": "2026-01-10T14:06:00+09:00",
-      "last_recovered_source_snapshot_id": null,
-      "last_recovered_system_utc": null,
-      "last_recovered_domain_utc": null
-    },
-    "recent_intents": [],
-    "recent_agent_jobs": [],
-    "limits": {
-      "recent_intents_limit": 8,
-      "recent_agent_jobs_limit": 8,
-      "runtime_attention_targets_limit": 8
-    }
+    "recent_intents": [
+      {
+        "intent_id": "intent-1",
+        "action_type": "web_research",
+        "status": "done",
+        "success_report_candidate_level": null,
+        "success_delivery_mode": null,
+        "success_delivery_note": "result_payload_dependent",
+        "failure_report_candidate_level": "notify",
+        "failure_delivery_mode": "notify",
+        "actual_completion_report_candidate_level": "chat",
+        "actual_completion_delivery_mode": "chat",
+        "actual_completion_delivery_reason": "research_result_rich"
+      }
+    ]
   },
   "limits": {
     "recent_affects_limit": 8,
     "recent_intents_limit": 8,
     "recent_agent_jobs_limit": 8,
     "runtime_attention_targets_limit": 8,
-    "current_thought_targets_limit": 8
+    "current_thought_targets_limit": 8,
+    "agenda_threads_limit": 8
   }
 }
 ```
 
-レスポンス（long_mood_state 未作成）:
+レスポンス（`long_mood_state` 未作成）:
 
 ```json
 {
   "mood": null,
   "current_thought": null,
+  "agenda_threads": [],
+  "delivery_decision": null,
   "recent_affects": [],
   "background": {
     "...": "..."
@@ -1174,7 +1215,8 @@ intent 一覧を返す（新しい順）。
     "recent_intents_limit": 8,
     "recent_agent_jobs_limit": 8,
     "runtime_attention_targets_limit": 8,
-    "current_thought_targets_limit": 8
+    "current_thought_targets_limit": 8,
+    "agenda_threads_limit": 8
   }
 }
 ```
