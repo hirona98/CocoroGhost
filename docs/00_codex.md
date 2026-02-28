@@ -62,6 +62,7 @@
 
 - 開発起動: `run.py`（uvicorn reload）
 - 配布起動（PyInstaller）: `cocoro_ghost/entrypoint.py`
+- TLS 証明書生成: `cocoro_ghost/infra/tls.py`
 - 設定テンプレ: `config/setting.toml.release`（秘密は埋めない。例は `<TOKEN>` 形式にする）
 - Windows 側で叩くコマンドは `.exe` を付ける（例: `python.exe`, `curl.exe`, `pyinstaller.exe`）
 
