@@ -27,10 +27,10 @@ from cocoro_ghost.autonomy.capabilities.vision_perception import execute_vision_
 from cocoro_ghost.autonomy.capabilities.web_access import execute_web_research
 from cocoro_ghost.autonomy.contracts import (
     CapabilityExecutionResult,
-    derive_report_candidate_for_action_result,
+    derive_talk_impulse_for_action_result,
     parse_action_decision,
     parse_console_delivery,
-    resolve_delivery_mode_from_report_candidate_level,
+    resolve_delivery_mode_from_talk_impulse_level,
     resolve_message_kind_for_action_result,
 )
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
@@ -330,8 +330,8 @@ def _sync_agenda_thread_after_action_result(
     if thread is None:
         return
 
-    # --- 完了結果から thread 状態と共有候補を決める ---
-    report_candidate = derive_report_candidate_for_action_result(
+    # --- 完了結果から thread 状態と発話衝動を決める ---
+    talk_impulse = derive_talk_impulse_for_action_result(
         action_type=str(action_type),
         result_status=str(result_status),
         result_payload=dict(result_payload),
@@ -355,8 +355,8 @@ def _sync_agenda_thread_after_action_result(
     thread.followup_due_at = None
     thread.last_progress_at = int(now_system_ts)
     thread.last_result_status = str(result_status_norm)
-    thread.report_candidate_level = str(report_candidate["level"])
-    thread.report_candidate_reason = (str(report_candidate["reason"]) if report_candidate["reason"] else None)
+    thread.talk_impulse_level = str(talk_impulse["level"])
+    thread.talk_impulse_reason = (str(talk_impulse["reason"]) if talk_impulse["reason"] else None)
     if result_status_norm in {"no_effect", "success"}:
         thread.next_action_type = None
         thread.next_action_payload_json = "{}"
@@ -860,14 +860,14 @@ def _emit_autonomy_console_events_for_action_result(
             "goal_id": (str(intent.goal_id) if intent.goal_id is not None else None),
         }
 
-        # --- 完了時の delivery は action_result 規則で決める ---
-        report_candidate = derive_report_candidate_for_action_result(
+        # --- 完了時の delivery は action_result の発話衝動で決める ---
+        talk_impulse = derive_talk_impulse_for_action_result(
             action_type=(str(intent.action_type) if intent.action_type is not None else ""),
             result_status=str(result.result_status),
             result_payload=dict(result_payload),
         )
-        terminal_mode = resolve_delivery_mode_from_report_candidate_level(
-            report_candidate.get("level"),
+        terminal_mode = resolve_delivery_mode_from_talk_impulse_level(
+            talk_impulse.get("level"),
         )
 
         # --- autonomy.message は「今すぐ話す」chat のときだけ作る ---
@@ -1168,9 +1168,9 @@ def _load_current_thought_snapshot_for_deliberation(db) -> dict[str, Any] | None
             if isinstance(payload_obj.get("next_candidate_action"), dict)
             else None
         ),
-        "talk_candidate": (
-            dict(payload_obj.get("talk_candidate") or {})
-            if isinstance(payload_obj.get("talk_candidate"), dict)
+        "talk_impulse": (
+            dict(payload_obj.get("talk_impulse") or {})
+            if isinstance(payload_obj.get("talk_impulse"), dict)
             else None
         ),
         "attention_targets": attention_targets_out,
@@ -1227,7 +1227,7 @@ def _load_agenda_threads_snapshot_for_deliberation(db) -> list[dict[str, Any]]:
                 "next_action_payload": dict(payload_obj),
                 "followup_due_at": (int(row.followup_due_at) if row.followup_due_at is not None else None),
                 "last_result_status": str(row.last_result_status or "").strip() or None,
-                "report_candidate_level": str(row.report_candidate_level),
+                "talk_impulse_level": str(row.talk_impulse_level),
             }
         )
     return out

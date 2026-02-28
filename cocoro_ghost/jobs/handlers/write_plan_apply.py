@@ -16,7 +16,7 @@ from sqlalchemy import func
 from cocoro_ghost.core import affect
 from cocoro_ghost.core import common_utils
 from cocoro_ghost.core import entity_utils
-from cocoro_ghost.autonomy.contracts import derive_report_candidate_for_action_result
+from cocoro_ghost.autonomy.contracts import derive_talk_impulse_for_action_result
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.storage.db import memory_session_scope
 from cocoro_ghost.storage.memory_models import (
@@ -1467,17 +1467,17 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             elif top_action_type in {"web_research", "agent_delegate"} or top_kind in {"research", "followup"}:
                 interaction_mode = "explore"
 
-        # --- action_result の共有候補は共通規則で決める（感情値は使わない） ---
-        talk_candidate_level = "none"
-        talk_candidate_reason = ""
+        # --- action_result の発話衝動は共通規則で決める（感情値は使わない） ---
+        talk_impulse_level = "none"
+        talk_impulse_reason = ""
         if event_source == "action_result":
-            report_candidate = derive_report_candidate_for_action_result(
+            talk_impulse = derive_talk_impulse_for_action_result(
                 action_type=str(action_type_ctx),
                 result_status=str(action_result_status),
                 result_payload=(dict(action_result_payload_obj) if action_result_payload_obj is not None else None),
             )
-            talk_candidate_level = str(report_candidate["level"])
-            talk_candidate_reason = str(report_candidate["reason"])
+            talk_impulse_level = str(talk_impulse["level"])
+            talk_impulse_reason = str(talk_impulse["reason"])
 
         # --- agenda_threads を upsert し、active thread を1本に絞る。 ---
         current_result_id = (str(action_result_row.result_id) if action_result_row is not None else None)
@@ -1501,14 +1501,14 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 .filter(AgendaThread.thread_key == str(thread_key))
                 .one_or_none()
             )
-            existing_report_candidate_level = (
-                str(thread_row.report_candidate_level)
-                if thread_row is not None and str(thread_row.report_candidate_level or "").strip()
+            existing_talk_impulse_level = (
+                str(thread_row.talk_impulse_level)
+                if thread_row is not None and str(thread_row.talk_impulse_level or "").strip()
                 else "none"
             )
-            existing_report_candidate_reason = (
-                str(thread_row.report_candidate_reason)
-                if thread_row is not None and str(thread_row.report_candidate_reason or "").strip()
+            existing_talk_impulse_reason = (
+                str(thread_row.talk_impulse_reason)
+                if thread_row is not None and str(thread_row.talk_impulse_reason or "").strip()
                 else None
             )
             is_result_target = (
@@ -1523,15 +1523,15 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 else {}
             )
             followup_due_at = int(base_ts) if next_action_type else None
-            report_candidate_level = (
-                str(talk_candidate_level)
-                if bool(is_result_target) and str(talk_candidate_level) != "none"
-                else str(existing_report_candidate_level)
+            resolved_talk_impulse_level = (
+                str(talk_impulse_level)
+                if bool(is_result_target) and str(talk_impulse_level) != "none"
+                else str(existing_talk_impulse_level)
             )
-            report_candidate_reason = (
-                str(talk_candidate_reason)
-                if bool(is_result_target) and str(talk_candidate_reason)
-                else existing_report_candidate_reason
+            resolved_talk_impulse_reason = (
+                str(talk_impulse_reason)
+                if bool(is_result_target) and str(talk_impulse_reason)
+                else existing_talk_impulse_reason
             )
 
             # --- action_result で thread の状態を明示遷移させる ---
@@ -1611,8 +1611,8 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         if bool(is_result_target) and action_result_status
                         else None
                     ),
-                    report_candidate_level=str(report_candidate_level),
-                    report_candidate_reason=(str(report_candidate_reason) if report_candidate_reason else None),
+                    talk_impulse_level=str(resolved_talk_impulse_level),
+                    talk_impulse_reason=(str(resolved_talk_impulse_reason) if resolved_talk_impulse_reason else None),
                     metadata_json=common_utils.json_dumps(metadata_obj),
                     created_at=int(now_ts),
                     updated_at=int(now_ts),
@@ -1636,8 +1636,10 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 thread_row.last_progress_at = int(now_ts)
                 if bool(is_result_target):
                     thread_row.last_result_status = (str(action_result_status) if action_result_status else None)
-                thread_row.report_candidate_level = str(report_candidate_level)
-                thread_row.report_candidate_reason = (str(report_candidate_reason) if report_candidate_reason else None)
+                thread_row.talk_impulse_level = str(resolved_talk_impulse_level)
+                thread_row.talk_impulse_reason = (
+                    str(resolved_talk_impulse_reason) if resolved_talk_impulse_reason else None
+                )
                 thread_row.metadata_json = common_utils.json_dumps(metadata_obj)
                 thread_row.updated_at = int(now_ts)
             db.add(thread_row)
@@ -1658,7 +1660,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     "priority": int(priority),
                     "next_action_type": (str(next_action_type) if next_action_type else None),
                     "followup_due_at": (int(followup_due_at) if followup_due_at is not None else None),
-                    "report_candidate_level": str(report_candidate_level),
+                    "talk_impulse_level": str(resolved_talk_impulse_level),
                 }
             )
 
@@ -1736,9 +1738,9 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             "active_thread_id": (str(active_thread_id) if active_thread_id else None),
             "focus_summary": (str(focus_summary) if focus_summary else None),
             "next_candidate_action": (dict(next_candidate_action) if isinstance(next_candidate_action, dict) else None),
-            "talk_candidate": {
-                "level": str(talk_candidate_level),
-                "reason": (str(talk_candidate_reason) if talk_candidate_reason else None),
+            "talk_impulse": {
+                "level": str(talk_impulse_level),
+                "reason": (str(talk_impulse_reason) if talk_impulse_reason else None),
             },
             "agenda_threads": list(agenda_threads_debug_rows),
             "updated_reason": "構造更新",

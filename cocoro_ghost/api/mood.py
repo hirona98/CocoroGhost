@@ -21,9 +21,9 @@ from sqlalchemy import func
 from cocoro_ghost.core import affect
 from cocoro_ghost.jobs import runner as worker
 from cocoro_ghost.autonomy.contracts import (
-    derive_report_candidate_for_action_result,
+    derive_talk_impulse_for_action_result,
     parse_console_delivery,
-    resolve_delivery_mode_from_report_candidate_level,
+    resolve_delivery_mode_from_talk_impulse_level,
 )
 from cocoro_ghost.core.clock import ClockService
 from cocoro_ghost.core import common_utils
@@ -81,20 +81,20 @@ def _build_success_delivery_expectation_for_action_type(*, action_type: str) -> 
     action_type_norm = str(action_type or "").strip()
     if action_type_norm == "web_research":
         return {
-            "report_candidate_level": None,
+            "talk_impulse_level": None,
             "delivery_mode": None,
             "note": "result_payload_dependent",
         }
 
     # --- それ以外は構造値だけで決められる ---
-    report_candidate = derive_report_candidate_for_action_result(
+    talk_impulse = derive_talk_impulse_for_action_result(
         action_type=str(action_type_norm),
         result_status="success",
     )
     return {
-        "report_candidate_level": str(report_candidate["level"]),
-        "delivery_mode": resolve_delivery_mode_from_report_candidate_level(
-            str(report_candidate["level"]),
+        "talk_impulse_level": str(talk_impulse["level"]),
+        "delivery_mode": resolve_delivery_mode_from_talk_impulse_level(
+            str(talk_impulse["level"]),
         ),
         "note": None,
     }
@@ -235,7 +235,7 @@ def _build_background_debug_snapshot(
             .one_or_none()
         )
         completion_result_status = None
-        completion_report_candidate_level = None
+        completion_talk_impulse_level = None
         completion_delivery_mode = None
         completion_delivery_reason = None
         if latest_result_row is not None:
@@ -243,16 +243,16 @@ def _build_background_debug_snapshot(
             completion_result_payload_obj = common_utils.json_loads_maybe(str(latest_result_row.result_payload_json or "{}"))
             if not isinstance(completion_result_payload_obj, dict):
                 raise RuntimeError("action_result.result_payload_json is not an object")
-            completion_report_candidate = derive_report_candidate_for_action_result(
+            completion_talk_impulse = derive_talk_impulse_for_action_result(
                 action_type=(str(latest_decision_row.action_type) if latest_decision_row.action_type else ""),
                 result_status=str(latest_result_row.result_status),
                 result_payload=dict(completion_result_payload_obj),
             )
-            completion_report_candidate_level = str(completion_report_candidate["level"])
-            completion_delivery_mode = resolve_delivery_mode_from_report_candidate_level(
-                completion_report_candidate_level,
+            completion_talk_impulse_level = str(completion_talk_impulse["level"])
+            completion_delivery_mode = resolve_delivery_mode_from_talk_impulse_level(
+                completion_talk_impulse_level,
             )
-            completion_delivery_reason = str(completion_report_candidate["reason"] or "").strip() or None
+            completion_delivery_reason = str(completion_talk_impulse["reason"] or "").strip() or None
 
         # --- latest decision の理由本文はプレビューだけ返す ---
         reason_preview = str(latest_decision_row.reason_text or "").strip()
@@ -266,7 +266,7 @@ def _build_background_debug_snapshot(
             "progress_delivery_mode": str(console_delivery_obj.get("on_progress") or ""),
             "progress_message_kind": str(console_delivery_obj.get("message_kind") or ""),
             "result_status": completion_result_status,
-            "completion_report_candidate_level": completion_report_candidate_level,
+            "completion_talk_impulse_level": completion_talk_impulse_level,
             "completion_delivery_mode": completion_delivery_mode,
             "completion_delivery_reason": completion_delivery_reason,
             "reason_text_preview": (str(reason_preview) if reason_preview else None),
@@ -354,13 +354,13 @@ def _build_background_debug_snapshot(
         success_expectation = _build_success_delivery_expectation_for_action_type(
             action_type=str(row.action_type),
         )
-        failure_report_candidate = derive_report_candidate_for_action_result(
+        failure_talk_impulse = derive_talk_impulse_for_action_result(
             action_type=str(row.action_type),
             result_status="failed",
         )
 
         # --- 直近結果があれば、実績の完了配信も計算する ---
-        actual_completion_report_candidate_level = None
+        actual_completion_talk_impulse_level = None
         actual_completion_delivery_mode = None
         actual_completion_delivery_reason = None
         last_result_status = str(row.last_result_status or "").strip() or None
@@ -377,16 +377,16 @@ def _build_background_debug_snapshot(
             actual_result_payload_obj = common_utils.json_loads_maybe(str(latest_result_row.result_payload_json or "{}"))
             if not isinstance(actual_result_payload_obj, dict):
                 raise RuntimeError("action_result.result_payload_json is not an object")
-            actual_report_candidate = derive_report_candidate_for_action_result(
+            actual_talk_impulse = derive_talk_impulse_for_action_result(
                 action_type=str(row.action_type),
                 result_status=str(last_result_status),
                 result_payload=dict(actual_result_payload_obj),
             )
-            actual_completion_report_candidate_level = str(actual_report_candidate["level"])
-            actual_completion_delivery_mode = resolve_delivery_mode_from_report_candidate_level(
-                actual_completion_report_candidate_level,
+            actual_completion_talk_impulse_level = str(actual_talk_impulse["level"])
+            actual_completion_delivery_mode = resolve_delivery_mode_from_talk_impulse_level(
+                actual_completion_talk_impulse_level,
             )
-            actual_completion_delivery_reason = str(actual_report_candidate["reason"] or "").strip() or None
+            actual_completion_delivery_reason = str(actual_talk_impulse["reason"] or "").strip() or None
 
         recent_intents.append(
             {
@@ -398,14 +398,14 @@ def _build_background_debug_snapshot(
                 "scheduled_at": _fmt_ts_or_none(int(row.scheduled_at) if row.scheduled_at is not None else None),
                 "updated_at": _fmt_ts_or_none(int(row.updated_at)),
                 "last_result_status": last_result_status,
-                "success_report_candidate_level": success_expectation.get("report_candidate_level"),
+                "success_talk_impulse_level": success_expectation.get("talk_impulse_level"),
                 "success_delivery_mode": success_expectation.get("delivery_mode"),
                 "success_delivery_note": success_expectation.get("note"),
-                "failure_report_candidate_level": str(failure_report_candidate["level"]),
-                "failure_delivery_mode": resolve_delivery_mode_from_report_candidate_level(
-                    str(failure_report_candidate["level"])
+                "failure_talk_impulse_level": str(failure_talk_impulse["level"]),
+                "failure_delivery_mode": resolve_delivery_mode_from_talk_impulse_level(
+                    str(failure_talk_impulse["level"])
                 ),
-                "actual_completion_report_candidate_level": actual_completion_report_candidate_level,
+                "actual_completion_talk_impulse_level": actual_completion_talk_impulse_level,
                 "actual_completion_delivery_mode": actual_completion_delivery_mode,
                 "actual_completion_delivery_reason": actual_completion_delivery_reason,
                 "blocked_reason": (str(row.blocked_reason) if row.blocked_reason else None),
@@ -655,14 +655,14 @@ def _build_current_thought_snapshot(
                 "payload": dict(payload_value),
             }
 
-    talk_candidate_raw = payload_obj.get("talk_candidate")
-    talk_candidate: dict[str, Any] | None = None
-    if isinstance(talk_candidate_raw, dict):
-        talk_level = str(talk_candidate_raw.get("level") or "").strip()
+    talk_impulse_raw = payload_obj.get("talk_impulse")
+    talk_impulse: dict[str, Any] | None = None
+    if isinstance(talk_impulse_raw, dict):
+        talk_level = str(talk_impulse_raw.get("level") or "").strip()
         if talk_level:
-            talk_candidate = {
+            talk_impulse = {
                 "level": str(talk_level),
-                "reason": str(talk_candidate_raw.get("reason") or "").strip() or None,
+                "reason": str(talk_impulse_raw.get("reason") or "").strip() or None,
             }
 
     updated_reason = str(payload_obj.get("updated_reason") or "").strip() or None
@@ -710,7 +710,7 @@ def _build_current_thought_snapshot(
         "active_thread_id": active_thread_id,
         "focus_summary": focus_summary,
         "next_candidate_action": next_candidate_action,
-        "talk_candidate": talk_candidate,
+        "talk_impulse": talk_impulse,
         "updated_reason": updated_reason,
         "attention_targets": list(attention_targets),
         "attention_targets_total": int(total_targets_count),
@@ -772,9 +772,9 @@ def _build_agenda_threads_snapshot(
                 "followup_due_at": _fmt_ts_or_none(int(row.followup_due_at)) if row.followup_due_at is not None else None,
                 "last_progress_at": _fmt_ts_or_none(int(row.last_progress_at)) if row.last_progress_at is not None else None,
                 "last_result_status": str(row.last_result_status or "").strip() or None,
-                "report_candidate_level": str(row.report_candidate_level),
-                "delivery_mode": resolve_delivery_mode_from_report_candidate_level(str(row.report_candidate_level)),
-                "report_candidate_reason": str(row.report_candidate_reason or "").strip() or None,
+                "talk_impulse_level": str(row.talk_impulse_level),
+                "delivery_mode": resolve_delivery_mode_from_talk_impulse_level(str(row.talk_impulse_level)),
+                "talk_impulse_reason": str(row.talk_impulse_reason or "").strip() or None,
                 "updated_at": _fmt_ts_or_none(int(row.updated_at)),
                 "source_event_id": (int(row.source_event_id) if row.source_event_id is not None else None),
                 "source_result_id": str(row.source_result_id or "").strip() or None,
@@ -793,9 +793,9 @@ def _build_delivery_decision_snapshot(
     現在の完了時 delivery_decision をデバッグ表示用に整形して返す。
 
     方針:
-        - active thread の report candidate を最優先で表示する。
+        - active thread の talk impulse を最優先で表示する。
         - active thread が無ければ、共有候補を持つ先頭 thread を表示する。
-        - delivery mode は report_candidate_level から導出する即時発話可否を示す。
+        - delivery mode は talk_impulse_level から導出する即時発話可否を示す。
     """
 
     # --- active thread を起点に見る ---
@@ -813,14 +813,14 @@ def _build_delivery_decision_snapshot(
 
     # --- active thread 自体に共有候補がある時だけ、それを最優先で表示する ---
     if isinstance(active_row, dict):
-        active_report_level = str(active_row.get("report_candidate_level") or "none")
-        if active_report_level != "none":
+        active_impulse_level = str(active_row.get("talk_impulse_level") or "none")
+        if active_impulse_level != "none":
             selected_row = dict(active_row)
 
     # --- active に共有候補が無ければ、共有候補を持つ先頭を採用する ---
     if selected_row is None:
         for row in list(agenda_threads_snapshot or []):
-            if str(row.get("report_candidate_level") or "") != "none":
+            if str(row.get("talk_impulse_level") or "") != "none":
                 selected_row = dict(row)
                 break
 
@@ -835,7 +835,7 @@ def _build_delivery_decision_snapshot(
                 if isinstance(active_row, dict)
                 else None
             ),
-            "report_candidate_level": "none",
+            "talk_impulse_level": "none",
             "delivery_mode": "silent",
             "reason": None,
         }
@@ -844,9 +844,9 @@ def _build_delivery_decision_snapshot(
     return {
         "thread_id": str(selected_row.get("thread_id") or "").strip() or None,
         "topic": str(selected_row.get("topic") or "").strip() or None,
-        "report_candidate_level": str(selected_row.get("report_candidate_level") or "none"),
+        "talk_impulse_level": str(selected_row.get("talk_impulse_level") or "none"),
         "delivery_mode": str(selected_row.get("delivery_mode") or "silent"),
-        "reason": str(selected_row.get("report_candidate_reason") or "").strip() or None,
+        "reason": str(selected_row.get("talk_impulse_reason") or "").strip() or None,
     }
 
 

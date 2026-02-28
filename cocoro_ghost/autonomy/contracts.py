@@ -21,7 +21,7 @@ _THRESHOLD_BIASES = {"higher", "neutral", "lower"}
 _CONSOLE_DELIVERY_TERMINAL_MODES = {"silent", "activity_only", "chat"}
 _CONSOLE_DELIVERY_PROGRESS_MODES = {"silent", "activity_only"}
 _CONSOLE_MESSAGE_KINDS = {"report", "progress", "question", "error"}
-_REPORT_CANDIDATE_LEVELS = {"none", "mention", "notify", "chat"}
+_TALK_IMPULSE_LEVELS = {"none", "low", "high", "speak_now"}
 
 
 def _normalize_string_list(value: Any, *, field_name: str, min_items: int = 0) -> list[str]:
@@ -151,22 +151,14 @@ def _parse_console_delivery(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("console_delivery must be an object")
 
-    # --- 旧値互換: notify は通知UIではなく通常発話へ統合する ---
-    on_complete_raw = str(value.get("on_complete") or "").strip()
-    if on_complete_raw == "notify":
-        on_complete_raw = "chat"
-    on_fail_raw = str(value.get("on_fail") or "").strip()
-    if on_fail_raw == "notify":
-        on_fail_raw = "chat"
-
     out = dict(value)
     out["on_complete"] = _normalize_enum_text(
-        on_complete_raw,
+        value.get("on_complete"),
         field_name="console_delivery.on_complete",
         allowed=_CONSOLE_DELIVERY_TERMINAL_MODES,
     )
     out["on_fail"] = _normalize_enum_text(
-        on_fail_raw,
+        value.get("on_fail"),
         field_name="console_delivery.on_fail",
         allowed=_CONSOLE_DELIVERY_TERMINAL_MODES,
     )
@@ -192,20 +184,20 @@ def parse_console_delivery(value: Any) -> dict[str, Any]:
     return _parse_console_delivery(value)
 
 
-def derive_report_candidate_for_action_result(
+def derive_talk_impulse_for_action_result(
     *,
     action_type: Any,
     result_status: Any,
     result_payload: Any | None = None,
 ) -> dict[str, str]:
     """
-    ActionResult から report candidate を決める。
+    ActionResult から talk impulse を決める。
 
     方針:
-        - 完了時の共有可否は action_result 側で決める。
+        - 「どれだけ話したいか」の強さだけを決める。
         - Deliberation の terminal console_delivery には依存しない。
         - 基本は構造値（action_type/result_status）で決める。
-        - `web_research` 成功時のみ result_payload の構造量で `notify/chat` を分ける。
+        - `web_research` 成功時のみ result_payload の構造量で強さを分ける。
     """
     action_type_norm = str(action_type or "").strip()
     result_status_norm = _normalize_enum_text(
@@ -219,25 +211,25 @@ def derive_report_candidate_for_action_result(
             raise ValueError("result_payload must be an object")
         result_payload_obj = dict(result_payload)
 
-    # --- 失敗は即時通知対象にする ---
+    # --- 失敗は必ず自分から話す ---
     if result_status_norm == "failed":
         return {
-            "level": "notify",
+            "level": "speak_now",
             "reason": "action_result_failed",
         }
 
-    # --- 部分成功は低めの共有候補に留める ---
+    # --- 部分成功は軽い共有衝動に留める ---
     if result_status_norm == "partial":
         return {
-            "level": "mention",
+            "level": "low",
             "reason": "action_result_partial",
         }
 
-    # --- 裏で調査して価値が出た結果だけ chat 候補に上げる ---
+    # --- 裏で調査して価値が高いときだけ即時発話に上げる ---
     if result_status_norm == "success" and action_type_norm == "web_research":
         if result_payload_obj is None:
             return {
-                "level": "notify",
+                "level": "high",
                 "reason": "research_result_ready",
             }
 
@@ -257,18 +249,18 @@ def derive_report_candidate_for_action_result(
         report_units = int(findings_count * 2) + int(min(sources_count, 2)) + (1 if notes_present else 0)
         if report_units >= 3:
             return {
-                "level": "chat",
+                "level": "speak_now",
                 "reason": "research_result_rich",
             }
         return {
-            "level": "notify",
+            "level": "high",
             "reason": "research_result_brief",
         }
 
-    # --- 委譲完了は通知候補にする ---
+    # --- 委譲完了は強めに気になるが、即時には話さない ---
     if result_status_norm == "success" and action_type_norm == "agent_delegate":
         return {
-            "level": "notify",
+            "level": "high",
             "reason": "delegated_result_ready",
         }
 
@@ -279,28 +271,28 @@ def derive_report_candidate_for_action_result(
     }
 
 
-def resolve_delivery_mode_from_report_candidate_level(value: Any) -> str:
+def resolve_delivery_mode_from_talk_impulse_level(value: Any) -> str:
     """
-    report candidate から最終 delivery mode を決める。
+    talk impulse から最終 delivery mode を決める。
 
     方針:
-        - `mention` / `notify` は「共有したい強さ」であり、即時発話はしない。
-        - AI人格が今ここで自分から話すのは `chat` のときだけにする。
+        - low/high は「話したい強さ」であり、即時発話はしない。
+        - AI人格が今ここで自分から話すのは speak_now のときだけにする。
     """
-    report_level = _normalize_enum_text(
+    impulse_level = _normalize_enum_text(
         value,
-        field_name="report_candidate_level",
-        allowed=_REPORT_CANDIDATE_LEVELS,
+        field_name="talk_impulse_level",
+        allowed=_TALK_IMPULSE_LEVELS,
     )
-    if report_level == "none":
+    if impulse_level == "none":
         return "silent"
-    if report_level == "mention":
+    if impulse_level == "low":
         return "silent"
-    if report_level == "notify":
+    if impulse_level == "high":
         return "silent"
-    if report_level == "chat":
+    if impulse_level == "speak_now":
         return "chat"
-    raise ValueError(f"unsupported report_candidate_level: {report_level}")
+    raise ValueError(f"unsupported talk_impulse_level: {impulse_level}")
 
 
 def resolve_message_kind_for_action_result(*, result_status: Any) -> str:

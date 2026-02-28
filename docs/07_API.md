@@ -1008,9 +1008,9 @@ intent 一覧を返す（新しい順）。
 - `long_mood_state` が存在しない場合は `mood: null` を返す
 - `current_thought_state` が存在しない場合は `current_thought: null` を返す
 - `agenda_threads` は常に返す（未作成時は空配列）
-- `delivery_decision` は、`agenda_threads` から見た「今の完了時共有候補」の要約を返す
-  - `current_thought.active_thread_id` の thread に共有候補がある場合はそれを優先する
-  - 無い場合は、共有候補（`report_candidate_level != "none"`）を持つ先頭 thread を返す
+- `delivery_decision` は、`agenda_threads` から見た「今の完了時発話衝動」の要約を返す
+  - `current_thought.active_thread_id` の thread に発話衝動がある場合はそれを優先する
+  - 無い場合は、発話衝動（`talk_impulse_level != "none"`）を持つ先頭 thread を返す
 - `shock_vad` は **読み出し時点（now）で時間減衰**した値を返す
   - `dt_seconds = now_ts - last_confirmed_at` を使う
 - `recent_affects` は `event_affects` を直近から固定件数返す（全 source、ただし `events.searchable=1` のみ）
@@ -1025,16 +1025,16 @@ intent 一覧を返す（新しい順）。
 - `current_thought`
   - `current_thought_state` の人間向け要約
   - `interaction_mode` / `active_thread_id` / `focus_summary`
-  - `next_candidate_action` / `talk_candidate`
+  - `next_candidate_action` / `talk_impulse`
   - `updated_from` / `updated_from_event_preview`
 - `agenda_threads`
   - 自発行動の実体である agenda 一覧
   - `status` / `next_action_type` / `followup_due_at`
   - `last_result_status`
-  - `report_candidate_level` / `delivery_mode` / `report_candidate_reason`
+  - `talk_impulse_level` / `delivery_mode` / `talk_impulse_reason`
 - `delivery_decision`
-  - 現時点の完了時共有見込み
-  - `thread_id` / `topic` / `report_candidate_level` / `delivery_mode` / `reason`
+  - 現時点の完了時発話見込み
+  - `thread_id` / `topic` / `talk_impulse_level` / `delivery_mode` / `reason`
 - `recent_affects`
   - 直近の瞬間感情
 - `background`
@@ -1053,17 +1053,17 @@ intent 一覧を返す（新しい順）。
 - `decision_outcome` / `trigger_type` / `action_type`
 - `progress_delivery_mode` / `progress_message_kind`
 - `result_status`
-- `completion_report_candidate_level`
+- `completion_talk_impulse_level`
 - `completion_delivery_mode`
 - `completion_delivery_reason`
 
 `background.recent_intents` の主な項目:
 
-- `success_report_candidate_level` / `success_delivery_mode`
+- `success_talk_impulse_level` / `success_delivery_mode`
 - `success_delivery_note`
-  - `web_research` は結果 payload の量で `notify/chat` が分かれるため、`result_payload_dependent` を返す
-- `failure_report_candidate_level` / `failure_delivery_mode`
-- `actual_completion_report_candidate_level`
+  - `web_research` は結果 payload の量で `silent/chat` が分かれるため、`result_payload_dependent` を返す
+- `failure_talk_impulse_level` / `failure_delivery_mode`
+- `actual_completion_talk_impulse_level`
 - `actual_completion_delivery_mode`
 - `actual_completion_delivery_reason`
 
@@ -1093,8 +1093,8 @@ intent 一覧を返す（新しい順）。
       "action_type": "web_research",
       "payload": {"query": "春の旅行先 候補"}
     },
-    "talk_candidate": {
-      "level": "chat",
+    "talk_impulse": {
+      "level": "speak_now",
       "reason": "research_result_rich"
     },
     "attention_targets": [],
@@ -1132,9 +1132,9 @@ intent 一覧を返す（新しい順）。
       "followup_due_at": "2026-02-28T12:05:00+09:00",
       "last_progress_at": "2026-02-28T12:00:00+09:00",
       "last_result_status": "success",
-      "report_candidate_level": "chat",
+      "talk_impulse_level": "speak_now",
       "delivery_mode": "chat",
-      "report_candidate_reason": "research_result_rich",
+      "talk_impulse_reason": "research_result_rich",
       "updated_at": "2026-02-28T12:00:00+09:00",
       "source_event_id": 789,
       "source_result_id": "result-1",
@@ -1144,7 +1144,7 @@ intent 一覧を返す（新しい順）。
   "delivery_decision": {
     "thread_id": "thread-1",
     "topic": "旅行先の候補",
-    "report_candidate_level": "chat",
+    "talk_impulse_level": "speak_now",
     "delivery_mode": "chat",
     "reason": "research_result_rich"
   },
@@ -1166,7 +1166,7 @@ intent 一覧を返す（新しい順）。
         "progress_delivery_mode": "activity_only",
         "progress_message_kind": "progress",
         "result_status": "success",
-        "completion_report_candidate_level": "chat",
+        "completion_talk_impulse_level": "speak_now",
         "completion_delivery_mode": "chat",
         "completion_delivery_reason": "research_result_rich"
       }
@@ -1176,12 +1176,12 @@ intent 一覧を返す（新しい順）。
         "intent_id": "intent-1",
         "action_type": "web_research",
         "status": "done",
-        "success_report_candidate_level": null,
+        "success_talk_impulse_level": null,
         "success_delivery_mode": null,
         "success_delivery_note": "result_payload_dependent",
-        "failure_report_candidate_level": "notify",
-        "failure_delivery_mode": "notify",
-        "actual_completion_report_candidate_level": "chat",
+        "failure_talk_impulse_level": "speak_now",
+        "failure_delivery_mode": "chat",
+        "actual_completion_talk_impulse_level": "speak_now",
         "actual_completion_delivery_mode": "chat",
         "actual_completion_delivery_reason": "research_result_rich"
       }
