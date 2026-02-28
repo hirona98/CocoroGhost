@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import json
 import tomli
 
-from cocoro_ghost import paths
+from cocoro_ghost.infra import paths
 
 if TYPE_CHECKING:
     from cocoro_ghost.storage.models import (

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from cocoro_ghost import common_utils
+from cocoro_ghost.core import common_utils
 from cocoro_ghost.autonomy.contracts import CapabilityExecutionResult
-from cocoro_ghost.clock import get_clock_service
+from cocoro_ghost.core.clock import get_clock_service
 from cocoro_ghost.reminders.db import reminders_session_scope
 from cocoro_ghost.reminders.models import Reminder
 

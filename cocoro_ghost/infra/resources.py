@@ -20,7 +20,7 @@ def get_static_dir() -> Path:
         return (Path(getattr(sys, "_MEIPASS")) / "static").resolve()
 
     # --- 通常実行は app_root/static を使う ---
-    from cocoro_ghost.paths import get_app_root_dir
+    from cocoro_ghost.infra.paths import get_app_root_dir
 
     return (get_app_root_dir() / "static").resolve()
 

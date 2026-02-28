@@ -13,7 +13,7 @@ def main() -> None:
     """配布版のサーバー起動処理。"""
 
     # --- 先にディレクトリを確実に作る（初回起動時の事故防止） ---
-    from cocoro_ghost import paths
+    from cocoro_ghost.infra import paths
 
     paths.get_config_dir()
     paths.get_data_dir()
@@ -22,7 +22,7 @@ def main() -> None:
 
     # --- TLS（自己署名）を用意する ---
     # NOTE: LAN 内でも HTTPS を必須にする。
-    from cocoro_ghost.tls import ensure_self_signed_tls_files
+    from cocoro_ghost.infra.tls import ensure_self_signed_tls_files
 
     cert_path, key_path = ensure_self_signed_tls_files()
 

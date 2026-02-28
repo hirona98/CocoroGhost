@@ -12,10 +12,13 @@ __all__ = [
     "api",
     "app_bootstrap",
     "autonomy",
+    "core",
+    "infra",
     "jobs",
     "llm",
     "memory",
     "reminders",
     "runtime",
     "storage",
+    "vision",
 ]

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from cocoro_ghost import common_utils
+from cocoro_ghost.core import common_utils
 from cocoro_ghost.llm import prompt_builders
 from cocoro_ghost.storage import vector_index
 from cocoro_ghost.storage.db import memory_session_scope, search_similar_item_ids

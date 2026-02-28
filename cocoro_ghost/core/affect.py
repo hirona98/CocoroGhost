@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from cocoro_ghost.common_utils import json_loads_maybe as _json_loads_maybe
+from cocoro_ghost.core.common_utils import json_loads_maybe as _json_loads_maybe
 
 # --- LongMoodState パラメータ（1箇所で管理） ---
 LONG_MOOD_MODEL_VERSION = 3

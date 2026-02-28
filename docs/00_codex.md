@@ -11,11 +11,11 @@
 - 依存生成（MemoryManager / ClockService / DB Depends）: `cocoro_ghost/app_bootstrap/dependencies.py`
 - 同期/非同期の境界（SSE開始前に検索確定）: `docs/10_実行フロー.md`
 - API（HTTPS必須/認証/主要エンドポイント）: `docs/07_API.md`
-- 時刻基盤（system/domain二層）: `cocoro_ghost/clock.py` と `cocoro_ghost/api/control.py` / `cocoro_ghost/api/services/control_service.py`（`/api/control/time*`）
+- 時刻基盤（system/domain二層）: `cocoro_ghost/core/clock.py` と `cocoro_ghost/api/control.py` / `cocoro_ghost/api/services/control_service.py`（`/api/control/time*`）
 - 記憶処理の入口（mixin構成）: `cocoro_ghost/memory/manager.py`
 - 非同期ジョブ（WritePlan/索引/整理など）: `cocoro_ghost/jobs/runner.py`（スケジューラ）/ `cocoro_ghost/jobs/registry.py`（ディスパッチ）/ `cocoro_ghost/jobs/handlers/*.py`（実処理）/ `cocoro_ghost/jobs/handlers/write_plan_generate.py` / `cocoro_ghost/jobs/handlers/write_plan_apply.py`（WritePlan分割）/ `cocoro_ghost/jobs/handlers/common.py`（共通ヘルパ）/ `cocoro_ghost/jobs/constants.py`（共通定数）/ `cocoro_ghost/jobs/internal_worker.py`
 - 確定プロフィール（好み/苦手: ConfirmedPreferences）: `cocoro_ghost/memory/_chat_mixin.py` と `cocoro_ghost/jobs/handlers/write_plan.py`
-- 保存先/パス（frozen/非frozen）: `cocoro_ghost/paths.py`
+- 保存先/パス（frozen/非frozen）: `cocoro_ghost/infra/paths.py`
 - TOMLキー/検証（未知キーで起動失敗）: `cocoro_ghost/config.py` の `load_config()`
 
 <!-- Block: Next Reads -->
@@ -23,7 +23,7 @@
 
 - API 追加/変更: `cocoro_ghost/api/` と `cocoro_ghost/app_bootstrap/routers.py` と `docs/07_API.md`
 - チャット（SSE）: `cocoro_ghost/api/chat.py` と `cocoro_ghost/memory/_chat_mixin.py`
-- 自発行動/Capability設計: `docs/03_自発行動アーキテクチャ方針.md` と `cocoro_ghost/autonomy/orchestrator.py` / `cocoro_ghost/autonomy/repository.py` / `cocoro_ghost/autonomy/runtime_blackboard.py` / `cocoro_ghost/autonomy/policies/` / `cocoro_ghost/autonomy/capabilities/` / `cocoro_ghost/jobs/handlers/autonomy.py` / `cocoro_ghost/desktop_watch.py` / `cocoro_ghost/camera_watch.py` / `cocoro_ghost/reminders/service.py` / `cocoro_ghost/runtime/event_stream.py` / `cocoro_ghost/jobs/runner.py`
+- 自発行動/Capability設計: `docs/03_自発行動アーキテクチャ方針.md` と `cocoro_ghost/autonomy/orchestrator.py` / `cocoro_ghost/autonomy/repository.py` / `cocoro_ghost/autonomy/runtime_blackboard.py` / `cocoro_ghost/autonomy/policies/` / `cocoro_ghost/autonomy/capabilities/` / `cocoro_ghost/jobs/handlers/autonomy.py` / `cocoro_ghost/vision/desktop_watch.py` / `cocoro_ghost/vision/camera_watch.py` / `cocoro_ghost/reminders/service.py` / `cocoro_ghost/runtime/event_stream.py` / `cocoro_ghost/jobs/runner.py`
 - 自発行動の詳細設計: `docs/18_自発行動アーキテクチャ詳細設計.md`（実装順序/データ/ジョブ/API/責務分割の実装契約）
 - 自発行動の汎用エージェント委譲（実装前設計）: `docs/19_汎用エージェント委譲設計.md`（`agent_delegate` / `agent_jobs` / `agent_runner` / control API）
 - 人格中心化（会話と自発行動の実装前設計）: `docs/20_人格中心化（会話と自発行動）実装設計.md`（`autonomy.message` の人格発話化 / 会話選別・Deliberation材料選別の人格化 / `current_thought_state` + `agenda_threads` 構想）

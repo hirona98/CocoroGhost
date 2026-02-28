@@ -27,7 +27,7 @@ from cocoro_ghost.api import (
     vision,
 )
 from cocoro_ghost.api.http_auth import require_bearer_only, require_bearer_or_cookie_session
-from cocoro_ghost.resources import get_static_dir
+from cocoro_ghost.infra.resources import get_static_dir
 
 
 def register_http_routes(app: FastAPI) -> None:

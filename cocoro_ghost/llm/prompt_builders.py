@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cocoro_ghost.common_utils import json_dumps
+from cocoro_ghost.core.common_utils import json_dumps
 
 
 def write_plan_system_prompt(*, persona_text: str, addon_text: str, second_person_label: str) -> str:

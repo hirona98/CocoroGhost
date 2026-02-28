@@ -42,7 +42,7 @@ def get_db_dir() -> Path:
     """
 
     # --- DB保存先は paths に集約 ---
-    from cocoro_ghost.paths import get_db_dir as _get_db_dir
+    from cocoro_ghost.infra.paths import get_db_dir as _get_db_dir
 
     return _get_db_dir()
 

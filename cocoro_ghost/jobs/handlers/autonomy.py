@@ -18,7 +18,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from cocoro_ghost import common_utils
+from cocoro_ghost.core import common_utils
 from cocoro_ghost.llm import prompt_builders
 from cocoro_ghost.autonomy.capabilities.device_control import execute_device_control
 from cocoro_ghost.autonomy.capabilities.mobility_move import execute_mobility_move
@@ -34,7 +34,7 @@ from cocoro_ghost.autonomy.contracts import (
     resolve_message_kind_for_action_result,
 )
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
-from cocoro_ghost.clock import get_clock_service
+from cocoro_ghost.core.clock import get_clock_service
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.storage.db import memory_session_scope
 from cocoro_ghost.llm.client import LlmClient, LlmRequestPurpose

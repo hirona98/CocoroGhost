@@ -13,7 +13,7 @@ from typing import Any
 
 from sqlalchemy import func
 
-from cocoro_ghost import common_utils
+from cocoro_ghost.core import common_utils
 from cocoro_ghost.storage.memory_models import Event, EventAffect, EventLink, EventThread, Job, State, StateLink
 from cocoro_ghost.jobs.constants import (
     JOB_DONE as _JOB_DONE,

@@ -13,7 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 from cocoro_ghost import schemas
 from cocoro_ghost.api.services import control_service
 from cocoro_ghost.app_bootstrap.dependencies import get_clock_service_dep
-from cocoro_ghost.clock import ClockService
+from cocoro_ghost.core.clock import ClockService
 
 router = APIRouter()
 

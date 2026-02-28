@@ -19,8 +19,8 @@ from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy import text
 
 from cocoro_ghost import schemas
-from cocoro_ghost import affect
-from cocoro_ghost import common_utils
+from cocoro_ghost.core import affect
+from cocoro_ghost.core import common_utils
 from cocoro_ghost.llm import prompt_builders
 from cocoro_ghost.storage import vector_index
 from cocoro_ghost.storage.db import memory_session_scope
@@ -30,7 +30,7 @@ from cocoro_ghost.memory._chat_search_mixin import _CandidateItem
 from cocoro_ghost.memory._image_mixin import default_input_text_when_images_only
 from cocoro_ghost.storage.memory_models import Event, EventAssistantSummary, EventLink, RetrievalRun, State, UserPreference
 from cocoro_ghost.memory._utils import now_utc_ts
-from cocoro_ghost.time_utils import format_iso8601_local
+from cocoro_ghost.core.time_utils import format_iso8601_local
 
 
 logger = logging.getLogger(__name__)

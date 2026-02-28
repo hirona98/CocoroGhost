@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from cocoro_ghost import schemas
-from cocoro_ghost.clock import ClockService
+from cocoro_ghost.core.clock import ClockService
 from cocoro_ghost.app_bootstrap.dependencies import get_clock_service_dep, get_reminders_db_dep
 from cocoro_ghost.reminders.logic import (
     DEFAULT_REMINDER_TIME_ZONE,

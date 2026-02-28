@@ -12,7 +12,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from cocoro_ghost import common_utils
+from cocoro_ghost.core import common_utils
 from cocoro_ghost.llm import prompt_builders
 from cocoro_ghost.storage import vector_index
 from cocoro_ghost.storage.db import memory_session_scope, upsert_vec_item

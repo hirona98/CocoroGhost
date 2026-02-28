@@ -12,7 +12,7 @@ import base64
 
 from fastapi import BackgroundTasks, HTTPException, status
 
-from cocoro_ghost import common_utils
+from cocoro_ghost.core import common_utils
 from cocoro_ghost import schemas
 from cocoro_ghost.llm import prompt_builders
 from cocoro_ghost.storage.db import memory_session_scope
@@ -21,7 +21,7 @@ from cocoro_ghost.memory._image_mixin import default_input_text_when_images_only
 from cocoro_ghost.memory._utils import now_utc_ts
 from cocoro_ghost.storage.memory_models import Event
 from cocoro_ghost.runtime import event_stream
-from cocoro_ghost import vision_bridge
+from cocoro_ghost.vision import vision_bridge
 
 
 def _format_hhmm_to_time_jp(hhmm: str) -> str:

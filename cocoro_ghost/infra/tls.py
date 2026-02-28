@@ -27,7 +27,7 @@ def _get_tls_dir() -> Path:
     """TLSファイルの保存先ディレクトリ（config/tls）を返し、存在しなければ作成する。"""
 
     # --- config は exe 隣を既定にする（paths の方針に従う） ---
-    from cocoro_ghost.paths import get_config_dir
+    from cocoro_ghost.infra.paths import get_config_dir
 
     tls_dir = (get_config_dir() / "tls").resolve()
     tls_dir.mkdir(parents=True, exist_ok=True)

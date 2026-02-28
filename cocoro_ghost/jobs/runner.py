@@ -22,7 +22,7 @@ from typing import Any
 
 from sqlalchemy import func
 
-from cocoro_ghost import common_utils
+from cocoro_ghost.core import common_utils
 from cocoro_ghost.storage.db import memory_session_scope
 from cocoro_ghost.llm.client import LlmClient
 from cocoro_ghost.jobs.constants import (

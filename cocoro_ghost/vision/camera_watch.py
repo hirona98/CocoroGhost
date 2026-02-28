@@ -14,7 +14,7 @@ import time
 
 from cocoro_ghost.autonomy.orchestrator import get_autonomy_orchestrator
 from cocoro_ghost.autonomy.policies import build_camera_watch_trigger
-from cocoro_ghost.clock import get_clock_service
+from cocoro_ghost.core.clock import get_clock_service
 from cocoro_ghost.config import get_config_store
 
 

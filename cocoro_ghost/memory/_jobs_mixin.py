@@ -12,7 +12,7 @@ import uuid
 
 from sqlalchemy import text
 
-from cocoro_ghost import common_utils
+from cocoro_ghost.core import common_utils
 from cocoro_ghost.storage.db import load_global_settings, memory_session_scope, settings_session_scope
 from cocoro_ghost.memory._utils import now_system_utc_ts
 from cocoro_ghost.storage.memory_models import Job

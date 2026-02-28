@@ -18,7 +18,7 @@
 
 ## 保存先（ファイルパス）
 
-保存先の方針は `cocoro_ghost/paths.py` に準拠する。
+保存先の方針は `cocoro_ghost/infra/paths.py` に準拠する。
 
 - 通常実行（非frozen）: `app_root/data/`
   - `app_root` は基本 CWD（例: `start.bat` の実行場所）

@@ -12,7 +12,7 @@ from typing import Iterator
 
 from sqlalchemy.orm import Session
 
-from cocoro_ghost.clock import ClockService, get_clock_service
+from cocoro_ghost.core.clock import ClockService, get_clock_service
 from cocoro_ghost.config import ConfigStore, get_config_store
 from cocoro_ghost.storage.db import get_memory_session, get_settings_db
 from cocoro_ghost.llm.client import LlmClient

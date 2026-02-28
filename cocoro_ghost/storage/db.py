@@ -64,7 +64,7 @@ def get_db_dir() -> Path:
     """
 
     # --- パス解決は paths に集約する ---
-    from cocoro_ghost.paths import get_db_dir as _get_db_dir
+    from cocoro_ghost.infra.paths import get_db_dir as _get_db_dir
 
     return _get_db_dir()
 
@@ -105,7 +105,7 @@ def _create_engine_with_vec_support(db_url: str):
         p = Path(vec_path)
         if not p.exists():
             try:
-                from cocoro_ghost.paths import get_app_root_dir
+                from cocoro_ghost.infra.paths import get_app_root_dir
 
                 search_dirs = [get_app_root_dir(), Path(sqlite_vec.__file__).resolve().parent]
                 candidates: list[Path] = []
