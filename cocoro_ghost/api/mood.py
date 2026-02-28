@@ -803,14 +803,21 @@ def _build_delivery_decision_snapshot(
     if isinstance(current_thought_snapshot, dict):
         active_thread_id = str(current_thought_snapshot.get("active_thread_id") or "").strip() or None
 
+    active_row: dict[str, Any] | None = None
     selected_row: dict[str, Any] | None = None
     if active_thread_id:
         for row in list(agenda_threads_snapshot or []):
             if str(row.get("thread_id") or "") == str(active_thread_id):
-                selected_row = dict(row)
+                active_row = dict(row)
                 break
 
-    # --- active が無ければ、共有候補を持つ先頭を採用する ---
+    # --- active thread 自体に共有候補がある時だけ、それを最優先で表示する ---
+    if isinstance(active_row, dict):
+        active_report_level = str(active_row.get("report_candidate_level") or "none")
+        if active_report_level != "none":
+            selected_row = dict(active_row)
+
+    # --- active に共有候補が無ければ、共有候補を持つ先頭を採用する ---
     if selected_row is None:
         for row in list(agenda_threads_snapshot or []):
             if str(row.get("report_candidate_level") or "") != "none":
@@ -823,7 +830,11 @@ def _build_delivery_decision_snapshot(
             return None
         return {
             "thread_id": active_thread_id,
-            "topic": None,
+            "topic": (
+                str(active_row.get("topic") or "").strip() or None
+                if isinstance(active_row, dict)
+                else None
+            ),
             "report_candidate_level": "none",
             "delivery_mode": "silent",
             "reason": None,

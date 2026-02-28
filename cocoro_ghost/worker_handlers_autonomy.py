@@ -292,12 +292,6 @@ def _select_agenda_thread_id_for_new_decision(
     if len(matching_thread_ids) == 1:
         return str(matching_thread_ids[0])
 
-    # --- 最後に、現在フォーカス中 thread だけは明示的に引き継ぐ ---
-    if isinstance(active_thread_row, dict):
-        active_status = str(active_thread_row.get("status") or "").strip()
-        if active_status in {"active", "open", "blocked"}:
-            return str(active_thread_id)
-
     return None
 
 
