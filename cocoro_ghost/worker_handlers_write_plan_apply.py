@@ -1367,14 +1367,14 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 .filter(AgendaThread.thread_key == str(thread_key))
                 .one_or_none()
             )
-            thread_status = "active" if idx == 0 else "open"
+            resolved_thread_status = "active" if idx == 0 else "open"
             next_action_type = str(seed.get("next_action_type") or "").strip() or None
             next_action_payload = (
                 dict(seed.get("next_action_payload") or {})
                 if isinstance(seed.get("next_action_payload"), dict)
                 else {}
             )
-            followup_due_at = int(now_ts) if next_action_type else None
+            followup_due_at = int(base_ts) if next_action_type else None
             report_candidate_level = (
                 str(talk_candidate_level)
                 if idx == 0 and str(talk_candidate_level) != "none"
@@ -1385,6 +1385,29 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 if idx == 0 and str(talk_candidate_reason)
                 else None
             )
+
+            # --- action_result で thread の状態を明示遷移させる ---
+            # NOTE:
+            # - action_result 後に active へ戻すと、heartbeat が同じ thread を即再実行しやすい。
+            # - ここで terminal / waiting 状態へ落とし、followup_due_at も制御する。
+            if event_source == "action_result" and idx == 0:
+                if action_result_status == "failed":
+                    resolved_thread_status = "blocked"
+                    followup_due_at = None
+                elif action_result_status == "partial":
+                    resolved_thread_status = "open"
+                    followup_due_at = None
+                elif action_result_status == "no_effect":
+                    resolved_thread_status = "stale"
+                    followup_due_at = None
+                    next_action_type = None
+                    next_action_payload = {}
+                elif action_result_status == "success":
+                    resolved_thread_status = "satisfied"
+                    followup_due_at = None
+                    next_action_type = None
+                    next_action_payload = {}
+
             priority = int(max(1, min(100, round(40 + float(seed.get("weight") or 0.0) * 60.0))))
             metadata_obj = {
                 "source_target": {
@@ -1410,7 +1433,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                         if str(seed.get("target_type") or "") == "world_goal"
                         else None
                     ),
-                    status=str(thread_status),
+                    status=str(resolved_thread_status),
                     priority=int(priority),
                     next_action_type=(str(next_action_type) if next_action_type else None),
                     next_action_payload_json=common_utils.json_dumps(next_action_payload),
@@ -1433,7 +1456,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     if str(seed.get("target_type") or "") == "world_goal"
                     else None
                 )
-                thread_row.status = str(thread_status)
+                thread_row.status = str(resolved_thread_status)
                 thread_row.priority = int(priority)
                 thread_row.next_action_type = (str(next_action_type) if next_action_type else None)
                 thread_row.next_action_payload_json = common_utils.json_dumps(next_action_payload)
@@ -1446,9 +1469,9 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 thread_row.updated_at = int(now_ts)
             db.add(thread_row)
 
-            if idx == 0:
+            if idx == 0 and str(resolved_thread_status) in {"active", "open", "blocked"}:
                 active_thread_id = str(thread_id)
-                if next_action_type:
+                if next_action_type and followup_due_at is not None:
                     next_candidate_action = {
                         "action_type": str(next_action_type),
                         "payload": dict(next_action_payload),
@@ -1457,7 +1480,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             agenda_threads_debug_rows.append(
                 {
                     "thread_id": str(thread_id),
-                    "status": str(thread_status),
+                    "status": str(resolved_thread_status),
                     "kind": str(seed.get("agenda_kind") or ""),
                     "topic": str(seed.get("target_value") or ""),
                     "priority": int(priority),
