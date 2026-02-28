@@ -8,7 +8,7 @@ memory配下の共通ユーティリティ（最小）。
 
 from __future__ import annotations
 
-from cocoro_ghost.clock import get_clock_service
+from cocoro_ghost.core.clock import get_clock_service
 
 
 def now_utc_ts() -> int:

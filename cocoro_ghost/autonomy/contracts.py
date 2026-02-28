@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from cocoro_ghost import common_utils
+from cocoro_ghost.core import common_utils
 
 
 _DECISION_OUTCOMES = {"do_action", "skip", "defer"}

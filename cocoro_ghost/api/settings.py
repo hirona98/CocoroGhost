@@ -13,10 +13,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from cocoro_ghost import models, schemas
-from cocoro_ghost.db import load_global_settings
-from cocoro_ghost.deps import reset_memory_manager
-from cocoro_ghost.deps import get_settings_db_dep
+from cocoro_ghost import schemas
+from cocoro_ghost.storage import models
+from cocoro_ghost.storage.db import load_global_settings
+from cocoro_ghost.app_bootstrap.dependencies import get_settings_db_dep, reset_memory_manager
 
 router = APIRouter()
 
@@ -146,7 +146,7 @@ def commit_settings(
 ):
     """全設定をまとめて確定（全置換 + アーカイブ + active IDs）。"""
     from cocoro_ghost.config import ConfigStore, build_runtime_config, get_config_store, set_global_config_store
-    from cocoro_ghost.db import init_memory_db
+    from cocoro_ghost.storage.db import init_memory_db
 
     current_store = get_config_store()
     toml_config = current_store.toml_config
@@ -378,7 +378,7 @@ def commit_settings(
     # 内蔵Workerが有効なら、設定変更に追従させる（LLMプリセット/embedding_preset_id切替など）。
     # 重い処理（join等）になる可能性があるため、レスポンス後に実行する。
     try:
-        from cocoro_ghost.internal_worker import request_restart_async
+        from cocoro_ghost.jobs.internal_worker import request_restart_async
 
         background_tasks.add_task(
             request_restart_async,

@@ -14,9 +14,9 @@ from typing import Any
 
 from sqlalchemy import bindparam, text
 
-from cocoro_ghost import common_utils
-from cocoro_ghost.db import memory_session_scope
-from cocoro_ghost.memory_models import AgentJob, Intent, Job, RuntimeSnapshot
+from cocoro_ghost.core import common_utils
+from cocoro_ghost.storage.db import memory_session_scope
+from cocoro_ghost.storage.memory_models import AgentJob, Intent, Job, RuntimeSnapshot
 
 
 _JOB_PENDING = 0

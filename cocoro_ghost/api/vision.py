@@ -12,7 +12,7 @@ import logging
 from fastapi import APIRouter, Depends, Response, status
 
 from cocoro_ghost import schemas
-from cocoro_ghost.deps import get_memory_manager
+from cocoro_ghost.app_bootstrap.dependencies import get_memory_manager
 from cocoro_ghost.memory import MemoryManager
 
 

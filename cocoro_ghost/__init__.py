@@ -1,18 +1,24 @@
-"""cocoro_ghost package."""
+"""
+CocoroGhost パッケージ。
 
-# LLM送受信デバッグのユーティリティ（後から呼び出し箇所に差し込みやすくする）
-from .llm_debug import format_debug_payload, log_llm_payload  # noqa: F401
+方針:
+    - package import 時に重い初期化や再エクスポートを行わない。
+    - 主要な責務は下位 package から明示的に参照する。
+"""
 
-"""CocoroAI core package."""
+from __future__ import annotations
 
 __all__ = [
+    "api",
+    "app_bootstrap",
     "autonomy",
-    "config",
-    "db",
-    "models",
-    "schemas",
-    "llm_client",
-    "prompts",
-    "reflection",
+    "core",
+    "infra",
+    "jobs",
+    "llm",
     "memory",
+    "reminders",
+    "runtime",
+    "storage",
+    "vision",
 ]

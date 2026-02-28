@@ -11,11 +11,13 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-from cocoro_ghost import common_utils, schemas, vision_bridge
+from cocoro_ghost import schemas
+from cocoro_ghost.core import common_utils
+from cocoro_ghost.vision import vision_bridge
 from cocoro_ghost.autonomy.contracts import CapabilityExecutionResult
 from cocoro_ghost.config import get_config_store
-from cocoro_ghost.deps import get_memory_manager
-from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
+from cocoro_ghost.app_bootstrap.dependencies import get_memory_manager
+from cocoro_ghost.llm.client import LlmClient, LlmRequestPurpose
 
 
 def _canonical_vision_client_id(*, action_payload: dict[str, Any]) -> str:
