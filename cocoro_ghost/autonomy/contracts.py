@@ -21,6 +21,7 @@ _THRESHOLD_BIASES = {"higher", "neutral", "lower"}
 _CONSOLE_DELIVERY_TERMINAL_MODES = {"silent", "activity_only", "notify", "chat"}
 _CONSOLE_DELIVERY_PROGRESS_MODES = {"silent", "activity_only"}
 _CONSOLE_MESSAGE_KINDS = {"report", "progress", "question", "error"}
+_REPORT_CANDIDATE_LEVELS = {"none", "mention", "notify", "chat"}
 
 
 def _normalize_string_list(value: Any, *, field_name: str, min_items: int = 0) -> list[str]:
@@ -181,6 +182,99 @@ def parse_console_delivery(value: Any) -> dict[str, Any]:
     Deliberation 出力だけでなく、DB保存済み `console_delivery_json` の再利用にも使う。
     """
     return _parse_console_delivery(value)
+
+
+def derive_report_candidate_for_action_result(*, action_type: Any, result_status: Any) -> dict[str, str]:
+    """
+    ActionResult から report candidate を決める。
+
+    方針:
+        - 完了時の共有可否は action_result 側で決める。
+        - Deliberation の terminal console_delivery には依存しない。
+        - 構造値（action_type/result_status）のみ使う。
+    """
+    action_type_norm = str(action_type or "").strip()
+    result_status_norm = _normalize_enum_text(
+        result_status,
+        field_name="result_status",
+        allowed=_RESULT_STATUSES,
+    )
+
+    # --- 失敗は即時通知対象にする ---
+    if result_status_norm == "failed":
+        return {
+            "level": "notify",
+            "reason": "action_result_failed",
+        }
+
+    # --- 部分成功は低めの共有候補に留める ---
+    if result_status_norm == "partial":
+        return {
+            "level": "mention",
+            "reason": "action_result_partial",
+        }
+
+    # --- 裏で調査して価値が出た結果だけ chat 候補に上げる ---
+    if result_status_norm == "success" and action_type_norm == "web_research":
+        return {
+            "level": "chat",
+            "reason": "research_result_ready",
+        }
+
+    # --- 委譲完了は通知候補にする ---
+    if result_status_norm == "success" and action_type_norm == "agent_delegate":
+        return {
+            "level": "notify",
+            "reason": "delegated_result_ready",
+        }
+
+    # --- それ以外は黙って保持する ---
+    return {
+        "level": "none",
+        "reason": "",
+    }
+
+
+def resolve_delivery_mode_from_report_candidate_level(value: Any) -> str:
+    """
+    report candidate から最終 delivery mode を決める。
+
+    方針:
+        - `mention` は軽い共有なので Console では `notify` に寄せる。
+        - `none` は `silent` に固定する。
+    """
+    report_level = _normalize_enum_text(
+        value,
+        field_name="report_candidate_level",
+        allowed=_REPORT_CANDIDATE_LEVELS,
+    )
+    if report_level == "none":
+        return "silent"
+    if report_level == "mention":
+        return "notify"
+    if report_level == "notify":
+        return "notify"
+    if report_level == "chat":
+        return "chat"
+    raise ValueError(f"unsupported report_candidate_level: {report_level}")
+
+
+def resolve_message_kind_for_action_result(*, result_status: Any) -> str:
+    """
+    ActionResult から autonomy.message の message_kind を決める。
+
+    方針:
+        - 失敗だけ `error`。
+        - それ以外は完了報告なので `report`。
+    """
+    result_status_norm = _normalize_enum_text(
+        result_status,
+        field_name="result_status",
+        allowed=_RESULT_STATUSES,
+    )
+    if result_status_norm == "failed":
+        return "error"
+    return "report"
 
 
 @dataclass(frozen=True)

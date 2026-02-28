@@ -24,7 +24,14 @@ from cocoro_ghost.autonomy.capabilities.mobility_move import execute_mobility_mo
 from cocoro_ghost.autonomy.capabilities.schedule_alarm import execute_schedule_alarm
 from cocoro_ghost.autonomy.capabilities.vision_perception import execute_vision_perception
 from cocoro_ghost.autonomy.capabilities.web_access import execute_web_research
-from cocoro_ghost.autonomy.contracts import CapabilityExecutionResult, parse_action_decision, parse_console_delivery
+from cocoro_ghost.autonomy.contracts import (
+    CapabilityExecutionResult,
+    derive_report_candidate_for_action_result,
+    parse_action_decision,
+    parse_console_delivery,
+    resolve_delivery_mode_from_report_candidate_level,
+    resolve_message_kind_for_action_result,
+)
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.clock import get_clock_service
 from cocoro_ghost.config import get_config_store
@@ -173,21 +180,98 @@ def _publish_autonomy_activity(
     )
 
 
-def _resolve_console_delivery_mode(
+def _resolve_agenda_thread_id_for_decision(
     *,
-    console_delivery_obj: dict[str, Any],
-    result_status: str,
-) -> str:
+    db,
+    decision: ActionDecision,
+) -> str | None:
     """
-    結果種別から terminal時の Console 表示モードを決める。
+    ActionDecision から、対象 agenda_thread_id を解決する。
 
     方針:
-        - 失敗時は `on_fail`、それ以外は `on_complete` を使う。
-        - 文字列比較による意味推定は行わない。
+        - 自発行動の thread 追跡は trigger payload の `agenda_thread_id` を正本にする。
+        - action_payload や summary_text からの意味推定はしない。
     """
-    if str(result_status) == "failed":
-        return str(console_delivery_obj.get("on_fail") or "")
-    return str(console_delivery_obj.get("on_complete") or "")
+    trigger_ref = str(decision.trigger_ref or "").strip()
+    if not trigger_ref:
+        return None
+
+    # --- trigger payload を正規化し、agenda_thread_id だけを読む ---
+    trigger = db.query(AutonomyTrigger).filter(AutonomyTrigger.trigger_id == str(trigger_ref)).one_or_none()
+    if trigger is None:
+        return None
+    trigger_payload_obj = common_utils.json_loads_maybe(str(trigger.payload_json or "{}"))
+    if not isinstance(trigger_payload_obj, dict):
+        raise RuntimeError("autonomy_trigger.payload_json is not an object")
+    agenda_thread_id = str(trigger_payload_obj.get("agenda_thread_id") or "").strip()
+    if not agenda_thread_id:
+        return None
+    return str(agenda_thread_id)
+
+
+def _sync_agenda_thread_after_action_result(
+    *,
+    db,
+    decision_id: str,
+    result_event_id: int,
+    result_id: str,
+    action_type: str,
+    result_status: str,
+    now_system_ts: int,
+) -> None:
+    """
+    ActionResult 保存と同じトランザクションで agenda_thread を同期更新する。
+
+    方針:
+        - 後続 WritePlan の前に、debug/配信判定で見える正本を先に揃える。
+        - 完了時の report candidate は action_result 規則で決める。
+    """
+    decision = db.query(ActionDecision).filter(ActionDecision.decision_id == str(decision_id)).one_or_none()
+    if decision is None:
+        return
+
+    # --- trigger に紐づく agenda thread だけを更新対象にする ---
+    agenda_thread_id = _resolve_agenda_thread_id_for_decision(
+        db=db,
+        decision=decision,
+    )
+    if not agenda_thread_id:
+        return
+    thread = db.query(AgendaThread).filter(AgendaThread.thread_id == str(agenda_thread_id)).one_or_none()
+    if thread is None:
+        return
+
+    # --- 完了結果から thread 状態と共有候補を決める ---
+    report_candidate = derive_report_candidate_for_action_result(
+        action_type=str(action_type),
+        result_status=str(result_status),
+    )
+    result_status_norm = str(result_status)
+    if result_status_norm == "failed":
+        next_status = "blocked"
+    elif result_status_norm == "partial":
+        next_status = "open"
+    elif result_status_norm == "no_effect":
+        next_status = "stale"
+    elif result_status_norm == "success":
+        next_status = "satisfied"
+    else:
+        raise RuntimeError(f"unsupported result_status: {result_status_norm}")
+
+    # --- thread 本体を同期更新する ---
+    thread.source_event_id = int(result_event_id)
+    thread.source_result_id = str(result_id)
+    thread.status = str(next_status)
+    thread.followup_due_at = None
+    thread.last_progress_at = int(now_system_ts)
+    thread.last_result_status = str(result_status_norm)
+    thread.report_candidate_level = str(report_candidate["level"])
+    thread.report_candidate_reason = (str(report_candidate["reason"]) if report_candidate["reason"] else None)
+    if result_status_norm in {"no_effect", "success"}:
+        thread.next_action_type = None
+        thread.next_action_payload_json = "{}"
+    thread.updated_at = int(now_system_ts)
+    db.add(thread)
 
 
 def _build_autonomy_message_report_focus(
@@ -655,34 +739,36 @@ def _emit_autonomy_console_events_for_action_result(
             agent_job_id = str(result_payload.get("agent_job_id") or "").strip() or None
             backend = str(result_payload.get("backend") or "").strip() or None
 
-        # --- 最終状態の activity を配信するか判定 ---
-        terminal_mode = _resolve_console_delivery_mode(
-            console_delivery_obj=console_delivery_obj,
+        # --- 完了時の activity は常に配信し、監視UIの正本にする ---
+        activity_publish = {
+            "event_id": int(result.event_id),
+            "phase": "execution",
+            "state": (str(activity_state_override) if activity_state_override else "completed"),
+            "action_type": (str(intent.action_type) if intent.action_type is not None else None),
+            "capability": (str(result.capability_name) if result.capability_name is not None else None),
+            "backend": backend,
+            "result_status": str(result.result_status),
+            "summary_text": (str(result.summary_text) if result.summary_text is not None else None),
+            "decision_id": str(decision.decision_id),
+            "intent_id": str(intent.intent_id),
+            "result_id": str(result.result_id),
+            "agent_job_id": agent_job_id,
+            "goal_id": (str(intent.goal_id) if intent.goal_id is not None else None),
+        }
+
+        # --- 完了時の delivery は action_result 規則で決める ---
+        report_candidate = derive_report_candidate_for_action_result(
+            action_type=(str(intent.action_type) if intent.action_type is not None else ""),
             result_status=str(result.result_status),
         )
-        if str(terminal_mode) != "silent":
-            activity_publish = {
-                "event_id": int(result.event_id),
-                "phase": "execution",
-                "state": (str(activity_state_override) if activity_state_override else "completed"),
-                "action_type": (str(intent.action_type) if intent.action_type is not None else None),
-                "capability": (str(result.capability_name) if result.capability_name is not None else None),
-                "backend": backend,
-                "result_status": str(result.result_status),
-                "summary_text": (str(result.summary_text) if result.summary_text is not None else None),
-                "decision_id": str(decision.decision_id),
-                "intent_id": str(intent.intent_id),
-                "result_id": str(result.result_id),
-                "agent_job_id": agent_job_id,
-                "goal_id": (str(intent.goal_id) if intent.goal_id is not None else None),
-            }
+        terminal_mode = resolve_delivery_mode_from_report_candidate_level(
+            report_candidate.get("level"),
+        )
 
-        # --- autonomy.message は notify/chat のときだけ人格発話生成の計画を作る ---
+        # --- autonomy.message は post-result delivery が notify/chat のときだけ作る ---
         if str(terminal_mode) in {"notify", "chat"}:
-            message_kind = (
-                "error"
-                if str(result.result_status) == "failed"
-                else str(console_delivery_obj.get("message_kind") or "report")
+            message_kind = resolve_message_kind_for_action_result(
+                result_status=str(result.result_status),
             )
             cfg = get_config_store().config
             mood_snapshot = _load_recent_mood_snapshot(db)
@@ -1909,6 +1995,17 @@ def _finalize_intent_and_save_action_result(
         result_payload_json=str(result_payload_json),
         now_system_ts=int(now_system_ts),
         now_domain_ts=int(now_domain_ts),
+    )
+
+    # --- agenda thread の正本を即時同期し、完了時配信の根拠を先に揃える ---
+    _sync_agenda_thread_after_action_result(
+        db=db,
+        decision_id=str(decision_id),
+        result_event_id=int(result_event.event_id),
+        result_id=str(result_id),
+        action_type=str(action_type),
+        result_status=str(result_status),
+        now_system_ts=int(now_system_ts),
     )
 
     # --- intent 状態を終端へ遷移 ---

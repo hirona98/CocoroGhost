@@ -16,6 +16,7 @@ from sqlalchemy import func
 from cocoro_ghost import affect
 from cocoro_ghost import common_utils
 from cocoro_ghost import entity_utils
+from cocoro_ghost.autonomy.contracts import derive_report_candidate_for_action_result
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.memory_models import (
@@ -1106,6 +1107,9 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             )
 
         # --- action_result 系イベントは client_context の構造情報を追加で使う ---
+        action_type_ctx = ""
+        capability_ctx = ""
+        result_status_ctx = ""
         client_ctx_obj = common_utils.json_loads_maybe(str(ev.client_context_json or ""))
         if isinstance(client_ctx_obj, dict):
             action_type_ctx = str(client_ctx_obj.get("action_type") or "").strip()
@@ -1339,16 +1343,16 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             elif top_action_type in {"web_research", "agent_delegate"} or top_kind in {"research", "followup"}:
                 interaction_mode = "explore"
 
-        # --- action_result の注意喚起は構造値だけで決める（感情値は使わない） ---
+        # --- action_result の共有候補は共通規則で決める（感情値は使わない） ---
         talk_candidate_level = "none"
         talk_candidate_reason = ""
         if event_source == "action_result":
-            if action_result_status == "failed":
-                talk_candidate_level = "notify"
-                talk_candidate_reason = "action_result_failed"
-            elif action_result_status == "partial":
-                talk_candidate_level = "mention"
-                talk_candidate_reason = "action_result_partial"
+            report_candidate = derive_report_candidate_for_action_result(
+                action_type=str(action_type_ctx),
+                result_status=str(action_result_status),
+            )
+            talk_candidate_level = str(report_candidate["level"])
+            talk_candidate_reason = str(report_candidate["reason"])
 
         # --- agenda_threads を upsert し、active thread を1本に絞る。 ---
         current_result_id = (str(action_result_row.result_id) if action_result_row is not None else None)
