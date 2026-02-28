@@ -7,6 +7,7 @@ Workerジョブハンドラ（WritePlan適用）
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -18,6 +19,7 @@ from cocoro_ghost import entity_utils
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.memory_models import (
+    AgendaThread,
     ActionResult,
     Event,
     EventAffect,
@@ -88,6 +90,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         # - action_result は構造化結果（result_status/useful_for_recall_hint）で感情更新可否を判定する。
         action_result_status = ""
         action_result_useful_for_recall = False
+        action_result_row: ActionResult | None = None
         if event_source == "action_result":
             action_result_row = (
                 db.query(ActionResult)
@@ -326,7 +329,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             if int(event_id) not in set(evidence_ids_norm):
                 evidence_ids_norm.append(int(event_id))
 
-            # --- persona_interest_state 用の注目ターゲット候補（構造情報のみ） ---
+            # --- current_thought_state 用の注目ターゲット候補（構造情報のみ） ---
             pref_target_weight = 0.55
             if op == "confirm":
                 pref_target_weight = 0.95
@@ -1041,12 +1044,12 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     )
                 )
 
-        # --- persona_interest_state の単一更新（構造情報ベース） ---
+        # --- current_thought_state + agenda_threads を更新する（構造情報ベース） ---
         # NOTE:
         # - 文字列比較で「意味」を推定しない。
-        # - event/entities/preferences/state更新/client_context の構造情報だけで関心ターゲットを組み立てる。
-        # - long_mood_state と同様に単一stateとして育てる。
-        # - world_model_items（観測集約）も構造フィールドだけ使って関心状態へ反映する。
+        # - event/entities/preferences/state更新/client_context の構造情報だけで現在の思考を組み立てる。
+        # - current_thought_state は人間向け要約、agenda_threads は機械向けの本体として扱う。
+        # - world_model_items（観測集約）も構造フィールドだけ使って反映する。
         recent_world_items = (
             db.query(WorldModelItem)
             .filter(WorldModelItem.active == 1)
@@ -1241,32 +1244,263 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         )
         attention_targets_sorted = attention_targets_sorted[:24]
 
-        # --- interaction_mode を構造値から推定（自然言語意味推定なし） ---
+        # --- agenda thread 候補へ落とす（現在の思考の実体） ---
+        # NOTE:
+        # - bookkeeping 用ターゲット（event_source/state_kind）は thread 化しない。
+        # - 同一構造ターゲットは thread_key で一本化する。
+        def _derive_agenda_kind(*, target_type: str, target_value: str) -> str | None:
+            if target_type == "world_query":
+                return "research"
+            if target_type == "world_goal":
+                return "research"
+            if target_type == "action_type":
+                if target_value in {"observe_screen", "observe_camera"}:
+                    return "observation"
+                if target_value == "web_research":
+                    return "research"
+                if target_value == "schedule_action":
+                    return "reminder"
+                return "followup"
+            if target_type in {"capability", "world_capability"}:
+                if target_value == "web_access":
+                    return "research"
+                if target_value == "vision_perception":
+                    return "observation"
+                if target_value == "schedule_alarm":
+                    return "reminder"
+                return "followup"
+            if target_type.startswith("entity_"):
+                return "followup"
+            if target_type in {"world_observation_class", "world_entity_kind", "world_space"}:
+                return "observation"
+            return None
+
+        # --- action_type はそのまま次候補になれる。world_query は web_research に変換する。 ---
+        def _derive_next_action(*, target_type: str, target_value: str) -> tuple[str | None, dict[str, Any] | None]:
+            if target_type == "world_query":
+                return (
+                    "web_research",
+                    {
+                        "query": str(target_value),
+                        "goal": "",
+                        "constraints": [],
+                    },
+                )
+            if target_type == "action_type" and target_value in {
+                "observe_screen",
+                "observe_camera",
+                "web_research",
+                "schedule_action",
+                "device_action",
+                "move_to",
+                "agent_delegate",
+            }:
+                return (str(target_value), {})
+            return (None, None)
+
+        # --- thread_id は thread_key から安定生成し、同一対象を継続扱いにする。 ---
+        def _agenda_thread_id_for_key(thread_key: str) -> str:
+            digest = hashlib.sha1(str(thread_key).encode("utf-8")).hexdigest()
+            return f"agenda-{digest[:20]}"
+
+        agenda_seed_rows: list[dict[str, Any]] = []
+        for item in list(attention_targets_sorted or []):
+            if not isinstance(item, dict):
+                continue
+            target_type = str(item.get("type") or "").strip()
+            target_value = str(item.get("value") or "").strip()
+            if not target_type or not target_value:
+                continue
+            if target_type in {"event_source", "state_kind"}:
+                continue
+
+            agenda_kind = _derive_agenda_kind(
+                target_type=str(target_type),
+                target_value=str(target_value),
+            )
+            if not agenda_kind:
+                continue
+
+            next_action_type, next_action_payload = _derive_next_action(
+                target_type=str(target_type),
+                target_value=str(target_value),
+            )
+            agenda_seed_rows.append(
+                {
+                    "target_type": str(target_type),
+                    "target_value": str(target_value),
+                    "weight": float(item.get("weight") or 0.0),
+                    "agenda_kind": str(agenda_kind),
+                    "next_action_type": (str(next_action_type) if next_action_type else None),
+                    "next_action_payload": (dict(next_action_payload) if isinstance(next_action_payload, dict) else None),
+                }
+            )
+            if len(agenda_seed_rows) >= 8:
+                break
+
+        # --- 現在の思考は agenda の先頭候補から interaction_mode を決める。 ---
         interaction_mode = "observe"
-        if moment_vad is not None:
-            v = float(moment_vad.get("v") or 0.0)
-            a_val = float(moment_vad.get("a") or 0.0)
-            d_val = float(moment_vad.get("d") or 0.0)
-            if a_val >= 0.45 and v >= -0.2:
-                interaction_mode = "explore"
-            elif a_val <= -0.3 and d_val <= -0.2:
-                interaction_mode = "wait"
-        if any(str(t.get("type") or "") == "action_type" and str(t.get("value") or "") in {"web_research", "agent_delegate"} for t in attention_targets_sorted):
-            if interaction_mode == "observe":
+        if agenda_seed_rows:
+            top_seed = dict(agenda_seed_rows[0])
+            top_kind = str(top_seed.get("agenda_kind") or "")
+            top_action_type = str(top_seed.get("next_action_type") or "")
+            if top_kind == "reminder":
+                interaction_mode = "support"
+            elif top_action_type in {"web_research", "agent_delegate"} or top_kind in {"research", "followup"}:
                 interaction_mode = "explore"
 
-        # --- 既存 persona_interest_state を読む（単一前提） ---
-        persona_interest_state = (
+        # --- action_result の注意喚起は構造値だけで決める（感情値は使わない） ---
+        talk_candidate_level = "none"
+        talk_candidate_reason = ""
+        if event_source == "action_result":
+            if action_result_status == "failed":
+                talk_candidate_level = "notify"
+                talk_candidate_reason = "action_result_failed"
+            elif action_result_status == "partial":
+                talk_candidate_level = "mention"
+                talk_candidate_reason = "action_result_partial"
+
+        # --- agenda_threads を upsert し、active thread を1本に絞る。 ---
+        current_result_id = (str(action_result_row.result_id) if action_result_row is not None else None)
+        active_thread_id: str | None = None
+        next_candidate_action: dict[str, Any] | None = None
+        agenda_threads_debug_rows: list[dict[str, Any]] = []
+        for idx, seed in enumerate(list(agenda_seed_rows or [])):
+            thread_key = (
+                f"{str(seed.get('agenda_kind') or '')}:"
+                f"{str(seed.get('target_type') or '')}:"
+                f"{str(seed.get('target_value') or '')}"
+            )
+            thread_id = _agenda_thread_id_for_key(str(thread_key))
+            thread_row = (
+                db.query(AgendaThread)
+                .filter(AgendaThread.thread_key == str(thread_key))
+                .one_or_none()
+            )
+            thread_status = "active" if idx == 0 else "open"
+            next_action_type = str(seed.get("next_action_type") or "").strip() or None
+            next_action_payload = (
+                dict(seed.get("next_action_payload") or {})
+                if isinstance(seed.get("next_action_payload"), dict)
+                else {}
+            )
+            followup_due_at = int(now_ts) if next_action_type else None
+            report_candidate_level = (
+                str(talk_candidate_level)
+                if idx == 0 and str(talk_candidate_level) != "none"
+                else "none"
+            )
+            report_candidate_reason = (
+                str(talk_candidate_reason)
+                if idx == 0 and str(talk_candidate_reason)
+                else None
+            )
+            priority = int(max(1, min(100, round(40 + float(seed.get("weight") or 0.0) * 60.0))))
+            metadata_obj = {
+                "source_target": {
+                    "type": str(seed.get("target_type") or ""),
+                    "value": str(seed.get("target_value") or ""),
+                    "weight": float(seed.get("weight") or 0.0),
+                },
+                "updated_from": {
+                    "event_id": int(event_id),
+                    "event_source": str(ev.source or ""),
+                },
+            }
+            if thread_row is None:
+                thread_row = AgendaThread(
+                    thread_id=str(thread_id),
+                    thread_key=str(thread_key),
+                    source_event_id=int(event_id),
+                    source_result_id=(str(current_result_id) if current_result_id else None),
+                    kind=str(seed.get("agenda_kind") or ""),
+                    topic=str(seed.get("target_value") or ""),
+                    goal=(
+                        str(seed.get("target_value") or "")
+                        if str(seed.get("target_type") or "") == "world_goal"
+                        else None
+                    ),
+                    status=str(thread_status),
+                    priority=int(priority),
+                    next_action_type=(str(next_action_type) if next_action_type else None),
+                    next_action_payload_json=common_utils.json_dumps(next_action_payload),
+                    followup_due_at=(int(followup_due_at) if followup_due_at is not None else None),
+                    last_progress_at=int(now_ts),
+                    last_result_status=(str(action_result_status) if action_result_status else None),
+                    report_candidate_level=str(report_candidate_level),
+                    report_candidate_reason=(str(report_candidate_reason) if report_candidate_reason else None),
+                    metadata_json=common_utils.json_dumps(metadata_obj),
+                    created_at=int(now_ts),
+                    updated_at=int(now_ts),
+                )
+            else:
+                thread_row.source_event_id = int(event_id)
+                thread_row.source_result_id = (str(current_result_id) if current_result_id else None)
+                thread_row.kind = str(seed.get("agenda_kind") or "")
+                thread_row.topic = str(seed.get("target_value") or "")
+                thread_row.goal = (
+                    str(seed.get("target_value") or "")
+                    if str(seed.get("target_type") or "") == "world_goal"
+                    else None
+                )
+                thread_row.status = str(thread_status)
+                thread_row.priority = int(priority)
+                thread_row.next_action_type = (str(next_action_type) if next_action_type else None)
+                thread_row.next_action_payload_json = common_utils.json_dumps(next_action_payload)
+                thread_row.followup_due_at = (int(followup_due_at) if followup_due_at is not None else None)
+                thread_row.last_progress_at = int(now_ts)
+                thread_row.last_result_status = (str(action_result_status) if action_result_status else None)
+                thread_row.report_candidate_level = str(report_candidate_level)
+                thread_row.report_candidate_reason = (str(report_candidate_reason) if report_candidate_reason else None)
+                thread_row.metadata_json = common_utils.json_dumps(metadata_obj)
+                thread_row.updated_at = int(now_ts)
+            db.add(thread_row)
+
+            if idx == 0:
+                active_thread_id = str(thread_id)
+                if next_action_type:
+                    next_candidate_action = {
+                        "action_type": str(next_action_type),
+                        "payload": dict(next_action_payload),
+                    }
+
+            agenda_threads_debug_rows.append(
+                {
+                    "thread_id": str(thread_id),
+                    "status": str(thread_status),
+                    "kind": str(seed.get("agenda_kind") or ""),
+                    "topic": str(seed.get("target_value") or ""),
+                    "priority": int(priority),
+                    "next_action_type": (str(next_action_type) if next_action_type else None),
+                    "followup_due_at": (int(followup_due_at) if followup_due_at is not None else None),
+                    "report_candidate_level": str(report_candidate_level),
+                }
+            )
+
+        # --- active thread は常に1本までに制限し、他は open に戻す。 ---
+        active_threads_query = db.query(AgendaThread).filter(AgendaThread.status == "active")
+        if active_thread_id:
+            active_threads_query = active_threads_query.filter(AgendaThread.thread_id != str(active_thread_id))
+        active_threads_query.update(
+            {
+                "status": "open",
+                "updated_at": int(now_ts),
+            },
+            synchronize_session=False,
+        )
+
+        # --- 既存 current_thought_state を読む（単一前提） ---
+        current_thought_state = (
             db.query(State)
-            .filter(State.kind == "persona_interest_state")
+            .filter(State.kind == "current_thought_state")
             .filter(State.searchable == 1)
             .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
             .first()
         )
 
         prev_interest_payload = (
-            common_utils.json_loads_maybe(str(persona_interest_state.payload_json or ""))
-            if persona_interest_state is not None
+            common_utils.json_loads_maybe(str(current_thought_state.payload_json or ""))
+            if current_thought_state is not None
             else None
         )
         prev_updated_from_event_ids = []
@@ -1282,7 +1516,21 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             merged_updated_from_event_ids.append(i)
         merged_updated_from_event_ids = merged_updated_from_event_ids[-20:]
 
-        persona_interest_payload = {
+        focus_summary = ""
+        if active_thread_id and agenda_threads_debug_rows:
+            top_agenda_row = dict(agenda_threads_debug_rows[0])
+            focus_summary = (
+                f"{str(top_agenda_row.get('kind') or '')}:"
+                f"{str(top_agenda_row.get('topic') or '')}"
+            )
+        elif attention_targets_sorted:
+            top_target = dict(attention_targets_sorted[0])
+            focus_summary = (
+                f"{str(top_target.get('type') or '')}:"
+                f"{str(top_target.get('value') or '')}"
+            )
+
+        current_thought_payload = {
             "attention_targets": [
                 {
                     "type": str(t.get("type") or ""),
@@ -1293,6 +1541,15 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 for t in list(attention_targets_sorted)
             ],
             "interaction_mode": str(interaction_mode),
+            "active_thread_id": (str(active_thread_id) if active_thread_id else None),
+            "focus_summary": (str(focus_summary) if focus_summary else None),
+            "next_candidate_action": (dict(next_candidate_action) if isinstance(next_candidate_action, dict) else None),
+            "talk_candidate": {
+                "level": str(talk_candidate_level),
+                "reason": (str(talk_candidate_reason) if talk_candidate_reason else None),
+            },
+            "agenda_threads": list(agenda_threads_debug_rows),
+            "updated_reason": "event_structure_refresh",
             "updated_from_event_ids": [int(x) for x in merged_updated_from_event_ids],
             "updated_from": {
                 "event_id": int(event_id),
@@ -1315,24 +1572,33 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             },
         }
 
-        # --- body_text は検索/人間可読の最低限（意味推定ではなく構造の要約） ---
+        # --- body_text は検索/人間可読の最低限（構造の要約のみ） ---
         top_labels = [
             f"{str(t.get('type') or '')}:{str(t.get('value') or '')}"
-            for t in list(attention_targets_sorted[:5])
+            for t in list(attention_targets_sorted[:4])
             if str(t.get("type") or "").strip() and str(t.get("value") or "").strip()
         ]
-        persona_interest_body_text = (
-            f"現在の関心状態（{str(interaction_mode)}）: "
-            + (", ".join(top_labels) if top_labels else "（ターゲットなし）")
-        )[:800]
+        next_action_label = ""
+        if isinstance(next_candidate_action, dict):
+            next_action_label = str(next_candidate_action.get("action_type") or "").strip()
+        current_thought_body_text = f"現在の思考（{str(interaction_mode)}）"
+        if focus_summary:
+            current_thought_body_text += f": {str(focus_summary)}"
+        elif top_labels:
+            current_thought_body_text += f": {', '.join(top_labels)}"
+        else:
+            current_thought_body_text += ": （ターゲットなし）"
+        if next_action_label:
+            current_thought_body_text += f" / 次候補: {str(next_action_label)}"
+        current_thought_body_text = str(current_thought_body_text)[:800]
 
-        persona_interest_payload_json = common_utils.json_dumps(persona_interest_payload)
-        persona_interest_changed_state_id = 0
-        if persona_interest_state is None:
-            st_interest = State(
-                kind="persona_interest_state",
-                body_text=str(persona_interest_body_text),
-                payload_json=str(persona_interest_payload_json),
+        current_thought_payload_json = common_utils.json_dumps(current_thought_payload)
+        current_thought_changed_state_id = 0
+        if current_thought_state is None:
+            st_current_thought = State(
+                kind="current_thought_state",
+                body_text=str(current_thought_body_text),
+                payload_json=str(current_thought_payload_json),
                 last_confirmed_at=int(base_ts),
                 confidence=0.85,
                 searchable=1,
@@ -1341,54 +1607,54 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 created_at=int(base_ts),
                 updated_at=int(now_ts),
             )
-            db.add(st_interest)
+            db.add(st_current_thought)
             db.flush()
             add_revision(
                 entity_type="state",
-                entity_id=int(st_interest.state_id),
+                entity_id=int(st_current_thought.state_id),
                 before=None,
-                after=_state_row_to_json(st_interest),
-                reason="persona_interest_state を更新した",
+                after=_state_row_to_json(st_current_thought),
+                reason="current_thought_state を更新した",
                 evidence_event_ids=[int(event_id)],
             )
-            persona_interest_changed_state_id = int(st_interest.state_id)
+            current_thought_changed_state_id = int(st_current_thought.state_id)
         else:
-            before = _state_row_to_json(persona_interest_state)
-            same_payload = str(persona_interest_state.payload_json or "") == str(persona_interest_payload_json)
-            same_body = str(persona_interest_state.body_text or "") == str(persona_interest_body_text)
-            same_lca = int(persona_interest_state.last_confirmed_at or 0) == int(base_ts)
+            before = _state_row_to_json(current_thought_state)
+            same_payload = str(current_thought_state.payload_json or "") == str(current_thought_payload_json)
+            same_body = str(current_thought_state.body_text or "") == str(current_thought_body_text)
+            same_lca = int(current_thought_state.last_confirmed_at or 0) == int(base_ts)
             if not (same_payload and same_body and same_lca):
-                persona_interest_state.kind = "persona_interest_state"
-                persona_interest_state.body_text = str(persona_interest_body_text)
-                persona_interest_state.payload_json = str(persona_interest_payload_json)
-                persona_interest_state.last_confirmed_at = int(base_ts)
-                persona_interest_state.confidence = 0.85
-                persona_interest_state.valid_from_ts = None
-                persona_interest_state.valid_to_ts = None
-                persona_interest_state.searchable = 1
-                persona_interest_state.updated_at = int(now_ts)
-                db.add(persona_interest_state)
+                current_thought_state.kind = "current_thought_state"
+                current_thought_state.body_text = str(current_thought_body_text)
+                current_thought_state.payload_json = str(current_thought_payload_json)
+                current_thought_state.last_confirmed_at = int(base_ts)
+                current_thought_state.confidence = 0.85
+                current_thought_state.valid_from_ts = None
+                current_thought_state.valid_to_ts = None
+                current_thought_state.searchable = 1
+                current_thought_state.updated_at = int(now_ts)
+                db.add(current_thought_state)
                 db.flush()
                 add_revision(
                     entity_type="state",
-                    entity_id=int(persona_interest_state.state_id),
+                    entity_id=int(current_thought_state.state_id),
                     before=before,
-                    after=_state_row_to_json(persona_interest_state),
-                    reason="persona_interest_state を更新した",
+                    after=_state_row_to_json(current_thought_state),
+                    reason="current_thought_state を更新した",
                     evidence_event_ids=[int(event_id)],
                 )
-                persona_interest_changed_state_id = int(persona_interest_state.state_id)
+                current_thought_changed_state_id = int(current_thought_state.state_id)
 
-        # --- entity 索引は今回 event の entities を再利用（内部状態の関心文脈検索用） ---
-        if int(persona_interest_changed_state_id) > 0:
+        # --- entity 索引は今回 event の entities を再利用（現在の思考の検索用） ---
+        if int(current_thought_changed_state_id) > 0:
             replace_state_entities(
-                state_id_in=int(persona_interest_changed_state_id),
+                state_id_in=int(current_thought_changed_state_id),
                 entities_norm_in=list(entities_norm),
             )
             db.add(
                 Job(
                     kind="upsert_state_embedding",
-                    payload_json=common_utils.json_dumps({"state_id": int(persona_interest_changed_state_id)}),
+                    payload_json=common_utils.json_dumps({"state_id": int(current_thought_changed_state_id)}),
                     status=int(_JOB_PENDING),
                     run_after=int(now_ts),
                     tries=0,

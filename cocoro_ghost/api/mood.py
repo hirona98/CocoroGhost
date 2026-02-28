@@ -26,7 +26,7 @@ from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.deps import get_clock_service_dep, get_config_store_dep
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
-from cocoro_ghost.memory_models import ActionDecision, AgentJob, AutonomyTrigger, Event, EventAffect, Intent, Job, State
+from cocoro_ghost.memory_models import AgendaThread, ActionDecision, AgentJob, AutonomyTrigger, Event, EventAffect, Intent, Job, State
 from cocoro_ghost.time_utils import format_iso8601_local_with_tz
 from cocoro_ghost.worker_constants import AGENT_JOB_STALE_SECONDS as _AGENT_JOB_STALE_SECONDS
 from cocoro_ghost.worker_constants import JOB_PENDING as _JOB_PENDING
@@ -44,6 +44,7 @@ _RECENT_INTENTS_LIMIT = 8
 _RECENT_AGENT_JOBS_LIMIT = 8
 _RUNTIME_ATTENTION_TARGETS_LIMIT = 8
 _CURRENT_THOUGHT_TARGETS_LIMIT = 8
+_AGENDA_THREADS_LIMIT = 8
 
 
 def _fmt_ts_or_none(ts: int | None) -> str | None:
@@ -435,7 +436,7 @@ def _build_current_thought_snapshot(
     now_domain_ts: int,
 ) -> dict[str, Any] | None:
     """
-    現在の思考（persona_interest_state）スナップショットを返す。
+    現在の思考（current_thought_state）スナップショットを返す。
 
     方針:
         - 「今なにを気にしているか」を感情デバッグAPIで直接観測できるようにする。
@@ -443,10 +444,10 @@ def _build_current_thought_snapshot(
         - 更新元イベントの最小プレビューを含め、更新理由の追跡をしやすくする。
     """
 
-    # --- 最新の persona_interest_state を取得 ---
+    # --- 最新の current_thought_state を取得 ---
     row = (
         db.query(State)
-        .filter(State.kind == "persona_interest_state")
+        .filter(State.kind == "current_thought_state")
         .filter(State.searchable == 1)
         .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
         .first()
@@ -504,6 +505,37 @@ def _build_current_thought_snapshot(
             "result_status": str(updated_from_obj.get("result_status") or "").strip() or None,
         }
 
+    # --- current_thought 固有フィールドを整形 ---
+    active_thread_id = str(payload_obj.get("active_thread_id") or "").strip() or None
+    focus_summary = str(payload_obj.get("focus_summary") or "").strip() or None
+
+    next_candidate_action_raw = payload_obj.get("next_candidate_action")
+    next_candidate_action: dict[str, Any] | None = None
+    if isinstance(next_candidate_action_raw, dict):
+        action_type = str(next_candidate_action_raw.get("action_type") or "").strip()
+        payload_value = (
+            dict(next_candidate_action_raw.get("payload") or {})
+            if isinstance(next_candidate_action_raw.get("payload"), dict)
+            else {}
+        )
+        if action_type:
+            next_candidate_action = {
+                "action_type": str(action_type),
+                "payload": dict(payload_value),
+            }
+
+    talk_candidate_raw = payload_obj.get("talk_candidate")
+    talk_candidate: dict[str, Any] | None = None
+    if isinstance(talk_candidate_raw, dict):
+        talk_level = str(talk_candidate_raw.get("level") or "").strip()
+        if talk_level:
+            talk_candidate = {
+                "level": str(talk_level),
+                "reason": str(talk_candidate_raw.get("reason") or "").strip() or None,
+            }
+
+    updated_reason = str(payload_obj.get("updated_reason") or "").strip() or None
+
     # --- updated_from_event_ids を整形 ---
     updated_from_event_ids_raw = payload_obj.get("updated_from_event_ids")
     updated_from_event_ids: list[int] = []
@@ -544,6 +576,11 @@ def _build_current_thought_snapshot(
         "state_id": int(row.state_id),
         "body_text": str(row.body_text or ""),
         "interaction_mode": str(payload_obj.get("interaction_mode") or "").strip() or None,
+        "active_thread_id": active_thread_id,
+        "focus_summary": focus_summary,
+        "next_candidate_action": next_candidate_action,
+        "talk_candidate": talk_candidate,
+        "updated_reason": updated_reason,
         "attention_targets": list(attention_targets),
         "attention_targets_total": int(total_targets_count),
         "last_confirmed_at": _fmt_ts_or_none(int(row.last_confirmed_at) if row.last_confirmed_at is not None else None),
@@ -553,6 +590,66 @@ def _build_current_thought_snapshot(
         "updated_from_event_ids": [int(x) for x in list(updated_from_event_ids)],
         "updated_from_event_preview": source_event_preview,
     }
+
+
+def _build_agenda_threads_snapshot(
+    *,
+    db,
+) -> list[dict[str, Any]]:
+    """現在の agenda_threads をデバッグ表示用に整形して返す。"""
+
+    # --- active/open を優先して、今見たい thread を上位へ出す。 ---
+    status_rank = {
+        "active": 0,
+        "open": 1,
+        "blocked": 2,
+        "stale": 3,
+        "satisfied": 4,
+        "closed": 5,
+    }
+
+    rows = db.query(AgendaThread).order_by(AgendaThread.updated_at.desc()).limit(32).all()
+    ordered_rows = sorted(
+        list(rows or []),
+        key=lambda row: (
+            int(status_rank.get(str(row.status or ""), 9)),
+            -int(row.priority or 0),
+            -int(row.updated_at or 0),
+            str(row.thread_id or ""),
+        ),
+    )[: int(_AGENDA_THREADS_LIMIT)]
+
+    out: list[dict[str, Any]] = []
+    for row in list(ordered_rows or []):
+        next_action_payload = common_utils.json_loads_maybe(str(row.next_action_payload_json or "{}"))
+        if not isinstance(next_action_payload, dict):
+            next_action_payload = {}
+        metadata_obj = common_utils.json_loads_maybe(str(row.metadata_json or "{}"))
+        if not isinstance(metadata_obj, dict):
+            metadata_obj = {}
+        out.append(
+            {
+                "thread_id": str(row.thread_id),
+                "thread_key": str(row.thread_key),
+                "kind": str(row.kind),
+                "topic": str(row.topic),
+                "goal": str(row.goal or "").strip() or None,
+                "status": str(row.status),
+                "priority": int(row.priority),
+                "next_action_type": str(row.next_action_type or "").strip() or None,
+                "next_action_payload": dict(next_action_payload),
+                "followup_due_at": _fmt_ts_or_none(int(row.followup_due_at)) if row.followup_due_at is not None else None,
+                "last_progress_at": _fmt_ts_or_none(int(row.last_progress_at)) if row.last_progress_at is not None else None,
+                "last_result_status": str(row.last_result_status or "").strip() or None,
+                "report_candidate_level": str(row.report_candidate_level),
+                "report_candidate_reason": str(row.report_candidate_reason or "").strip() or None,
+                "updated_at": _fmt_ts_or_none(int(row.updated_at)),
+                "source_event_id": (int(row.source_event_id) if row.source_event_id is not None else None),
+                "source_result_id": str(row.source_result_id or "").strip() or None,
+                "metadata": dict(metadata_obj),
+            }
+        )
+    return out
 
 
 @router.get("/debug")
@@ -637,10 +734,13 @@ def get_mood_debug(
             config_store=config_store,
             now_domain_ts=int(now_ts),
         )
-        # --- 現在の思考（persona_interest_state）を取得 ---
+        # --- 現在の思考と agenda を取得 ---
         current_thought_debug = _build_current_thought_snapshot(
             db=db,
             now_domain_ts=int(now_ts),
+        )
+        agenda_threads_debug = _build_agenda_threads_snapshot(
+            db=db,
         )
 
         st = (
@@ -656,6 +756,7 @@ def get_mood_debug(
             return {
                 "mood": None,
                 "current_thought": current_thought_debug,
+                "agenda_threads": list(agenda_threads_debug),
                 "recent_affects": list(recent_affects),
                 "background": dict(background_debug),
                 "limits": {
@@ -664,6 +765,7 @@ def get_mood_debug(
                     "recent_agent_jobs_limit": int(_RECENT_AGENT_JOBS_LIMIT),
                     "runtime_attention_targets_limit": int(_RUNTIME_ATTENTION_TARGETS_LIMIT),
                     "current_thought_targets_limit": int(_CURRENT_THOUGHT_TARGETS_LIMIT),
+                    "agenda_threads_limit": int(_AGENDA_THREADS_LIMIT),
                 },
             }
 
@@ -721,6 +823,7 @@ def get_mood_debug(
                 "last_confirmed_at": format_iso8601_local_with_tz(int(st.last_confirmed_at)),
             },
             "current_thought": current_thought_debug,
+            "agenda_threads": list(agenda_threads_debug),
             "recent_affects": list(recent_affects),
             "background": dict(background_debug),
             "limits": {
@@ -729,5 +832,6 @@ def get_mood_debug(
                 "recent_agent_jobs_limit": int(_RECENT_AGENT_JOBS_LIMIT),
                 "runtime_attention_targets_limit": int(_RUNTIME_ATTENTION_TARGETS_LIMIT),
                 "current_thought_targets_limit": int(_CURRENT_THOUGHT_TARGETS_LIMIT),
+                "agenda_threads_limit": int(_AGENDA_THREADS_LIMIT),
             },
         }

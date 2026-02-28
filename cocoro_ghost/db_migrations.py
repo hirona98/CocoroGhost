@@ -305,6 +305,87 @@ def _migrate_memory_db_v11_to_v12(engine, logger: logging.Logger) -> None:
     logger.info("memory DB migrated: user_version 11 -> 12")
 
 
+def _migrate_memory_db_v12_to_v13(engine, logger: logging.Logger) -> None:
+    """記憶DBを v12 から v13 へ移行する（agenda_threads 追加 + current_thought_state へ改名）。"""
+
+    with engine.connect() as conn:
+        # --- agenda_threads テーブルを追加（現在の思考の実体） ---
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS agenda_threads (
+                    thread_id TEXT NOT NULL,
+                    thread_key TEXT NOT NULL,
+                    source_event_id INTEGER,
+                    source_result_id TEXT,
+                    kind TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    goal TEXT,
+                    status TEXT NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 50,
+                    next_action_type TEXT,
+                    next_action_payload_json TEXT NOT NULL DEFAULT '{}',
+                    followup_due_at INTEGER,
+                    last_progress_at INTEGER,
+                    last_result_status TEXT,
+                    report_candidate_level TEXT NOT NULL DEFAULT 'none',
+                    report_candidate_reason TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    CONSTRAINT pk_agenda_threads PRIMARY KEY (thread_id),
+                    CONSTRAINT uq_agenda_threads_thread_key UNIQUE (thread_key),
+                    CONSTRAINT ck_agenda_threads_status CHECK (
+                        status IN ('open','active','blocked','satisfied','stale','closed')
+                    ),
+                    CONSTRAINT ck_agenda_threads_report_candidate_level CHECK (
+                        report_candidate_level IN ('none','mention','notify','chat')
+                    ),
+                    CONSTRAINT ck_agenda_threads_kind_non_empty CHECK (length(trim(kind)) > 0),
+                    CONSTRAINT ck_agenda_threads_topic_non_empty CHECK (length(trim(topic)) > 0),
+                    CONSTRAINT fk_agenda_threads_source_event_id FOREIGN KEY (source_event_id) REFERENCES events(event_id) ON DELETE SET NULL,
+                    CONSTRAINT fk_agenda_threads_source_result_id FOREIGN KEY (source_result_id) REFERENCES action_results(result_id) ON DELETE SET NULL
+                )
+                """
+            )
+        )
+
+        # --- 参照/スケジューリング用インデックスを追加 ---
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_agenda_threads_status_followup_due_at "
+                "ON agenda_threads(status, followup_due_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_agenda_threads_updated_at "
+                "ON agenda_threads(updated_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_agenda_threads_report_candidate_level "
+                "ON agenda_threads(report_candidate_level)"
+            )
+        )
+
+        # --- 現在の思考 state を新名称へ改名する ---
+        conn.execute(
+            text(
+                "UPDATE state "
+                "SET kind = 'current_thought_state' "
+                "WHERE kind = 'persona_interest_state'"
+            )
+        )
+
+        # --- スキーマバージョンを更新 ---
+        conn.execute(text("PRAGMA user_version=13"))
+        conn.commit()
+
+    logger.info("memory DB migrated: user_version 12 -> 13")
+
+
 def migrate_memory_db_if_needed(*, engine, target_user_version: int, logger: logging.Logger) -> None:
     """記憶DBに必要なマイグレーションを適用する。"""
 
@@ -318,5 +399,8 @@ def migrate_memory_db_if_needed(*, engine, target_user_version: int, logger: log
             continue
         if current == 11 and int(target_user_version) >= 12:
             _migrate_memory_db_v11_to_v12(engine, logger)
+            continue
+        if current == 12 and int(target_user_version) >= 13:
+            _migrate_memory_db_v12_to_v13(engine, logger)
             continue
         break

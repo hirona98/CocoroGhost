@@ -653,6 +653,62 @@ class ActionResult(MemoryBase):
     created_at: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class AgendaThread(MemoryBase):
+    """現在の思考の実体となる agenda thread。"""
+
+    __tablename__ = "agenda_threads"
+    __table_args__ = (
+        UniqueConstraint("thread_key", name="uq_agenda_threads_thread_key"),
+        CheckConstraint(
+            "status IN ('open','active','blocked','satisfied','stale','closed')",
+            name="ck_agenda_threads_status",
+        ),
+        CheckConstraint(
+            "report_candidate_level IN ('none','mention','notify','chat')",
+            name="ck_agenda_threads_report_candidate_level",
+        ),
+        CheckConstraint(
+            "length(trim(kind)) > 0",
+            name="ck_agenda_threads_kind_non_empty",
+        ),
+        CheckConstraint(
+            "length(trim(topic)) > 0",
+            name="ck_agenda_threads_topic_non_empty",
+        ),
+    )
+
+    # --- 主キー/一意キー ---
+    thread_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    thread_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # --- 起点参照 ---
+    source_event_id: Mapped[Optional[int]] = mapped_column(ForeignKey("events.event_id", ondelete="SET NULL"))
+    source_result_id: Mapped[Optional[str]] = mapped_column(ForeignKey("action_results.result_id", ondelete="SET NULL"))
+
+    # --- thread 本体 ---
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    topic: Mapped[str] = mapped_column(Text, nullable=False)
+    goal: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+
+    # --- 次の一手 ---
+    next_action_type: Mapped[Optional[str]] = mapped_column(Text)
+    next_action_payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    followup_due_at: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # --- 実行/共有の補助情報 ---
+    last_progress_at: Mapped[Optional[int]] = mapped_column(Integer)
+    last_result_status: Mapped[Optional[str]] = mapped_column(Text)
+    report_candidate_level: Mapped[str] = mapped_column(Text, nullable=False, default="none")
+    report_candidate_reason: Mapped[Optional[str]] = mapped_column(Text)
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    # --- タイムスタンプ ---
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class WorldModelItem(MemoryBase):
     """世界モデル項目（観測を集約した構造化状態）。"""
 
@@ -758,6 +814,9 @@ Index("idx_agent_jobs_status_created_at", AgentJob.status, AgentJob.created_at)
 Index("idx_agent_jobs_backend_status", AgentJob.backend, AgentJob.status)
 Index("idx_agent_jobs_heartbeat_at", AgentJob.heartbeat_at)
 Index("idx_action_results_created_at", ActionResult.created_at)
+Index("idx_agenda_threads_status_followup_due_at", AgendaThread.status, AgendaThread.followup_due_at)
+Index("idx_agenda_threads_updated_at", AgendaThread.updated_at)
+Index("idx_agenda_threads_report_candidate_level", AgendaThread.report_candidate_level)
 Index("idx_world_model_items_freshness_at", WorldModelItem.freshness_at)
 Index("idx_world_model_items_active_confidence", WorldModelItem.active, WorldModelItem.confidence)
 Index("idx_runtime_snapshots_created_at", RuntimeSnapshot.created_at)

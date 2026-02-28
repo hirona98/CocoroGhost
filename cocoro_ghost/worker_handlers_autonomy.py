@@ -31,6 +31,7 @@ from cocoro_ghost.config import get_config_store
 from cocoro_ghost.db import memory_session_scope
 from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.memory_models import (
+    AgendaThread,
     ActionDecision,
     ActionResult,
     AgentJob,
@@ -542,7 +543,7 @@ def _build_autonomy_message_render_input(
         "mood": dict(mood_snapshot or {}),
         "confirmed_preferences": dict(confirmed_preferences or {}),
         "runtime_blackboard": dict(runtime_blackboard_snapshot or {}),
-        "interest_state": (dict(interest_state_snapshot) if isinstance(interest_state_snapshot, dict) else None),
+        "current_thought": (dict(interest_state_snapshot) if isinstance(interest_state_snapshot, dict) else None),
         "delivery": {
             "mode": str(delivery_mode),
             "message_kind": str(message_kind),
@@ -918,7 +919,7 @@ def _load_confirmed_preferences_snapshot_for_deliberation(db) -> dict[str, Any]:
 
 def _load_persona_interest_state_snapshot_for_deliberation(db) -> dict[str, Any] | None:
     """
-    Deliberation / autonomy.message 再生成用の persona_interest_state スナップショットを返す。
+    Deliberation / autonomy.message 再生成用の current_thought_state スナップショットを返す。
 
     方針:
         - 構造化 payload を正として扱う。
@@ -928,7 +929,7 @@ def _load_persona_interest_state_snapshot_for_deliberation(db) -> dict[str, Any]
     st = (
         db.query(State)
         .filter(State.searchable == 1)
-        .filter(State.kind == "persona_interest_state")
+        .filter(State.kind == "current_thought_state")
         .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
         .first()
     )
@@ -969,6 +970,18 @@ def _load_persona_interest_state_snapshot_for_deliberation(db) -> dict[str, Any]
         "kind": str(st.kind),
         "body_text": str(st.body_text or ""),
         "interaction_mode": str(payload_obj.get("interaction_mode") or "").strip() or None,
+        "active_thread_id": str(payload_obj.get("active_thread_id") or "").strip() or None,
+        "focus_summary": str(payload_obj.get("focus_summary") or "").strip() or None,
+        "next_candidate_action": (
+            dict(payload_obj.get("next_candidate_action") or {})
+            if isinstance(payload_obj.get("next_candidate_action"), dict)
+            else None
+        ),
+        "talk_candidate": (
+            dict(payload_obj.get("talk_candidate") or {})
+            if isinstance(payload_obj.get("talk_candidate"), dict)
+            else None
+        ),
         "attention_targets": attention_targets_out,
         "updated_from_event_ids": [
             int(x) for x in list(updated_from_event_ids) if isinstance(x, (int, float)) and int(x) > 0
@@ -979,12 +992,63 @@ def _load_persona_interest_state_snapshot_for_deliberation(db) -> dict[str, Any]
     }
 
 
+def _load_agenda_threads_snapshot_for_deliberation(db) -> list[dict[str, Any]]:
+    """Deliberation 用の agenda_threads スナップショットを返す。"""
+
+    rows = (
+        db.query(AgendaThread)
+        .filter(AgendaThread.status.in_(["active", "open", "blocked"]))
+        .order_by(AgendaThread.updated_at.desc())
+        .limit(8)
+        .all()
+    )
+
+    status_rank = {
+        "active": 0,
+        "open": 1,
+        "blocked": 2,
+    }
+    ordered_rows = sorted(
+        list(rows or []),
+        key=lambda row: (
+            int(status_rank.get(str(row.status or ""), 9)),
+            -int(row.priority or 0),
+            -int(row.updated_at or 0),
+            str(row.thread_id or ""),
+        ),
+    )[:8]
+
+    out: list[dict[str, Any]] = []
+    for row in list(ordered_rows or []):
+        payload_obj = common_utils.json_loads_maybe(str(row.next_action_payload_json or "{}"))
+        if not isinstance(payload_obj, dict):
+            payload_obj = {}
+        out.append(
+            {
+                "thread_id": str(row.thread_id),
+                "thread_key": str(row.thread_key),
+                "kind": str(row.kind),
+                "topic": str(row.topic),
+                "goal": str(row.goal or "").strip() or None,
+                "status": str(row.status),
+                "priority": int(row.priority),
+                "next_action_type": str(row.next_action_type or "").strip() or None,
+                "next_action_payload": dict(payload_obj),
+                "followup_due_at": (int(row.followup_due_at) if row.followup_due_at is not None else None),
+                "last_result_status": str(row.last_result_status or "").strip() or None,
+                "report_candidate_level": str(row.report_candidate_level),
+            }
+        )
+    return out
+
+
 def _build_persona_deliberation_focus(
     *,
     trigger: AutonomyTrigger,
     confirmed_preferences: dict[str, Any],
     runtime_blackboard_snapshot: dict[str, Any],
     persona_interest_state_snapshot: dict[str, Any] | None,
+    agenda_threads_snapshot: list[dict[str, Any]],
     active_goal_ids: list[str],
 ) -> dict[str, Any]:
     """
@@ -992,7 +1056,7 @@ def _build_persona_deliberation_focus(
 
     方針:
         - 自然言語本文の意味推定は行わない。
-        - 構造化済みの preferences/runtime/current_thought 情報だけで、並び順と件数のヒントを作る。
+        - 構造化済みの preferences/runtime/current_thought/agenda 情報だけで、並び順と件数のヒントを作る。
     """
 
     # --- runtime の短期継続状態 ---
@@ -1117,6 +1181,29 @@ def _build_persona_deliberation_focus(
             _add_score(priority_goal_type_scores, "research", w)
             continue
 
+    # --- agenda_threads の構造値も優先度へ反映する ---
+    agenda_threads = [dict(x) for x in list(agenda_threads_snapshot or []) if isinstance(x, dict)]
+    has_due_agenda_action = False
+    has_active_agenda = False
+    for item in list(agenda_threads or []):
+        thread_status = str(item.get("status") or "").strip()
+        if thread_status not in {"active", "open", "blocked"}:
+            continue
+        has_active_agenda = True
+        status_weight = 1.0 if thread_status == "active" else (0.75 if thread_status == "open" else 0.55)
+        next_action_type = str(item.get("next_action_type") or "").strip()
+        if next_action_type:
+            has_due_agenda_action = True
+            _add_score(priority_action_type_scores, next_action_type, status_weight)
+            if next_action_type == "web_research":
+                _add_score(priority_capability_scores, "web_access", float(max(0.0, status_weight - 0.05)))
+                _add_score(priority_goal_type_scores, "research", status_weight)
+        thread_kind = str(item.get("kind") or "").strip()
+        if thread_kind == "research":
+            _add_score(priority_goal_type_scores, "research", status_weight)
+        elif thread_kind == "observation" and next_action_type in {"observe_screen", "observe_camera"}:
+            _add_score(priority_capability_scores, "vision_perception", float(max(0.0, status_weight - 0.05)))
+
     # --- スコア上位順に優先リスト化（既存の再並び替え関数互換） ---
     def _top_keys(score_map: dict[str, float], *, cap: int) -> list[str]:
         ordered = sorted(
@@ -1137,7 +1224,7 @@ def _build_persona_deliberation_focus(
     topic_dislike_count = len(list(((confirmed_preferences.get("topic") or {}).get("dislike") or []))) if isinstance(confirmed_preferences, dict) else 0
     style_like_count = len(list(((confirmed_preferences.get("style") or {}).get("like") or []))) if isinstance(confirmed_preferences, dict) else 0
     has_research_interest = bool(priority_goal_types) and ("research" in {str(x) for x in list(priority_goal_types or [])})
-    has_active_focus = bool(priority_action_types or priority_capabilities or priority_goal_types)
+    has_active_focus = bool(priority_action_types or priority_capabilities or priority_goal_types or has_active_agenda)
 
     # --- interaction mode を構造値から推定（VADは使わない） ---
     # --- interest_state.interaction_mode を最優先ヒントとして使う（構造値のみ） ---
@@ -1150,7 +1237,7 @@ def _build_persona_deliberation_focus(
         interaction_mode_hint = "observe"
         if len(active_intent_ids) >= 2:
             interaction_mode_hint = "support"
-        elif bool(has_active_focus) or topic_like_count > 0:
+        elif bool(has_due_agenda_action) or bool(has_active_focus) or topic_like_count > 0:
             interaction_mode_hint = "explore"
         elif not active_intent_ids and str(trigger.trigger_type or "").strip() in {"heartbeat", "time", "time_routine"}:
             interaction_mode_hint = "wait"
@@ -1984,6 +2071,7 @@ def _collect_deliberation_input(
     # --- 人格判断の材料（構造化済みの好み/短期ランタイム状態） ---
     confirmed_preferences = _load_confirmed_preferences_snapshot_for_deliberation(db)
     persona_interest_state_snapshot = _load_persona_interest_state_snapshot_for_deliberation(db)
+    agenda_threads_snapshot = _load_agenda_threads_snapshot_for_deliberation(db)
     runtime_blackboard_snapshot = get_runtime_blackboard().snapshot()
     if not isinstance(runtime_blackboard_snapshot, dict):
         runtime_blackboard_snapshot = {}
@@ -2021,6 +2109,7 @@ def _collect_deliberation_input(
         confirmed_preferences=confirmed_preferences,
         runtime_blackboard_snapshot=runtime_blackboard_snapshot,
         persona_interest_state_snapshot=persona_interest_state_snapshot,
+        agenda_threads_snapshot=agenda_threads_snapshot,
         active_goal_ids=active_goal_ids,
     )
     focus_limits = persona_deliberation_focus.get("limits") if isinstance(persona_deliberation_focus, dict) else {}
@@ -2135,7 +2224,8 @@ def _collect_deliberation_input(
         "goals": goals,
         "intents": intents,
         "confirmed_preferences": confirmed_preferences,
-        "interest_state": persona_interest_state_snapshot,
+        "current_thought": persona_interest_state_snapshot,
+        "agenda_threads": agenda_threads_snapshot,
         "runtime_blackboard": runtime_blackboard_snapshot,
         "persona_deliberation_focus": persona_deliberation_focus,
         "capabilities": [

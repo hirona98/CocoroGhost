@@ -1131,7 +1131,7 @@ class _ChatMemoryMixin:
         self, *, embedding_preset_id: str, embedding_dimension: int
     ) -> dict[str, Any] | None:
         """
-        persona_interest_state の最新スナップショットを返す。
+        current_thought_state の最新スナップショットを返す。
 
         目的:
             - 会話の選別/返答で、現在の関心・注目の継続状態を参照できるようにする。
@@ -1141,7 +1141,7 @@ class _ChatMemoryMixin:
         with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
             st = (
                 db.query(State)
-                .filter(State.kind == "persona_interest_state")
+                .filter(State.kind == "current_thought_state")
                 .filter(State.searchable == 1)
                 .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
                 .first()
@@ -1187,6 +1187,13 @@ class _ChatMemoryMixin:
                 "kind": str(st.kind),
                 "body_text": str(st.body_text or ""),
                 "interaction_mode": str(payload_obj.get("interaction_mode") or "").strip() or None,
+                "active_thread_id": str(payload_obj.get("active_thread_id") or "").strip() or None,
+                "focus_summary": str(payload_obj.get("focus_summary") or "").strip() or None,
+                "next_candidate_action": (
+                    dict(payload_obj.get("next_candidate_action") or {})
+                    if isinstance(payload_obj.get("next_candidate_action"), dict)
+                    else None
+                ),
                 "attention_targets": attention_targets_out,
                 "updated_from_event_ids": [
                     int(x) for x in list(updated_from_event_ids) if isinstance(x, (int, float)) and int(x) > 0
@@ -1556,7 +1563,7 @@ class _ChatMemoryMixin:
                         "addon_text": str(cfg.addon_text or ""),
                         "long_mood_state": long_mood_state_snapshot,
                         "confirmed_preferences": confirmed_preferences_snapshot,
-                        "interest_state": persona_interest_state_snapshot,
+                        "current_thought": persona_interest_state_snapshot,
                     },
                     "candidates": compact_candidates,
                 }
@@ -1630,7 +1637,7 @@ class _ChatMemoryMixin:
                 },
                 "LongMoodState": long_mood_state_snapshot,
                 "ConfirmedPreferences": confirmed_preferences_snapshot,
-                "PersonaInterestState": persona_interest_state_snapshot,
+                "CurrentThoughtState": persona_interest_state_snapshot,
                 "SearchResultPack": self._inflate_search_result_pack(
                     embedding_preset_id=embedding_preset_id,
                     embedding_dimension=embedding_dimension,
