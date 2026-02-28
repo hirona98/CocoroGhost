@@ -1,61 +1,21 @@
 """
-/control エンドポイント
+/control ルーター。
 
-プロセス自体の制御（終了要求など）を受け付ける。
-本APIは CocoroConsole 等の管理UIから呼び出される想定で、Bearer 認証必須とする。
+目的:
+    - ルーティングと入出力定義だけを保持する。
+    - 業務ロジックは services.control_service へ委譲する。
 """
 
 from __future__ import annotations
 
-import os
-import signal
-import time
-from typing import Optional
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
-
-from cocoro_ghost.clock import ClockService
-from cocoro_ghost import event_stream, log_stream, schemas, worker
-from cocoro_ghost.deps import get_clock_service_dep
-from cocoro_ghost.time_utils import format_iso8601_local_with_tz
-
-logger = __import__("logging").getLogger(__name__)
+from cocoro_ghost import schemas
+from cocoro_ghost.api.services import control_service
+from cocoro_ghost.app_bootstrap.dependencies import get_clock_service_dep
+from cocoro_ghost.core.clock import ClockService
 
 router = APIRouter()
-
-
-def _request_process_shutdown(*, reason: Optional[str]) -> None:
-    """
-    CocoroGhost プロセスの終了を要求する。
-
-    FastAPI のハンドラ内で即座に終了させると、HTTP レスポンスの返却が不安定になるため、
-    BackgroundTask として少し遅延させてから SIGTERM を送る。
-    """
-
-    # --- ログ出力（UI 操作の追跡用） ---
-    logger.warning("shutdown requested", extra={"reason": (reason or "").strip()})
-
-    # --- 先にレスポンスを返しやすくするための短い遅延 ---
-    time.sleep(0.2)
-
-    # --- uvicorn に停止シグナルを送る（shutdown イベントが走る） ---
-    os.kill(os.getpid(), signal.SIGTERM)
-
-
-def _build_time_snapshot_response(clock_service: ClockService) -> schemas.ControlTimeSnapshotResponse:
-    """現在のsystem/domain時刻をAPIレスポンスへ整形する。"""
-
-    # --- スナップショットを取得 ---
-    snap = clock_service.snapshot()
-
-    # --- ISO表示（ローカルTZ付き）を付ける ---
-    return schemas.ControlTimeSnapshotResponse(
-        system_now_utc_ts=int(snap.system_now_utc_ts),
-        system_now_iso=format_iso8601_local_with_tz(int(snap.system_now_utc_ts)),
-        domain_now_utc_ts=int(snap.domain_now_utc_ts),
-        domain_now_iso=format_iso8601_local_with_tz(int(snap.domain_now_utc_ts)),
-        domain_offset_seconds=int(snap.domain_offset_seconds),
-    )
 
 
 @router.post("/control", status_code=status.HTTP_204_NO_CONTENT)
@@ -68,11 +28,10 @@ def control(
 
     現状は shutdown のみをサポートし、受理後にプロセス終了を要求する。
     """
-
-    # --- action バリデーションは schemas 側で実施済み ---
-    background_tasks.add_task(_request_process_shutdown, reason=request.reason)
-    # --- BackgroundTasks を紐づける（これが無いと shutdown が実行されない） ---
-    return Response(status_code=status.HTTP_204_NO_CONTENT, background=background_tasks)
+    return control_service.schedule_process_control(
+        request=request,
+        background_tasks=background_tasks,
+    )
 
 
 @router.get("/control/stream-stats", response_model=schemas.StreamRuntimeStatsResponse)
@@ -82,16 +41,7 @@ def stream_stats() -> schemas.StreamRuntimeStatsResponse:
 
     運用時に queue逼迫/ドロップ/送信失敗を確認するために使う。
     """
-
-    # --- 各ストリームから統計スナップショットを取得する ---
-    event_stats = event_stream.get_runtime_stats()
-    log_stats = log_stream.get_runtime_stats()
-
-    # --- スキーマへ詰め替えて返す ---
-    return schemas.StreamRuntimeStatsResponse(
-        events=schemas.EventStreamRuntimeStats(**event_stats),
-        logs=schemas.LogStreamRuntimeStats(**log_stats),
-    )
+    return control_service.build_stream_stats_response()
 
 
 @router.get("/control/worker-stats", response_model=schemas.WorkerRuntimeStatsResponse)
@@ -101,20 +51,7 @@ def worker_stats() -> schemas.WorkerRuntimeStatsResponse:
 
     pending/running/stale の詰まり具合を運用時に確認するために使う。
     """
-
-    # --- アクティブな embedding 設定を取得する ---
-    from cocoro_ghost.config import get_config_store
-
-    cfg = get_config_store().config
-
-    # --- jobs テーブル統計を取得する ---
-    stats = worker.get_job_queue_stats(
-        embedding_preset_id=str(cfg.embedding_preset_id),
-        embedding_dimension=int(cfg.embedding_dimension),
-    )
-
-    # --- スキーマへ詰め替えて返す ---
-    return schemas.WorkerRuntimeStatsResponse(**stats)
+    return control_service.build_worker_stats_response()
 
 
 @router.get("/control/time", response_model=schemas.ControlTimeSnapshotResponse)
@@ -127,9 +64,7 @@ def control_time_snapshot(
     - system: OS実時間
     - domain: 会話/記憶/感情の評価に使う論理時刻
     """
-
-    # --- 現在値を返す ---
-    return _build_time_snapshot_response(clock_service)
+    return control_service.get_time_snapshot(clock_service=clock_service)
 
 
 @router.post("/control/time/advance", response_model=schemas.ControlTimeSnapshotResponse)
@@ -144,15 +79,10 @@ def control_time_advance(
         - system時刻は変更しない。
         - seconds は1以上のみ許可する。
     """
-
-    # --- 入力秒を反映 ---
-    try:
-        clock_service.advance_domain_seconds(seconds=int(request.seconds))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    # --- 変更後スナップショット ---
-    return _build_time_snapshot_response(clock_service)
+    return control_service.advance_time(
+        request=request,
+        clock_service=clock_service,
+    )
 
 
 @router.post("/control/time/reset", response_model=schemas.ControlTimeSnapshotResponse)
@@ -164,9 +94,130 @@ def control_time_reset(
 
     system時刻には影響しない。
     """
+    return control_service.reset_time(clock_service=clock_service)
 
-    # --- offsetを0へ戻す ---
-    clock_service.reset_domain_offset()
 
-    # --- 変更後スナップショット ---
-    return _build_time_snapshot_response(clock_service)
+@router.get("/control/autonomy/status", response_model=schemas.ControlAutonomyStatusResponse)
+def control_autonomy_status() -> schemas.ControlAutonomyStatusResponse:
+    """
+    自発行動の稼働状態と滞留数を返す。
+    """
+    return control_service.get_autonomy_status()
+
+
+@router.post("/control/autonomy/start", response_model=schemas.ControlAutonomyToggleResponse)
+def control_autonomy_start() -> schemas.ControlAutonomyToggleResponse:
+    """
+    自発行動を有効化する。
+    """
+    return control_service.set_autonomy_enabled(enabled=True)
+
+
+@router.post("/control/autonomy/stop", response_model=schemas.ControlAutonomyToggleResponse)
+def control_autonomy_stop() -> schemas.ControlAutonomyToggleResponse:
+    """
+    自発行動を無効化する。
+    """
+    return control_service.set_autonomy_enabled(enabled=False)
+
+
+@router.post("/control/autonomy/trigger", response_model=schemas.ControlAutonomyToggleResponse)
+def control_autonomy_trigger(request: schemas.ControlAutonomyTriggerRequest) -> schemas.ControlAutonomyToggleResponse:
+    """
+    手動トリガを投入する（デバッグ用）。
+    """
+    return control_service.trigger_autonomy(request=request)
+
+
+@router.get("/control/autonomy/intents", response_model=schemas.ControlAutonomyIntentsResponse)
+def control_autonomy_intents(
+    limit: int = Query(default=50, ge=1, le=500),
+) -> schemas.ControlAutonomyIntentsResponse:
+    """
+    intent 一覧を返す。
+    """
+    return control_service.list_autonomy_intents(limit=int(limit))
+
+
+@router.post("/control/agent-jobs/claim", response_model=schemas.ControlAgentJobClaimResponse)
+def control_agent_jobs_claim(
+    request: schemas.ControlAgentJobClaimRequest,
+    clock_service: ClockService = Depends(get_clock_service_dep),
+) -> schemas.ControlAgentJobClaimResponse:
+    """
+    agent_runner 向けに queued agent_job を claim して返す。
+    """
+    return control_service.claim_agent_jobs(
+        request=request,
+        clock_service=clock_service,
+    )
+
+
+@router.post("/control/agent-jobs/{job_id}/heartbeat", response_model=schemas.ControlAgentJobMutationResponse)
+def control_agent_job_heartbeat(
+    job_id: str,
+    request: schemas.ControlAgentJobHeartbeatRequest,
+    clock_service: ClockService = Depends(get_clock_service_dep),
+) -> schemas.ControlAgentJobMutationResponse:
+    """
+    実行中 agent_job の heartbeat を更新する。
+    """
+    return control_service.heartbeat_agent_job(
+        job_id=str(job_id),
+        request=request,
+        clock_service=clock_service,
+    )
+
+
+@router.post("/control/agent-jobs/{job_id}/complete", response_model=schemas.ControlAgentJobMutationResponse)
+def control_agent_job_complete(
+    job_id: str,
+    request: schemas.ControlAgentJobCompleteRequest,
+) -> schemas.ControlAgentJobMutationResponse:
+    """
+    agent_runner の complete callback を受け付ける。
+    """
+    return control_service.complete_agent_job(
+        job_id=str(job_id),
+        request=request,
+    )
+
+
+@router.post("/control/agent-jobs/{job_id}/fail", response_model=schemas.ControlAgentJobMutationResponse)
+def control_agent_job_fail(
+    job_id: str,
+    request: schemas.ControlAgentJobFailRequest,
+) -> schemas.ControlAgentJobMutationResponse:
+    """
+    agent_runner の fail callback を受け付ける。
+    """
+    return control_service.fail_agent_job(
+        job_id=str(job_id),
+        request=request,
+    )
+
+
+@router.get("/control/agent-jobs", response_model=schemas.ControlAgentJobsResponse)
+def control_agent_jobs(
+    limit: int = Query(default=50, ge=1, le=500),
+    status: str | None = Query(default=None),
+    backend: str | None = Query(default=None),
+) -> schemas.ControlAgentJobsResponse:
+    """
+    agent_jobs 一覧を返す（新しい順）。
+    """
+    return control_service.list_agent_jobs(
+        limit=int(limit),
+        job_status=status,
+        backend=backend,
+    )
+
+
+@router.get("/control/agent-jobs/{job_id}", response_model=schemas.ControlAgentJobResponse)
+def control_agent_job(
+    job_id: str,
+) -> schemas.ControlAgentJobResponse:
+    """
+    agent_job 1件を返す。
+    """
+    return control_service.get_agent_job(job_id=str(job_id))

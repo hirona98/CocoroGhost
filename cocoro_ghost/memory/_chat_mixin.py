@@ -19,16 +19,18 @@ from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy import text
 
 from cocoro_ghost import schemas
-from cocoro_ghost import affect
-from cocoro_ghost import common_utils, prompt_builders, vector_index
-from cocoro_ghost.db import memory_session_scope
-from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
-from cocoro_ghost.llm_client import LlmRequestPurpose
+from cocoro_ghost.core import affect
+from cocoro_ghost.core import common_utils
+from cocoro_ghost.llm import prompt_builders
+from cocoro_ghost.storage import vector_index
+from cocoro_ghost.storage.db import memory_session_scope
+from cocoro_ghost.llm.debug import log_llm_payload, normalize_llm_log_level
+from cocoro_ghost.llm.client import LlmRequestPurpose
 from cocoro_ghost.memory._chat_search_mixin import _CandidateItem
 from cocoro_ghost.memory._image_mixin import default_input_text_when_images_only
-from cocoro_ghost.memory_models import Event, EventAssistantSummary, EventLink, RetrievalRun, State, UserPreference
+from cocoro_ghost.storage.memory_models import Event, EventAssistantSummary, EventLink, RetrievalRun, State, UserPreference
 from cocoro_ghost.memory._utils import now_utc_ts
-from cocoro_ghost.time_utils import format_iso8601_local
+from cocoro_ghost.core.time_utils import format_iso8601_local
 
 
 logger = logging.getLogger(__name__)
@@ -258,6 +260,7 @@ def _build_rule_based_retrieval_plan(
     *,
     user_input: str,
     max_candidates: int,
+    persona_focus_hint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     ルールベースでRetrievalPlan（SearchPlan互換のdict）を作る。
@@ -322,7 +325,95 @@ def _build_rule_based_retrieval_plan(
         "diversify": {"by": ["life_stage", "about_year_bucket"], "per_bucket": 5},
         "limits": {"max_candidates": int(max_candidates), "max_selected": 12},
     }
+    # --- 人格の関心軸ヒント（ルールベース計画のまま補助情報として載せる） ---
+    if isinstance(persona_focus_hint, dict) and persona_focus_hint:
+        plan_obj["persona_focus_hint"] = dict(persona_focus_hint)
     return plan_obj
+
+
+def _build_persona_focus_hint(
+    *,
+    confirmed_preferences_snapshot: dict[str, Any] | None,
+    long_mood_state_snapshot: dict[str, Any] | None,
+    persona_interest_state_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    RetrievalPlan/選別向けの PersonaFocusHint を作る。
+
+    方針:
+        - 文字列比較で persona 文を解析しない。
+        - 構造化済みの confirmed preferences / mood snapshot を使う。
+    """
+
+    # --- confirmed preferences を安全に読む ---
+    prefs = confirmed_preferences_snapshot if isinstance(confirmed_preferences_snapshot, dict) else {}
+    topic_like = []
+    style_like = []
+    style_dislike = []
+    try:
+        topic_like = list((prefs.get("topic") or {}).get("like") or [])
+        style_like = list((prefs.get("style") or {}).get("like") or [])
+        style_dislike = list((prefs.get("style") or {}).get("dislike") or [])
+    except Exception:  # noqa: BLE001
+        topic_like = []
+        style_like = []
+        style_dislike = []
+
+    # --- ラベルだけを短い配列へ正規化（subject を優先） ---
+    def _subjects(rows: list[Any], *, cap: int = 6) -> list[str]:
+        out: list[str] = []
+        for row in list(rows or []):
+            if not isinstance(row, dict):
+                continue
+            subject = str(row.get("subject") or "").strip()
+            if not subject:
+                continue
+            out.append(subject[:80])
+            if len(out) >= int(cap):
+                break
+        return out
+
+    # --- mood は構造情報のまま補助ヒントに載せる（意味判定はしない） ---
+    mood_vad_hint = None
+    if isinstance(long_mood_state_snapshot, dict):
+        vad_obj = long_mood_state_snapshot.get("vad")
+        if isinstance(vad_obj, dict):
+            try:
+                mood_vad_hint = {
+                    "v": float(vad_obj.get("v")),
+                    "a": float(vad_obj.get("a")),
+                    "d": float(vad_obj.get("d")),
+                }
+            except Exception:  # noqa: BLE001
+                mood_vad_hint = None
+
+    # --- persona_interest_state は「現在の関心ターゲット」として補助ヒントに載せる ---
+    interest_mode = None
+    interest_targets: list[str] = []
+    if isinstance(persona_interest_state_snapshot, dict):
+        interest_mode_raw = str(persona_interest_state_snapshot.get("interaction_mode") or "").strip()
+        interest_mode = str(interest_mode_raw) if interest_mode_raw else None
+        targets_raw = persona_interest_state_snapshot.get("attention_targets")
+        if isinstance(targets_raw, list):
+            for t in list(targets_raw):
+                if not isinstance(t, dict):
+                    continue
+                tt = str(t.get("type") or "").strip()
+                tv = str(t.get("value") or "").strip()
+                if not tt or not tv:
+                    continue
+                interest_targets.append(f"{tt}:{tv}"[:120])
+                if len(interest_targets) >= 8:
+                    break
+
+    return {
+        "topic_bias": _subjects(topic_like),
+        "style_bias": _subjects(style_like),
+        "avoid_bias": _subjects(style_dislike),
+        "mood_vad_hint": mood_vad_hint,
+        "interest_mode_hint": interest_mode,
+        "interest_targets_hint": interest_targets,
+    }
 
 
 def _build_compact_candidates_for_selection(
@@ -435,6 +526,144 @@ def _build_compact_candidates_for_selection(
         if t in ("e", "s", "a") and i > 0:
             cleaned.append(x)
     return cleaned
+
+
+def _reorder_compact_candidates_for_persona_selection(
+    compact_candidates: list[dict[str, Any]],
+    *,
+    persona_interest_state_snapshot: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """
+    SearchResultPack 選別入力の候補順を、persona_interest_state の構造情報で調整する。
+
+    方針:
+        - 自然言語本文の意味推定は行わない。
+        - candidate の構造フィールド（t/src/k/hs）と interest_state の構造値だけ使う。
+        - LLM選別を置き換えず、入力順の重み付けだけ行う。
+    """
+
+    # --- 入力の正規化 ---
+    if not compact_candidates:
+        return []
+    if not isinstance(persona_interest_state_snapshot, dict):
+        return list(compact_candidates)
+
+    # --- interaction_mode（構造値） ---
+    interaction_mode = str(persona_interest_state_snapshot.get("interaction_mode") or "").strip()
+    if interaction_mode not in {"observe", "support", "explore", "wait"}:
+        interaction_mode = "observe"
+
+    # --- attention_targets の重みマップ化（構造フィールドのみ） ---
+    targets_raw = persona_interest_state_snapshot.get("attention_targets")
+    event_source_scores: dict[str, float] = {}
+    state_kind_scores: dict[str, float] = {}
+    world_capability_scores: dict[str, float] = {}
+    world_entity_kind_scores: dict[str, float] = {}
+
+    def _safe_weight(x: dict[str, Any]) -> float:
+        try:
+            return float(max(0.0, min(1.0, float(x.get("weight") or 0.0))))
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _merge_score(dst: dict[str, float], key: str, weight: float) -> None:
+        k = str(key or "").strip()
+        if not k:
+            return
+        dst[k] = float(max(float(dst.get(k, 0.0)), float(weight)))
+
+    if isinstance(targets_raw, list):
+        for item in list(targets_raw):
+            if not isinstance(item, dict):
+                continue
+            t = str(item.get("type") or "").strip()
+            v = str(item.get("value") or "").strip()
+            w = _safe_weight(item)
+            if not v:
+                continue
+            if t == "event_source":
+                _merge_score(event_source_scores, v, w)
+                continue
+            if t in {"state_kind", "kind"}:
+                _merge_score(state_kind_scores, v, w)
+                continue
+            if t == "world_capability":
+                _merge_score(world_capability_scores, v, w)
+                continue
+            if t == "world_entity_kind":
+                _merge_score(world_entity_kind_scores, v, w)
+                continue
+
+    # --- world_* の構造ターゲットを会話候補の型/ヒット経路へ橋渡しする ---
+    # NOTE:
+    # - 本文比較はしないため、ここでは「どの種類の候補を前に出すか」だけ決める。
+    research_interest_score = 0.0
+    research_interest_score = max(research_interest_score, float(world_capability_scores.get("web_access") or 0.0))
+    research_interest_score = max(
+        research_interest_score,
+        float(world_entity_kind_scores.get("web_research_query") or 0.0),
+    )
+    has_research_interest = research_interest_score > 0.0
+
+    # --- interaction_mode ごとの型/経路バイアス（構造値のみ） ---
+    def _candidate_score(c: dict[str, Any], original_index: int) -> tuple[float, int]:
+        t = str(c.get("t") or "")
+        src = str(c.get("src") or "")  # event 用
+        state_kind = str(c.get("k") or "")  # state 用
+        hs = [str(x or "").strip() for x in list(c.get("hs") or [])]
+
+        score = 0.0
+
+        # --- 明示ターゲット一致（event_source / state_kind） ---
+        if t == "e" and src:
+            score += float(event_source_scores.get(src) or 0.0) * 1.2
+        if t == "s" and state_kind:
+            score += float(state_kind_scores.get(state_kind) or 0.0) * 1.2
+
+        # --- interaction_mode による型/経路重み ---
+        if interaction_mode == "support":
+            if t == "s":
+                score += 0.25
+            if any(h in {"reply_chain", "context_threads", "context_links"} for h in hs):
+                score += 0.20
+            if t == "e":
+                score += 0.08
+        elif interaction_mode == "explore":
+            if t == "e":
+                score += 0.20
+            if any(h in {"vector_global", "vector_recent", "trigram_events", "about_time"} for h in hs):
+                score += 0.18
+        elif interaction_mode == "wait":
+            if t == "s":
+                score += 0.22
+            if any(h in {"recent_events", "reply_chain", "context_threads", "context_links"} for h in hs):
+                score += 0.12
+            if t == "a":
+                score -= 0.05
+        else:  # observe
+            if t == "e":
+                score += 0.10
+            if t == "s":
+                score += 0.10
+
+        # --- world_model_items 由来の research 関心は検索系経路/イベント候補を少し前へ ---
+        if has_research_interest:
+            if t == "e":
+                score += 0.10 * float(max(0.0, min(1.0, research_interest_score)))
+            if any(h in {"vector_global", "about_time", "trigram_events"} for h in hs):
+                score += 0.12 * float(max(0.0, min(1.0, research_interest_score)))
+
+        # --- 同点時は元の順序を維持（安定化） ---
+        return (float(score), int(original_index))
+
+    scored = []
+    for idx, item in enumerate(list(compact_candidates or [])):
+        if not isinstance(item, dict):
+            continue
+        scored.append((dict(item), _candidate_score(dict(item), idx)))
+
+    scored.sort(key=lambda x: (-float(x[1][0]), int(x[1][1])))
+    return [dict(x[0]) for x in scored]
 
 
 class _UserVisibleReplySanitizer:
@@ -900,6 +1129,82 @@ class _ChatMemoryMixin:
 
         return out
 
+    def _load_persona_interest_state_snapshot(
+        self, *, embedding_preset_id: str, embedding_dimension: int
+    ) -> dict[str, Any] | None:
+        """
+        current_thought_state の最新スナップショットを返す。
+
+        目的:
+            - 会話の選別/返答で、現在の関心・注目の継続状態を参照できるようにする。
+            - 文字列比較ではなく構造化 payload を正として扱う。
+        """
+
+        with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
+            st = (
+                db.query(State)
+                .filter(State.kind == "current_thought_state")
+                .filter(State.searchable == 1)
+                .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
+                .first()
+            )
+            if st is None:
+                return None
+
+            payload_obj = common_utils.json_loads_maybe(str(st.payload_json or ""))
+            if not isinstance(payload_obj, dict):
+                payload_obj = {}
+
+            attention_targets_out: list[dict[str, Any]] = []
+            attention_targets_raw = payload_obj.get("attention_targets")
+            if isinstance(attention_targets_raw, list):
+                for item in list(attention_targets_raw):
+                    if not isinstance(item, dict):
+                        continue
+                    target_type = str(item.get("type") or "").strip()
+                    value = str(item.get("value") or "").strip()
+                    if not target_type or not value:
+                        continue
+                    attention_targets_out.append(
+                        {
+                            "type": str(target_type),
+                            "value": str(value),
+                            "weight": float(item.get("weight") or 0.0),
+                            "updated_at": (
+                                format_iso8601_local(int(item.get("updated_at")))
+                                if item.get("updated_at") is not None and int(item.get("updated_at") or 0) > 0
+                                else None
+                            ),
+                        }
+                    )
+                    if len(attention_targets_out) >= 24:
+                        break
+
+            updated_from_event_ids = payload_obj.get("updated_from_event_ids")
+            if not isinstance(updated_from_event_ids, list):
+                updated_from_event_ids = []
+
+            return {
+                "state_id": int(st.state_id),
+                "kind": str(st.kind),
+                "body_text": str(st.body_text or ""),
+                "interaction_mode": str(payload_obj.get("interaction_mode") or "").strip() or None,
+                "active_thread_id": str(payload_obj.get("active_thread_id") or "").strip() or None,
+                "focus_summary": str(payload_obj.get("focus_summary") or "").strip() or None,
+                "next_candidate_action": (
+                    dict(payload_obj.get("next_candidate_action") or {})
+                    if isinstance(payload_obj.get("next_candidate_action"), dict)
+                    else None
+                ),
+                "attention_targets": attention_targets_out,
+                "updated_from_event_ids": [
+                    int(x) for x in list(updated_from_event_ids) if isinstance(x, (int, float)) and int(x) > 0
+                ][:20],
+                "updated_from": (payload_obj.get("updated_from") if isinstance(payload_obj.get("updated_from"), dict) else None),
+                "confidence": float(st.confidence),
+                "last_confirmed_at": format_iso8601_local(int(st.last_confirmed_at)),
+            }
+
     def _llm_io_loggers(self) -> tuple[logging.Logger, logging.Logger]:
         """LLM I/O ログの出力先ロガー（console/file）を返す。"""
         return (logging.getLogger("cocoro_ghost.llm_io.console"), logging.getLogger("cocoro_ghost.llm_io.file"))
@@ -1138,7 +1443,7 @@ class _ChatMemoryMixin:
             )
             if prev is not None and int(prev[0] or 0) > 0:
                 # NOTE: 文脈グラフの本更新は非同期で行う。ここでは reply_to だけを即時に張る。
-                from cocoro_ghost.memory_models import EventLink  # noqa: PLC0415
+                from cocoro_ghost.storage.memory_models import EventLink  # noqa: PLC0415
 
                 reply_to_event_id = int(prev[0])
                 db.add(
@@ -1195,10 +1500,30 @@ class _ChatMemoryMixin:
         # - SearchPlan（LLM）を毎ターン呼ぶと、SSE開始前の同期待ちが増えるため廃止する。
         # - 代わりに、ユーザー入力から年/学生区分などの「明示ヒント」だけを軽く抽出して plan を作る。
         # - 上限（max_candidates）はTOML値を基準とし、実装側でも強制される。
+        # --- 会話選別/返答で共通に使う人格スナップショットを先に取得する ---
+        long_mood_state_snapshot = self._load_long_mood_state_snapshot(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            now_ts=int(now_ts),
+        )
+        confirmed_preferences_snapshot = self._load_confirmed_preferences_snapshot(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+        )
+        persona_interest_state_snapshot = self._load_persona_interest_state_snapshot(
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+        )
+        persona_focus_hint = _build_persona_focus_hint(
+            confirmed_preferences_snapshot=confirmed_preferences_snapshot,
+            long_mood_state_snapshot=long_mood_state_snapshot,
+            persona_interest_state_snapshot=persona_interest_state_snapshot,
+        )
         toml_max_candidates = int(self.config_store.toml_config.retrieval_max_candidates)
         plan_obj = _build_rule_based_retrieval_plan(
             user_input=str(input_text or ""),
             max_candidates=int(toml_max_candidates),
+            persona_focus_hint=dict(persona_focus_hint or {}),
         )
 
         # --- 5) 候補収集（取りこぼし防止優先・可能なものは並列） ---
@@ -1224,11 +1549,24 @@ class _ChatMemoryMixin:
             compact_candidates = _build_compact_candidates_for_selection(
                 candidates, event_id_to_summary=event_id_to_summary
             )
+            # --- 選別入力順を人格の関心状態（構造値）で調整する ---
+            compact_candidates = _reorder_compact_candidates_for_persona_selection(
+                compact_candidates,
+                persona_interest_state_snapshot=persona_interest_state_snapshot,
+            )
             selection_input = common_utils.json_dumps(
                 {
                     "user_input": input_text,
                     "image_summaries": list(non_empty_summaries),
                     "plan": plan_obj,
+                    "persona_selection_context": {
+                        "second_person_label": str(cfg.second_person_label or "").strip() or "あなた",
+                        "persona_text": str(cfg.persona_text or ""),
+                        "addon_text": str(cfg.addon_text or ""),
+                        "long_mood_state": long_mood_state_snapshot,
+                        "confirmed_preferences": confirmed_preferences_snapshot,
+                        "current_thought": persona_interest_state_snapshot,
+                    },
                     "candidates": compact_candidates,
                 }
             )
@@ -1299,15 +1637,9 @@ class _ChatMemoryMixin:
                     ),
                     "gap_text": gap_text,
                 },
-                "LongMoodState": self._load_long_mood_state_snapshot(
-                    embedding_preset_id=embedding_preset_id,
-                    embedding_dimension=embedding_dimension,
-                    now_ts=int(now_ts),
-                ),
-                "ConfirmedPreferences": self._load_confirmed_preferences_snapshot(
-                    embedding_preset_id=embedding_preset_id,
-                    embedding_dimension=embedding_dimension,
-                ),
+                "LongMoodState": long_mood_state_snapshot,
+                "ConfirmedPreferences": confirmed_preferences_snapshot,
+                "CurrentThoughtState": persona_interest_state_snapshot,
                 "SearchResultPack": self._inflate_search_result_pack(
                     embedding_preset_id=embedding_preset_id,
                     embedding_dimension=embedding_dimension,
@@ -1419,6 +1751,15 @@ class _ChatMemoryMixin:
             embedding_preset_id=embedding_preset_id,
             embedding_dimension=embedding_dimension,
             event_id=int(event_id),
+        )
+
+        # --- 10.7) 非同期: 自発行動トリガ（event） ---
+        background_tasks.add_task(
+            self._enqueue_autonomy_event_trigger,
+            embedding_preset_id=embedding_preset_id,
+            embedding_dimension=embedding_dimension,
+            event_id=int(event_id),
+            source="chat",
         )
 
         # --- 10.6) 非同期: 否定フィードバックによる自動分離（検索対象から除外） ---

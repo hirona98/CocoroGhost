@@ -310,6 +310,12 @@ UI向けの「全設定」取得/更新。
   "desktop_watch_enabled": false,
   "desktop_watch_interval_seconds": 300,
   "desktop_watch_target_client_id": "console-uuid-or-stable-id",
+  "autonomy_enabled": false,
+  "autonomy_heartbeat_seconds": 30,
+  "autonomy_max_parallel_intents": 2,
+  "camera_watch_enabled": false,
+  "camera_watch_interval_seconds": 15,
+  "agent_backend_cli_agent_command": "gemini.exe -p",
   "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_persona_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
@@ -374,6 +380,7 @@ UI向けの「全設定」取得/更新。
 - `memory_enabled` は常に `true` を扱う（`false` を送ると `400 Bad Request`）
 - `desktop_watch_target_client_id` は未送信なら既存DB値を保持する（明示送信時のみ更新）
 - 会話応答作成（`/api/chat` の最終生成）でのWeb検索（インターネット）は、`llm_preset.reply_web_search_enabled` でON/OFFする
+- 自発行動（autonomy）のWeb検索は `/api/chat` と別経路で実行し、`reply_web_search_enabled` では制御しない
 - `llm_model` は `openrouter/*` / `xai/*` / `openai/*` / `google/*` / `gemini/*` のいずれかを使用する
 - OpenRouter を OpenAI互換 `base_url` で使う場合（例: `https://openrouter.ai/api/v1`）も、設定がONなら最終生成時に OpenRouter のWeb検索 plugin を有効化する
 
@@ -731,6 +738,233 @@ Workerのジョブキュー統計を返す。
 
 - `GET /api/control/time` と同じ形式（リセット後の値）
 
+### `GET /api/control/autonomy/status`
+
+自発行動（autonomy）の稼働状態と滞留数を返す。
+
+レスポンス（例）:
+
+```json
+{
+  "autonomy_enabled": true,
+  "autonomy_heartbeat_seconds": 30,
+  "autonomy_max_parallel_intents": 2,
+  "now_domain_utc_ts": 1769654424,
+  "triggers_queued": 3,
+  "triggers_claimed": 1,
+  "triggers_due": 2,
+  "intents_queued": 1,
+  "intents_running": 1,
+  "intents_blocked": 0
+}
+```
+
+### `POST /api/control/autonomy/start`
+
+自発行動を有効化する。
+
+レスポンス（例）:
+
+```json
+{
+  "autonomy_enabled": true
+}
+```
+
+### `POST /api/control/autonomy/stop`
+
+自発行動を無効化する。
+
+レスポンス（例）:
+
+```json
+{
+  "autonomy_enabled": false
+}
+```
+
+### `POST /api/control/autonomy/trigger`
+
+手動トリガを投入する（管理/デバッグ用）。
+
+リクエスト（例）:
+
+```json
+{
+  "trigger_type": "manual",
+  "trigger_key": "manual:debug:001",
+  "payload": {"note": "debug run"},
+  "scheduled_at": 1769654424
+}
+```
+
+レスポンス（例）:
+
+```json
+{
+  "autonomy_enabled": true
+}
+```
+
+補足:
+
+- `trigger_key` は `queued/claimed` で重複不可
+- 重複時は `409 Conflict`（`detail="trigger already queued or claimed"`）
+
+### `GET /api/control/autonomy/intents`
+
+intent 一覧を返す（新しい順）。
+
+クエリ:
+
+- `limit`（任意, 1..500, 既定50）
+
+レスポンス（例）:
+
+```json
+{
+  "items": [
+    {
+      "intent_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "decision_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "action_type": "web_research",
+      "status": "queued",
+      "priority": 60,
+      "scheduled_at": null,
+      "blocked_reason": null,
+      "dropped_reason": null,
+      "updated_at": 1769654424
+    }
+  ]
+}
+```
+
+### `POST /api/control/agent-jobs/claim`
+
+外部 `agent_runner` が実行可能な `agent_job` を claim する。
+
+リクエスト（例）:
+
+```json
+{
+  "runner_id": "agent-runner-01",
+  "backends": ["codex"],
+  "limit": 1
+}
+```
+
+レスポンス（例）:
+
+```json
+{
+  "items": [
+    {
+      "job_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "claim_token": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
+      "backend": "codex",
+      "task_instruction": "メールをチェックして、対応が必要なものがあれば要点だけ報告して",
+      "intent_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "decision_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "created_at": 1769654424
+    }
+  ]
+}
+```
+
+### `POST /api/control/agent-jobs/{job_id}/heartbeat`
+
+実行中 `agent_job` の heartbeat を更新する。
+
+リクエスト（例）:
+
+```json
+{
+  "runner_id": "agent-runner-01",
+  "claim_token": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
+  "progress_text": "メール一覧を確認中"
+}
+```
+
+レスポンス（例）:
+
+```json
+{
+  "ok": true,
+  "job_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "status": "running"
+}
+```
+
+### `POST /api/control/agent-jobs/{job_id}/complete`
+
+`agent_runner` の完了 callback。
+
+リクエスト（例）:
+
+```json
+{
+  "runner_id": "agent-runner-01",
+  "claim_token": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
+  "result_status": "success",
+  "summary_text": "対応が必要なメールを2件検出しました。要点を報告します。",
+  "details_json": {
+    "items": [
+      {"kind": "mail", "subject": "A"},
+      {"kind": "mail", "subject": "B"}
+    ]
+  }
+}
+```
+
+レスポンス（例）:
+
+```json
+{
+  "ok": true,
+  "job_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "status": "completed"
+}
+```
+
+### `POST /api/control/agent-jobs/{job_id}/fail`
+
+`agent_runner` の失敗 callback。
+
+リクエスト（例）:
+
+```json
+{
+  "runner_id": "agent-runner-01",
+  "claim_token": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
+  "error_code": "agent_execution_failed",
+  "error_message": "メールAPI応答の解析に失敗しました"
+}
+```
+
+レスポンス（例）:
+
+```json
+{
+  "ok": true,
+  "job_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "status": "failed"
+}
+```
+
+### `GET /api/control/agent-jobs`
+
+`agent_job` 一覧を返す（監視用）。
+
+クエリ:
+
+- `limit`（任意, 1..500, 既定50）
+- `status`（任意）
+- `backend`（任意）
+
+### `GET /api/control/agent-jobs/{job_id}`
+
+`agent_job` 1件を返す（監視用）。
+
 ### `POST /api/control`
 
 ```json
@@ -752,13 +986,15 @@ Workerのジョブキュー統計を返す。
 
 ## `/api/mood/debug`（管理/デバッグ）
 
-現在の「背景の気分（LongMoodState）」を、デバッグ観測向けに返す。
+現在の感情状態と、自発行動まわりの内部状態をまとめて返す。
 
 目的:
 
 - 運用前のため互換は付けない
-- 感情（VAD + 本文 + payload）と「shock減衰込みの現在値」を、1回のAPIで確認できるようにする
-- 直近の瞬間感情（event_affects）を併せて返し、moodの揺れの原因追跡をしやすくする
+- `long_mood_state`（長期感情）と `event_affects`（瞬間感情）を1回で確認できるようにする
+- `current_thought_state` と `agenda_threads` を併せて返し、「今なにを追っているか」を追跡しやすくする
+- 完了時の共有見込み（`delivery_decision`）を返し、「裏で動く/話しかける」の差を見えるようにする
+- バックグラウンド状態（自発行動 / worker / agent_jobs / runtime_blackboard）も併せて返し、感情と並行して観測できるようにする
 
 ### `GET /api/mood/debug`
 
@@ -768,55 +1004,219 @@ Workerのジョブキュー統計を返す。
 
 動作:
 
-- `embedding_preset_id` は **サーバのアクティブ設定**を使用する（クライアントからは受け取らない）
-- `long_mood_state` が存在しない場合は `mood: null` を返す（recent_affects は返す）
-- `shock_vad` は **読み出し時点（now）で時間減衰**させた値を返す
-  - `dt_seconds = now_ts - last_confirmed_at` を用いる
-- `recent_affects` は `event_affects` を直近から固定件数返す（全source、ただし `events.searchable=1` のみ）
+- `embedding_preset_id` は **サーバのアクティブ設定**を使う（クライアント入力は受けない）
+- `long_mood_state` が存在しない場合は `mood: null` を返す
+- `current_thought_state` が存在しない場合は `current_thought: null` を返す
+- `agenda_threads` は常に返す（未作成時は空配列）
+- `delivery_decision` は、`agenda_threads` から見た「今の完了時発話衝動」の要約を返す
+  - `current_thought.active_thread_id` の thread に発話衝動がある場合はそれを優先する
+  - 無い場合は、発話衝動（`talk_impulse_level != "none"`）を持つ先頭 thread を返す
+- `shock_vad` は **読み出し時点（now）で時間減衰**した値を返す
+  - `dt_seconds = now_ts - last_confirmed_at` を使う
+- `recent_affects` は `event_affects` を直近から固定件数返す（全 source、ただし `events.searchable=1` のみ）
+- `current_thought.attention_targets` は `current_thought_state.payload.attention_targets` の上位固定件数を返す
+- `background` は感情デバッグ窓向けの要約スナップショットであり、`/api/control/*` の完全代替ではない
 
-レスポンス（成功）:
+レスポンス構造（要約）:
+
+- `mood`
+  - `long_mood_state` の現在値
+  - `baseline_vad` / 減衰後 `shock_vad` / 合成 `vad` を返す
+- `current_thought`
+  - `current_thought_state` の人間向け要約
+  - `interaction_mode` / `active_thread_id` / `focus_summary`
+  - `next_candidate_action` / `talk_impulse`
+  - `updated_from` / `updated_from_event_preview`
+- `agenda_threads`
+  - 自発行動の実体である agenda 一覧
+  - `status` / `next_action_type` / `followup_due_at`
+  - `last_result_status`
+  - `talk_impulse_level` / `delivery_mode` / `talk_impulse_reason`
+- `delivery_decision`
+  - 現時点の完了時発話見込み
+  - `thread_id` / `topic` / `talk_impulse_level` / `delivery_mode` / `reason`
+- `recent_affects`
+  - 直近の瞬間感情
+- `background`
+  - `autonomy`: 稼働状態
+  - `decision_flow`: 判定フロー要約
+  - `worker`: worker ジョブ状態
+  - `agent_jobs`: 委譲ジョブ状態
+  - `runtime_blackboard`: 短期RAM状態
+  - `recent_intents`: 最近の intent と完了時共有見込み
+  - `recent_agent_jobs`: 最近の委譲ジョブ
+- `limits`
+  - 固定件数上限
+
+`background.decision_flow.latest_decision` の主な項目:
+
+- `decision_outcome` / `trigger_type` / `action_type`
+- `progress_delivery_mode` / `progress_message_kind`
+- `result_status`
+- `completion_talk_impulse_level`
+- `completion_delivery_mode`
+- `completion_delivery_reason`
+
+`background.recent_intents` の主な項目:
+
+- `success_talk_impulse_level` / `success_delivery_mode`
+- `success_delivery_note`
+  - `web_research` は結果 payload の量で `silent/chat` が分かれるため、`result_payload_dependent` を返す
+- `failure_talk_impulse_level` / `failure_delivery_mode`
+- `actual_completion_talk_impulse_level`
+- `actual_completion_delivery_mode`
+- `actual_completion_delivery_reason`
+
+レスポンス（成功・例）:
 
 ```json
 {
   "mood": {
     "state_id": 123,
-    "body_text": "string",
-    "confidence": 0.0,
+    "body_text": "最近は少し落ち着いている",
+    "confidence": 0.84,
     "payload": {},
-    "baseline_vad": {"v": 0.0, "a": 0.0, "d": 0.0},
+    "baseline_vad": {"v": 0.1, "a": 0.0, "d": 0.1},
     "shock_vad": {"v": 0.0, "a": 0.0, "d": 0.0},
-    "vad": {"v": 0.0, "a": 0.0, "d": 0.0},
-    "now": "2026-01-10T14:06:59+09:00",
-    "dt_seconds": 1019,
-    "last_confirmed_at": "2026-01-10T13:50:00+09:00"
+    "vad": {"v": 0.1, "a": 0.0, "d": 0.1},
+    "now": "2026-02-28T12:00:00+09:00",
+    "dt_seconds": 120,
+    "last_confirmed_at": "2026-02-28T11:58:00+09:00"
   },
-  "recent_affects": [
+  "current_thought": {
+    "state_id": 321,
+    "body_text": "現在の思考（探索）: 調べもの: 旅行先の候補 / 次候補: Web調査",
+    "interaction_mode": "explore",
+    "active_thread_id": "thread-1",
+    "focus_summary": "調べもの: 旅行先の候補",
+    "next_candidate_action": {
+      "action_type": "web_research",
+      "payload": {"query": "春の旅行先 候補"}
+    },
+    "talk_impulse": {
+      "level": "speak_now",
+      "reason": "research_result_rich"
+    },
+    "attention_targets": [],
+    "attention_targets_total": 0,
+    "last_confirmed_at": "2026-02-28T12:00:00+09:00",
+    "updated_at": "2026-02-28T12:00:00+09:00",
+    "dt_seconds": 0,
+    "updated_from": {
+      "event_id": 789,
+      "event_source": "action_result",
+      "action_type": "web_research",
+      "capability": "web_access",
+      "result_status": "success"
+    },
+    "updated_from_event_ids": [745, 789],
+    "updated_from_event_preview": {
+      "event_id": 789,
+      "source": "action_result",
+      "created_at": "2026-02-28T12:00:00+09:00",
+      "user_text_preview": null,
+      "assistant_text_preview": "調査結果を保存した。"
+    }
+  },
+  "agenda_threads": [
     {
-      "affect_id": 1,
-      "event_id": 456,
-      "event_source": "chat",
-      "event_created_at": "2026-01-10T13:50:00+09:00",
-      "affect_created_at": "2026-01-10T13:50:00+09:00",
-      "moment_affect_text": "string",
-      "moment_affect_labels": ["string"],
-      "vad": {"v": 0.0, "a": 0.0, "d": 0.0},
-      "confidence": 0.0
+      "thread_id": "thread-1",
+      "thread_key": "research:travel",
+      "kind": "research",
+      "topic": "旅行先の候補",
+      "goal": null,
+      "status": "active",
+      "priority": 80,
+      "next_action_type": "web_research",
+      "next_action_payload": {"query": "春の旅行先 候補"},
+      "followup_due_at": "2026-02-28T12:05:00+09:00",
+      "last_progress_at": "2026-02-28T12:00:00+09:00",
+      "last_result_status": "success",
+      "talk_impulse_level": "speak_now",
+      "delivery_mode": "chat",
+      "talk_impulse_reason": "research_result_rich",
+      "updated_at": "2026-02-28T12:00:00+09:00",
+      "source_event_id": 789,
+      "source_result_id": "result-1",
+      "metadata": {}
     }
   ],
+  "delivery_decision": {
+    "thread_id": "thread-1",
+    "topic": "旅行先の候補",
+    "talk_impulse_level": "speak_now",
+    "delivery_mode": "chat",
+    "reason": "research_result_rich"
+  },
+  "recent_affects": [],
+  "background": {
+    "autonomy": {
+      "enabled": true,
+      "heartbeat_seconds": 120,
+      "max_parallel_intents": 2,
+      "now_domain": "2026-02-28T12:00:00+09:00",
+      "triggers": {"queued": 0, "claimed": 0, "due": 0},
+      "intents": {"queued": 0, "running": 1, "blocked": 0}
+    },
+    "decision_flow": {
+      "latest_decision": {
+        "decision_outcome": "do_action",
+        "trigger_type": "heartbeat",
+        "action_type": "web_research",
+        "progress_delivery_mode": "activity_only",
+        "progress_message_kind": "progress",
+        "result_status": "success",
+        "completion_talk_impulse_level": "speak_now",
+        "completion_delivery_mode": "chat",
+        "completion_delivery_reason": "research_result_rich"
+      }
+    },
+    "recent_intents": [
+      {
+        "intent_id": "intent-1",
+        "action_type": "web_research",
+        "status": "done",
+        "success_talk_impulse_level": null,
+        "success_delivery_mode": null,
+        "success_delivery_note": "result_payload_dependent",
+        "failure_talk_impulse_level": "speak_now",
+        "failure_delivery_mode": "chat",
+        "actual_completion_talk_impulse_level": "speak_now",
+        "actual_completion_delivery_mode": "chat",
+        "actual_completion_delivery_reason": "research_result_rich"
+      }
+    ]
+  },
   "limits": {
-    "recent_affects_limit": 8
+    "recent_affects_limit": 8,
+    "recent_intents_limit": 8,
+    "recent_agent_jobs_limit": 8,
+    "runtime_attention_targets_limit": 8,
+    "current_thought_targets_limit": 8,
+    "agenda_threads_limit": 8
   }
 }
 ```
 
-レスポンス（long_mood_state 未作成）:
+レスポンス（`long_mood_state` 未作成）:
 
 ```json
 {
   "mood": null,
+  "current_thought": null,
+  "agenda_threads": [],
+  "delivery_decision": null,
   "recent_affects": [],
+  "background": {
+    "...": "..."
+  },
   "limits": {
-    "recent_affects_limit": 8
+    "recent_affects_limit": 8,
+    "recent_intents_limit": 8,
+    "recent_agent_jobs_limit": 8,
+    "runtime_attention_targets_limit": 8,
+    "current_thought_targets_limit": 8,
+    "agenda_threads_limit": 8
   }
 }
 ```

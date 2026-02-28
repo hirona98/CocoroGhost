@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from cocoro_ghost.api.http_auth import COOKIE_NAME
 from cocoro_ghost.config import get_config_store
-from cocoro_ghost.web_sessions import get_web_session_store
+from cocoro_ghost.infra.web_sessions import get_web_session_store
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])

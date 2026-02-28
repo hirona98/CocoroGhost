@@ -1,20 +1,42 @@
 #
 # CocoroGhost: Git attributes
-#
-# NOTE:
+
+
 # - Windows で `cmd.exe` から実行する .bat は CRLF が前提。
 # - LF だけになると、コメント行が実行扱いになったり、コマンドが分割されたりして壊れることがある。
-#
-
 *.bat text eol=crlf
 *.cmd text eol=crlf
-
-# NOTE:
-# - Python/Markdown は LF に固定する（環境差で巨大な差分が出ないようにする）。
-# - ここで eol を明示しておくと、Windows/WSL/CI の混在でも差分が安定する。
 *.py text eol=lf
 *.md text eol=lf
 *.toml text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
 *.json text eol=lf
+* text=auto eol=lf
+
+*.png filter=lfs diff=lfs merge=lfs -text
+*.psd filter=lfs diff=lfs merge=lfs -text
+*.ai filter=lfs diff=lfs merge=lfs -text
+*.tif filter=lfs diff=lfs merge=lfs -text
+*.tga filter=lfs diff=lfs merge=lfs -text
+*.cubemap filter=lfs diff=lfs merge=lfs -text
+*.unitypackage filter=lfs diff=lfs merge=lfs -text
+*.fbx filter=lfs diff=lfs merge=lfs -text
+*.obj filter=lfs diff=lfs merge=lfs -text
+*.max filter=lfs diff=lfs merge=lfs -text
+*.blend filter=lfs diff=lfs merge=lfs -text
+*.dae filter=lfs diff=lfs merge=lfs -text
+*.mb filter=lfs diff=lfs merge=lfs -text
+*.ma filter=lfs diff=lfs merge=lfs -text
+*.3ds filter=lfs diff=lfs merge=lfs -text
+*.3dm filter=lfs diff=lfs merge=lfs -text
+*.wav filter=lfs diff=lfs merge=lfs -text
+*.mp3 filter=lfs diff=lfs merge=lfs -text
+*.ogg filter=lfs diff=lfs merge=lfs -text
+*.aif filter=lfs diff=lfs merge=lfs -text
+*.mp4 filter=lfs diff=lfs merge=lfs -text
+*.mov filter=lfs diff=lfs merge=lfs -text
+*.avi filter=lfs diff=lfs merge=lfs -text
+*.jpg filter=lfs diff=lfs merge=lfs -text
+*.jpeg filter=lfs diff=lfs merge=lfs -text
+*.onnx filter=lfs diff=lfs merge=lfs -text

@@ -15,10 +15,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import json
 import tomli
 
-from cocoro_ghost import paths
+from cocoro_ghost.infra import paths
 
 if TYPE_CHECKING:
-    from cocoro_ghost.models import (
+    from cocoro_ghost.storage.models import (
         AddonPreset,
         EmbeddingPreset,
         GlobalSettings,
@@ -105,6 +105,15 @@ class RuntimeConfig:
     desktop_watch_enabled: bool
     desktop_watch_interval_seconds: int
     desktop_watch_target_client_id: Optional[str]
+
+    # 自発行動（Autonomy）
+    autonomy_enabled: bool
+    autonomy_heartbeat_seconds: int
+    autonomy_max_parallel_intents: int
+
+    # 視覚（Vision）: カメラ監視
+    camera_watch_enabled: bool
+    camera_watch_interval_seconds: int
 
     # LlmPreset由来（LLM設定）
     llm_preset_name: str          # LLMプリセット名
@@ -508,6 +517,11 @@ def build_runtime_config(
             if global_settings.desktop_watch_target_client_id is not None
             else None
         ),
+        autonomy_enabled=bool(getattr(global_settings, "autonomy_enabled", False)),
+        autonomy_heartbeat_seconds=max(1, int(getattr(global_settings, "autonomy_heartbeat_seconds", 30))),
+        autonomy_max_parallel_intents=max(1, int(getattr(global_settings, "autonomy_max_parallel_intents", 2))),
+        camera_watch_enabled=bool(getattr(global_settings, "camera_watch_enabled", False)),
+        camera_watch_interval_seconds=max(1, int(getattr(global_settings, "camera_watch_interval_seconds", 15))),
         # LlmPreset由来
         llm_preset_name=llm_preset.name,
         llm_api_key=llm_preset.llm_api_key,

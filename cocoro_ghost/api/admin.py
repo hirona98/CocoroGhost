@@ -13,9 +13,9 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from cocoro_ghost import models
-from cocoro_ghost.db import memory_session_scope, settings_session_scope
-from cocoro_ghost.memory_models import Event, Revision, State
+from cocoro_ghost.storage import models
+from cocoro_ghost.storage.db import memory_session_scope, settings_session_scope
+from cocoro_ghost.storage.memory_models import Event, Revision, State
 
 
 router = APIRouter()

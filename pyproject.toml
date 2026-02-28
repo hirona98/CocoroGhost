@@ -12,7 +12,7 @@ dependencies = [
   "cryptography==46.0.3",
   "sqlite-vec==0.1.6",
   # --- LLM ---
-  "litellm==1.81.6",
+  "litellm==1.81.16",
   # --- Core utils ---
   "pydantic==2.12.5",
   "python-multipart==0.0.21",
@@ -25,5 +25,5 @@ dependencies = [
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["cocoro_ghost"]
+[tool.setuptools.packages.find]
+include = ["cocoro_ghost*"]

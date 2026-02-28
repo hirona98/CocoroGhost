@@ -13,6 +13,7 @@ https://github.com/hirona98/CocoroConsole
 <!-- Block: Docs -->
 ## ドキュメント
 
+- 変更履歴: `CHANGELOG.md`
 - 設計入口: `docs/00_はじめに.md`
 - API 仕様: `docs/07_API.md`
 - 実行フロー: `docs/10_実行フロー.md`

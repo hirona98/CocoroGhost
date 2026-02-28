@@ -12,7 +12,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from cocoro_ghost import log_stream
+from cocoro_ghost.runtime import log_stream
 from cocoro_ghost.api.ws_auth import authenticate_ws_bearer
 
 

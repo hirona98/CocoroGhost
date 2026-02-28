@@ -9,7 +9,7 @@ memoryパッケージのエントリ（MemoryManager）。
 from __future__ import annotations
 
 from cocoro_ghost.config import ConfigStore
-from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost.llm.client import LlmClient
 from cocoro_ghost.memory._chat_mixin import _ChatMemoryMixin
 from cocoro_ghost.memory._chat_search_mixin import _ChatSearchMixin
 from cocoro_ghost.memory._external_mixin import _ExternalMemoryMixin

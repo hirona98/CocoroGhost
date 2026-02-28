@@ -357,6 +357,181 @@ class WorkerRuntimeStatsResponse(BaseModel):
     stale_seconds: int
 
 
+class ControlAutonomyStatusResponse(BaseModel):
+    """
+    /control/autonomy/status レスポンス。
+    """
+
+    autonomy_enabled: bool
+    autonomy_heartbeat_seconds: int
+    autonomy_max_parallel_intents: int
+    now_domain_utc_ts: int
+    triggers_queued: int
+    triggers_claimed: int
+    triggers_due: int
+    intents_queued: int
+    intents_running: int
+    intents_blocked: int
+
+
+class ControlAutonomyTriggerRequest(BaseModel):
+    """
+    /control/autonomy/trigger リクエスト。
+    """
+
+    trigger_type: str
+    trigger_key: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    scheduled_at: Optional[int] = None
+
+
+class ControlAutonomyToggleResponse(BaseModel):
+    """
+    /control/autonomy/start|stop の共通レスポンス。
+    """
+
+    autonomy_enabled: bool
+
+
+class ControlAutonomyIntentItem(BaseModel):
+    """
+    intent 一覧の1件。
+    """
+
+    intent_id: str
+    decision_id: str
+    action_type: str
+    status: str
+    priority: int
+    scheduled_at: Optional[int] = None
+    blocked_reason: Optional[str] = None
+    dropped_reason: Optional[str] = None
+    updated_at: int
+
+
+class ControlAutonomyIntentsResponse(BaseModel):
+    """
+    /control/autonomy/intents レスポンス。
+    """
+
+    items: List[ControlAutonomyIntentItem] = Field(default_factory=list)
+
+
+class ControlAgentJobClaimRequest(BaseModel):
+    """
+    /control/agent-jobs/claim リクエスト。
+    """
+
+    runner_id: str
+    backends: List[str] = Field(default_factory=list)
+    limit: int = Field(default=1, ge=1, le=20)
+
+
+class ControlAgentJobClaimItem(BaseModel):
+    """
+    claim 済み agent_job の runner 向け返却1件。
+    """
+
+    job_id: str
+    claim_token: str
+    backend: str
+    task_instruction: str
+    intent_id: str
+    decision_id: str
+    created_at: int
+
+
+class ControlAgentJobClaimResponse(BaseModel):
+    """
+    /control/agent-jobs/claim レスポンス。
+    """
+
+    items: List[ControlAgentJobClaimItem] = Field(default_factory=list)
+
+
+class ControlAgentJobHeartbeatRequest(BaseModel):
+    """
+    /control/agent-jobs/{job_id}/heartbeat リクエスト。
+    """
+
+    runner_id: str
+    claim_token: str
+    progress_text: Optional[str] = None
+
+
+class ControlAgentJobCompleteRequest(BaseModel):
+    """
+    /control/agent-jobs/{job_id}/complete リクエスト。
+    """
+
+    runner_id: str
+    claim_token: str
+    result_status: str
+    summary_text: str
+    details_json: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ControlAgentJobFailRequest(BaseModel):
+    """
+    /control/agent-jobs/{job_id}/fail リクエスト。
+    """
+
+    runner_id: str
+    claim_token: str
+    error_code: Optional[str] = None
+    error_message: str
+
+
+class ControlAgentJobItem(BaseModel):
+    """
+    agent_job 一覧/詳細の共通項目。
+    """
+
+    job_id: str
+    intent_id: str
+    decision_id: str
+    backend: str
+    task_instruction: str
+    status: str
+    runner_id: Optional[str] = None
+    attempts: int
+    heartbeat_at: Optional[int] = None
+    result_status: Optional[str] = None
+    result_summary_text: Optional[str] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: int
+    started_at: Optional[int] = None
+    finished_at: Optional[int] = None
+    updated_at: int
+
+
+class ControlAgentJobsResponse(BaseModel):
+    """
+    /control/agent-jobs レスポンス。
+    """
+
+    items: List[ControlAgentJobItem] = Field(default_factory=list)
+
+
+class ControlAgentJobResponse(BaseModel):
+    """
+    /control/agent-jobs/{job_id} レスポンス。
+    """
+
+    item: ControlAgentJobItem
+
+
+class ControlAgentJobMutationResponse(BaseModel):
+    """
+    heartbeat/complete/fail の共通レスポンス。
+    """
+
+    ok: bool
+    job_id: str
+    status: str
+
+
 # --- 設定関連 ---
 
 
@@ -372,6 +547,12 @@ class FullSettingsResponse(BaseModel):
     desktop_watch_enabled: bool
     desktop_watch_interval_seconds: int
     desktop_watch_target_client_id: Optional[str] = None
+    autonomy_enabled: bool
+    autonomy_heartbeat_seconds: int
+    autonomy_max_parallel_intents: int
+    camera_watch_enabled: bool
+    camera_watch_interval_seconds: int
+    agent_backend_cli_agent_command: str
 
     # アクティブなプリセットID
     active_llm_preset_id: Optional[str] = None
@@ -446,6 +627,12 @@ class FullSettingsUpdateRequest(BaseModel):
     desktop_watch_enabled: bool
     desktop_watch_interval_seconds: int
     desktop_watch_target_client_id: Optional[str] = None
+    autonomy_enabled: bool
+    autonomy_heartbeat_seconds: int
+    autonomy_max_parallel_intents: int
+    camera_watch_enabled: bool
+    camera_watch_interval_seconds: int
+    agent_backend_cli_agent_command: str
     active_llm_preset_id: str
     active_embedding_preset_id: str
     active_persona_preset_id: str

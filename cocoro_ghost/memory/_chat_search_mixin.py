@@ -20,12 +20,13 @@ from typing import Any
 
 from sqlalchemy import func, text
 
-from cocoro_ghost import common_utils, vector_index
-from cocoro_ghost.db import memory_session_scope, search_similar_item_ids
-from cocoro_ghost.llm_client import LlmRequestPurpose
+from cocoro_ghost.core import common_utils
+from cocoro_ghost.storage import vector_index
+from cocoro_ghost.storage.db import memory_session_scope, search_similar_item_ids
+from cocoro_ghost.llm.client import LlmRequestPurpose
 from cocoro_ghost.memory._utils import now_utc_ts
-from cocoro_ghost.memory_models import Event, EventAffect, EventEntity, EventLink, EventThread, State, StateEntity, StateLink
-from cocoro_ghost.time_utils import format_iso8601_local
+from cocoro_ghost.storage.memory_models import Event, EventAffect, EventEntity, EventLink, EventThread, State, StateEntity, StateLink
+from cocoro_ghost.core.time_utils import format_iso8601_local
 
 
 @dataclass(frozen=True)
@@ -400,6 +401,7 @@ class _ChatSearchMixin:
                 rows = (
                     db.query(Event.event_id)
                     .filter(Event.searchable == 1)
+                    .filter(Event.source != "deliberation_decision")
                     .filter(Event.event_id != int(event_id))
                     .order_by(Event.created_at.desc(), Event.event_id.desc())
                     .limit(50)
@@ -419,6 +421,7 @@ class _ChatSearchMixin:
                         WHERE f MATCH :q
                           AND f.rowid != :event_id
                           AND e.searchable = 1
+                          AND e.source != 'deliberation_decision'
                         ORDER BY f.rowid DESC
                         LIMIT 80
                         """
@@ -600,6 +603,7 @@ class _ChatSearchMixin:
 
             with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
                 q = db.query(Event.event_id).filter(Event.searchable == 1)
+                q = q.filter(Event.source != "deliberation_decision")
                 if y0 or y1:
                     ys = int(y0) if isinstance(y0, (int, float)) and int(y0) > 0 else None
                     ye = int(y1) if isinstance(y1, (int, float)) and int(y1) > 0 else None
@@ -1168,6 +1172,7 @@ class _ChatSearchMixin:
                                 db.query(EventEntity.event_id)
                                 .join(Event, Event.event_id == EventEntity.event_id)
                                 .filter(Event.searchable == 1)
+                                .filter(Event.source != "deliberation_decision")
                                 .filter(EventEntity.entity_type_norm == str(t_norm))
                                 .filter(EventEntity.entity_name_norm == str(name_norm))
                                 .order_by(Event.event_id.desc())
@@ -1228,6 +1233,7 @@ class _ChatSearchMixin:
             events = (
                 db.query(Event)
                 .filter(Event.searchable == 1)
+                .filter(Event.source != "deliberation_decision")
                 .filter(Event.event_id.in_(event_ids))
                 .filter(~Event.event_id.in_([int(x) for x in excluded_event_id_set]))
                 .all()
@@ -1243,6 +1249,7 @@ class _ChatSearchMixin:
                 db.query(EventAffect)
                 .join(Event, Event.event_id == EventAffect.event_id)
                 .filter(Event.searchable == 1)
+                .filter(Event.source != "deliberation_decision")
                 .filter(EventAffect.id.in_(affect_ids))
                 # --- 直近ターンの派生（event_affect）は重複しやすいので除外する ---
                 .filter(~EventAffect.event_id.in_([int(x) for x in excluded_event_id_set]))
@@ -1283,7 +1290,11 @@ class _ChatSearchMixin:
 
             affect_event_ids = sorted({int(a.event_id) for a in affects if a and a.event_id is not None})
             affect_events = (
-                db.query(Event).filter(Event.searchable == 1).filter(Event.event_id.in_(affect_event_ids)).all()
+                db.query(Event)
+                .filter(Event.searchable == 1)
+                .filter(Event.source != "deliberation_decision")
+                .filter(Event.event_id.in_(affect_event_ids))
+                .all()
                 if affect_event_ids
                 else []
             )

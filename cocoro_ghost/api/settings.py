@@ -13,10 +13,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from cocoro_ghost import models, schemas
-from cocoro_ghost.db import load_global_settings
-from cocoro_ghost.deps import reset_memory_manager
-from cocoro_ghost.deps import get_settings_db_dep
+from cocoro_ghost import schemas
+from cocoro_ghost.storage import models
+from cocoro_ghost.storage.db import load_global_settings
+from cocoro_ghost.app_bootstrap.dependencies import get_settings_db_dep, reset_memory_manager
 
 router = APIRouter()
 
@@ -119,6 +119,14 @@ def get_settings(
             if global_settings.desktop_watch_target_client_id is not None
             else None
         ),
+        autonomy_enabled=bool(getattr(global_settings, "autonomy_enabled", False)),
+        autonomy_heartbeat_seconds=max(1, int(getattr(global_settings, "autonomy_heartbeat_seconds", 30))),
+        autonomy_max_parallel_intents=max(1, int(getattr(global_settings, "autonomy_max_parallel_intents", 2))),
+        camera_watch_enabled=bool(getattr(global_settings, "camera_watch_enabled", False)),
+        camera_watch_interval_seconds=max(1, int(getattr(global_settings, "camera_watch_interval_seconds", 15))),
+        agent_backend_cli_agent_command=str(
+            getattr(global_settings, "agent_backend_cli_agent_command", "gemini.exe -p") or ""
+        ).strip(),
         active_llm_preset_id=global_settings.active_llm_preset_id,
         active_embedding_preset_id=global_settings.active_embedding_preset_id,
         active_persona_preset_id=global_settings.active_persona_preset_id,
@@ -138,7 +146,7 @@ def commit_settings(
 ):
     """全設定をまとめて確定（全置換 + アーカイブ + active IDs）。"""
     from cocoro_ghost.config import ConfigStore, build_runtime_config, get_config_store, set_global_config_store
-    from cocoro_ghost.db import init_memory_db
+    from cocoro_ghost.storage.db import init_memory_db
 
     current_store = get_config_store()
     toml_config = current_store.toml_config
@@ -161,12 +169,9 @@ def commit_settings(
         raise HTTPException(status_code=400, detail="active_persona_preset_id must be included in persona_preset list")
     if str(request.active_addon_preset_id) not in set(addon_ids):
         raise HTTPException(status_code=400, detail="active_addon_preset_id must be included in addon_preset list")
-    # 記憶機能は仕様上OFF不可。
-    if not bool(request.memory_enabled):
-        raise HTTPException(status_code=400, detail="memory_enabled must be true")
 
     # 共通設定更新
-    global_settings.memory_enabled = True
+    global_settings.memory_enabled = request.memory_enabled
     global_settings.desktop_watch_enabled = bool(request.desktop_watch_enabled)
     global_settings.desktop_watch_interval_seconds = int(request.desktop_watch_interval_seconds)
     # --- desktop_watch_target_client_id は「明示指定されたときだけ更新」する ---
@@ -177,6 +182,13 @@ def commit_settings(
         global_settings.desktop_watch_target_client_id = (
             str(request.desktop_watch_target_client_id).strip() if request.desktop_watch_target_client_id else None
         )
+    global_settings.autonomy_enabled = bool(request.autonomy_enabled)
+    global_settings.autonomy_heartbeat_seconds = max(1, int(request.autonomy_heartbeat_seconds))
+    global_settings.autonomy_max_parallel_intents = max(1, int(request.autonomy_max_parallel_intents))
+    global_settings.camera_watch_enabled = bool(request.camera_watch_enabled)
+    global_settings.camera_watch_interval_seconds = max(1, int(request.camera_watch_interval_seconds))
+    # --- agent_runner backend=cli_agent 実行CLIコマンド（task_instruction は末尾引数で渡される） ---
+    global_settings.agent_backend_cli_agent_command = str(request.agent_backend_cli_agent_command or "").strip()
 
     # LLMプリセットの更新（複数件 / 全置換 + アーカイブ）
     llm_existing = db.query(models.LlmPreset).order_by(models.LlmPreset.id.asc()).all()
@@ -366,7 +378,7 @@ def commit_settings(
     # 内蔵Workerが有効なら、設定変更に追従させる（LLMプリセット/embedding_preset_id切替など）。
     # 重い処理（join等）になる可能性があるため、レスポンス後に実行する。
     try:
-        from cocoro_ghost.internal_worker import request_restart_async
+        from cocoro_ghost.jobs.internal_worker import request_restart_async
 
         background_tasks.add_task(
             request_restart_async,

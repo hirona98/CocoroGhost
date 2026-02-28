@@ -19,7 +19,7 @@ def main() -> None:
     toml_config = load_config()
 
     # --- TLS（自己署名）を用意する ---
-    from cocoro_ghost.tls import ensure_self_signed_tls_files
+    from cocoro_ghost.infra.tls import ensure_self_signed_tls_files
 
     cert_path, key_path = ensure_self_signed_tls_files()
 
