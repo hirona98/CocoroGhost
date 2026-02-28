@@ -18,10 +18,8 @@ _DECISION_OUTCOMES = {"do_action", "skip", "defer"}
 _RESULT_STATUSES = {"success", "partial", "failed", "no_effect"}
 _PERSONA_PREFERRED_DIRECTIONS = {"observe", "support", "wait", "avoid", "explore"}
 _THRESHOLD_BIASES = {"higher", "neutral", "lower"}
-_CONSOLE_DELIVERY_TERMINAL_MODES = {"silent", "activity_only", "chat"}
+_COMPLETION_SPEECH_POLICIES = {"silent", "on_error", "on_material", "always"}
 _CONSOLE_DELIVERY_PROGRESS_MODES = {"silent", "activity_only"}
-_CONSOLE_MESSAGE_KINDS = {"report", "progress", "question", "error"}
-_TALK_IMPULSE_LEVELS = {"none", "low", "high", "speak_now"}
 
 
 def _normalize_string_list(value: Any, *, field_name: str, min_items: int = 0) -> list[str]:
@@ -152,25 +150,18 @@ def _parse_console_delivery(value: Any) -> dict[str, Any]:
         raise ValueError("console_delivery must be an object")
 
     out = dict(value)
+    # --- 完了時は、実際の発話契約を1本だけ持つ ---
     out["on_complete"] = _normalize_enum_text(
         value.get("on_complete"),
         field_name="console_delivery.on_complete",
-        allowed=_CONSOLE_DELIVERY_TERMINAL_MODES,
+        allowed=_COMPLETION_SPEECH_POLICIES,
     )
-    out["on_fail"] = _normalize_enum_text(
-        value.get("on_fail"),
-        field_name="console_delivery.on_fail",
-        allowed=_CONSOLE_DELIVERY_TERMINAL_MODES,
-    )
+
+    # --- 進行中表示は activity だけを制御する ---
     out["on_progress"] = _normalize_enum_text(
         value.get("on_progress"),
         field_name="console_delivery.on_progress",
         allowed=_CONSOLE_DELIVERY_PROGRESS_MODES,
-    )
-    out["message_kind"] = _normalize_enum_text(
-        value.get("message_kind"),
-        field_name="console_delivery.message_kind",
-        allowed=_CONSOLE_MESSAGE_KINDS,
     )
     return out
 
@@ -184,115 +175,43 @@ def parse_console_delivery(value: Any) -> dict[str, Any]:
     return _parse_console_delivery(value)
 
 
-def derive_talk_impulse_for_action_result(
+def resolve_completion_delivery_mode(
     *,
-    action_type: Any,
+    policy: Any,
     result_status: Any,
-    result_payload: Any | None = None,
 ) -> dict[str, str]:
     """
-    ActionResult から talk impulse を決める。
+    完了時発話契約と ActionResult から、実際の即時発話モードを決める。
 
     方針:
-        - 「どれだけ話したいか」の強さだけを決める。
-        - Deliberation の terminal console_delivery には依存しない。
-        - 基本は構造値（action_type/result_status）で決める。
-        - `web_research` 成功時のみ result_payload の構造量で強さを分ける。
+        - 発話有無は、意思決定時に決めた completion policy を正本にする。
+        - result_status は、その契約をどこまで発火させるかの実行結果として使う。
+        - payload の量や本文の意味で後から発話有無を上書きしない。
     """
-    action_type_norm = str(action_type or "").strip()
+    policy_norm = _normalize_enum_text(
+        policy,
+        field_name="completion_speech_policy",
+        allowed=_COMPLETION_SPEECH_POLICIES,
+    )
     result_status_norm = _normalize_enum_text(
         result_status,
         field_name="result_status",
         allowed=_RESULT_STATUSES,
     )
-    result_payload_obj: dict[str, Any] | None = None
-    if result_payload is not None:
-        if not isinstance(result_payload, dict):
-            raise ValueError("result_payload must be an object")
-        result_payload_obj = dict(result_payload)
-
-    # --- 失敗は必ず自分から話す ---
-    if result_status_norm == "failed":
-        return {
-            "level": "speak_now",
-            "reason": "action_result_failed",
-        }
-
-    # --- 部分成功は軽い共有衝動に留める ---
-    if result_status_norm == "partial":
-        return {
-            "level": "low",
-            "reason": "action_result_partial",
-        }
-
-    # --- 裏で調査して価値が高いときだけ即時発話に上げる ---
-    if result_status_norm == "success" and action_type_norm == "web_research":
-        if result_payload_obj is None:
-            return {
-                "level": "high",
-                "reason": "research_result_ready",
-            }
-
-        findings_raw = result_payload_obj.get("findings")
-        if findings_raw is not None and not isinstance(findings_raw, list):
-            raise ValueError("result_payload.findings must be a list")
-        sources_raw = result_payload_obj.get("sources")
-        if sources_raw is not None and not isinstance(sources_raw, list):
-            raise ValueError("result_payload.sources must be a list")
-        notes_raw = result_payload_obj.get("notes")
-        if notes_raw is not None and not isinstance(notes_raw, str):
-            raise ValueError("result_payload.notes must be a string")
-
-        findings_count = int(len(findings_raw or []))
-        sources_count = int(len(sources_raw or []))
-        notes_present = bool(str(notes_raw or "").strip())
-        report_units = int(findings_count * 2) + int(min(sources_count, 2)) + (1 if notes_present else 0)
-        if report_units >= 3:
-            return {
-                "level": "speak_now",
-                "reason": "research_result_rich",
-            }
-        return {
-            "level": "high",
-            "reason": "research_result_brief",
-        }
-
-    # --- 委譲完了は強めに気になるが、即時には話さない ---
-    if result_status_norm == "success" and action_type_norm == "agent_delegate":
-        return {
-            "level": "high",
-            "reason": "delegated_result_ready",
-        }
-
-    # --- それ以外は黙って保持する ---
-    return {
-        "level": "none",
-        "reason": "",
-    }
-
-
-def resolve_delivery_mode_from_talk_impulse_level(value: Any) -> str:
-    """
-    talk impulse から最終 delivery mode を決める。
-
-    方針:
-        - low/high は「話したい強さ」であり、即時発話はしない。
-        - AI人格が今ここで自分から話すのは speak_now のときだけにする。
-    """
-    impulse_level = _normalize_enum_text(
-        value,
-        field_name="talk_impulse_level",
-        allowed=_TALK_IMPULSE_LEVELS,
-    )
-    if impulse_level == "none":
-        return "silent"
-    if impulse_level == "low":
-        return "silent"
-    if impulse_level == "high":
-        return "silent"
-    if impulse_level == "speak_now":
-        return "chat"
-    raise ValueError(f"unsupported talk_impulse_level: {impulse_level}")
+    # --- 契約ごとに、どの結果で即時発話するかを分ける ---
+    if policy_norm == "silent":
+        return {"delivery_mode": "silent", "reason": "policy_silent"}
+    if policy_norm == "on_error":
+        if result_status_norm == "failed":
+            return {"delivery_mode": "chat", "reason": "policy_on_error"}
+        return {"delivery_mode": "silent", "reason": "policy_on_error"}
+    if policy_norm == "on_material":
+        if result_status_norm in {"success", "partial", "failed"}:
+            return {"delivery_mode": "chat", "reason": "policy_on_material"}
+        return {"delivery_mode": "silent", "reason": "policy_on_material"}
+    if policy_norm == "always":
+        return {"delivery_mode": "chat", "reason": "policy_always"}
+    raise ValueError(f"unsupported completion_speech_policy: {policy_norm}")
 
 
 def resolve_message_kind_for_action_result(*, result_status: Any) -> str:

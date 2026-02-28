@@ -677,6 +677,260 @@ def _migrate_memory_db_v14_to_v15(engine, logger: logging.Logger) -> None:
     logger.info("memory DB migrated: user_version 14 -> 15")
 
 
+def _migrate_memory_db_v15_to_v16(engine, logger: logging.Logger) -> None:
+    """記憶DBを v15 から v16 へ移行する（完了時発話契約へ統合）。"""
+
+    with engine.connect() as conn:
+        def _map_progress_mode(raw: object) -> str:
+            text_value = str(raw or "").strip()
+            if text_value in {"silent", "activity_only"}:
+                return text_value
+            raise RuntimeError(f"unsupported progress visibility: {text_value}")
+
+        def _map_completion_policy(*, on_complete_raw: object, on_fail_raw: object) -> str:
+            on_complete_value = str(on_complete_raw or "").strip()
+            on_fail_value = str(on_fail_raw or "").strip()
+
+            # --- すでに新契約なら、そのまま通す ---
+            if on_complete_value in {"silent", "on_error", "on_material", "always"}:
+                return on_complete_value
+
+            # --- 旧契約を、完了時の発話契約へ縮約する ---
+            complete_requests_speech = on_complete_value in {"chat", "notify"}
+            fail_requests_speech = on_fail_value in {"chat", "notify"}
+
+            if complete_requests_speech:
+                return "on_material"
+            if fail_requests_speech:
+                return "on_error"
+            if on_complete_value in {"", "silent", "activity_only"} and on_fail_value in {"", "silent", "activity_only"}:
+                return "silent"
+
+            raise RuntimeError(
+                f"unsupported completion speech legacy values: on_complete={on_complete_value!r}, on_fail={on_fail_value!r}"
+            )
+
+        # --- action_decisions.console_delivery_json を新契約へ正規化する ---
+        decision_rows = conn.execute(
+            text(
+                "SELECT decision_id, console_delivery_json "
+                "FROM action_decisions "
+                "WHERE length(trim(COALESCE(console_delivery_json,''))) > 0"
+            )
+        ).fetchall()
+        for decision_id, console_delivery_json in decision_rows:
+            try:
+                payload_obj = json.loads(str(console_delivery_json))
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    f"memory DB migration failed: action_decisions.console_delivery_json is invalid JSON "
+                    f"(decision_id={decision_id})."
+                ) from exc
+            if not isinstance(payload_obj, dict):
+                raise RuntimeError(
+                    f"memory DB migration failed: action_decisions.console_delivery_json is not an object "
+                    f"(decision_id={decision_id})."
+                )
+
+            normalized_payload = {
+                "on_complete": _map_completion_policy(
+                    on_complete_raw=payload_obj.get("on_complete"),
+                    on_fail_raw=payload_obj.get("on_fail"),
+                ),
+                "on_progress": _map_progress_mode(payload_obj.get("on_progress")),
+            }
+
+            if payload_obj == normalized_payload:
+                continue
+
+            conn.execute(
+                text(
+                    "UPDATE action_decisions "
+                    "SET console_delivery_json = :payload_json "
+                    "WHERE decision_id = :decision_id"
+                ),
+                {
+                    "payload_json": json.dumps(normalized_payload, ensure_ascii=False, separators=(",", ":")),
+                    "decision_id": str(decision_id),
+                },
+            )
+
+        # --- agenda_threads から旧発話衝動列を削除する ---
+        columns = _get_table_columns(conn, "agenda_threads")
+        if "talk_impulse_level" in columns or "talk_impulse_reason" in columns:
+            conn.execute(text("ALTER TABLE agenda_threads RENAME TO agenda_threads_v15_legacy"))
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE agenda_threads (
+                        thread_id TEXT NOT NULL,
+                        thread_key TEXT NOT NULL,
+                        source_event_id INTEGER,
+                        source_result_id TEXT,
+                        kind TEXT NOT NULL,
+                        topic TEXT NOT NULL,
+                        goal TEXT,
+                        status TEXT NOT NULL,
+                        priority INTEGER NOT NULL DEFAULT 50,
+                        next_action_type TEXT,
+                        next_action_payload_json TEXT NOT NULL DEFAULT '{}',
+                        followup_due_at INTEGER,
+                        last_progress_at INTEGER,
+                        last_result_status TEXT,
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL,
+                        CONSTRAINT pk_agenda_threads PRIMARY KEY (thread_id),
+                        CONSTRAINT uq_agenda_threads_thread_key UNIQUE (thread_key),
+                        CONSTRAINT ck_agenda_threads_status CHECK (
+                            status IN ('open','active','blocked','satisfied','stale','closed')
+                        ),
+                        CONSTRAINT ck_agenda_threads_kind_non_empty CHECK (length(trim(kind)) > 0),
+                        CONSTRAINT ck_agenda_threads_topic_non_empty CHECK (length(trim(topic)) > 0),
+                        CONSTRAINT fk_agenda_threads_source_event_id FOREIGN KEY (source_event_id) REFERENCES events(event_id) ON DELETE SET NULL,
+                        CONSTRAINT fk_agenda_threads_source_result_id FOREIGN KEY (source_result_id) REFERENCES action_results(result_id) ON DELETE SET NULL
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO agenda_threads (
+                        thread_id,
+                        thread_key,
+                        source_event_id,
+                        source_result_id,
+                        kind,
+                        topic,
+                        goal,
+                        status,
+                        priority,
+                        next_action_type,
+                        next_action_payload_json,
+                        followup_due_at,
+                        last_progress_at,
+                        last_result_status,
+                        metadata_json,
+                        created_at,
+                        updated_at
+                    )
+                    SELECT
+                        thread_id,
+                        thread_key,
+                        source_event_id,
+                        source_result_id,
+                        kind,
+                        topic,
+                        goal,
+                        status,
+                        priority,
+                        next_action_type,
+                        next_action_payload_json,
+                        followup_due_at,
+                        last_progress_at,
+                        last_result_status,
+                        metadata_json,
+                        created_at,
+                        updated_at
+                    FROM agenda_threads_v15_legacy
+                    """
+                )
+            )
+            conn.execute(text("DROP TABLE agenda_threads_v15_legacy"))
+
+        # --- current_thought_state payload から旧発話関連キーを除去する ---
+        state_rows = conn.execute(
+            text(
+                "SELECT state_id, payload_json "
+                "FROM state "
+                "WHERE kind = 'current_thought_state' "
+                "AND length(trim(COALESCE(payload_json,''))) > 0"
+            )
+        ).fetchall()
+        for state_id, payload_json in state_rows:
+            try:
+                payload_obj = json.loads(str(payload_json))
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    f"memory DB migration failed: current_thought_state.payload_json is invalid JSON "
+                    f"(state_id={state_id})."
+                ) from exc
+            if not isinstance(payload_obj, dict):
+                raise RuntimeError(
+                    f"memory DB migration failed: current_thought_state.payload_json is not an object "
+                    f"(state_id={state_id})."
+                )
+
+            changed = False
+            for key in ("talk_candidate", "talk_impulse"):
+                if key in payload_obj:
+                    payload_obj.pop(key, None)
+                    changed = True
+
+            agenda_threads = payload_obj.get("agenda_threads")
+            if isinstance(agenda_threads, list):
+                new_rows: list[object] = []
+                row_changed = False
+                for row in agenda_threads:
+                    if not isinstance(row, dict):
+                        raise RuntimeError(
+                            f"memory DB migration failed: current_thought_state.agenda_threads item is not an object "
+                            f"(state_id={state_id})."
+                        )
+                    row_obj = dict(row)
+                    for key in (
+                        "report_candidate_level",
+                        "report_candidate_reason",
+                        "talk_impulse_level",
+                        "talk_impulse_reason",
+                        "delivery_mode",
+                    ):
+                        if key in row_obj:
+                            row_obj.pop(key, None)
+                            row_changed = True
+                    new_rows.append(row_obj)
+                if row_changed:
+                    payload_obj["agenda_threads"] = new_rows
+                    changed = True
+
+            if not changed:
+                continue
+
+            conn.execute(
+                text(
+                    "UPDATE state "
+                    "SET payload_json = :payload_json "
+                    "WHERE state_id = :state_id"
+                ),
+                {
+                    "payload_json": json.dumps(payload_obj, ensure_ascii=False, separators=(",", ":")),
+                    "state_id": int(state_id),
+                },
+            )
+
+        # --- 旧インデックスは削除し、新正本だけを残す ---
+        conn.execute(text("DROP INDEX IF EXISTS idx_agenda_threads_talk_impulse_level"))
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_agenda_threads_status_followup_due_at "
+                "ON agenda_threads(status, followup_due_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_agenda_threads_updated_at "
+                "ON agenda_threads(updated_at)"
+            )
+        )
+
+        # --- スキーマバージョンを更新 ---
+        conn.execute(text("PRAGMA user_version=16"))
+        conn.commit()
+
+    logger.info("memory DB migrated: user_version 15 -> 16")
+
+
 def migrate_memory_db_if_needed(*, engine, target_user_version: int, logger: logging.Logger) -> None:
     """記憶DBに必要なマイグレーションを適用する。"""
 
@@ -699,5 +953,8 @@ def migrate_memory_db_if_needed(*, engine, target_user_version: int, logger: log
             continue
         if current == 14 and int(target_user_version) >= 15:
             _migrate_memory_db_v14_to_v15(engine, logger)
+            continue
+        if current == 15 and int(target_user_version) >= 16:
+            _migrate_memory_db_v15_to_v16(engine, logger)
             continue
         break

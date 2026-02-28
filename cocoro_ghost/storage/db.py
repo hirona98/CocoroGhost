@@ -52,7 +52,7 @@ class _MemorySessionEntry:
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
-_MEMORY_DB_USER_VERSION = 15
+_MEMORY_DB_USER_VERSION = 16
 _SETTINGS_DB_USER_VERSION = 7
 
 
@@ -325,7 +325,6 @@ def _create_memory_indexes(engine) -> None:
         "CREATE INDEX IF NOT EXISTS idx_action_results_recall_decision ON action_results(recall_decision, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_agenda_threads_status_followup_due_at ON agenda_threads(status, followup_due_at)",
         "CREATE INDEX IF NOT EXISTS idx_agenda_threads_updated_at ON agenda_threads(updated_at)",
-        "CREATE INDEX IF NOT EXISTS idx_agenda_threads_talk_impulse_level ON agenda_threads(talk_impulse_level)",
         # --- autonomy: world model ---
         "CREATE INDEX IF NOT EXISTS idx_world_model_items_active_confidence ON world_model_items(active, confidence)",
         "CREATE INDEX IF NOT EXISTS idx_world_model_items_freshness_at ON world_model_items(freshness_at)",

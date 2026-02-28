@@ -27,10 +27,9 @@ from cocoro_ghost.autonomy.capabilities.vision_perception import execute_vision_
 from cocoro_ghost.autonomy.capabilities.web_access import execute_web_research
 from cocoro_ghost.autonomy.contracts import (
     CapabilityExecutionResult,
-    derive_talk_impulse_for_action_result,
     parse_action_decision,
     parse_console_delivery,
-    resolve_delivery_mode_from_talk_impulse_level,
+    resolve_completion_delivery_mode,
     resolve_message_kind_for_action_result,
 )
 from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
@@ -313,7 +312,7 @@ def _sync_agenda_thread_after_action_result(
 
     方針:
         - 後続 WritePlan の前に、debug/配信判定で見える正本を先に揃える。
-        - 完了時の report candidate は action_result 規則で決める。
+        - 完了時の発話は action_decision の契約で決める。
     """
     decision = db.query(ActionDecision).filter(ActionDecision.decision_id == str(decision_id)).one_or_none()
     if decision is None:
@@ -330,12 +329,7 @@ def _sync_agenda_thread_after_action_result(
     if thread is None:
         return
 
-    # --- 完了結果から thread 状態と発話衝動を決める ---
-    talk_impulse = derive_talk_impulse_for_action_result(
-        action_type=str(action_type),
-        result_status=str(result_status),
-        result_payload=dict(result_payload),
-    )
+    # --- 完了結果から thread 状態を決める ---
     result_status_norm = str(result_status)
     if result_status_norm == "failed":
         next_status = "blocked"
@@ -355,8 +349,6 @@ def _sync_agenda_thread_after_action_result(
     thread.followup_due_at = None
     thread.last_progress_at = int(now_system_ts)
     thread.last_result_status = str(result_status_norm)
-    thread.talk_impulse_level = str(talk_impulse["level"])
-    thread.talk_impulse_reason = (str(talk_impulse["reason"]) if talk_impulse["reason"] else None)
     if result_status_norm in {"no_effect", "success"}:
         thread.next_action_type = None
         thread.next_action_payload_json = "{}"
@@ -860,17 +852,14 @@ def _emit_autonomy_console_events_for_action_result(
             "goal_id": (str(intent.goal_id) if intent.goal_id is not None else None),
         }
 
-        # --- 完了時の delivery は action_result の発話衝動で決める ---
-        talk_impulse = derive_talk_impulse_for_action_result(
-            action_type=(str(intent.action_type) if intent.action_type is not None else ""),
+        # --- 完了時の delivery は action_decision の契約をそのまま守る ---
+        completion_delivery = resolve_completion_delivery_mode(
+            policy=str(console_delivery_obj.get("on_complete") or "silent"),
             result_status=str(result.result_status),
-            result_payload=dict(result_payload),
         )
-        terminal_mode = resolve_delivery_mode_from_talk_impulse_level(
-            talk_impulse.get("level"),
-        )
+        terminal_mode = str(completion_delivery.get("delivery_mode") or "silent")
 
-        # --- autonomy.message は「今すぐ話す」chat のときだけ作る ---
+        # --- autonomy.message は契約上「今話す」chat のときだけ作る ---
         if str(terminal_mode) == "chat":
             message_kind = resolve_message_kind_for_action_result(
                 result_status=str(result.result_status),
@@ -1168,11 +1157,6 @@ def _load_current_thought_snapshot_for_deliberation(db) -> dict[str, Any] | None
             if isinstance(payload_obj.get("next_candidate_action"), dict)
             else None
         ),
-        "talk_impulse": (
-            dict(payload_obj.get("talk_impulse") or {})
-            if isinstance(payload_obj.get("talk_impulse"), dict)
-            else None
-        ),
         "attention_targets": attention_targets_out,
         "updated_from_event_ids": [
             int(x) for x in list(updated_from_event_ids) if isinstance(x, (int, float)) and int(x) > 0
@@ -1227,7 +1211,6 @@ def _load_agenda_threads_snapshot_for_deliberation(db) -> list[dict[str, Any]]:
                 "next_action_payload": dict(payload_obj),
                 "followup_due_at": (int(row.followup_due_at) if row.followup_due_at is not None else None),
                 "last_result_status": str(row.last_result_status or "").strip() or None,
-                "talk_impulse_level": str(row.talk_impulse_level),
             }
         )
     return out

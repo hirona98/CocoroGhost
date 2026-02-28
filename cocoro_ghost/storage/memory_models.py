@@ -15,7 +15,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from cocoro_ghost.storage.db import MemoryBase
 
 _ACTION_DECISION_DEFAULT_CONSOLE_DELIVERY_JSON = (
-    '{"on_complete":"activity_only","on_fail":"activity_only","on_progress":"activity_only","message_kind":"report"}'
+    '{"on_complete":"silent","on_progress":"activity_only"}'
 )
 
 
@@ -665,10 +665,6 @@ class AgendaThread(MemoryBase):
             name="ck_agenda_threads_status",
         ),
         CheckConstraint(
-            "talk_impulse_level IN ('none','low','high','speak_now')",
-            name="ck_agenda_threads_talk_impulse_level",
-        ),
-        CheckConstraint(
             "length(trim(kind)) > 0",
             name="ck_agenda_threads_kind_non_empty",
         ),
@@ -701,8 +697,6 @@ class AgendaThread(MemoryBase):
     # --- 実行/共有の補助情報 ---
     last_progress_at: Mapped[Optional[int]] = mapped_column(Integer)
     last_result_status: Mapped[Optional[str]] = mapped_column(Text)
-    talk_impulse_level: Mapped[str] = mapped_column(Text, nullable=False, default="none")
-    talk_impulse_reason: Mapped[Optional[str]] = mapped_column(Text)
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
     # --- タイムスタンプ ---
@@ -817,7 +811,6 @@ Index("idx_agent_jobs_heartbeat_at", AgentJob.heartbeat_at)
 Index("idx_action_results_created_at", ActionResult.created_at)
 Index("idx_agenda_threads_status_followup_due_at", AgendaThread.status, AgendaThread.followup_due_at)
 Index("idx_agenda_threads_updated_at", AgendaThread.updated_at)
-Index("idx_agenda_threads_talk_impulse_level", AgendaThread.talk_impulse_level)
 Index("idx_world_model_items_freshness_at", WorldModelItem.freshness_at)
 Index("idx_world_model_items_active_confidence", WorldModelItem.active, WorldModelItem.confidence)
 Index("idx_runtime_snapshots_created_at", RuntimeSnapshot.created_at)
