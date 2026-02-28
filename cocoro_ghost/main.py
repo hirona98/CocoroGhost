@@ -10,11 +10,9 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from cocoro_ghost.app_bootstrap import (
-    bootstrap_runtime_config,
-    register_http_routes,
-    register_lifecycle_hooks,
-)
+from cocoro_ghost.app_bootstrap.config_bootstrap import bootstrap_runtime_config
+from cocoro_ghost.app_bootstrap.lifecycle import register_lifecycle_hooks
+from cocoro_ghost.app_bootstrap.routers import register_http_routes
 
 
 def create_app() -> FastAPI:

@@ -8,6 +8,7 @@
 ## 毎回読む（最短で現在地に戻る）
 
 - 全体初期化の流れ（設定DB→プリセット→記憶DB→ルータ登録）: `cocoro_ghost/main.py` の `create_app()` と `cocoro_ghost/app_bootstrap/config_bootstrap.py` / `cocoro_ghost/app_bootstrap/routers.py` / `cocoro_ghost/app_bootstrap/lifecycle.py`
+- 依存生成（MemoryManager / ClockService / DB Depends）: `cocoro_ghost/app_bootstrap/dependencies.py`
 - 同期/非同期の境界（SSE開始前に検索確定）: `docs/10_実行フロー.md`
 - API（HTTPS必須/認証/主要エンドポイント）: `docs/07_API.md`
 - 時刻基盤（system/domain二層）: `cocoro_ghost/clock.py` と `cocoro_ghost/api/control.py` / `cocoro_ghost/api/services/control_service.py`（`/api/control/time*`）
