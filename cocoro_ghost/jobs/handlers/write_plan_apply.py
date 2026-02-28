@@ -1500,6 +1500,16 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 else {}
             )
             followup_due_at = int(base_ts) if next_action_type else None
+            # --- action_result 直後は、同じ web_research を自動で再点火しない ---
+            # NOTE:
+            # - 調査完了イベントから同一 query の world_query が再抽出されても、
+            #   そのまま due に戻すと heartbeat が同じ調査をループさせやすい。
+            # - 継続調査は「新しい外部変化」か「新しい要求」で再び seed 化されるべきで、
+            #   直前の action_result 自体を理由に同じ web_research を予約し直さない。
+            if event_source == "action_result" and str(next_action_type) == "web_research":
+                next_action_type = None
+                next_action_payload = {}
+                followup_due_at = None
             # --- action_result で thread の状態を明示遷移させる ---
             # NOTE:
             # - 実際に実行した thread だけを終端/待機へ遷移させる。
