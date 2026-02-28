@@ -320,6 +320,32 @@ def _build_background_debug_snapshot(
     )
     recent_intents: list[dict[str, Any]] = []
     for row in list(recent_intents_rows or []):
+        # --- intent 単位で、成功時/失敗時の完了配信を先に計算する ---
+        success_report_candidate = derive_report_candidate_for_action_result(
+            action_type=str(row.action_type),
+            result_status="success",
+        )
+        failure_report_candidate = derive_report_candidate_for_action_result(
+            action_type=str(row.action_type),
+            result_status="failed",
+        )
+
+        # --- 直近結果があれば、実績の完了配信も計算する ---
+        actual_completion_report_candidate_level = None
+        actual_completion_delivery_mode = None
+        actual_completion_delivery_reason = None
+        last_result_status = str(row.last_result_status or "").strip() or None
+        if last_result_status is not None:
+            actual_report_candidate = derive_report_candidate_for_action_result(
+                action_type=str(row.action_type),
+                result_status=str(last_result_status),
+            )
+            actual_completion_report_candidate_level = str(actual_report_candidate["level"])
+            actual_completion_delivery_mode = resolve_delivery_mode_from_report_candidate_level(
+                actual_completion_report_candidate_level,
+            )
+            actual_completion_delivery_reason = str(actual_report_candidate["reason"] or "").strip() or None
+
         recent_intents.append(
             {
                 "intent_id": str(row.intent_id),
@@ -329,6 +355,18 @@ def _build_background_debug_snapshot(
                 "goal_id": (str(row.goal_id) if row.goal_id is not None else None),
                 "scheduled_at": _fmt_ts_or_none(int(row.scheduled_at) if row.scheduled_at is not None else None),
                 "updated_at": _fmt_ts_or_none(int(row.updated_at)),
+                "last_result_status": last_result_status,
+                "success_report_candidate_level": str(success_report_candidate["level"]),
+                "success_delivery_mode": resolve_delivery_mode_from_report_candidate_level(
+                    str(success_report_candidate["level"])
+                ),
+                "failure_report_candidate_level": str(failure_report_candidate["level"]),
+                "failure_delivery_mode": resolve_delivery_mode_from_report_candidate_level(
+                    str(failure_report_candidate["level"])
+                ),
+                "actual_completion_report_candidate_level": actual_completion_report_candidate_level,
+                "actual_completion_delivery_mode": actual_completion_delivery_mode,
+                "actual_completion_delivery_reason": actual_completion_delivery_reason,
                 "blocked_reason": (str(row.blocked_reason) if row.blocked_reason else None),
                 "dropped_reason": (str(row.dropped_reason) if row.dropped_reason else None),
             }
