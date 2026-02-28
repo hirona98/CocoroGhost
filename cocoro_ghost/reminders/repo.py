@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from cocoro_ghost.reminders_models import ReminderGlobalSettings
+from cocoro_ghost.reminders.models import ReminderGlobalSettings
 
 
 def ensure_initial_reminder_global_settings(db: Session) -> ReminderGlobalSettings:

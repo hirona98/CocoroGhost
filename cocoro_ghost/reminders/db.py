@@ -80,7 +80,7 @@ def init_reminders_db() -> None:
     RemindersSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
     # reminders.db のテーブル群を作成（モデル import が必要）
-    import cocoro_ghost.reminders_models  # noqa: F401
+    import cocoro_ghost.reminders.models  # noqa: F401
 
     RemindersBase.metadata.create_all(bind=engine)
     _assert_expected_schema(engine)

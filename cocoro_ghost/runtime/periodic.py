@@ -101,4 +101,3 @@ async def stop_periodic_tasks(app: "FastAPI", *, logger: logging.Logger) -> None
         # --- 状態を初期化して二重停止を避ける ---
         setattr(app.state, _TASKS_STATE_KEY, [])
         logger.info("periodic tasks stopped")
-

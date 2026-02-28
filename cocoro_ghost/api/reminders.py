@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from cocoro_ghost import schemas
 from cocoro_ghost.clock import ClockService
 from cocoro_ghost.app_bootstrap.dependencies import get_clock_service_dep, get_reminders_db_dep
-from cocoro_ghost.reminders_logic import (
+from cocoro_ghost.reminders.logic import (
     DEFAULT_REMINDER_TIME_ZONE,
     NextFireInput,
     compute_next_fire_at_utc,
@@ -26,8 +26,8 @@ from cocoro_ghost.reminders_logic import (
     validate_time_zone,
     weekdays_to_mask,
 )
-from cocoro_ghost.reminders_models import Reminder
-from cocoro_ghost.reminders_repo import ensure_initial_reminder_global_settings
+from cocoro_ghost.reminders.models import Reminder
+from cocoro_ghost.reminders.repo import ensure_initial_reminder_global_settings
 
 
 router = APIRouter(prefix="/reminders", tags=["reminders"])

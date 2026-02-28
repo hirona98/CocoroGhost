@@ -18,7 +18,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from cocoro_ghost import common_utils, event_stream, prompt_builders
+from cocoro_ghost import common_utils, prompt_builders
 from cocoro_ghost.autonomy.capabilities.device_control import execute_device_control
 from cocoro_ghost.autonomy.capabilities.mobility_move import execute_mobility_move
 from cocoro_ghost.autonomy.capabilities.schedule_alarm import execute_schedule_alarm
@@ -52,6 +52,7 @@ from cocoro_ghost.memory_models import (
     State,
     UserPreference,
 )
+from cocoro_ghost.runtime import event_stream
 from cocoro_ghost.worker_constants import AGENT_JOB_STALE_SECONDS as _AGENT_JOB_STALE_SECONDS
 from cocoro_ghost.worker_constants import JOB_PENDING as _JOB_PENDING
 from cocoro_ghost.worker_constants import JOB_RUNNING as _JOB_RUNNING

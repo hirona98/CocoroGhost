@@ -16,7 +16,7 @@ from uuid import uuid4
 from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from cocoro_ghost.reminders_db import RemindersBase
+from cocoro_ghost.reminders.db import RemindersBase
 
 
 # UUIDの文字列長（ハイフン含む36文字）

@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from cocoro_ghost import event_stream
+from cocoro_ghost.runtime import event_stream
 
 
 logger = logging.getLogger(__name__)

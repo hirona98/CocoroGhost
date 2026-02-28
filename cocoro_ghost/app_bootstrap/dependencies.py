@@ -17,7 +17,7 @@ from cocoro_ghost.config import ConfigStore, get_config_store
 from cocoro_ghost.db import get_memory_session, get_settings_db
 from cocoro_ghost.llm_client import LlmClient
 from cocoro_ghost.memory import MemoryManager
-from cocoro_ghost.reminders_db import get_reminders_db
+from cocoro_ghost.reminders.db import get_reminders_db
 
 
 _memory_manager: MemoryManager | None = None

@@ -13,14 +13,14 @@ import logging
 
 from fastapi import FastAPI
 
-from cocoro_ghost import event_stream, log_stream
+from cocoro_ghost.runtime import event_stream, log_stream
 from cocoro_ghost.autonomy.orchestrator import get_autonomy_orchestrator
 from cocoro_ghost.camera_watch import get_camera_watch_service
 from cocoro_ghost.config import RuntimeConfig
 from cocoro_ghost.desktop_watch import get_desktop_watch_service
-from cocoro_ghost.logging_config import suppress_uvicorn_access_log_paths
-from cocoro_ghost.periodic import start_periodic_task, stop_periodic_tasks
-from cocoro_ghost.reminders_service import get_reminder_service
+from cocoro_ghost.runtime.logging import suppress_uvicorn_access_log_paths
+from cocoro_ghost.runtime.periodic import start_periodic_task, stop_periodic_tasks
+from cocoro_ghost.reminders.service import get_reminder_service
 
 
 logger = logging.getLogger(__name__)

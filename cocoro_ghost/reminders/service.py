@@ -19,16 +19,16 @@ import threading
 from cocoro_ghost.clock import get_clock_service
 from cocoro_ghost.autonomy.orchestrator import get_autonomy_orchestrator
 from cocoro_ghost.app_bootstrap.dependencies import get_memory_manager
-from cocoro_ghost.reminders_logic import (
+from cocoro_ghost.reminders.logic import (
     DEFAULT_REMINDER_TIME_ZONE,
     NextFireInput,
     compute_next_fire_at_utc,
     utc_ts_to_hhmm,
     validate_time_zone,
 )
-from cocoro_ghost.reminders_models import Reminder
-from cocoro_ghost.reminders_repo import ensure_initial_reminder_global_settings
-from cocoro_ghost.reminders_db import reminders_session_scope
+from cocoro_ghost.reminders.models import Reminder
+from cocoro_ghost.reminders.repo import ensure_initial_reminder_global_settings
+from cocoro_ghost.reminders.db import reminders_session_scope
 
 
 logger = logging.getLogger(__name__)

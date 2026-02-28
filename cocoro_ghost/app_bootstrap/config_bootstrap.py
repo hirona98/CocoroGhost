@@ -26,9 +26,9 @@ from cocoro_ghost.db import (
     load_global_settings,
     settings_session_scope,
 )
-from cocoro_ghost.logging_config import setup_logging
-from cocoro_ghost.reminders_db import init_reminders_db, reminders_session_scope
-from cocoro_ghost.reminders_repo import ensure_initial_reminder_global_settings
+from cocoro_ghost.runtime.logging import setup_logging
+from cocoro_ghost.reminders.db import init_reminders_db, reminders_session_scope
+from cocoro_ghost.reminders.repo import ensure_initial_reminder_global_settings
 
 
 def bootstrap_runtime_config() -> RuntimeConfig:

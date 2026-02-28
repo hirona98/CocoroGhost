@@ -23,7 +23,7 @@
 
 - API 追加/変更: `cocoro_ghost/api/` と `cocoro_ghost/app_bootstrap/routers.py` と `docs/07_API.md`
 - チャット（SSE）: `cocoro_ghost/api/chat.py` と `cocoro_ghost/memory/_chat_mixin.py`
-- 自発行動/Capability設計: `docs/03_自発行動アーキテクチャ方針.md` と `cocoro_ghost/autonomy/orchestrator.py` / `cocoro_ghost/autonomy/repository.py` / `cocoro_ghost/autonomy/runtime_blackboard.py` / `cocoro_ghost/autonomy/policies/` / `cocoro_ghost/autonomy/capabilities/` / `cocoro_ghost/worker_handlers_autonomy.py` / `cocoro_ghost/desktop_watch.py` / `cocoro_ghost/camera_watch.py` / `cocoro_ghost/reminders_service.py` / `cocoro_ghost/event_stream.py` / `cocoro_ghost/worker.py`
+- 自発行動/Capability設計: `docs/03_自発行動アーキテクチャ方針.md` と `cocoro_ghost/autonomy/orchestrator.py` / `cocoro_ghost/autonomy/repository.py` / `cocoro_ghost/autonomy/runtime_blackboard.py` / `cocoro_ghost/autonomy/policies/` / `cocoro_ghost/autonomy/capabilities/` / `cocoro_ghost/worker_handlers_autonomy.py` / `cocoro_ghost/desktop_watch.py` / `cocoro_ghost/camera_watch.py` / `cocoro_ghost/reminders/service.py` / `cocoro_ghost/runtime/event_stream.py` / `cocoro_ghost/worker.py`
 - 自発行動の詳細設計: `docs/18_自発行動アーキテクチャ詳細設計.md`（実装順序/データ/ジョブ/API/責務分割の実装契約）
 - 自発行動の汎用エージェント委譲（実装前設計）: `docs/19_汎用エージェント委譲設計.md`（`agent_delegate` / `agent_jobs` / `agent_runner` / control API）
 - 人格中心化（会話と自発行動の実装前設計）: `docs/20_人格中心化（会話と自発行動）実装設計.md`（`autonomy.message` の人格発話化 / 会話選別・Deliberation材料選別の人格化 / `current_thought_state` + `agenda_threads` 構想）
