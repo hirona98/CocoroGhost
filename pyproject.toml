@@ -25,5 +25,5 @@ dependencies = [
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["cocoro_ghost"]
+[tool.setuptools.packages.find]
+include = ["cocoro_ghost*"]

@@ -37,7 +37,7 @@ def start(*, embedding_preset_id: str, embedding_dimension: int) -> None:
     デーモンスレッドとして起動し、アプリ終了時に自動停止する。
     """
     from cocoro_ghost.config import get_config_store
-    from cocoro_ghost.deps import get_llm_client
+    from cocoro_ghost.app_bootstrap.dependencies import get_llm_client
 
     # --- 記憶が無効なら、Workerも動かない（誤解を避けるためログする） ---
     if not get_config_store().memory_enabled:

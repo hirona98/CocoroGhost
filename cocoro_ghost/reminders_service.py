@@ -18,7 +18,7 @@ import threading
 
 from cocoro_ghost.clock import get_clock_service
 from cocoro_ghost.autonomy.orchestrator import get_autonomy_orchestrator
-from cocoro_ghost.deps import get_memory_manager
+from cocoro_ghost.app_bootstrap.dependencies import get_memory_manager
 from cocoro_ghost.reminders_logic import (
     DEFAULT_REMINDER_TIME_ZONE,
     NextFireInput,

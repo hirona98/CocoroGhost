@@ -765,7 +765,7 @@ def _render_autonomy_message_text(*, render_input: dict[str, Any]) -> str:
     """
 
     # --- 現在設定から人格/LLM設定を取得し、worker 用 LLM client を生成 ---
-    from cocoro_ghost.deps import get_llm_client
+    from cocoro_ghost.app_bootstrap.dependencies import get_llm_client
 
     cfg = get_config_store().config
     llm_client = get_llm_client()

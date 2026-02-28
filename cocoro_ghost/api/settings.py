@@ -15,8 +15,7 @@ from sqlalchemy.orm import Session
 
 from cocoro_ghost import models, schemas
 from cocoro_ghost.db import load_global_settings
-from cocoro_ghost.deps import reset_memory_manager
-from cocoro_ghost.deps import get_settings_db_dep
+from cocoro_ghost.app_bootstrap.dependencies import get_settings_db_dep, reset_memory_manager
 
 router = APIRouter()
 

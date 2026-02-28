@@ -20,7 +20,7 @@ from cocoro_ghost.clock import ClockService
 from cocoro_ghost import event_stream, log_stream, schemas, worker
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.db import load_global_settings, settings_session_scope
-from cocoro_ghost.deps import get_clock_service_dep
+from cocoro_ghost.app_bootstrap.dependencies import get_clock_service_dep
 from cocoro_ghost.time_utils import format_iso8601_local_with_tz
 from cocoro_ghost.worker_handlers_autonomy import complete_agent_job_from_runner, fail_agent_job_from_runner
 

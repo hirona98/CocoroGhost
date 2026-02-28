@@ -7,7 +7,7 @@
 <!-- Block: Always Read -->
 ## 毎回読む（最短で現在地に戻る）
 
-- 全体初期化の流れ（設定DB→プリセット→記憶DB→ルータ登録）: `cocoro_ghost/main.py` の `create_app()`
+- 全体初期化の流れ（設定DB→プリセット→記憶DB→ルータ登録）: `cocoro_ghost/main.py` の `create_app()` と `cocoro_ghost/app_bootstrap/config_bootstrap.py` / `cocoro_ghost/app_bootstrap/routers.py` / `cocoro_ghost/app_bootstrap/lifecycle.py`
 - 同期/非同期の境界（SSE開始前に検索確定）: `docs/10_実行フロー.md`
 - API（HTTPS必須/認証/主要エンドポイント）: `docs/07_API.md`
 - 時刻基盤（system/domain二層）: `cocoro_ghost/clock.py` と `cocoro_ghost/api/control.py`（`/api/control/time*`）
@@ -20,7 +20,7 @@
 <!-- Block: Next Reads -->
 ## 作業タイプ別: 次に開く
 
-- API 追加/変更: `cocoro_ghost/api/` と `docs/07_API.md`
+- API 追加/変更: `cocoro_ghost/api/` と `cocoro_ghost/app_bootstrap/routers.py` と `docs/07_API.md`
 - チャット（SSE）: `cocoro_ghost/api/chat.py` と `cocoro_ghost/memory/_chat_mixin.py`
 - 自発行動/Capability設計: `docs/03_自発行動アーキテクチャ方針.md` と `cocoro_ghost/autonomy/orchestrator.py` / `cocoro_ghost/autonomy/repository.py` / `cocoro_ghost/autonomy/runtime_blackboard.py` / `cocoro_ghost/autonomy/policies/` / `cocoro_ghost/autonomy/capabilities/` / `cocoro_ghost/worker_handlers_autonomy.py` / `cocoro_ghost/desktop_watch.py` / `cocoro_ghost/camera_watch.py` / `cocoro_ghost/reminders_service.py` / `cocoro_ghost/event_stream.py` / `cocoro_ghost/worker.py`
 - 自発行動の詳細設計: `docs/18_自発行動アーキテクチャ詳細設計.md`（実装順序/データ/ジョブ/API/責務分割の実装契約）
@@ -29,7 +29,7 @@
 - 検索（思い出す）: `docs/04_検索（思い出す）.md` と `cocoro_ghost/memory/_chat_search_mixin.py`
 - 記憶更新（育てる）: `docs/05_記憶更新（育てる）.md` と `cocoro_ghost/worker.py` / `cocoro_ghost/worker_handlers.py` / `cocoro_ghost/worker_handlers_*.py`
 - DB/ストレージ（SQLite）: `docs/06_ストレージ（SQLite）.md` と `cocoro_ghost/db.py`
-- Web UI: `docs/13_WebブラウザUI.md` と `static/` と `cocoro_ghost/main.py`（static mount）
+- Web UI: `docs/13_WebブラウザUI.md` と `static/` と `cocoro_ghost/app_bootstrap/routers.py`（static mount）
 - 長期評価（会話/感情/時間前進）: `docs/15_長期会話評価計画.md` と `docs/16_長期会話シナリオ台帳.md`
 - 感情境界 / heartbeat / 完了時共有判定: `docs/18_自発行動アーキテクチャ詳細設計.md`（自発行動の正本に統合済み）
 
