@@ -10,22 +10,22 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from cocoro_ghost.llm_client import LlmClient
-from cocoro_ghost.worker_handlers_autonomy import (
+from cocoro_ghost.llm.client import LlmClient
+from cocoro_ghost.jobs.handlers.autonomy import (
     _handle_deliberate_once,
     _handle_execute_intent,
     _handle_promote_action_result_to_searchable,
     _handle_snapshot_runtime,
     _handle_sweep_agent_jobs,
 )
-from cocoro_ghost.worker_handlers_embeddings import (
+from cocoro_ghost.jobs.handlers.embeddings import (
     _handle_upsert_event_affect_embedding,
     _handle_upsert_event_assistant_summary,
     _handle_upsert_event_embedding,
     _handle_upsert_state_embedding,
 )
-from cocoro_ghost.worker_handlers_maintenance import _handle_build_state_links, _handle_tidy_memory
-from cocoro_ghost.worker_handlers_write_plan import _handle_apply_write_plan, _handle_generate_write_plan
+from cocoro_ghost.jobs.handlers.maintenance import _handle_build_state_links, _handle_tidy_memory
+from cocoro_ghost.jobs.handlers.write_plan import _handle_apply_write_plan, _handle_generate_write_plan
 
 
 JobHandler = Callable[..., None]

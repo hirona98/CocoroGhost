@@ -88,7 +88,7 @@ def parse_first_json_object_or_none(text: str) -> dict[str, Any] | None:
         return None
 
     # --- llm_client の内部ユーティリティで抽出/修復する ---
-    from cocoro_ghost.llm_client import _extract_first_json_value, _repair_json_like_text  # noqa: PLC0415
+    from cocoro_ghost.llm.client import _extract_first_json_value, _repair_json_like_text  # noqa: PLC0415
 
     candidate = _extract_first_json_value(s)
     if not candidate:

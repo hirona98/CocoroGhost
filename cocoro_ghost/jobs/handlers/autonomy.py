@@ -18,7 +18,8 @@ from typing import Any
 
 from sqlalchemy import text
 
-from cocoro_ghost import common_utils, prompt_builders
+from cocoro_ghost import common_utils
+from cocoro_ghost.llm import prompt_builders
 from cocoro_ghost.autonomy.capabilities.device_control import execute_device_control
 from cocoro_ghost.autonomy.capabilities.mobility_move import execute_mobility_move
 from cocoro_ghost.autonomy.capabilities.schedule_alarm import execute_schedule_alarm
@@ -36,7 +37,7 @@ from cocoro_ghost.autonomy.runtime_blackboard import get_runtime_blackboard
 from cocoro_ghost.clock import get_clock_service
 from cocoro_ghost.config import get_config_store
 from cocoro_ghost.storage.db import memory_session_scope
-from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
+from cocoro_ghost.llm.client import LlmClient, LlmRequestPurpose
 from cocoro_ghost.storage.memory_models import (
     AgendaThread,
     ActionDecision,
@@ -53,10 +54,10 @@ from cocoro_ghost.storage.memory_models import (
     UserPreference,
 )
 from cocoro_ghost.runtime import event_stream
-from cocoro_ghost.worker_constants import AGENT_JOB_STALE_SECONDS as _AGENT_JOB_STALE_SECONDS
-from cocoro_ghost.worker_constants import JOB_PENDING as _JOB_PENDING
-from cocoro_ghost.worker_constants import JOB_RUNNING as _JOB_RUNNING
-from cocoro_ghost.worker_handlers_common import _now_utc_ts
+from cocoro_ghost.jobs.constants import AGENT_JOB_STALE_SECONDS as _AGENT_JOB_STALE_SECONDS
+from cocoro_ghost.jobs.constants import JOB_PENDING as _JOB_PENDING
+from cocoro_ghost.jobs.constants import JOB_RUNNING as _JOB_RUNNING
+from cocoro_ghost.jobs.handlers.common import _now_utc_ts
 
 
 logger = logging.getLogger(__name__)

@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 
 from cocoro_ghost import affect
-from cocoro_ghost import worker
+from cocoro_ghost.jobs import runner as worker
 from cocoro_ghost.autonomy.contracts import (
     derive_report_candidate_for_action_result,
     parse_console_delivery,
@@ -44,9 +44,9 @@ from cocoro_ghost.storage.memory_models import (
     State,
 )
 from cocoro_ghost.time_utils import format_iso8601_local_with_tz
-from cocoro_ghost.worker_constants import AGENT_JOB_STALE_SECONDS as _AGENT_JOB_STALE_SECONDS
-from cocoro_ghost.worker_constants import JOB_PENDING as _JOB_PENDING
-from cocoro_ghost.worker_constants import JOB_RUNNING as _JOB_RUNNING
+from cocoro_ghost.jobs.constants import AGENT_JOB_STALE_SECONDS as _AGENT_JOB_STALE_SECONDS
+from cocoro_ghost.jobs.constants import JOB_PENDING as _JOB_PENDING
+from cocoro_ghost.jobs.constants import JOB_RUNNING as _JOB_RUNNING
 
 
 router = APIRouter(prefix="/mood", tags=["mood"])

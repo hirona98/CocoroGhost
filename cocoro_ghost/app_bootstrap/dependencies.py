@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from cocoro_ghost.clock import ClockService, get_clock_service
 from cocoro_ghost.config import ConfigStore, get_config_store
 from cocoro_ghost.storage.db import get_memory_session, get_settings_db
-from cocoro_ghost.llm_client import LlmClient
+from cocoro_ghost.llm.client import LlmClient
 from cocoro_ghost.memory import MemoryManager
 from cocoro_ghost.reminders.db import get_reminders_db
 

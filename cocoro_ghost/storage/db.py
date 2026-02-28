@@ -776,7 +776,7 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
     各種プリセット（LLM, Embedding, Persona, Addon）のデフォルトを用意する。
     """
     from cocoro_ghost.storage import models
-    from cocoro_ghost import prompts
+    from cocoro_ghost.llm import prompts
 
     # 既にアクティブなプリセットがあれば何もしない
     global_settings = session.query(models.GlobalSettings).first()

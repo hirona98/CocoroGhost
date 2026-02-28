@@ -1,4 +1,4 @@
-"""cocoro_ghost.llm_client
+"""cocoro_ghost.llm.client
 
 LiteLLM ラッパー。
 
@@ -20,7 +20,7 @@ from typing import Any, Dict, Generator, Iterable, List, Optional
 
 import litellm
 
-from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level, truncate_for_log
+from cocoro_ghost.llm.debug import log_llm_payload, normalize_llm_log_level, truncate_for_log
 
 
 def _to_openai_compatible_model_for_slug(slug: str) -> str:

@@ -65,7 +65,7 @@ def register_lifecycle_hooks(app: FastAPI, *, runtime_config: RuntimeConfig) -> 
     async def start_internal_worker() -> None:
         """同一プロセス内 Worker を起動する。"""
 
-        from cocoro_ghost import internal_worker
+        from cocoro_ghost.jobs import internal_worker
 
         internal_worker.start(
             embedding_preset_id=runtime_config.embedding_preset_id,
@@ -164,6 +164,6 @@ def register_lifecycle_hooks(app: FastAPI, *, runtime_config: RuntimeConfig) -> 
     async def stop_internal_worker() -> None:
         """同一プロセス内 Worker を停止する。"""
 
-        from cocoro_ghost import internal_worker
+        from cocoro_ghost.jobs import internal_worker
 
         await asyncio.to_thread(internal_worker.stop, timeout_seconds=5.0)

@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from cocoro_ghost import common_utils, prompt_builders
+from cocoro_ghost import common_utils
+from cocoro_ghost.llm import prompt_builders
 from cocoro_ghost.autonomy.contracts import CapabilityExecutionResult, parse_capability_result
-from cocoro_ghost.llm_client import LlmClient, LlmRequestPurpose
+from cocoro_ghost.llm.client import LlmClient, LlmRequestPurpose
 
 
 def execute_web_research(

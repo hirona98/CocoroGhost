@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import threading
 
-from cocoro_ghost.worker import run_forever
+from cocoro_ghost.jobs.runner import run_forever
 
 
 _lock = threading.Lock()

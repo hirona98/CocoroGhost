@@ -7,8 +7,8 @@ Workerジョブハンドラ（WritePlan系ディスパッチ）
 
 from __future__ import annotations
 
-from cocoro_ghost.worker_handlers_write_plan_apply import _handle_apply_write_plan
-from cocoro_ghost.worker_handlers_write_plan_generate import _handle_generate_write_plan
+from cocoro_ghost.jobs.handlers.write_plan_apply import _handle_apply_write_plan
+from cocoro_ghost.jobs.handlers.write_plan_generate import _handle_generate_write_plan
 
 
 __all__ = [

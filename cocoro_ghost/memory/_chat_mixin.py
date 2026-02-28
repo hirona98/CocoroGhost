@@ -20,11 +20,12 @@ from sqlalchemy import text
 
 from cocoro_ghost import schemas
 from cocoro_ghost import affect
-from cocoro_ghost import common_utils, prompt_builders
+from cocoro_ghost import common_utils
+from cocoro_ghost.llm import prompt_builders
 from cocoro_ghost.storage import vector_index
 from cocoro_ghost.storage.db import memory_session_scope
-from cocoro_ghost.llm_debug import log_llm_payload, normalize_llm_log_level
-from cocoro_ghost.llm_client import LlmRequestPurpose
+from cocoro_ghost.llm.debug import log_llm_payload, normalize_llm_log_level
+from cocoro_ghost.llm.client import LlmRequestPurpose
 from cocoro_ghost.memory._chat_search_mixin import _CandidateItem
 from cocoro_ghost.memory._image_mixin import default_input_text_when_images_only
 from cocoro_ghost.storage.memory_models import Event, EventAssistantSummary, EventLink, RetrievalRun, State, UserPreference

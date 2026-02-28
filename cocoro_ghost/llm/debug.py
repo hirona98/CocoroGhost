@@ -9,7 +9,7 @@ LLMクライアント実装から独立しており、任意の箇所に差し�
 - 秘匿情報（api_key、token等）のマスク
 
 使い方例:
-    from cocoro_ghost.llm_debug import log_llm_payload
+    from cocoro_ghost.llm.debug import log_llm_payload
     log_llm_payload(logger, "LLM request", payload_dict)
     log_llm_payload(logger, "LLM response", response_text)
 """

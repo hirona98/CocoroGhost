@@ -37,12 +37,12 @@ from cocoro_ghost.storage.memory_models import (
     WorldModelItem,
 )
 from cocoro_ghost.time_utils import parse_iso8601_to_utc_ts
-from cocoro_ghost.worker_constants import (
+from cocoro_ghost.jobs.constants import (
     JOB_PENDING as _JOB_PENDING,
     TIDY_CHAT_TURNS_INTERVAL as _TIDY_CHAT_TURNS_INTERVAL,
     TIDY_CHAT_TURNS_INTERVAL_FIRST as _TIDY_CHAT_TURNS_INTERVAL_FIRST,
 )
-from cocoro_ghost.worker_handlers_common import (
+from cocoro_ghost.jobs.handlers.common import (
     _affect_row_to_json,
     _enqueue_tidy_memory_job,
     _has_pending_or_running_job,

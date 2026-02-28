@@ -13,7 +13,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from cocoro_ghost.storage import models, schemas
+from cocoro_ghost import schemas
+from cocoro_ghost.storage import models
 from cocoro_ghost.storage.db import load_global_settings
 from cocoro_ghost.app_bootstrap.dependencies import get_settings_db_dep, reset_memory_manager
 
@@ -377,7 +378,7 @@ def commit_settings(
     # 内蔵Workerが有効なら、設定変更に追従させる（LLMプリセット/embedding_preset_id切替など）。
     # 重い処理（join等）になる可能性があるため、レスポンス後に実行する。
     try:
-        from cocoro_ghost.internal_worker import request_restart_async
+        from cocoro_ghost.jobs.internal_worker import request_restart_async
 
         background_tasks.add_task(
             request_restart_async,
