@@ -26,6 +26,7 @@ https://github.com/hirona98/CocoroConsole
 - Python `3.10+`
 - カレントディレクトリをリポジトリルートにする
 - 初回起動前に `config/setting.toml` を作成する
+- Tapo Wi-Fi カメラを使う場合は `ffmpeg` を PATH 上で実行できるようにする
 
 
 <!-- Block: Windows Run -->

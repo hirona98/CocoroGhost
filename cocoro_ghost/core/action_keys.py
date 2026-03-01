@@ -59,11 +59,15 @@ def canonical_action_key(
             return f"web_research_goal:{goal_norm}"
         return "web_research"
 
-    # --- 観測系は target_client_id まで含める ---
-    if action_type_norm in {"observe_screen", "observe_camera"}:
+    # --- 画面観測は target_client_id まで含める ---
+    if action_type_norm == "observe_screen":
         target_client_id = normalize_action_text(payload_obj.get("target_client_id"))
         if target_client_id:
             return f"{action_type_norm}:{target_client_id}"
+        return str(action_type_norm)
+
+    # --- Tapo カメラ観測は単一カメラ前提で action_type 単位にする ---
+    if action_type_norm == "observe_camera":
         return str(action_type_norm)
 
     # --- それ以外は action_type 単位で扱う ---

@@ -262,10 +262,34 @@
                 <input id="desktop-watch-enabled" type="checkbox" />
                 <span>デスクトップ監視を有効化する</span>
               </label>
+              <label class="settings-check">
+                <input id="camera-watch-enabled" type="checkbox" />
+                <span>Tapo カメラ監視を有効化する</span>
+              </label>
               <div class="settings-grid">
                 <label class="settings-field">
-                  <span class="settings-label">監視間隔（秒）</span>
+                  <span class="settings-label">デスクトップ監視間隔（秒）</span>
                   <input id="desktop-watch-interval-seconds" class="settings-input" type="number" min="1" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">Tapo監視間隔（秒）</span>
+                  <input id="camera-watch-interval-seconds" class="settings-input" type="number" min="1" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">Tapoホスト</span>
+                  <input id="tapo-camera-host" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">Tapoユーザー名</span>
+                  <input id="tapo-camera-username" class="settings-input" type="text" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">Tapoパスワード</span>
+                  <input id="tapo-camera-password" class="settings-input" type="password" />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">Tapoクラウドパスワード</span>
+                  <input id="tapo-camera-cloud-password" class="settings-input" type="password" />
                 </label>
               </div>
             </div>

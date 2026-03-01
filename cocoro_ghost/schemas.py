@@ -552,6 +552,10 @@ class FullSettingsResponse(BaseModel):
     autonomy_max_parallel_intents: int
     camera_watch_enabled: bool
     camera_watch_interval_seconds: int
+    tapo_camera_host: str
+    tapo_camera_username: str
+    tapo_camera_password: str
+    tapo_camera_cloud_password: str
     agent_backend_cli_agent_command: str
 
     # アクティブなプリセットID
@@ -632,6 +636,10 @@ class FullSettingsUpdateRequest(BaseModel):
     autonomy_max_parallel_intents: int
     camera_watch_enabled: bool
     camera_watch_interval_seconds: int
+    tapo_camera_host: str
+    tapo_camera_username: str
+    tapo_camera_password: str
+    tapo_camera_cloud_password: str
     agent_backend_cli_agent_command: str
     active_llm_preset_id: str
     active_embedding_preset_id: str

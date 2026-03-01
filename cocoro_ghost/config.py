@@ -114,6 +114,10 @@ class RuntimeConfig:
     # 視覚（Vision）: カメラ監視
     camera_watch_enabled: bool
     camera_watch_interval_seconds: int
+    tapo_camera_host: str
+    tapo_camera_username: str
+    tapo_camera_password: str
+    tapo_camera_cloud_password: str
 
     # LlmPreset由来（LLM設定）
     llm_preset_name: str          # LLMプリセット名
@@ -522,6 +526,10 @@ def build_runtime_config(
         autonomy_max_parallel_intents=max(1, int(getattr(global_settings, "autonomy_max_parallel_intents", 2))),
         camera_watch_enabled=bool(getattr(global_settings, "camera_watch_enabled", False)),
         camera_watch_interval_seconds=max(1, int(getattr(global_settings, "camera_watch_interval_seconds", 15))),
+        tapo_camera_host=str(getattr(global_settings, "tapo_camera_host", "") or "").strip(),
+        tapo_camera_username=str(getattr(global_settings, "tapo_camera_username", "") or "").strip(),
+        tapo_camera_password=str(getattr(global_settings, "tapo_camera_password", "") or ""),
+        tapo_camera_cloud_password=str(getattr(global_settings, "tapo_camera_cloud_password", "") or ""),
         # LlmPreset由来
         llm_preset_name=llm_preset.name,
         llm_api_key=llm_preset.llm_api_key,

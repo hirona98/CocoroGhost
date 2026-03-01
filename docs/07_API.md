@@ -315,6 +315,10 @@ UI向けの「全設定」取得/更新。
   "autonomy_max_parallel_intents": 2,
   "camera_watch_enabled": false,
   "camera_watch_interval_seconds": 15,
+  "tapo_camera_host": "192.168.0.10",
+  "tapo_camera_username": "camera-user",
+  "tapo_camera_password": "camera-password",
+  "tapo_camera_cloud_password": "optional-cloud-password",
   "agent_backend_cli_agent_command": "gemini.exe -p",
   "active_llm_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "active_embedding_preset_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
@@ -366,6 +370,12 @@ UI向けの「全設定」取得/更新。
   ]
 }
 ```
+
+補足:
+
+- `observe_camera` はクライアント経由ではなく、上記 `tapo_camera_*` 設定でサーバーが Tapo カメラへ直接接続する
+- Tapo カメラ画像の取得には `ffmpeg` が PATH 上で実行可能であることが前提
+- `tapo_camera_cloud_password` は機種/ファームにより不要な場合があるが、必要な場合は空文字のままでは動かない
 
 ### `PUT /api/settings`
 
@@ -589,7 +599,7 @@ UI向けの「全設定」取得/更新。
   "type": "vision.capture_request",
   "data": {
     "request_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    "source": "desktop|camera",
+    "source": "desktop",
     "mode": "still",
     "purpose": "chat|desktop_watch",
     "timeout_ms": 5000
@@ -610,7 +620,7 @@ UI向けの「全設定」取得/更新。
 {
   "type": "hello",
   "client_id": "console-uuid-or-stable-id",
-  "caps": ["vision.desktop", "vision.camera"]
+  "caps": ["vision.desktop"]
 }
 ```
 

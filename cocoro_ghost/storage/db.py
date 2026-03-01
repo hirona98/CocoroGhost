@@ -53,7 +53,7 @@ _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
 _MEMORY_DB_USER_VERSION = 17
-_SETTINGS_DB_USER_VERSION = 7
+_SETTINGS_DB_USER_VERSION = 8
 
 
 def get_db_dir() -> Path:
@@ -469,6 +469,10 @@ def _verify_settings_db_user_version(engine) -> None:
                 "autonomy_max_parallel_intents",
                 "camera_watch_enabled",
                 "camera_watch_interval_seconds",
+                "tapo_camera_host",
+                "tapo_camera_username",
+                "tapo_camera_password",
+                "tapo_camera_cloud_password",
                 "agent_backend_cli_agent_command",
             }
             missing_global = sorted(required_global_columns - gs_columns)
@@ -844,6 +848,10 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
             # 視覚（Vision）: カメラ監視（初期は無効）
             camera_watch_enabled=False,
             camera_watch_interval_seconds=15,
+            tapo_camera_host="",
+            tapo_camera_username="",
+            tapo_camera_password="",
+            tapo_camera_cloud_password="",
             # 汎用エージェント委譲 backend（cli_agent）
             agent_backend_cli_agent_command="gemini.exe -p",
         )
@@ -858,6 +866,15 @@ def ensure_initial_settings(session: Session, toml_config) -> None:
         global_settings.autonomy_max_parallel_intents = 2
     if int(getattr(global_settings, "camera_watch_interval_seconds", 0) or 0) <= 0:
         global_settings.camera_watch_interval_seconds = 15
+    # --- Tapo カメラ設定は未設定(None)のときだけ空文字へ正規化する ---
+    if getattr(global_settings, "tapo_camera_host", None) is None:
+        global_settings.tapo_camera_host = ""
+    if getattr(global_settings, "tapo_camera_username", None) is None:
+        global_settings.tapo_camera_username = ""
+    if getattr(global_settings, "tapo_camera_password", None) is None:
+        global_settings.tapo_camera_password = ""
+    if getattr(global_settings, "tapo_camera_cloud_password", None) is None:
+        global_settings.tapo_camera_cloud_password = ""
     # --- cli_agent backend 実行CLIコマンドは未設定(None)のときだけ初期値を補完する ---
     if getattr(global_settings, "agent_backend_cli_agent_command", None) is None:
         global_settings.agent_backend_cli_agent_command = "gemini.exe -p"
