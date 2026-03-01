@@ -13,7 +13,7 @@ import logging
 
 from sqlalchemy import text
 
-from cocoro_ghost.autonomy.action_keys import canonical_action_key
+from cocoro_ghost.core.action_keys import canonical_action_key
 
 
 def _get_sqlite_user_version(conn) -> int:
