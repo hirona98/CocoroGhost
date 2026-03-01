@@ -185,6 +185,48 @@ def _migrate_settings_db_v6_to_v7(engine, logger: logging.Logger) -> None:
     logger.info("settings DB migrated: user_version 6 -> 7")
 
 
+def _migrate_settings_db_v7_to_v8(engine, logger: logging.Logger) -> None:
+    """設定DBを v7 から v8 へ移行する。"""
+
+    with engine.connect() as conn:
+        # --- global_settings に Tapo カメラ設定列を追加 ---
+        gs_columns = _get_table_columns(conn, "global_settings")
+        if "tapo_camera_host" not in gs_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE global_settings "
+                    "ADD COLUMN tapo_camera_host TEXT NOT NULL DEFAULT ''"
+                )
+            )
+        if "tapo_camera_username" not in gs_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE global_settings "
+                    "ADD COLUMN tapo_camera_username TEXT NOT NULL DEFAULT ''"
+                )
+            )
+        if "tapo_camera_password" not in gs_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE global_settings "
+                    "ADD COLUMN tapo_camera_password TEXT NOT NULL DEFAULT ''"
+                )
+            )
+        if "tapo_camera_cloud_password" not in gs_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE global_settings "
+                    "ADD COLUMN tapo_camera_cloud_password TEXT NOT NULL DEFAULT ''"
+                )
+            )
+
+        # --- スキーマバージョンを更新 ---
+        conn.execute(text("PRAGMA user_version=8"))
+        conn.commit()
+
+    logger.info("settings DB migrated: user_version 7 -> 8")
+
+
 def migrate_settings_db_if_needed(*, engine, target_user_version: int, logger: logging.Logger) -> None:
     """設定DBに必要なマイグレーションを適用する。"""
 
@@ -207,6 +249,9 @@ def migrate_settings_db_if_needed(*, engine, target_user_version: int, logger: l
             continue
         if current == 6 and int(target_user_version) >= 7:
             _migrate_settings_db_v6_to_v7(engine, logger)
+            continue
+        if current == 7 and int(target_user_version) >= 8:
+            _migrate_settings_db_v7_to_v8(engine, logger)
             continue
         break
 

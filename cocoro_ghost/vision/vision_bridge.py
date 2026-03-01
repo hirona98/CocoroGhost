@@ -35,7 +35,7 @@ class VisionCaptureRequest:
     """クライアントへ送る画像取得要求。"""
 
     request_id: str
-    source: str  # desktop|camera
+    source: str  # current: desktop
     mode: str  # still（将来 video）
     purpose: str  # chat|desktop_watch
     timeout_ms: int

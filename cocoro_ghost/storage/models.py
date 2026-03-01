@@ -69,6 +69,14 @@ class GlobalSettings(Base):
     camera_watch_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # カメラ監視間隔（秒）
     camera_watch_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    # Tapo カメラのホスト（IP / ホスト名）
+    tapo_camera_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # Tapo カメラのユーザー名（Camera Account）
+    tapo_camera_username: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    # Tapo カメラのパスワード（Camera Account）
+    tapo_camera_password: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Tapo クラウドパスワード（ストリーム取得に必要な機種向け）
+    tapo_camera_cloud_password: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     # --- 自発行動（Autonomy）: 汎用エージェント委譲 backend 設定 ---
     # backend="cli_agent" 実行時に task_instruction を末尾引数として渡すCLIコマンド（例: gemini.exe -p）

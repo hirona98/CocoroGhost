@@ -102,6 +102,12 @@
 
   const desktopWatchEnabledInput = document.getElementById("desktop-watch-enabled");
   const desktopWatchIntervalSecondsInput = document.getElementById("desktop-watch-interval-seconds");
+  const cameraWatchEnabledInput = document.getElementById("camera-watch-enabled");
+  const cameraWatchIntervalSecondsInput = document.getElementById("camera-watch-interval-seconds");
+  const tapoCameraHostInput = document.getElementById("tapo-camera-host");
+  const tapoCameraUsernameInput = document.getElementById("tapo-camera-username");
+  const tapoCameraPasswordInput = document.getElementById("tapo-camera-password");
+  const tapoCameraCloudPasswordInput = document.getElementById("tapo-camera-cloud-password");
 
   // --- Camera modal DOM refs ---
   const cameraModal = document.getElementById("camera-modal");
@@ -1628,6 +1634,12 @@
     // --- システム設定 ---
     desktopWatchEnabledInput.checked = !!settingsDraft.desktop_watch_enabled;
     desktopWatchIntervalSecondsInput.value = String(settingsDraft.desktop_watch_interval_seconds);
+    cameraWatchEnabledInput.checked = !!settingsDraft.camera_watch_enabled;
+    cameraWatchIntervalSecondsInput.value = String(settingsDraft.camera_watch_interval_seconds);
+    tapoCameraHostInput.value = String(settingsDraft.tapo_camera_host || "");
+    tapoCameraUsernameInput.value = String(settingsDraft.tapo_camera_username || "");
+    tapoCameraPasswordInput.value = String(settingsDraft.tapo_camera_password || "");
+    tapoCameraCloudPasswordInput.value = String(settingsDraft.tapo_camera_cloud_password || "");
   }
 
   async function apiGetSettings() {
@@ -1749,13 +1761,20 @@
 
   function syncSystemFormToDraft() {
     if (!settingsDraft) return;
-    const interval = readNumberInput(desktopWatchIntervalSecondsInput);
-    if (interval == null) {
+    const desktopInterval = readNumberInput(desktopWatchIntervalSecondsInput);
+    const cameraInterval = readNumberInput(cameraWatchIntervalSecondsInput);
+    if (desktopInterval == null || cameraInterval == null) {
       setSettingsStatus("システム設定の数値項目が不正です。", true);
       return;
     }
     settingsDraft.desktop_watch_enabled = !!desktopWatchEnabledInput.checked;
-    settingsDraft.desktop_watch_interval_seconds = interval;
+    settingsDraft.desktop_watch_interval_seconds = desktopInterval;
+    settingsDraft.camera_watch_enabled = !!cameraWatchEnabledInput.checked;
+    settingsDraft.camera_watch_interval_seconds = cameraInterval;
+    settingsDraft.tapo_camera_host = String(tapoCameraHostInput.value || "");
+    settingsDraft.tapo_camera_username = String(tapoCameraUsernameInput.value || "");
+    settingsDraft.tapo_camera_password = String(tapoCameraPasswordInput.value || "");
+    settingsDraft.tapo_camera_cloud_password = String(tapoCameraCloudPasswordInput.value || "");
   }
 
   // --- WebSocket (events) ---
@@ -2360,6 +2379,12 @@
 
   desktopWatchEnabledInput.addEventListener("change", syncSystemFormToDraft);
   desktopWatchIntervalSecondsInput.addEventListener("input", syncSystemFormToDraft);
+  cameraWatchEnabledInput.addEventListener("change", syncSystemFormToDraft);
+  cameraWatchIntervalSecondsInput.addEventListener("input", syncSystemFormToDraft);
+  tapoCameraHostInput.addEventListener("input", syncSystemFormToDraft);
+  tapoCameraUsernameInput.addEventListener("input", syncSystemFormToDraft);
+  tapoCameraPasswordInput.addEventListener("input", syncSystemFormToDraft);
+  tapoCameraCloudPasswordInput.addEventListener("input", syncSystemFormToDraft);
 
   settingsLogoutButton.addEventListener("click", async () => {
     const ok = confirm("ログアウトしますか？");

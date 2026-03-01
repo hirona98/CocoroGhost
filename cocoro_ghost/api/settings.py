@@ -4,7 +4,7 @@
 アプリケーション設定の取得・更新を行うエンドポイント。
 LLM/Embedding/PersonaPreset/AddonPreset各プリセットの管理、
 GlobalSettings（除外キーワード、記憶機能=常時ON等）の更新、
-デスクトップウォッチ設定の管理をサポートする。
+デスクトップウォッチと Tapo カメラ設定の管理をサポートする。
 """
 
 from __future__ import annotations
@@ -124,6 +124,10 @@ def get_settings(
         autonomy_max_parallel_intents=max(1, int(getattr(global_settings, "autonomy_max_parallel_intents", 2))),
         camera_watch_enabled=bool(getattr(global_settings, "camera_watch_enabled", False)),
         camera_watch_interval_seconds=max(1, int(getattr(global_settings, "camera_watch_interval_seconds", 15))),
+        tapo_camera_host=str(getattr(global_settings, "tapo_camera_host", "") or "").strip(),
+        tapo_camera_username=str(getattr(global_settings, "tapo_camera_username", "") or "").strip(),
+        tapo_camera_password=str(getattr(global_settings, "tapo_camera_password", "") or ""),
+        tapo_camera_cloud_password=str(getattr(global_settings, "tapo_camera_cloud_password", "") or ""),
         agent_backend_cli_agent_command=str(
             getattr(global_settings, "agent_backend_cli_agent_command", "gemini.exe -p") or ""
         ).strip(),
@@ -187,6 +191,11 @@ def commit_settings(
     global_settings.autonomy_max_parallel_intents = max(1, int(request.autonomy_max_parallel_intents))
     global_settings.camera_watch_enabled = bool(request.camera_watch_enabled)
     global_settings.camera_watch_interval_seconds = max(1, int(request.camera_watch_interval_seconds))
+    # --- Tapo カメラ設定は camera 観測の正とする ---
+    global_settings.tapo_camera_host = str(request.tapo_camera_host or "").strip()
+    global_settings.tapo_camera_username = str(request.tapo_camera_username or "").strip()
+    global_settings.tapo_camera_password = str(request.tapo_camera_password or "")
+    global_settings.tapo_camera_cloud_password = str(request.tapo_camera_cloud_password or "")
     # --- agent_runner backend=cli_agent 実行CLIコマンド（task_instruction は末尾引数で渡される） ---
     global_settings.agent_backend_cli_agent_command = str(request.agent_backend_cli_agent_command or "").strip()
 
