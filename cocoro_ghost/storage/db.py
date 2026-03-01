@@ -52,7 +52,7 @@ class _MemorySessionEntry:
 _memory_sessions: dict[str, _MemorySessionEntry] = {}
 
 
-_MEMORY_DB_USER_VERSION = 16
+_MEMORY_DB_USER_VERSION = 17
 _SETTINGS_DB_USER_VERSION = 7
 
 
@@ -321,6 +321,12 @@ def _create_memory_indexes(engine) -> None:
         "CREATE INDEX IF NOT EXISTS idx_action_decisions_outcome_created ON action_decisions(decision_outcome, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_intents_status_scheduled_at ON intents(status, scheduled_at)",
         "CREATE INDEX IF NOT EXISTS idx_intents_updated_at ON intents(updated_at)",
+        (
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_intents_active_canonical_action_key "
+            "ON intents(canonical_action_key) "
+            "WHERE status IN ('queued','running','blocked') "
+            "AND length(trim(COALESCE(canonical_action_key,''))) > 0"
+        ),
         "CREATE INDEX IF NOT EXISTS idx_action_results_created_at ON action_results(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_action_results_recall_decision ON action_results(recall_decision, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_agenda_threads_status_followup_due_at ON agenda_threads(status, followup_due_at)",

@@ -13,6 +13,8 @@ import logging
 
 from sqlalchemy import text
 
+from cocoro_ghost.autonomy.action_keys import canonical_action_key
+
 
 def _get_sqlite_user_version(conn) -> int:
     """SQLite PRAGMA user_version を整数で取得する。"""
@@ -931,6 +933,150 @@ def _migrate_memory_db_v15_to_v16(engine, logger: logging.Logger) -> None:
     logger.info("memory DB migrated: user_version 15 -> 16")
 
 
+def _migrate_memory_db_v16_to_v17(engine, logger: logging.Logger) -> None:
+    """記憶DBを v16 から v17 へ移行する（active intent の同一 action key を一意化）。"""
+
+    with engine.connect() as conn:
+        # --- intents に canonical_action_key 列を追加する ---
+        intent_columns = _get_table_columns(conn, "intents")
+        if "canonical_action_key" not in intent_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE intents "
+                    "ADD COLUMN canonical_action_key TEXT NOT NULL DEFAULT ''"
+                )
+            )
+
+        # --- 既存 intents の canonical_action_key を再計算する ---
+        intent_rows = conn.execute(
+            text(
+                """
+                SELECT
+                    intent_id,
+                    action_type,
+                    action_payload_json,
+                    status,
+                    created_at,
+                    updated_at
+                  FROM intents
+                """
+            )
+        ).fetchall()
+
+        active_rows_by_key: dict[str, list[dict[str, object]]] = {}
+        active_status_rank = {"running": 0, "blocked": 1, "queued": 2}
+
+        for row in intent_rows:
+            intent_id = str(row[0] or "").strip()
+            if not intent_id:
+                continue
+
+            # --- payload JSON は構造比較の正本なので、壊れていれば移行を止める ---
+            try:
+                action_payload_obj = json.loads(str(row[2] or "{}"))
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    f"memory DB migration failed: intents.action_payload_json is invalid JSON "
+                    f"(intent_id={intent_id})."
+                ) from exc
+            if not isinstance(action_payload_obj, dict):
+                raise RuntimeError(
+                    f"memory DB migration failed: intents.action_payload_json is not an object "
+                    f"(intent_id={intent_id})."
+                )
+
+            # --- 全 intent に canonical_action_key を保存する ---
+            key = canonical_action_key(
+                action_type=str(row[1] or ""),
+                action_payload=dict(action_payload_obj),
+            )
+            conn.execute(
+                text(
+                    "UPDATE intents "
+                    "SET canonical_action_key = :canonical_action_key "
+                    "WHERE intent_id = :intent_id"
+                ),
+                {
+                    "canonical_action_key": str(key),
+                    "intent_id": str(intent_id),
+                },
+            )
+
+            # --- active intent の重複だけを移行時に整理する ---
+            status = str(row[3] or "").strip()
+            if status not in {"queued", "running", "blocked"}:
+                continue
+            if not key:
+                continue
+
+            bucket = active_rows_by_key.get(str(key))
+            if bucket is None:
+                bucket = []
+                active_rows_by_key[str(key)] = bucket
+            bucket.append(
+                {
+                    "intent_id": str(intent_id),
+                    "status": str(status),
+                    "created_at": int(row[4] or 0),
+                    "updated_at": int(row[5] or 0),
+                }
+            )
+
+        # --- 重複 active intent は1件だけ残し、他は dropped へ落とす ---
+        for key, rows in active_rows_by_key.items():
+            ordered_rows = sorted(
+                list(rows),
+                key=lambda item: (
+                    int(active_status_rank.get(str(item.get("status") or ""), 9)),
+                    int(item.get("created_at") or 0),
+                    int(item.get("updated_at") or 0),
+                    str(item.get("intent_id") or ""),
+                ),
+            )
+            for duplicate_row in ordered_rows[1:]:
+                drop_ts = max(
+                    int(duplicate_row.get("updated_at") or 0),
+                    int(duplicate_row.get("created_at") or 0),
+                    1,
+                )
+                conn.execute(
+                    text(
+                        """
+                        UPDATE intents
+                           SET status = 'dropped',
+                               dropped_reason = :dropped_reason,
+                               dropped_at = :dropped_at,
+                               updated_at = :updated_at
+                         WHERE intent_id = :intent_id
+                           AND status IN ('queued','running','blocked')
+                        """
+                    ),
+                    {
+                        "dropped_reason": f"superseded_same_action_key:{str(key)}"[:255],
+                        "dropped_at": int(drop_ts),
+                        "updated_at": int(drop_ts),
+                        "intent_id": str(duplicate_row.get("intent_id") or ""),
+                    },
+                )
+
+        # --- active intent の同一 action key をDB制約で一意化する ---
+        conn.execute(text("DROP INDEX IF EXISTS uq_intents_active_canonical_action_key"))
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_intents_active_canonical_action_key "
+                "ON intents(canonical_action_key) "
+                "WHERE status IN ('queued','running','blocked') "
+                "AND length(trim(COALESCE(canonical_action_key,''))) > 0"
+            )
+        )
+
+        # --- スキーマバージョンを更新 ---
+        conn.execute(text("PRAGMA user_version=17"))
+        conn.commit()
+
+    logger.info("memory DB migrated: user_version 16 -> 17")
+
+
 def migrate_memory_db_if_needed(*, engine, target_user_version: int, logger: logging.Logger) -> None:
     """記憶DBに必要なマイグレーションを適用する。"""
 
@@ -956,5 +1102,8 @@ def migrate_memory_db_if_needed(*, engine, target_user_version: int, logger: log
             continue
         if current == 15 and int(target_user_version) >= 16:
             _migrate_memory_db_v15_to_v16(engine, logger)
+            continue
+        if current == 16 and int(target_user_version) >= 17:
+            _migrate_memory_db_v16_to_v17(engine, logger)
             continue
         break

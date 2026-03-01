@@ -20,6 +20,7 @@ from sqlalchemy import text
 
 from cocoro_ghost.core import common_utils
 from cocoro_ghost.llm import prompt_builders
+from cocoro_ghost.autonomy.action_keys import canonical_action_key as _canonical_action_key
 from cocoro_ghost.autonomy.capabilities.device_control import execute_device_control
 from cocoro_ghost.autonomy.capabilities.mobility_move import execute_mobility_move
 from cocoro_ghost.autonomy.capabilities.schedule_alarm import execute_schedule_alarm
@@ -1216,65 +1217,6 @@ def _load_agenda_threads_snapshot_for_deliberation(db) -> list[dict[str, Any]]:
     return out
 
 
-def _normalize_action_text(value: Any) -> str:
-    """
-    行動キー比較用に文字列を正規化する。
-
-    方針:
-        - 改行や余分な空白を畳み、比較ゆらぎを減らす。
-        - 英字は casefold して、大文字小文字差を吸収する。
-    """
-
-    # --- 空文字を正規化する ---
-    text_in = str(value or "").replace("\r", "\n").strip()
-    if not text_in:
-        return ""
-
-    # --- 連続空白を1つに畳む ---
-    compact = " ".join(text_in.split())
-    return str(compact).casefold()
-
-
-def _canonical_action_key(
-    *,
-    action_type: str,
-    action_payload: dict[str, Any] | None,
-) -> str:
-    """
-    同一行動を判定するための正規化キーを返す。
-
-    方針:
-        - 自然言語本文ではなく、構造化 payload だけで同一性を決める。
-        - query のような再実行しやすい行動は、入力値まで含めて識別する。
-    """
-
-    # --- 行動種別を正規化する ---
-    action_type_norm = str(action_type or "").strip()
-    payload_obj = dict(action_payload or {})
-    if not action_type_norm:
-        return ""
-
-    # --- web_research は query を主キーにする ---
-    if action_type_norm == "web_research":
-        query_norm = _normalize_action_text(payload_obj.get("query"))
-        if query_norm:
-            return f"web_research:{query_norm}"
-        goal_norm = _normalize_action_text(payload_obj.get("goal"))
-        if goal_norm:
-            return f"web_research_goal:{goal_norm}"
-        return "web_research"
-
-    # --- 観測系は target_client_id まで含める ---
-    if action_type_norm in {"observe_screen", "observe_camera"}:
-        target_client_id = _normalize_action_text(payload_obj.get("target_client_id"))
-        if target_client_id:
-            return f"{action_type_norm}:{target_client_id}"
-        return str(action_type_norm)
-
-    # --- それ以外は action_type 単位で扱う ---
-    return str(action_type_norm)
-
-
 def _build_action_result_content_fingerprint(
     *,
     action_type: str,
@@ -2073,6 +2015,108 @@ def _update_runtime_attention_targets_from_action_result(
         items=items,
         now_system_ts=int(now_system_ts),
     )
+
+
+def _find_live_intent_by_action_key(
+    *,
+    db,
+    canonical_action_key: str,
+) -> dict[str, Any] | None:
+    """
+    同じ canonical_action_key を持つ live intent を1件返す。
+
+    方針:
+        - queued / running / blocked を「まだ生きている実行」として扱う。
+        - running を最優先し、次に blocked、最後に queued を採用する。
+    """
+
+    # --- 比較キーが空なら対象無し ---
+    key_norm = str(canonical_action_key or "").strip()
+    if not key_norm:
+        return None
+
+    # --- live intent を優先順位付きで1件だけ引く ---
+    row = db.execute(
+        text(
+            """
+            SELECT
+                intent_id,
+                status,
+                priority,
+                goal_id
+              FROM intents
+             WHERE canonical_action_key = :canonical_action_key
+               AND status IN ('queued','running','blocked')
+             ORDER BY
+                CASE status
+                    WHEN 'running' THEN 0
+                    WHEN 'blocked' THEN 1
+                    ELSE 2
+                END ASC,
+                created_at ASC,
+                updated_at ASC,
+                intent_id ASC
+             LIMIT 1
+            """
+        ),
+        {"canonical_action_key": str(key_norm)},
+    ).fetchone()
+    if row is None:
+        return None
+
+    # --- 呼び出し側で扱いやすい最小構造に整える ---
+    return {
+        "intent_id": str(row[0] or "").strip(),
+        "status": str(row[1] or "").strip(),
+        "priority": int(row[2] or 0),
+        "goal_id": (str(row[3]) if row[3] is not None and str(row[3]).strip() else None),
+    }
+
+
+def _touch_live_intent_for_duplicate_action(
+    *,
+    db,
+    canonical_action_key: str,
+    requested_priority: int,
+    now_system_ts: int,
+) -> str | None:
+    """
+    同じ action key の live intent を再利用し、必要なら優先度だけ持ち上げる。
+
+    方針:
+        - 新しい Goal / Intent は作らない。
+        - 既存 intent を正本として残し、priority だけ最大値へ寄せる。
+    """
+
+    # --- live intent が無ければ再利用できない ---
+    live_intent = _find_live_intent_by_action_key(
+        db=db,
+        canonical_action_key=str(canonical_action_key),
+    )
+    if not isinstance(live_intent, dict):
+        return None
+
+    # --- priority は高い方だけ採用して、同じ intent を正本にする ---
+    next_priority = max(
+        int(live_intent.get("priority") or 0),
+        max(0, min(100, int(requested_priority))),
+    )
+    db.execute(
+        text(
+            """
+            UPDATE intents
+               SET priority = :priority,
+                   updated_at = :updated_at
+             WHERE intent_id = :intent_id
+            """
+        ),
+        {
+            "priority": int(next_priority),
+            "updated_at": int(now_system_ts),
+            "intent_id": str(live_intent.get("intent_id") or ""),
+        },
+    )
+    return str(live_intent.get("intent_id") or "") or None
 
 
 def _maybe_create_goal_from_decision(
@@ -3047,87 +3091,132 @@ def _handle_deliberate_once(
 
             # --- decision_outcome=do_action: Intent を冪等生成して execute_intent を投入 ---
             if str(decision.decision_outcome) == "do_action":
-                goal_id_for_intent = _maybe_create_goal_from_decision(
+                action_type_for_intent = str(decision.action_type or "")
+                action_payload_json_for_intent = str(decision.action_payload_json or "{}")
+                action_payload_obj_for_intent = common_utils.json_loads_maybe(str(action_payload_json_for_intent))
+                if not isinstance(action_payload_obj_for_intent, dict):
+                    action_payload_obj_for_intent = {}
+                canonical_action_key_for_intent = _canonical_action_key(
+                    action_type=str(action_type_for_intent),
+                    action_payload=dict(action_payload_obj_for_intent),
+                )
+
+                # --- まず action_decisions を確定し、同じ action key の live intent を探す ---
+                # --- duplicate がある限り、新しい Goal / Intent は作らない ---
+                db.flush()
+                reused_intent_id = _touch_live_intent_for_duplicate_action(
                     db=db,
-                    decision_id=str(decision_id),
-                    action_type=str(decision.action_type or ""),
-                    action_payload_json=(str(decision.action_payload_json) if decision.action_payload_json else None),
-                    priority=int(decision.priority),
+                    canonical_action_key=str(canonical_action_key_for_intent),
+                    requested_priority=int(decision.priority),
                     now_system_ts=int(now_system_ts),
                 )
 
-                # --- 親行（action_decisions / goals）を先に flush する ---
-                # `intents` は `decision_id` / `goal_id` の外部キーを持つ。
-                # ここで生SQL `INSERT` を使うため、ORM の pending 行を明示 flush して
-                # FK親を先にDBへ反映してから `intents` を追加する。
-                db.flush()
-
-                proposed_intent_id = str(uuid.uuid4())
-                db.execute(
-                    text(
-                        """
-                        INSERT OR IGNORE INTO intents(
-                            intent_id,
-                            decision_id,
-                            goal_id,
-                            action_type,
-                            action_payload_json,
-                            status,
-                            priority,
-                            scheduled_at,
-                            blocked_reason,
-                            dropped_reason,
-                            dropped_at,
-                            last_result_status,
-                            created_at,
-                            updated_at
-                        )
-                        VALUES(
-                            :intent_id,
-                            :decision_id,
-                            :goal_id,
-                            :action_type,
-                            :action_payload_json,
-                            'queued',
-                            :priority,
-                            NULL,
-                            NULL,
-                            '',
-                            NULL,
-                            NULL,
-                            :created_at,
-                            :updated_at
-                        )
-                        """
-                    ),
-                    {
-                        "intent_id": str(proposed_intent_id),
-                        "decision_id": str(decision_id),
-                        "goal_id": (str(goal_id_for_intent) if goal_id_for_intent else None),
-                        "action_type": str(decision.action_type or ""),
-                        "action_payload_json": str(decision.action_payload_json or "{}"),
-                        "priority": int(decision.priority),
-                        "created_at": int(now_system_ts),
-                        "updated_at": int(now_system_ts),
-                    },
-                )
-                intent_row = db.execute(
-                    text("SELECT intent_id FROM intents WHERE decision_id=:decision_id LIMIT 1"),
-                    {"decision_id": str(decision_id)},
-                ).fetchone()
-                if intent_row is not None and str(intent_row[0] or "").strip():
-                    db.add(
-                        Job(
-                            kind="execute_intent",
-                            payload_json=common_utils.json_dumps({"intent_id": str(intent_row[0])}),
-                            status=int(_JOB_PENDING),
-                            run_after=int(now_system_ts),
-                            tries=0,
-                            last_error=None,
-                            created_at=int(now_system_ts),
-                            updated_at=int(now_system_ts),
-                        )
+                # --- live intent が無いときだけ、新規 intent を1件作る ---
+                if reused_intent_id is None:
+                    proposed_intent_id = str(uuid.uuid4())
+                    db.execute(
+                        text(
+                            """
+                            INSERT OR IGNORE INTO intents(
+                                intent_id,
+                                decision_id,
+                                goal_id,
+                                action_type,
+                                action_payload_json,
+                                canonical_action_key,
+                                status,
+                                priority,
+                                scheduled_at,
+                                blocked_reason,
+                                dropped_reason,
+                                dropped_at,
+                                last_result_status,
+                                created_at,
+                                updated_at
+                            )
+                            VALUES(
+                                :intent_id,
+                                :decision_id,
+                                NULL,
+                                :action_type,
+                                :action_payload_json,
+                                :canonical_action_key,
+                                'queued',
+                                :priority,
+                                NULL,
+                                NULL,
+                                '',
+                                NULL,
+                                NULL,
+                                :created_at,
+                                :updated_at
+                            )
+                            """
+                        ),
+                        {
+                            "intent_id": str(proposed_intent_id),
+                            "decision_id": str(decision_id),
+                            "action_type": str(action_type_for_intent),
+                            "action_payload_json": str(action_payload_json_for_intent),
+                            "canonical_action_key": str(canonical_action_key_for_intent),
+                            "priority": int(decision.priority),
+                            "created_at": int(now_system_ts),
+                            "updated_at": int(now_system_ts),
+                        },
                     )
+                    intent_row = db.execute(
+                        text("SELECT intent_id FROM intents WHERE decision_id=:decision_id LIMIT 1"),
+                        {"decision_id": str(decision_id)},
+                    ).fetchone()
+
+                    # --- 挿入できたときだけ Goal を作り、intent に紐づけて実行ジョブを積む ---
+                    if intent_row is not None and str(intent_row[0] or "").strip():
+                        goal_id_for_intent = _maybe_create_goal_from_decision(
+                            db=db,
+                            decision_id=str(decision_id),
+                            action_type=str(action_type_for_intent),
+                            action_payload_json=str(action_payload_json_for_intent),
+                            priority=int(decision.priority),
+                            now_system_ts=int(now_system_ts),
+                        )
+                        if goal_id_for_intent:
+                            db.flush()
+                            db.execute(
+                                text(
+                                    """
+                                    UPDATE intents
+                                       SET goal_id = :goal_id,
+                                           updated_at = :updated_at
+                                     WHERE intent_id = :intent_id
+                                    """
+                                ),
+                                {
+                                    "goal_id": str(goal_id_for_intent),
+                                    "updated_at": int(now_system_ts),
+                                    "intent_id": str(intent_row[0]),
+                                },
+                            )
+
+                        db.add(
+                            Job(
+                                kind="execute_intent",
+                                payload_json=common_utils.json_dumps({"intent_id": str(intent_row[0])}),
+                                status=int(_JOB_PENDING),
+                                run_after=int(now_system_ts),
+                                tries=0,
+                                last_error=None,
+                                created_at=int(now_system_ts),
+                                updated_at=int(now_system_ts),
+                            )
+                        )
+                    else:
+                        # --- race で他方が先に同じ action key を作った場合は、それを正本にする ---
+                        _touch_live_intent_for_duplicate_action(
+                            db=db,
+                            canonical_action_key=str(canonical_action_key_for_intent),
+                            requested_priority=int(decision.priority),
+                            now_system_ts=int(now_system_ts),
+                        )
 
             # --- defer: 再検討トリガを投入 ---
             if str(decision.decision_outcome) == "defer":

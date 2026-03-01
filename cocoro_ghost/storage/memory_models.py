@@ -547,6 +547,7 @@ class Intent(MemoryBase):
     # --- 実行定義 ---
     action_type: Mapped[str] = mapped_column(Text, nullable=False)
     action_payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_action_key: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
     scheduled_at: Mapped[Optional[int]] = mapped_column(Integer)
