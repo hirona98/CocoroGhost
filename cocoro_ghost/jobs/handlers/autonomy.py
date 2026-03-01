@@ -1285,13 +1285,14 @@ def _build_novelty_context_for_deliberation(
     trigger: AutonomyTrigger,
     current_thought_snapshot: dict[str, Any] | None,
     agenda_threads_snapshot: list[dict[str, Any]],
+    active_intents_snapshot: list[dict[str, Any]],
     now_domain_ts: int,
 ) -> dict[str, Any]:
     """
     Deliberation 用の反復・新規性コンテキストを構築する。
 
     方針:
-        - 同じ行動を直近で実行したか、新しい観測差分があるか、ユーザー反応があるかを構造で渡す。
+        - 同じ行動を直近で実行したか、同じ行動が進行中か、新しい観測差分があるかを構造で渡す。
         - ここでは「止める」のではなく、最初から選びにくい判断材料を作る。
     """
 
@@ -1463,16 +1464,60 @@ def _build_novelty_context_for_deliberation(
             }
         )
 
+    # --- 進行中 intent も「今まさに同じことをしようとしている」情報として渡す ---
+    inflight_action_keys: list[str] = []
+    inflight_action_alerts: list[dict[str, Any]] = []
+    seen_inflight_keys: set[str] = set()
+    for item in list(active_intents_snapshot or []):
+        if not isinstance(item, dict):
+            continue
+
+        status_norm = str(item.get("status") or "").strip()
+        if status_norm not in {"queued", "running", "blocked"}:
+            continue
+
+        action_type_norm = str(item.get("action_type") or "").strip()
+        canonical_key = str(item.get("canonical_action_key") or "").strip()
+        if not canonical_key:
+            canonical_key = _canonical_action_key(
+                action_type=str(action_type_norm),
+                action_payload=(
+                    dict(item.get("action_payload") or {})
+                    if isinstance(item.get("action_payload"), dict)
+                    else {}
+                ),
+            )
+        if not canonical_key or canonical_key in seen_inflight_keys:
+            continue
+
+        seen_inflight_keys.add(str(canonical_key))
+        inflight_action_keys.append(str(canonical_key))
+        if canonical_key not in avoid_action_keys:
+            avoid_action_keys.append(str(canonical_key))
+        if action_type_norm and action_type_norm not in avoid_action_types:
+            avoid_action_types.append(str(action_type_norm))
+
+        inflight_action_alerts.append(
+            {
+                "canonical_action_key": str(canonical_key),
+                "action_type": str(action_type_norm),
+                "live_intent_status": str(status_norm),
+                "suggested_decision": "defer",
+            }
+        )
+
     return {
         "trigger_type": str(trigger.trigger_type or ""),
         "recent_window_seconds": int(recent_window_seconds),
         "repeat_cooldown_seconds": int(repeat_cooldown_seconds),
         "candidate_action_keys": list(candidate_action_keys),
+        "inflight_action_keys": list(inflight_action_keys),
         "avoid_action_keys": list(avoid_action_keys),
         "avoid_action_types": list(avoid_action_types),
         "last_chat_event_id": last_chat_event_id,
         "last_chat_created_at": last_chat_created_at,
         "repetition_alerts": list(repetition_alerts),
+        "inflight_action_alerts": list(inflight_action_alerts),
     }
 
 
@@ -1767,6 +1812,11 @@ def _build_persona_deliberation_focus(
             "repetition_alerts": [
                 dict(x)
                 for x in list(novelty_context.get("repetition_alerts") or [])
+                if isinstance(x, dict)
+            ],
+            "inflight_action_alerts": [
+                dict(x)
+                for x in list(novelty_context.get("inflight_action_alerts") or [])
                 if isinstance(x, dict)
             ],
         },
@@ -2659,13 +2709,6 @@ def _collect_deliberation_input(
     runtime_blackboard_snapshot = get_runtime_blackboard().snapshot()
     if not isinstance(runtime_blackboard_snapshot, dict):
         runtime_blackboard_snapshot = {}
-    novelty_context = _build_novelty_context_for_deliberation(
-        db,
-        trigger=trigger,
-        current_thought_snapshot=current_thought_snapshot,
-        agenda_threads_snapshot=agenda_threads_snapshot,
-        now_domain_ts=_now_domain_utc_ts(),
-    )
 
     # --- intents は goals優先順にも使うので先に取得しておく ---
     intent_rows = (
@@ -2675,24 +2718,42 @@ def _collect_deliberation_input(
         .limit(16)
         .all()
     )
-    intents = [
-        {
-            "intent_id": str(x.intent_id),
-            "decision_id": str(x.decision_id),
-            "goal_id": (str(x.goal_id) if x.goal_id is not None else None),
-            "action_type": str(x.action_type),
-            "status": str(x.status),
-            "priority": int(x.priority),
-            "scheduled_at": (int(x.scheduled_at) if x.scheduled_at is not None else None),
-            "blocked_reason": (str(x.blocked_reason) if x.blocked_reason is not None else None),
-        }
-        for x in intent_rows
-    ]
+    intents: list[dict[str, Any]] = []
+    for x in intent_rows:
+        # --- action_payload は novelty_context で同一 action key を補完計算する時にも使う ---
+        action_payload_obj = common_utils.json_loads_maybe(str(x.action_payload_json or "{}"))
+        if not isinstance(action_payload_obj, dict):
+            action_payload_obj = {}
+
+        intents.append(
+            {
+                "intent_id": str(x.intent_id),
+                "decision_id": str(x.decision_id),
+                "goal_id": (str(x.goal_id) if x.goal_id is not None else None),
+                "action_type": str(x.action_type),
+                "action_payload": dict(action_payload_obj),
+                "canonical_action_key": str(x.canonical_action_key or "").strip(),
+                "status": str(x.status),
+                "priority": int(x.priority),
+                "scheduled_at": (int(x.scheduled_at) if x.scheduled_at is not None else None),
+                "blocked_reason": (str(x.blocked_reason) if x.blocked_reason is not None else None),
+            }
+        )
     active_goal_ids = []
     for it in list(intents or []):
         gid = str(it.get("goal_id") or "").strip()
         if gid and gid not in active_goal_ids:
             active_goal_ids.append(gid)
+
+    # --- novelty_context は直近結果と進行中 intent の両方から組み立てる ---
+    novelty_context = _build_novelty_context_for_deliberation(
+        db,
+        trigger=trigger,
+        current_thought_snapshot=current_thought_snapshot,
+        agenda_threads_snapshot=agenda_threads_snapshot,
+        active_intents_snapshot=intents,
+        now_domain_ts=_now_domain_utc_ts(),
+    )
 
     # --- Deliberation 材料選別用の focus（構造情報ベース） ---
     persona_deliberation_focus = _build_persona_deliberation_focus(
