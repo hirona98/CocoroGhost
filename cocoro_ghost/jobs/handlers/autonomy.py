@@ -19,6 +19,13 @@ from typing import Any
 from sqlalchemy import text
 
 from cocoro_ghost.core import common_utils
+from cocoro_ghost.core.current_thought import (
+    extract_current_thought_attention_targets,
+    extract_current_thought_interaction_mode,
+    extract_current_thought_next_action,
+    extract_current_thought_resume_when,
+    normalize_current_thought_snapshot,
+)
 from cocoro_ghost.llm import prompt_builders
 from cocoro_ghost.autonomy.capabilities.device_control import execute_device_control
 from cocoro_ghost.autonomy.capabilities.mobility_move import execute_mobility_move
@@ -393,8 +400,12 @@ def _build_autonomy_message_report_focus(
     attention_targets_raw: list[Any] = []
     if isinstance(runtime_bb.get("attention_targets"), list):
         attention_targets_raw.extend(list(runtime_bb.get("attention_targets") or []))
-    if isinstance(current_thought.get("attention_targets"), list):
-        attention_targets_raw.extend(list(current_thought.get("attention_targets") or []))
+    attention_targets_raw.extend(
+        extract_current_thought_attention_targets(
+            current_thought,
+            include_actionable=True,
+        )
+    )
 
     attention_type_value_scores: dict[tuple[str, str], float] = {}
 
@@ -424,7 +435,7 @@ def _build_autonomy_message_report_focus(
         by_type_scores[t][str(v)] = float(w)
 
     # --- 代表的な構造関心を取り出す ---
-    interaction_mode = str(current_thought.get("interaction_mode") or "").strip()
+    interaction_mode = str(extract_current_thought_interaction_mode(current_thought) or "").strip()
     if interaction_mode not in {"observe", "support", "explore", "wait"}:
         interaction_mode = None
     research_interest_score = max(
@@ -1109,7 +1120,6 @@ def _load_current_thought_snapshot_for_deliberation(db) -> dict[str, Any] | None
 
     st = (
         db.query(State)
-        .filter(State.searchable == 1)
         .filter(State.kind == "current_thought_state")
         .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
         .first()
@@ -1118,54 +1128,13 @@ def _load_current_thought_snapshot_for_deliberation(db) -> dict[str, Any] | None
         return None
 
     payload_obj = common_utils.json_loads_maybe(str(st.payload_json or ""))
-    if not isinstance(payload_obj, dict):
-        payload_obj = {}
-
-    attention_targets_out: list[dict[str, Any]] = []
-    attention_targets_raw = payload_obj.get("attention_targets")
-    if isinstance(attention_targets_raw, list):
-        for item in list(attention_targets_raw):
-            if not isinstance(item, dict):
-                continue
-            target_type = str(item.get("type") or "").strip()
-            value = str(item.get("value") or "").strip()
-            if not target_type or not value:
-                continue
-            attention_targets_out.append(
-                {
-                    "type": str(target_type),
-                    "value": str(value),
-                    "weight": float(item.get("weight") or 0.0),
-                    "updated_at": (int(item.get("updated_at")) if item.get("updated_at") is not None else None),
-                }
-            )
-            if len(attention_targets_out) >= 24:
-                break
-
-    updated_from_event_ids = payload_obj.get("updated_from_event_ids")
-    if not isinstance(updated_from_event_ids, list):
-        updated_from_event_ids = []
-
-    return {
-        "state_id": int(st.state_id),
-        "kind": str(st.kind),
-        "body_text": str(st.body_text or ""),
-        "interaction_mode": str(payload_obj.get("interaction_mode") or "").strip() or None,
-        "active_thread_id": str(payload_obj.get("active_thread_id") or "").strip() or None,
-        "focus_summary": str(payload_obj.get("focus_summary") or "").strip() or None,
-        "next_candidate_action": (
-            dict(payload_obj.get("next_candidate_action") or {})
-            if isinstance(payload_obj.get("next_candidate_action"), dict)
-            else None
-        ),
-        "attention_targets": attention_targets_out,
-        "updated_from_event_ids": [
-            int(x) for x in list(updated_from_event_ids) if isinstance(x, (int, float)) and int(x) > 0
-        ][:20],
-        "updated_from": (payload_obj.get("updated_from") if isinstance(payload_obj.get("updated_from"), dict) else None),
-        "confidence": float(st.confidence),
-        "last_confirmed_at": int(st.last_confirmed_at),
-    }
+    return normalize_current_thought_snapshot(
+        state_id=int(st.state_id),
+        body_text=str(st.body_text or ""),
+        payload_obj=payload_obj,
+        confidence=float(st.confidence),
+        last_confirmed_at=int(st.last_confirmed_at),
+    )
 
 
 def _load_agenda_threads_snapshot_for_deliberation(db) -> list[dict[str, Any]]:
@@ -1322,22 +1291,21 @@ def _build_novelty_context_for_deliberation(
         seen_candidate_keys.add(action_key)
         candidate_action_keys.append(str(action_key))
 
-    if isinstance(current_thought_snapshot, dict):
-        next_candidate_action = current_thought_snapshot.get("next_candidate_action")
-        if isinstance(next_candidate_action, dict):
-            next_action_type = str(next_candidate_action.get("action_type") or "").strip()
-            if next_action_type:
-                action_key = _canonical_action_key(
-                    action_type=str(next_action_type),
-                    action_payload=(
-                        dict(next_candidate_action.get("action_payload") or {})
-                        if isinstance(next_candidate_action.get("action_payload"), dict)
-                        else {}
-                    ),
-                )
-                if action_key and action_key not in seen_candidate_keys:
-                    seen_candidate_keys.add(action_key)
-                    candidate_action_keys.append(str(action_key))
+    next_candidate_action = extract_current_thought_next_action(current_thought_snapshot)
+    if isinstance(next_candidate_action, dict):
+        next_action_type = str(next_candidate_action.get("action_type") or "").strip()
+        if next_action_type:
+            action_key = _canonical_action_key(
+                action_type=str(next_action_type),
+                action_payload=(
+                    dict(next_candidate_action.get("action_payload") or {})
+                    if isinstance(next_candidate_action.get("action_payload"), dict)
+                    else {}
+                ),
+            )
+            if action_key and action_key not in seen_candidate_keys:
+                seen_candidate_keys.add(action_key)
+                candidate_action_keys.append(str(action_key))
 
     # --- 直近のユーザー会話時刻を取る ---
     last_chat_row = (
@@ -1566,12 +1534,22 @@ def _build_persona_deliberation_focus(
         if str(x or "").strip()
     }
 
-    # --- runtime attention_targets + current_thought.attention_targets を使う ---
+    # --- runtime attention_targets + current_thought.present.attention_targets を使う ---
     attention_targets_raw: list[Any] = []
     if isinstance(runtime_blackboard_snapshot.get("attention_targets"), list):
         attention_targets_raw.extend(list(runtime_blackboard_snapshot.get("attention_targets") or []))
-    if isinstance(current_thought_snapshot, dict) and isinstance(current_thought_snapshot.get("attention_targets"), list):
-        attention_targets_raw.extend(list(current_thought_snapshot.get("attention_targets") or []))
+    resume_when = extract_current_thought_resume_when(current_thought_snapshot)
+    include_actionable_current_targets = True
+    if isinstance(resume_when, dict):
+        resume_mode = str(resume_when.get("mode") or "").strip()
+        if resume_mode in {"wait_for_new_information", "wait_for_user"}:
+            include_actionable_current_targets = False
+    attention_targets_raw.extend(
+        extract_current_thought_attention_targets(
+            current_thought_snapshot,
+            include_actionable=bool(include_actionable_current_targets),
+        )
+    )
     attention_targets: list[dict[str, Any]] = []
     for item in list(attention_targets_raw or []):
         if not isinstance(item, dict):
@@ -1733,10 +1711,9 @@ def _build_persona_deliberation_focus(
     # --- interaction mode を構造値から推定（VADは使わない） ---
     # --- current_thought.interaction_mode を最優先ヒントとして使う（構造値のみ） ---
     interaction_mode_hint = ""
-    if isinstance(current_thought_snapshot, dict):
-        interest_mode_raw = str(current_thought_snapshot.get("interaction_mode") or "").strip()
-        if interest_mode_raw in {"observe", "support", "explore", "wait"}:
-            interaction_mode_hint = str(interest_mode_raw)
+    interest_mode_raw = str(extract_current_thought_interaction_mode(current_thought_snapshot) or "").strip()
+    if interest_mode_raw in {"observe", "support", "explore", "wait"}:
+        interaction_mode_hint = str(interest_mode_raw)
     if not interaction_mode_hint:
         interaction_mode_hint = "observe"
         if len(active_intent_ids) >= 2:
@@ -1750,6 +1727,10 @@ def _build_persona_deliberation_focus(
     continuity_bias = "high" if active_intent_ids else "medium"
     if not active_intent_ids and str(trigger.trigger_type or "").strip() in {"heartbeat", "time_routine"}:
         continuity_bias = "low"
+    if not active_intent_ids and isinstance(resume_when, dict):
+        resume_mode = str(resume_when.get("mode") or "").strip()
+        if resume_mode in {"wait_for_user", "wait_for_new_information"}:
+            continuity_bias = "low"
 
     # --- Deliberation 入力件数（収集後の最終件数） ---
     limits = {

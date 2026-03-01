@@ -165,6 +165,55 @@ def _attention_target_to_text(*, target_type: str, target_value: str) -> str:
     return f"{prefix}: {target_value_norm}"
 
 
+def _current_thought_past_summary(
+    *,
+    event_source: str,
+    action_result_status: str,
+    second_person_label: str,
+) -> str:
+    """current_thought の past.continuity_summary を短く返す。"""
+
+    # --- 直前の出来事を、人間が自分で振り返る時の短い一文に寄せる ---
+    source_norm = str(event_source or "").strip()
+    result_norm = str(action_result_status or "").strip()
+    second_person_label_norm = str(second_person_label or "").strip() or "あなた"
+    if source_norm == "action_result":
+        if result_norm == "success":
+            return "直前の行動で一区切りの結果を受け取り、理解を整理した"
+        if result_norm == "partial":
+            return "直前の行動で途中結果を受け取り、未解決点を見直した"
+        if result_norm == "failed":
+            return "直前の行動がうまく進まず、方針を立て直している"
+        if result_norm == "no_effect":
+            return "直前の行動では決め手がなく、焦点を絞り直している"
+        return "直前の行動結果を受け取り、状況を整理した"
+    if source_norm == "autonomy_message":
+        return f"さっき見つけたことを{second_person_label_norm}に伝え、反応を待っている"
+    if source_norm == "chat":
+        return f"{second_person_label_norm}との会話を受けて、気になる点を整理した"
+    if source_norm == "deliberation_decision":
+        return "次にどう関わるかを決め直し、気持ちを整えた"
+    return "直近の出来事を踏まえて、考えを整理し直している"
+
+
+def _current_thought_resume_mode(
+    *,
+    next_candidate_action: dict[str, Any] | None,
+    action_result_status: str,
+    active_thread_status: str,
+) -> str:
+    """current_thought の future.resume_when.mode を返す。"""
+
+    # --- 次の一手が即時にあるのか、条件待ちなのかを明示する ---
+    if isinstance(next_candidate_action, dict) and str(next_candidate_action.get("action_type") or "").strip():
+        return "ready"
+    if str(active_thread_status or "").strip() == "blocked":
+        return "wait_for_unblock"
+    if str(action_result_status or "").strip() in {"success", "partial", "no_effect"}:
+        return "wait_for_new_information"
+    return "idle"
+
+
 def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: int, payload: dict[str, Any]) -> None:
     """WritePlan を適用し、状態/感情/文脈グラフを更新する。"""
 
@@ -177,6 +226,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         raise RuntimeError("payload.write_plan is required")
 
     now_ts = _now_utc_ts()
+    second_person_label = "あなた"
+    from cocoro_ghost.config import get_config_store
+
+    # --- 呼称は設定値を正本として使う ---
+    second_person_label = str(get_config_store().config.second_person_label or "").strip() or "あなた"
 
     # --- まとめて1トランザクションで適用する（途中失敗で半端に残さない） ---
     with memory_session_scope(embedding_preset_id, embedding_dimension) as db:
@@ -865,6 +919,13 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
 
                 # --- kind/op の最低限チェック ---
                 if not op or not kind:
+                    continue
+
+                # --- current_thought_state は LLM の state_updates では受け付けない ---
+                # NOTE:
+                # - current_thought はサーバ側の制御状態であり、通常記憶の upsert ルートに混ぜない。
+                # - 人格の内省状態は後段の構造更新で必ず再計算する。
+                if str(kind) == "current_thought_state":
                     continue
 
                 # --- close/mark_done は state_id 必須 ---
@@ -1618,6 +1679,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 if next_action_type and followup_due_at is not None:
                     next_candidate_action = {
                         "action_type": str(next_action_type),
+                        "action_payload": dict(next_action_payload),
                         "payload": dict(next_action_payload),
                     }
 
@@ -1649,7 +1711,6 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         current_thought_state = (
             db.query(State)
             .filter(State.kind == "current_thought_state")
-            .filter(State.searchable == 1)
             .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
             .first()
         )
@@ -1661,7 +1722,11 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
         )
         prev_updated_from_event_ids = []
         if isinstance(prev_interest_payload, dict) and isinstance(prev_interest_payload.get("updated_from_event_ids"), list):
-            prev_updated_from_event_ids = [int(x) for x in list(prev_interest_payload.get("updated_from_event_ids") or []) if isinstance(x, (int, float)) and int(x) > 0]
+            prev_updated_from_event_ids = [
+                int(x)
+                for x in list(prev_interest_payload.get("updated_from_event_ids") or [])
+                if isinstance(x, (int, float)) and int(x) > 0
+            ]
         merged_updated_from_event_ids = []
         seen_event_ids: set[int] = set()
         for x in list(prev_updated_from_event_ids) + [int(event_id)]:
@@ -1681,10 +1746,21 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                     break
         if focus_row_for_summary is None and agenda_threads_debug_rows:
             focus_row_for_summary = dict(agenda_threads_debug_rows[0])
+        focus_topic = ""
+        active_thread_status = ""
+        resume_not_before_ts: int | None = None
         if isinstance(focus_row_for_summary, dict):
             focus_summary = _agenda_focus_to_text(
                 agenda_kind=str(focus_row_for_summary.get("kind") or ""),
                 topic=str(focus_row_for_summary.get("topic") or ""),
+            )
+            focus_topic = str(focus_row_for_summary.get("topic") or "").strip()
+            active_thread_status = str(focus_row_for_summary.get("status") or "").strip()
+            resume_not_before_ts = (
+                int(focus_row_for_summary.get("followup_due_at"))
+                if isinstance(focus_row_for_summary.get("followup_due_at"), (int, float))
+                and int(focus_row_for_summary.get("followup_due_at")) > 0
+                else None
             )
         elif attention_targets_sorted:
             top_target = dict(attention_targets_sorted[0])
@@ -1692,23 +1768,187 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 target_type=str(top_target.get("type") or ""),
                 target_value=str(top_target.get("value") or ""),
             )
+            focus_topic = str(top_target.get("value") or "").strip()
+
+        # --- 過去・現在・未来の三段で現在の思考を組み立てる ---
+        # NOTE:
+        # - これは「行動候補の寄せ集め」ではなく、人格の内省状態として保存する。
+        # - 旧フィールドは他機能の互換用に残すが、正本は past / present / future とする。
+        attention_targets_for_payload = [
+            {
+                "type": str(t.get("type") or ""),
+                "value": str(t.get("value") or ""),
+                "weight": float(t.get("weight") or 0.0),
+                "updated_at": int(now_ts),
+            }
+            for t in list(attention_targets_sorted)
+        ]
+        top_labels = [
+            _attention_target_to_text(
+                target_type=str(t.get("type") or ""),
+                target_value=str(t.get("value") or ""),
+            )
+            for t in list(attention_targets_sorted[:4])
+            if str(t.get("type") or "").strip() and str(t.get("value") or "").strip()
+        ]
+        next_candidate_action_out: dict[str, Any] | None = None
+        next_action_label = ""
+        if isinstance(next_candidate_action, dict):
+            next_payload = (
+                dict(next_candidate_action.get("payload") or {})
+                if isinstance(next_candidate_action.get("payload"), dict)
+                else {}
+            )
+            next_action_type = str(next_candidate_action.get("action_type") or "").strip()
+            if next_action_type:
+                next_candidate_action_out = {
+                    "action_type": str(next_action_type),
+                    "action_payload": dict(next_payload),
+                    "payload": dict(next_payload),
+                }
+                next_action_label = _action_type_to_label(str(next_action_type))
+
+        prev_last_completed_action = None
+        if isinstance(prev_interest_payload, dict):
+            prev_past_obj = prev_interest_payload.get("past")
+            if isinstance(prev_past_obj, dict) and isinstance(prev_past_obj.get("last_completed_action"), dict):
+                prev_last_completed_action = dict(prev_past_obj.get("last_completed_action"))
+
+        last_completed_action = prev_last_completed_action
+        if event_source == "action_result" and str(action_type_ctx):
+            action_payload_preview = {}
+            if isinstance(action_result_payload_obj, dict):
+                for key in ("query", "goal"):
+                    value = str(action_result_payload_obj.get(key) or "").strip()
+                    if value:
+                        action_payload_preview[str(key)] = str(value)[:240]
+            last_completed_action = {
+                "action_type": str(action_type_ctx),
+                "result_status": (str(action_result_status) if action_result_status else None),
+                "source_event_id": int(event_id),
+                "at": int(base_ts),
+                "payload_preview": dict(action_payload_preview),
+            }
+
+        past_continuity_summary = _current_thought_past_summary(
+            event_source=str(event_source),
+            action_result_status=str(action_result_status),
+            second_person_label=str(second_person_label),
+        )
+
+        present_status = "settled"
+        present_novelty = "stable"
+        present_reason = "ひとまず流れを整理している"
+        if event_source == "action_result":
+            if action_result_status == "success":
+                present_status = "settled"
+                present_novelty = "refreshed"
+                present_reason = "新しい結果が加わり、理解が更新された"
+            elif action_result_status == "partial":
+                present_status = "open_question"
+                present_novelty = "incomplete"
+                present_reason = "途中結果まで見えており、未解決点が残っている"
+            elif action_result_status == "failed":
+                present_status = "blocked"
+                present_novelty = "stalled"
+                present_reason = "思った形で進まず、視点を立て直す必要がある"
+            elif action_result_status == "no_effect":
+                present_status = "cooling"
+                present_novelty = "thin"
+                present_reason = "決め手が薄く、いったん距離を置く段階に入った"
+        elif event_source == "autonomy_message":
+            present_status = "shared"
+            present_novelty = "reported"
+            present_reason = "いま把握している内容は伝え終え、相手の反応待ちに近い"
+        elif isinstance(next_candidate_action_out, dict):
+            present_status = "ready"
+            present_novelty = "active"
+            present_reason = "次の一手は見えているが、まだ実行前"
+        elif active_thread_id:
+            present_status = "monitoring"
+            present_novelty = "open"
+            present_reason = "話題は持ち続けるが、無理に急がない段階"
+
+        future_resume_mode = _current_thought_resume_mode(
+            next_candidate_action=next_candidate_action_out,
+            action_result_status=str(action_result_status),
+            active_thread_status=str(active_thread_status),
+        )
+        if event_source == "autonomy_message":
+            future_resume_mode = "wait_for_user"
+
+        future_desire_summary = "今は無理に次を決めず、自然な流れを見たい"
+        if future_resume_mode == "ready" and next_action_label:
+            future_desire_summary = f"{str(next_action_label)}を次の候補としている"
+        elif future_resume_mode == "wait_for_user":
+            future_desire_summary = (
+                f"{str(second_person_label)}の反応があれば、その温度感に合わせて続きを考えたい"
+            )
+        elif future_resume_mode == "wait_for_new_information":
+            future_desire_summary = "新しい差分や手がかりが出た時だけ続きを考えたい"
+        elif future_resume_mode == "wait_for_unblock":
+            future_desire_summary = "詰まりが解けたら、改めて次の一手を選びたい"
 
         current_thought_payload = {
-            "attention_targets": [
-                {
-                    "type": str(t.get("type") or ""),
-                    "value": str(t.get("value") or ""),
-                    "weight": float(t.get("weight") or 0.0),
-                    "updated_at": int(now_ts),
-                }
-                for t in list(attention_targets_sorted)
-            ],
+            "schema_version": 2,
+            "past": {
+                "continuity_summary": str(past_continuity_summary),
+                "last_event": {
+                    "event_id": int(event_id),
+                    "event_source": str(ev.source or ""),
+                    "at": int(base_ts),
+                },
+                "recent_event_ids": [int(x) for x in merged_updated_from_event_ids],
+                "last_completed_action": (
+                    dict(last_completed_action)
+                    if isinstance(last_completed_action, dict)
+                    else None
+                ),
+            },
+            "present": {
+                "interaction_mode": str(interaction_mode),
+                "focus": {
+                    "summary": (str(focus_summary) if focus_summary else None),
+                    "thread_id": (str(active_thread_id) if active_thread_id else None),
+                    "topic": (str(focus_topic) if focus_topic else None),
+                },
+                "appraisal": {
+                    "novelty": str(present_novelty),
+                    "status": str(present_status),
+                    "reason": str(present_reason),
+                },
+                "attention_targets": list(attention_targets_for_payload),
+            },
+            "future": {
+                "next_action": (
+                    dict(next_candidate_action_out)
+                    if isinstance(next_candidate_action_out, dict)
+                    else None
+                ),
+                "resume_when": {
+                    "mode": str(future_resume_mode),
+                    "requires_user_reply": bool(future_resume_mode == "wait_for_user"),
+                    "requires_new_observation": bool(future_resume_mode == "wait_for_new_information"),
+                    "not_before_ts": (
+                        int(resume_not_before_ts)
+                        if resume_not_before_ts is not None
+                        else None
+                    ),
+                },
+                "desire_summary": str(future_desire_summary),
+            },
+            # --- 互換キー ---
+            "attention_targets": list(attention_targets_for_payload),
             "interaction_mode": str(interaction_mode),
             "active_thread_id": (str(active_thread_id) if active_thread_id else None),
             "focus_summary": (str(focus_summary) if focus_summary else None),
-            "next_candidate_action": (dict(next_candidate_action) if isinstance(next_candidate_action, dict) else None),
+            "next_candidate_action": (
+                dict(next_candidate_action_out)
+                if isinstance(next_candidate_action_out, dict)
+                else None
+            ),
             "agenda_threads": list(agenda_threads_debug_rows),
-            "updated_reason": "構造更新",
+            "updated_reason": "内省更新",
             "updated_from_event_ids": [int(x) for x in merged_updated_from_event_ids],
             "updated_from": {
                 "event_id": int(event_id),
@@ -1731,27 +1971,14 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             },
         }
 
-        # --- body_text は検索/人間可読の最低限（構造の要約のみ） ---
-        top_labels = [
-            _attention_target_to_text(
-                target_type=str(t.get("type") or ""),
-                target_value=str(t.get("value") or ""),
-            )
-            for t in list(attention_targets_sorted[:4])
-            if str(t.get("type") or "").strip() and str(t.get("value") or "").strip()
-        ]
-        next_action_label = ""
-        if isinstance(next_candidate_action, dict):
-            next_action_label = _action_type_to_label(str(next_candidate_action.get("action_type") or "").strip())
-        current_thought_body_text = f"現在の思考（{_interaction_mode_to_label(str(interaction_mode))}）"
-        if focus_summary:
-            current_thought_body_text += f": {str(focus_summary)}"
-        elif top_labels:
-            current_thought_body_text += f": {', '.join(top_labels)}"
-        else:
-            current_thought_body_text += ": （ターゲットなし）"
-        if next_action_label:
-            current_thought_body_text += f" / 次候補: {str(next_action_label)}"
+        # --- body_text も past / present / future の自然な独白に寄せる ---
+        present_body = str(focus_summary) if focus_summary else (", ".join(top_labels) if top_labels else "焦点を整理している")
+        current_thought_body_text = (
+            f"現在の思考（{_interaction_mode_to_label(str(interaction_mode))}）: "
+            f"直前は{str(past_continuity_summary)}。"
+            f"今は{str(present_body)}。"
+            f"次は{str(future_desire_summary)}。"
+        )
         current_thought_body_text = str(current_thought_body_text)[:800]
 
         current_thought_payload_json = common_utils.json_dumps(current_thought_payload)
@@ -1763,7 +1990,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 payload_json=str(current_thought_payload_json),
                 last_confirmed_at=int(base_ts),
                 confidence=0.85,
-                searchable=1,
+                searchable=0,
                 valid_from_ts=None,
                 valid_to_ts=None,
                 created_at=int(base_ts),
@@ -1785,7 +2012,8 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
             same_payload = str(current_thought_state.payload_json or "") == str(current_thought_payload_json)
             same_body = str(current_thought_state.body_text or "") == str(current_thought_body_text)
             same_lca = int(current_thought_state.last_confirmed_at or 0) == int(base_ts)
-            if not (same_payload and same_body and same_lca):
+            same_visibility = int(current_thought_state.searchable or 0) == 0
+            if not (same_payload and same_body and same_lca and same_visibility):
                 current_thought_state.kind = "current_thought_state"
                 current_thought_state.body_text = str(current_thought_body_text)
                 current_thought_state.payload_json = str(current_thought_payload_json)
@@ -1793,7 +2021,7 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 current_thought_state.confidence = 0.85
                 current_thought_state.valid_from_ts = None
                 current_thought_state.valid_to_ts = None
-                current_thought_state.searchable = 1
+                current_thought_state.searchable = 0
                 current_thought_state.updated_at = int(now_ts)
                 db.add(current_thought_state)
                 db.flush()
@@ -1807,37 +2035,20 @@ def _handle_apply_write_plan(*, embedding_preset_id: str, embedding_dimension: i
                 )
                 current_thought_changed_state_id = int(current_thought_state.state_id)
 
-        # --- entity 索引は今回 event の entities を再利用（現在の思考の検索用） ---
+        # --- current_thought_state は通常記憶から切り離す ---
+        # NOTE:
+        # - searchable=0 にした上で entity 索引も空にして、検索・リンク対象から外す。
+        # - current_thought は制御状態なので、通常 state の埋め込みも作らない。
         if int(current_thought_changed_state_id) > 0:
             replace_state_entities(
                 state_id_in=int(current_thought_changed_state_id),
-                entities_norm_in=list(entities_norm),
-            )
-            db.add(
-                Job(
-                    kind="upsert_state_embedding",
-                    payload_json=common_utils.json_dumps({"state_id": int(current_thought_changed_state_id)}),
-                    status=int(_JOB_PENDING),
-                    run_after=int(now_ts),
-                    tries=0,
-                    last_error=None,
-                    created_at=int(now_ts),
-                    updated_at=int(now_ts),
-                )
+                entities_norm_in=[],
             )
 
-        # --- RAM blackboard の短期注目状態へも反映（次回 Deliberation の材料選別へ即時反映） ---
-        get_runtime_blackboard().merge_attention_targets(
-            items=[
-                {
-                    "type": str(t.get("type") or ""),
-                    "value": str(t.get("value") or ""),
-                    "weight": float(t.get("weight") or 0.0),
-                }
-                for t in list(attention_targets_sorted[:16])
-            ],
-            now_system_ts=int(now_ts),
-        )
+        # --- current_thought 由来の target は runtime blackboard へ再注入しない ---
+        # NOTE:
+        # - runtime は action_result 由来の短期刺激だけを持ち、内省状態の自己増幅を避ける。
+        # - current_thought は DB上の制御状態として別に読み戻す。
 
         # NOTE:
         # - state_entities は各 state_update の entities を正にして即時反映している。

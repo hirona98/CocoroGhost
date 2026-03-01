@@ -21,6 +21,7 @@ from sqlalchemy import text
 from cocoro_ghost import schemas
 from cocoro_ghost.core import affect
 from cocoro_ghost.core import common_utils
+from cocoro_ghost.core.current_thought import normalize_current_thought_snapshot
 from cocoro_ghost.llm import prompt_builders
 from cocoro_ghost.storage import vector_index
 from cocoro_ghost.storage.db import memory_session_scope
@@ -1144,7 +1145,6 @@ class _ChatMemoryMixin:
             st = (
                 db.query(State)
                 .filter(State.kind == "current_thought_state")
-                .filter(State.searchable == 1)
                 .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
                 .first()
             )
@@ -1152,58 +1152,38 @@ class _ChatMemoryMixin:
                 return None
 
             payload_obj = common_utils.json_loads_maybe(str(st.payload_json or ""))
-            if not isinstance(payload_obj, dict):
-                payload_obj = {}
+            snapshot = normalize_current_thought_snapshot(
+                state_id=int(st.state_id),
+                body_text=str(st.body_text or ""),
+                payload_obj=payload_obj,
+                confidence=float(st.confidence),
+                last_confirmed_at=int(st.last_confirmed_at),
+            )
 
+            # --- 表示用に current_thought 内の時刻だけ ISO へ整える ---
             attention_targets_out: list[dict[str, Any]] = []
-            attention_targets_raw = payload_obj.get("attention_targets")
-            if isinstance(attention_targets_raw, list):
-                for item in list(attention_targets_raw):
-                    if not isinstance(item, dict):
-                        continue
-                    target_type = str(item.get("type") or "").strip()
-                    value = str(item.get("value") or "").strip()
-                    if not target_type or not value:
-                        continue
-                    attention_targets_out.append(
-                        {
-                            "type": str(target_type),
-                            "value": str(value),
-                            "weight": float(item.get("weight") or 0.0),
-                            "updated_at": (
-                                format_iso8601_local(int(item.get("updated_at")))
-                                if item.get("updated_at") is not None and int(item.get("updated_at") or 0) > 0
-                                else None
-                            ),
-                        }
-                    )
-                    if len(attention_targets_out) >= 24:
-                        break
+            for item in list(snapshot.get("attention_targets") or []):
+                if not isinstance(item, dict):
+                    continue
+                updated_at_raw = item.get("updated_at")
+                attention_targets_out.append(
+                    {
+                        "type": str(item.get("type") or ""),
+                        "value": str(item.get("value") or ""),
+                        "weight": float(item.get("weight") or 0.0),
+                        "updated_at": (
+                            format_iso8601_local(int(updated_at_raw))
+                            if isinstance(updated_at_raw, (int, float)) and int(updated_at_raw) > 0
+                            else None
+                        ),
+                    }
+                )
 
-            updated_from_event_ids = payload_obj.get("updated_from_event_ids")
-            if not isinstance(updated_from_event_ids, list):
-                updated_from_event_ids = []
-
-            return {
-                "state_id": int(st.state_id),
-                "kind": str(st.kind),
-                "body_text": str(st.body_text or ""),
-                "interaction_mode": str(payload_obj.get("interaction_mode") or "").strip() or None,
-                "active_thread_id": str(payload_obj.get("active_thread_id") or "").strip() or None,
-                "focus_summary": str(payload_obj.get("focus_summary") or "").strip() or None,
-                "next_candidate_action": (
-                    dict(payload_obj.get("next_candidate_action") or {})
-                    if isinstance(payload_obj.get("next_candidate_action"), dict)
-                    else None
-                ),
-                "attention_targets": attention_targets_out,
-                "updated_from_event_ids": [
-                    int(x) for x in list(updated_from_event_ids) if isinstance(x, (int, float)) and int(x) > 0
-                ][:20],
-                "updated_from": (payload_obj.get("updated_from") if isinstance(payload_obj.get("updated_from"), dict) else None),
-                "confidence": float(st.confidence),
-                "last_confirmed_at": format_iso8601_local(int(st.last_confirmed_at)),
-            }
+            snapshot["attention_targets"] = list(attention_targets_out)
+            if isinstance(snapshot.get("present"), dict):
+                snapshot["present"]["attention_targets"] = list(attention_targets_out)
+            snapshot["last_confirmed_at"] = format_iso8601_local(int(st.last_confirmed_at))
+            return snapshot
 
     def _llm_io_loggers(self) -> tuple[logging.Logger, logging.Logger]:
         """LLM I/O ログの出力先ロガー（console/file）を返す。"""

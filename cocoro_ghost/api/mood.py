@@ -26,6 +26,7 @@ from cocoro_ghost.autonomy.contracts import (
 )
 from cocoro_ghost.core.clock import ClockService
 from cocoro_ghost.core import common_utils
+from cocoro_ghost.core.current_thought import normalize_current_thought_snapshot
 from cocoro_ghost.config import ConfigStore
 from cocoro_ghost.storage.db import memory_session_scope
 from cocoro_ghost.app_bootstrap.dependencies import get_clock_service_dep, get_config_store_dep
@@ -545,7 +546,6 @@ def _build_current_thought_snapshot(
     row = (
         db.query(State)
         .filter(State.kind == "current_thought_state")
-        .filter(State.searchable == 1)
         .order_by(State.last_confirmed_at.desc(), State.state_id.desc())
         .first()
     )
@@ -554,11 +554,16 @@ def _build_current_thought_snapshot(
 
     # --- payload を読む（壊れていても落とさない） ---
     payload_obj = common_utils.json_loads_maybe(str(row.payload_json or ""))
-    if not isinstance(payload_obj, dict):
-        payload_obj = {}
+    snapshot = normalize_current_thought_snapshot(
+        state_id=int(row.state_id),
+        body_text=str(row.body_text or ""),
+        payload_obj=payload_obj,
+        confidence=float(row.confidence),
+        last_confirmed_at=int(row.last_confirmed_at),
+    )
 
     # --- attention_targets（構造情報）を整形 ---
-    attention_targets_raw = payload_obj.get("attention_targets")
+    attention_targets_raw = snapshot.get("attention_targets")
     attention_targets: list[dict[str, Any]] = []
     total_targets_count = 0
     if isinstance(attention_targets_raw, list):
@@ -586,7 +591,7 @@ def _build_current_thought_snapshot(
                 break
 
     # --- updated_from（更新起点）を整形 ---
-    updated_from_obj = payload_obj.get("updated_from")
+    updated_from_obj = snapshot.get("updated_from")
     updated_from: dict[str, Any] | None = None
     updated_from_event_id = 0
     if isinstance(updated_from_obj, dict):
@@ -603,10 +608,10 @@ def _build_current_thought_snapshot(
         }
 
     # --- current_thought 固有フィールドを整形 ---
-    active_thread_id = str(payload_obj.get("active_thread_id") or "").strip() or None
-    focus_summary = str(payload_obj.get("focus_summary") or "").strip() or None
+    active_thread_id = str(snapshot.get("active_thread_id") or "").strip() or None
+    focus_summary = str(snapshot.get("focus_summary") or "").strip() or None
 
-    next_candidate_action_raw = payload_obj.get("next_candidate_action")
+    next_candidate_action_raw = snapshot.get("next_candidate_action")
     next_candidate_action: dict[str, Any] | None = None
     if isinstance(next_candidate_action_raw, dict):
         action_type = str(next_candidate_action_raw.get("action_type") or "").strip()
@@ -621,10 +626,10 @@ def _build_current_thought_snapshot(
                 "payload": dict(payload_value),
             }
 
-    updated_reason = str(payload_obj.get("updated_reason") or "").strip() or None
+    updated_reason = str(snapshot.get("updated_reason") or "").strip() or None
 
     # --- updated_from_event_ids を整形 ---
-    updated_from_event_ids_raw = payload_obj.get("updated_from_event_ids")
+    updated_from_event_ids_raw = snapshot.get("updated_from_event_ids")
     updated_from_event_ids: list[int] = []
     if isinstance(updated_from_event_ids_raw, list):
         for x in list(updated_from_event_ids_raw):
@@ -662,13 +667,16 @@ def _build_current_thought_snapshot(
     return {
         "state_id": int(row.state_id),
         "body_text": str(row.body_text or ""),
-        "interaction_mode": str(payload_obj.get("interaction_mode") or "").strip() or None,
+        "interaction_mode": str(snapshot.get("interaction_mode") or "").strip() or None,
         "active_thread_id": active_thread_id,
         "focus_summary": focus_summary,
         "next_candidate_action": next_candidate_action,
         "updated_reason": updated_reason,
         "attention_targets": list(attention_targets),
         "attention_targets_total": int(total_targets_count),
+        "past": (dict(snapshot.get("past")) if isinstance(snapshot.get("past"), dict) else None),
+        "present": (dict(snapshot.get("present")) if isinstance(snapshot.get("present"), dict) else None),
+        "future": (dict(snapshot.get("future")) if isinstance(snapshot.get("future"), dict) else None),
         "last_confirmed_at": _fmt_ts_or_none(int(row.last_confirmed_at) if row.last_confirmed_at is not None else None),
         "updated_at": _fmt_ts_or_none(int(row.updated_at) if row.updated_at is not None else None),
         "dt_seconds": int(dt_seconds),
