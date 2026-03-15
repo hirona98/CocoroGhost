@@ -23,6 +23,9 @@ datas = []
 binaries = []
 # sqlite-vec の loadable extension（vec0.*）を同梱
 binaries += collect_dynamic_libs("sqlite_vec")
+# pydantic / pydantic_core の mypyc コンパイル済み .pyd を同梱
+binaries += collect_dynamic_libs("pydantic")
+binaries += collect_dynamic_libs("pydantic_core")
 
 # tiktoken は動的に plugin(tiktoken_ext) を探索してエンコーディング定義を登録する。
 # PyInstaller だと解析で落ちやすいため、明示的に取り込む。
@@ -50,10 +53,20 @@ hiddenimports = [
     "cocoro_ghost.reminders_models",
     # tiktoken encodings (e.g., cl100k_base)
     "tiktoken_ext.openai_public",
+    # Pillow (litellm の ollama 画像変換で動的に import される)
+    "PIL",
+    "PIL.Image",
+    # pydantic core mypyc module for this wheel
+    "3c22db458360489351e4__mypyc",
 ]
 
 # tiktoken_ext 配下は動的に読み込まれるため、サブモジュールも拾っておく
 hiddenimports += collect_submodules("tiktoken_ext")
+# Pillow 配下も動的ロードされるのでサブモジュールを含める
+hiddenimports += collect_submodules("PIL")
+# pydantic の mypyc モジュールを拾う
+hiddenimports += collect_submodules("pydantic")
+hiddenimports += collect_submodules("pydantic_core")
 
 
 a = Analysis(
